@@ -12,7 +12,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use iroh::endpoint::Endpoint;
 use iroh::EndpointId;
 use tokio::sync::mpsc;
@@ -57,6 +57,13 @@ enum Command {
         /// Name of the network to leave
         name: String,
     },
+    /// Show status of active networks
+    Status,
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
 }
 
 fn check_root() {
@@ -89,6 +96,16 @@ async fn main() -> Result<()> {
             let stats = stats::Stats::new();
             stats.spawn_logger(token.clone());
             cmd_join(node_id, &name, token, stats).await
+        }
+        Command::Status => cmd_status(),
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "pitopi",
+                &mut std::io::stdout(),
+            );
+            Ok(())
         }
     }
 }
@@ -459,6 +476,36 @@ fn cmd_list() -> Result<()> {
             ip_str,
             net.peers.len()
         );
+    }
+    Ok(())
+}
+
+fn cmd_status() -> Result<()> {
+    let app_config = config::load()?;
+    if app_config.networks.is_empty() {
+        println!("No networks configured.");
+        return Ok(());
+    }
+    println!("Networks:");
+    for net in &app_config.networks {
+        let role = if net.assigned_ip.is_none() {
+            "coordinator"
+        } else {
+            "member"
+        };
+        let ip_str = net
+            .assigned_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "100.64.0.1".to_string());
+        println!("  {} [{}]", net.name, role);
+        println!("    IP: {}", ip_str);
+        println!("    Coordinator: {}", net.coordinator_id);
+        if !net.peers.is_empty() {
+            println!("    Peers:");
+            for peer in &net.peers {
+                println!("      {} ({})", peer.ip, peer.endpoint_id);
+            }
+        }
     }
     Ok(())
 }
