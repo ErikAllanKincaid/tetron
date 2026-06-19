@@ -46,6 +46,7 @@ impl Stats {
             let mut prev_tx = 0u64;
             let mut prev_bytes_rx = 0u64;
             let mut prev_bytes_tx = 0u64;
+            let mut prev_drops = 0u64;
 
             loop {
                 tokio::select! {
@@ -61,7 +62,7 @@ impl Stats {
                             tx = tx - prev_tx,
                             bytes_rx = format_bytes(brx - prev_bytes_rx),
                             bytes_tx = format_bytes(btx - prev_bytes_tx),
-                            drops,
+                            drops = drops - prev_drops,
                             "(30s)"
                         );
 
@@ -69,6 +70,7 @@ impl Stats {
                         prev_tx = tx;
                         prev_bytes_rx = brx;
                         prev_bytes_tx = btx;
+                        prev_drops = drops;
                     }
                     _ = token.cancelled() => {
                         stats.log_summary();
