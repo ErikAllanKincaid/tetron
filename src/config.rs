@@ -20,6 +20,10 @@ pub struct NetworkConfig {
     pub coordinator_id: String,
     /// Our assigned IP in this network (None if we are the creator).
     pub assigned_ip: Option<Ipv4Addr>,
+    /// Subnet index for network isolation (100.64.{subnet_index}.0/24).
+    /// Defaults to 0 for backward compatibility.
+    #[serde(default)]
+    pub subnet_index: u8,
     /// Known peers in this network.
     #[serde(default)]
     pub peers: Vec<PeerEntry>,
@@ -68,6 +72,19 @@ pub fn upsert_network(config: &mut AppConfig, network: NetworkConfig) {
     }
 }
 
+/// Find the next unused subnet index (starting from 1; 0 is the default for single-network use).
+pub fn next_subnet_index(config: &AppConfig) -> u8 {
+    let mut used: Vec<u8> = config.networks.iter().map(|n| n.subnet_index).collect();
+    used.sort();
+    let mut candidate: u8 = 1;
+    for idx in used {
+        if idx == candidate {
+            candidate += 1;
+        }
+    }
+    candidate
+}
+
 /// Remove a network by name. Returns true if it was found and removed.
 pub fn remove_network(config: &mut AppConfig, name: &str) -> bool {
     let before = config.networks.len();
@@ -86,14 +103,15 @@ mod tests {
                 NetworkConfig {
                     name: "gaming".to_string(),
                     coordinator_id: "abc123def456".to_string(),
-                    assigned_ip: Some(Ipv4Addr::new(100, 64, 0, 2)),
+                    assigned_ip: Some(Ipv4Addr::new(100, 64, 1, 2)),
+                    subnet_index: 1,
                     peers: vec![
                         PeerEntry {
-                            ip: Ipv4Addr::new(100, 64, 0, 1),
+                            ip: Ipv4Addr::new(100, 64, 1, 1),
                             endpoint_id: "coord-id".to_string(),
                         },
                         PeerEntry {
-                            ip: Ipv4Addr::new(100, 64, 0, 3),
+                            ip: Ipv4Addr::new(100, 64, 1, 3),
                             endpoint_id: "peer-id".to_string(),
                         },
                     ],
@@ -102,6 +120,7 @@ mod tests {
                     name: "work".to_string(),
                     coordinator_id: "xyz789".to_string(),
                     assigned_ip: None,
+                    subnet_index: 2,
                     peers: vec![],
                 },
             ],
@@ -140,6 +159,7 @@ coordinator_id = "abc"
             name: "test".to_string(),
             coordinator_id: "abc".to_string(),
             assigned_ip: Some(Ipv4Addr::new(100, 64, 0, 2)),
+            subnet_index: 0,
             peers: vec![],
         };
         upsert_network(&mut config, net.clone());
@@ -154,6 +174,7 @@ coordinator_id = "abc"
                 name: "test".to_string(),
                 coordinator_id: "old".to_string(),
                 assigned_ip: None,
+                subnet_index: 0,
                 peers: vec![],
             }],
         };
@@ -161,11 +182,50 @@ coordinator_id = "abc"
             name: "test".to_string(),
             coordinator_id: "new".to_string(),
             assigned_ip: Some(Ipv4Addr::new(100, 64, 0, 5)),
+            subnet_index: 0,
             peers: vec![],
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
         assert_eq!(config.networks[0].coordinator_id, "new");
+    }
+
+    #[test]
+    fn test_next_subnet_index() {
+        let config = AppConfig::default();
+        assert_eq!(next_subnet_index(&config), 1);
+
+        let config = AppConfig {
+            networks: vec![NetworkConfig {
+                name: "a".to_string(),
+                coordinator_id: "x".to_string(),
+                assigned_ip: None,
+                subnet_index: 1,
+                peers: vec![],
+            }],
+        };
+        assert_eq!(next_subnet_index(&config), 2);
+
+        // Gaps should be filled
+        let config = AppConfig {
+            networks: vec![
+                NetworkConfig {
+                    name: "a".to_string(),
+                    coordinator_id: "x".to_string(),
+                    assigned_ip: None,
+                    subnet_index: 1,
+                    peers: vec![],
+                },
+                NetworkConfig {
+                    name: "b".to_string(),
+                    coordinator_id: "y".to_string(),
+                    assigned_ip: None,
+                    subnet_index: 3,
+                    peers: vec![],
+                },
+            ],
+        };
+        assert_eq!(next_subnet_index(&config), 2);
     }
 
     #[test]
@@ -176,12 +236,14 @@ coordinator_id = "abc"
                     name: "keep".to_string(),
                     coordinator_id: "a".to_string(),
                     assigned_ip: None,
+                    subnet_index: 0,
                     peers: vec![],
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
                     coordinator_id: "b".to_string(),
                     assigned_ip: None,
+                    subnet_index: 0,
                     peers: vec![],
                 },
             ],

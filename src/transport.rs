@@ -1,16 +1,17 @@
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::Connection, endpoint::presets};
 
-pub const DEFAULT_ALPN: &[u8] = b"pitopi/net/0";
-
 pub fn network_alpn(network_name: &str) -> Vec<u8> {
     format!("pitopi/net/{network_name}").into_bytes()
 }
 
-pub async fn create_endpoint(secret_key: SecretKey) -> Result<Endpoint> {
+pub async fn create_endpoint_with_alpns(
+    secret_key: SecretKey,
+    alpns: Vec<Vec<u8>>,
+) -> Result<Endpoint> {
     let ep = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
-        .alpns(vec![DEFAULT_ALPN.to_vec()])
+        .alpns(alpns)
         .bind()
         .await
         .context("failed to bind iroh endpoint")?;
@@ -20,21 +21,33 @@ pub async fn create_endpoint(secret_key: SecretKey) -> Result<Endpoint> {
     Ok(ep)
 }
 
-
-pub async fn accept_connection(ep: &Endpoint) -> Result<Connection> {
+pub async fn accept_connection_with_alpn(ep: &Endpoint) -> Result<(Connection, Vec<u8>)> {
     let incoming = ep.accept().await.context("no incoming connection")?;
     let conn = incoming.await.context("failed to accept connection")?;
-    tracing::info!(peer = %conn.remote_id().fmt_short(), "peer connected");
-    Ok(conn)
+    let alpn = conn.alpn().to_vec();
+    tracing::info!(
+        peer = %conn.remote_id().fmt_short(),
+        alpn = %String::from_utf8_lossy(&alpn),
+        "peer connected"
+    );
+    Ok((conn, alpn))
 }
 
-pub async fn connect_to_peer(ep: &Endpoint, id: EndpointId) -> Result<Connection> {
+pub async fn connect_to_peer_with_alpn(
+    ep: &Endpoint,
+    id: EndpointId,
+    alpn: &[u8],
+) -> Result<Connection> {
     let addr: EndpointAddr = id.into();
     let conn = ep
-        .connect(addr, DEFAULT_ALPN)
+        .connect(addr, alpn)
         .await
         .context("failed to connect to peer")?;
-    tracing::info!(peer = %conn.remote_id().fmt_short(), "connected to peer");
+    tracing::info!(
+        peer = %conn.remote_id().fmt_short(),
+        alpn = %String::from_utf8_lossy(alpn),
+        "connected to peer"
+    );
     Ok(conn)
 }
 

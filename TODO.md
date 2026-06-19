@@ -2,7 +2,7 @@
 
 ## Current state
 
-Multi-peer mesh VPN over iroh QUIC datagrams. Creator acts as coordinator — assigns IPs from 100.64.0.0/24 and broadcasts peer lists. Joiners receive their IP via a control channel (QUIC bidirectional stream), then connect directly to all existing peers (full mesh). Routing table dispatches packets by destination IP. ~400 lines across 8 modules.
+Multi-peer mesh VPN over iroh QUIC datagrams. Supports multiple isolated networks on a single endpoint. Creator acts as coordinator — assigns IPs from a per-network /24 subnet (100.64.{n}.0/24) and broadcasts peer lists. Each network uses its own ALPN (`pitopi/net/<name>`) and TUN device for strict isolation. Joiners receive their IP via a control channel (QUIC bidirectional stream), then connect directly to all existing peers (full mesh). Features: persistent config, room codes, ACL policy engine, audit logging, shell completions, systemd/launchd service files. ~1500 lines across 12 modules.
 
 ---
 
@@ -54,10 +54,10 @@ Run multiple independent virtual networks simultaneously.
 
 ### Network isolation
 
-- [ ] Each network gets its own TUN device and /24 subnet (100.64.1.0/24, 100.64.2.0/24, ...)
-- [ ] ALPN per network: `pitopi/net/<network-hash>` — iroh multiplexes connections by ALPN on a single endpoint
-- [ ] Single shared iroh Endpoint across all networks (one port, one identity)
-- [ ] Strict isolation — packets from one network never cross to another
+- [x] Each network gets its own TUN device and /24 subnet (100.64.1.0/24, 100.64.2.0/24, ...)
+- [x] ALPN per network: `pitopi/net/<network-hash>` — iroh multiplexes connections by ALPN on a single endpoint
+- [x] Single shared iroh Endpoint across all networks (one port, one identity)
+- [x] Strict isolation — packets from one network never cross to another
 
 ### Daemon mode
 
@@ -125,14 +125,14 @@ Let people find each other through platforms they already use.
 
 Fine-grained control over who can reach what.
 
-- [ ] ACL policy engine — rules like `user:alice can access server:gamehost on port 25565`
+- [x] ACL policy engine — rules like `user:alice can access server:gamehost on port 25565`
 - [ ] Role-based access — map Discord roles / Slack groups to ACL groups
 - [ ] Admin controls — org admins grant/revoke access per user, per resource, per port
 - [ ] Resource tagging — peers advertise services (e.g., "minecraft:25565", "ssh:22") on the control channel
-- [ ] Default policies: deny-all, allow-same-org, allow-all
-- [ ] Policy format: human-readable TOML (inspired by Tailscale ACLs)
-- [ ] Enforcement at the forwarding layer — filter packets against ACLs before writing to TUN
-- [ ] Audit log — who connected to what, when, how much traffic
+- [x] Default policies: deny-all, allow-same-org, allow-all
+- [x] Policy format: human-readable TOML (inspired by Tailscale ACLs)
+- [x] Enforcement at the forwarding layer — filter packets against ACLs before writing to TUN
+- [x] Audit log — who connected to what, when, how much traffic
 
 ## Future / Ideas
 

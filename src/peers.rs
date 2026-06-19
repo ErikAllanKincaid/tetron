@@ -7,16 +7,20 @@ use iroh::endpoint::Connection;
 use crate::control::PeerInfo;
 
 pub struct IpAllocator {
+    subnet_index: u8,
     next_octet: u8,
 }
 
 impl IpAllocator {
-    pub fn new() -> Self {
-        Self { next_octet: 2 }
+    pub fn for_subnet(subnet_index: u8) -> Self {
+        Self {
+            subnet_index,
+            next_octet: 2,
+        }
     }
 
     pub fn next(&mut self) -> Ipv4Addr {
-        let ip = Ipv4Addr::new(100, 64, 0, self.next_octet);
+        let ip = Ipv4Addr::new(100, 64, self.subnet_index, self.next_octet);
         self.next_octet += 1;
         ip
     }
@@ -82,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_ip_allocator_sequential() {
-        let mut alloc = IpAllocator::new();
+        let mut alloc = IpAllocator::for_subnet(0);
         assert_eq!(alloc.next(), Ipv4Addr::new(100, 64, 0, 2));
         assert_eq!(alloc.next(), Ipv4Addr::new(100, 64, 0, 3));
         assert_eq!(alloc.next(), Ipv4Addr::new(100, 64, 0, 4));

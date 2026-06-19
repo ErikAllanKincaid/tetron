@@ -1,3 +1,5 @@
+mod acl;
+mod audit;
 mod config;
 mod control;
 mod forward;
@@ -23,7 +25,9 @@ use control::{ControlMsg, PeerInfo};
 use peers::{IpAllocator, PeerTable};
 use stats::Stats;
 
-const COORDINATOR_IP: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 1);
+fn coordinator_ip(subnet_index: u8) -> Ipv4Addr {
+    tun::TunDevice::coordinator_ip(subnet_index)
+}
 
 const BACKOFF_INITIAL: std::time::Duration = std::time::Duration::from_secs(1);
 const BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
@@ -133,34 +137,53 @@ async fn main() -> Result<()> {
 
 async fn cmd_create(name: &str, token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
     let key = identity::load_or_create()?;
-    let ep = transport::create_endpoint(key).await?;
+    let alpn = transport::network_alpn(name);
+    let ep = transport::create_endpoint_with_alpns(key, vec![alpn.clone()]).await?;
 
+    // Assign subnet index
+    let mut app_config = config::load()?;
+    let subnet_index = config::next_subnet_index(&app_config);
+
+    cmd_create_on_endpoint(name, &ep, subnet_index, token, stats, &mut app_config).await
+}
+
+/// Run a coordinator for a single network on a shared endpoint.
+async fn cmd_create_on_endpoint(
+    name: &str,
+    ep: &Endpoint,
+    subnet_index: u8,
+    token: CancellationToken,
+    stats: Arc<Stats>,
+    app_config: &mut config::AppConfig,
+) -> Result<()> {
+    let coord_ip = coordinator_ip(subnet_index);
     let room_code = room_code::encode(&ep.id());
+    let alpn = transport::network_alpn(name);
 
-    tracing::info!(name = %name, "network created");
-    tracing::info!(ip = %COORDINATOR_IP, "your virtual IP");
+    tracing::info!(name = %name, subnet_index, "network created");
+    tracing::info!(ip = %coord_ip, "your virtual IP");
     tracing::info!(node_id = %ep.id(), "share this node ID with peers");
     tracing::info!(room_code = %room_code, "or share this room code");
 
     // Save network to config
-    let mut app_config = config::load()?;
     config::upsert_network(
-        &mut app_config,
+        app_config,
         config::NetworkConfig {
             name: name.to_string(),
             coordinator_id: ep.id().to_string(),
             assigned_ip: None,
+            subnet_index,
             peers: vec![],
         },
     );
-    config::save(&app_config)?;
+    config::save(app_config)?;
     tracing::info!("saved network to config");
 
-    let tun_dev =
-        tun::TunDevice::create_mesh(COORDINATOR_IP).context("failed to create TUN device")?;
+    let tun_dev = tun::TunDevice::create_mesh_subnet(coord_ip, subnet_index)
+        .context("failed to create TUN device")?;
 
     let peers = PeerTable::new();
-    let mut ip_alloc = IpAllocator::new();
+    let mut ip_alloc = IpAllocator::for_subnet(subnet_index);
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
 
     forward::spawn_tun_writer(tun_dev.share(), tun_rx);
@@ -174,13 +197,18 @@ async fn cmd_create(name: &str, token: CancellationToken, stats: Arc<Stats>) -> 
     ));
 
     loop {
-        tracing::info!("waiting for peers to join...");
+        tracing::info!(network = %name, "waiting for peers to join...");
 
         let conn = tokio::select! {
             _ = token.cancelled() => return Ok(()),
-            result = transport::accept_connection(&ep) => {
+            result = transport::accept_connection_with_alpn(ep) => {
                 match result {
-                    Ok(conn) => conn,
+                    Ok((conn, conn_alpn)) => {
+                        if conn_alpn != alpn {
+                            continue;
+                        }
+                        conn
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to accept connection");
                         continue;
@@ -195,7 +223,7 @@ async fn cmd_create(name: &str, token: CancellationToken, stats: Arc<Stats>) -> 
 
         peers.add(assigned_ip, conn.clone(), peer_endpoint_id);
 
-        tracing::info!(ip = %assigned_ip, "peer joined network");
+        tracing::info!(ip = %assigned_ip, network = %name, "peer joined network");
 
         let peers_clone = peers.clone();
         let token_clone = token.clone();
@@ -290,16 +318,34 @@ async fn cmd_join(
     stats: Arc<Stats>,
 ) -> Result<()> {
     let key = identity::load_or_create()?;
-    let ep = transport::create_endpoint(key).await?;
+    let alpn = transport::network_alpn(name);
+    let ep = transport::create_endpoint_with_alpns(key, vec![alpn.clone()]).await?;
 
+    // Assign subnet index
+    let app_config = config::load()?;
+    let subnet_index = config::next_subnet_index(&app_config);
+
+    cmd_join_on_endpoint(node_id, name, &ep, subnet_index, token, stats).await
+}
+
+/// Join a network on a shared endpoint with a specific subnet and ALPN.
+async fn cmd_join_on_endpoint(
+    node_id: EndpointId,
+    name: &str,
+    ep: &Endpoint,
+    subnet_index: u8,
+    token: CancellationToken,
+    stats: Arc<Stats>,
+) -> Result<()> {
+    let alpn = transport::network_alpn(name);
     let mut backoff = BACKOFF_INITIAL;
 
     loop {
-        tracing::info!("connecting to network...");
+        tracing::info!(network = %name, "connecting to network...");
 
         let conn = tokio::select! {
             _ = token.cancelled() => return Ok(()),
-            result = transport::connect_to_peer(&ep, node_id) => {
+            result = transport::connect_to_peer_with_alpn(ep, node_id, &alpn) => {
                 match result {
                     Ok(conn) => {
                         backoff = BACKOFF_INITIAL;
@@ -314,7 +360,7 @@ async fn cmd_join(
             }
         };
 
-        match join_mesh(conn, &ep, name, node_id, token.clone(), stats.clone()).await {
+        match join_mesh(conn, ep, name, node_id, subnet_index, token.clone(), stats.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if token.is_cancelled() {
@@ -332,9 +378,13 @@ async fn join_mesh(
     ep: &Endpoint,
     network_name: &str,
     coordinator_node_id: EndpointId,
+    subnet_index: u8,
     token: CancellationToken,
     stats: Arc<Stats>,
 ) -> Result<()> {
+    let alpn = transport::network_alpn(network_name);
+    let coord_ip = coordinator_ip(subnet_index);
+
     let (_send, mut recv) = coordinator_conn
         .accept_bi()
         .await
@@ -346,7 +396,7 @@ async fn join_mesh(
         other => anyhow::bail!("expected Welcome, got {:?}", other),
     };
 
-    tracing::info!(ip = %my_ip, peers = existing_peers.len(), "joined network");
+    tracing::info!(ip = %my_ip, network = %network_name, peers = existing_peers.len(), "joined network");
 
     // Save network membership to config
     let peer_entries: Vec<config::PeerEntry> = existing_peers
@@ -363,13 +413,15 @@ async fn join_mesh(
             name: network_name.to_string(),
             coordinator_id: coordinator_node_id.to_string(),
             assigned_ip: Some(my_ip),
+            subnet_index,
             peers: peer_entries,
         },
     );
     config::save(&app_config)?;
     tracing::info!(name = %network_name, "saved network to config");
 
-    let tun_dev = tun::TunDevice::create_mesh(my_ip).context("failed to create TUN device")?;
+    let tun_dev = tun::TunDevice::create_mesh_subnet(my_ip, subnet_index)
+        .context("failed to create TUN device")?;
 
     let peers = PeerTable::new();
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
@@ -377,7 +429,7 @@ async fn join_mesh(
     forward::spawn_tun_writer(tun_dev.share(), tun_rx);
 
     peers.add(
-        COORDINATOR_IP,
+        coord_ip,
         coordinator_conn.clone(),
         coordinator_conn.remote_id().to_string(),
     );
@@ -393,7 +445,7 @@ async fn join_mesh(
             .endpoint_id
             .parse()
             .context("invalid peer endpoint id")?;
-        match transport::connect_to_peer(ep, peer_id).await {
+        match transport::connect_to_peer_with_alpn(ep, peer_id, &alpn).await {
             Ok(conn) => {
                 let (mut send, _peer_recv) = conn.open_bi().await?;
                 control::send_msg(&mut send, &ControlMsg::MeshHello { ip: my_ip }).await?;
@@ -449,13 +501,23 @@ async fn join_mesh(
         let token = token.clone();
         let stats = stats.clone();
         let tun_tx = tun_tx.clone();
+        let expected_alpn = alpn.clone();
         async move {
             loop {
                 tokio::select! {
                     _ = token.cancelled() => return,
-                    result = transport::accept_connection(&ep) => {
+                    result = transport::accept_connection_with_alpn(&ep) => {
                         match result {
-                            Ok(conn) => {
+                            Ok((conn, conn_alpn)) => {
+                                // Strict isolation: only accept connections for our network
+                                if conn_alpn != expected_alpn {
+                                    tracing::debug!(
+                                        expected = %String::from_utf8_lossy(&expected_alpn),
+                                        got = %String::from_utf8_lossy(&conn_alpn),
+                                        "ignoring connection for different network"
+                                    );
+                                    continue;
+                                }
                                 match conn.accept_bi().await {
                                     Ok((_send, mut recv)) => {
                                         if let Ok(ControlMsg::MeshHello { ip }) = control::recv_msg(&mut recv).await {
@@ -520,9 +582,10 @@ fn cmd_status() -> Result<()> {
         let ip_str = net
             .assigned_ip
             .map(|ip| ip.to_string())
-            .unwrap_or_else(|| "100.64.0.1".to_string());
+            .unwrap_or_else(|| coordinator_ip(net.subnet_index).to_string());
         println!("  {} [{}]", net.name, role);
         println!("    IP: {}", ip_str);
+        println!("    Subnet: 100.64.{}.0/24", net.subnet_index);
         println!("    Coordinator: {}", net.coordinator_id);
         if !net.peers.is_empty() {
             println!("    Peers:");
@@ -553,10 +616,21 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
     }
 
     let key = identity::load_or_create()?;
-    let ep = transport::create_endpoint(key).await?;
+
+    // Collect all ALPNs upfront so the shared endpoint serves all networks
+    let alpns: Vec<Vec<u8>> = app_config
+        .networks
+        .iter()
+        .map(|net| transport::network_alpn(&net.name))
+        .collect();
+
+    let ep = transport::create_endpoint_with_alpns(key, alpns).await?;
 
     let mut handles = Vec::new();
     for net in &app_config.networks {
+        let subnet_index = net.subnet_index;
+        let alpn = transport::network_alpn(&net.name);
+
         if net.assigned_ip.is_some() {
             let coordinator_id: EndpointId = net.coordinator_id.parse()
                 .context("invalid coordinator id in config")?;
@@ -565,10 +639,10 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
             let token = token.clone();
             let stats = stats.clone();
             handles.push(tokio::spawn(async move {
-                tracing::info!(network = %name, "connecting...");
-                match transport::connect_to_peer(&ep, coordinator_id).await {
+                tracing::info!(network = %name, subnet_index, "connecting...");
+                match transport::connect_to_peer_with_alpn(&ep, coordinator_id, &alpn).await {
                     Ok(conn) => {
-                        if let Err(e) = join_mesh(conn, &ep, &name, coordinator_id, token, stats).await {
+                        if let Err(e) = join_mesh(conn, &ep, &name, coordinator_id, subnet_index, token, stats).await {
                             tracing::warn!(network = %name, error = %e, "disconnected");
                         }
                     }
@@ -579,11 +653,13 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
             }));
         } else {
             let name = net.name.clone();
+            let ep = ep.clone();
             let token = token.clone();
             let stats = stats.clone();
             handles.push(tokio::spawn(async move {
-                tracing::info!(network = %name, "starting coordinator...");
-                if let Err(e) = cmd_create(&name, token, stats).await {
+                tracing::info!(network = %name, subnet_index, "starting coordinator...");
+                let mut app_config = config::load().unwrap_or_default();
+                if let Err(e) = cmd_create_on_endpoint(&name, &ep, subnet_index, token, stats, &mut app_config).await {
                     tracing::warn!(network = %name, error = %e, "coordinator stopped");
                 }
             }));
