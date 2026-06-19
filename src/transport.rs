@@ -20,6 +20,7 @@ pub async fn create_endpoint(secret_key: SecretKey) -> Result<Endpoint> {
     Ok(ep)
 }
 
+
 pub async fn accept_connection(ep: &Endpoint) -> Result<Connection> {
     let incoming = ep.accept().await.context("no incoming connection")?;
     let conn = incoming.await.context("failed to accept connection")?;
