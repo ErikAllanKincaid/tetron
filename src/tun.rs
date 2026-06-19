@@ -13,11 +13,11 @@ pub struct TunDevice {
 }
 
 impl TunDevice {
-    pub fn create(addr: Ipv4Addr, dest: Ipv4Addr) -> Result<Self> {
+    pub fn create_mesh(addr: Ipv4Addr) -> Result<Self> {
         let mut config = Configuration::default();
         config
             .address(addr)
-            .destination(dest)
+            .destination(Ipv4Addr::new(100, 64, 0, 1))
             .netmask((255, 255, 255, 0))
             .mtu(TUN_MTU)
             .up();
@@ -28,7 +28,7 @@ impl TunDevice {
         });
 
         let device = tun::create_as_async(&config)?;
-        tracing::info!(%addr, "TUN device created");
+        tracing::info!(%addr, "TUN device created (mesh)");
         Ok(Self {
             device: Arc::new(Mutex::new(device)),
         })

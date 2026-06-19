@@ -2,7 +2,7 @@
 
 ## Current state
 
-Two-peer point-to-point VPN over iroh QUIC datagrams. Creator listens, joiner connects by EndpointId. Hardcoded IPs (100.64.0.1 / .2), single connection, no reconnection, no signal handling. ~150 lines of implementation across 5 modules.
+Multi-peer mesh VPN over iroh QUIC datagrams. Creator acts as coordinator — assigns IPs from 100.64.0.0/24 and broadcasts peer lists. Joiners receive their IP via a control channel (QUIC bidirectional stream), then connect directly to all existing peers (full mesh). Routing table dispatches packets by destination IP. ~400 lines across 8 modules.
 
 ---
 
@@ -24,23 +24,23 @@ Go from 2 peers to N peers in a single network.
 
 ### IP assignment
 
-- [ ] Creator becomes the initial coordinator — assigns IPs sequentially from 100.64.0.0/24 (100.64.0.1, .2, .3, ...)
-- [ ] Control channel over a bidirectional QUIC stream (separate from datagram path) for IP assignment, peer list exchange, and keep-alives
-- [ ] Joiner requests an IP via control channel; coordinator responds with assignment + current peer list
+- [x] Creator becomes the initial coordinator — assigns IPs sequentially from 100.64.0.0/24 (100.64.0.1, .2, .3, ...)
+- [x] Control channel over a bidirectional QUIC stream (separate from datagram path) for IP assignment, peer list exchange, and keep-alives
+- [x] Joiner requests an IP via control channel; coordinator responds with assignment + current peer list
 
 ### Mesh connectivity
 
-- [ ] Accept multiple incoming connections — creator listens in a loop, not just once
-- [ ] Full mesh — when a new peer joins, coordinator broadcasts the updated peer list; each peer connects to every other peer directly
-- [ ] Routing table — `HashMap<Ipv4Addr, Connection>` to dispatch packets to the right peer based on destination IP
-- [ ] Forwarding layer reads destination IP from each packet and routes to the correct connection (or drops if unknown)
+- [x] Accept multiple incoming connections — creator listens in a loop, not just once
+- [x] Full mesh — when a new peer joins, coordinator broadcasts the updated peer list; each peer connects to every other peer directly
+- [x] Routing table — `HashMap<Ipv4Addr, Connection>` to dispatch packets to the right peer based on destination IP
+- [x] Forwarding layer reads destination IP from each packet and routes to the correct connection (or drops if unknown)
 
 ### Resilience
 
-- [ ] Peer disconnect detection — remove from routing table, notify remaining peers via control channel
-- [ ] Replicate peer list to all members — any peer holds full state, not just the coordinator
+- [x] Peer disconnect detection — remove from routing table, notify remaining peers via control channel
+- [x] Replicate peer list to all members — any peer holds full state, not just the coordinator
 - [ ] If coordinator goes offline, existing mesh stays connected; any peer can accept new joiners
-- [ ] Any peer can share the network ID (creator's EndpointId) to invite others
+- [x] Any peer can share the network ID (creator's EndpointId) to invite others
 
 ## Phase 3: Multi-network support
 
