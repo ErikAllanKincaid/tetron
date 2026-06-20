@@ -137,7 +137,11 @@ impl ApprovedList {
         }
     }
 
-    pub fn approve(&mut self, entry: ApprovedEntry, members: &MemberList) -> Result<(), IpCollision> {
+    pub fn approve(
+        &mut self,
+        entry: ApprovedEntry,
+        members: &MemberList,
+    ) -> Result<(), IpCollision> {
         // Check collision against existing members
         if let Some(existing) = members.get_by_ip(entry.ip)
             && existing.identity != entry.identity
@@ -348,7 +352,10 @@ mod tests {
         list.add(member.clone()).unwrap();
         assert!(list.is_member("peer-a"));
         assert!(!list.is_member("peer-b"));
-        assert_eq!(list.get("peer-a").unwrap().ip, Ipv4Addr::new(100, 64, 10, 5));
+        assert_eq!(
+            list.get("peer-a").unwrap().ip,
+            Ipv4Addr::new(100, 64, 10, 5)
+        );
     }
 
     #[test]
@@ -479,11 +486,13 @@ mod tests {
     fn test_approved_list_collision_with_member() {
         let mut approved = ApprovedList::new();
         let mut members = MemberList::new();
-        members.add(Member {
-            identity: "existing".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-            is_coordinator: false,
-        }).unwrap();
+        members
+            .add(Member {
+                identity: "existing".to_string(),
+                ip: Ipv4Addr::new(100, 64, 5, 10),
+                is_coordinator: false,
+            })
+            .unwrap();
         let entry = ApprovedEntry {
             identity: "new-peer".to_string(),
             ip: Ipv4Addr::new(100, 64, 5, 10),
@@ -495,14 +504,22 @@ mod tests {
     fn test_approved_list_collision_within_approved() {
         let mut approved = ApprovedList::new();
         let members = MemberList::new();
-        approved.approve(ApprovedEntry {
-            identity: "peer-a".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-        }, &members).unwrap();
-        let result = approved.approve(ApprovedEntry {
-            identity: "peer-b".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-        }, &members);
+        approved
+            .approve(
+                ApprovedEntry {
+                    identity: "peer-a".to_string(),
+                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                },
+                &members,
+            )
+            .unwrap();
+        let result = approved.approve(
+            ApprovedEntry {
+                identity: "peer-b".to_string(),
+                ip: Ipv4Addr::new(100, 64, 5, 10),
+            },
+            &members,
+        );
         assert!(result.is_err());
     }
 
@@ -510,14 +527,24 @@ mod tests {
     fn test_approved_list_same_identity_is_idempotent() {
         let mut approved = ApprovedList::new();
         let members = MemberList::new();
-        approved.approve(ApprovedEntry {
-            identity: "peer-a".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-        }, &members).unwrap();
-        approved.approve(ApprovedEntry {
-            identity: "peer-a".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-        }, &members).unwrap();
+        approved
+            .approve(
+                ApprovedEntry {
+                    identity: "peer-a".to_string(),
+                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                },
+                &members,
+            )
+            .unwrap();
+        approved
+            .approve(
+                ApprovedEntry {
+                    identity: "peer-a".to_string(),
+                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                },
+                &members,
+            )
+            .unwrap();
         assert_eq!(approved.all().len(), 1);
     }
 
@@ -525,10 +552,15 @@ mod tests {
     fn test_approved_list_remove() {
         let mut approved = ApprovedList::new();
         let members = MemberList::new();
-        approved.approve(ApprovedEntry {
-            identity: "peer-a".to_string(),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
-        }, &members).unwrap();
+        approved
+            .approve(
+                ApprovedEntry {
+                    identity: "peer-a".to_string(),
+                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                },
+                &members,
+            )
+            .unwrap();
         let removed = approved.remove("peer-a");
         assert!(removed.is_some());
         assert!(!approved.is_approved("peer-a"));
@@ -537,8 +569,14 @@ mod tests {
     #[test]
     fn test_approved_list_from_entries() {
         let entries = vec![
-            ApprovedEntry { identity: "a".to_string(), ip: Ipv4Addr::new(100, 64, 0, 2) },
-            ApprovedEntry { identity: "b".to_string(), ip: Ipv4Addr::new(100, 64, 0, 3) },
+            ApprovedEntry {
+                identity: "a".to_string(),
+                ip: Ipv4Addr::new(100, 64, 0, 2),
+            },
+            ApprovedEntry {
+                identity: "b".to_string(),
+                ip: Ipv4Addr::new(100, 64, 0, 3),
+            },
         ];
         let list = ApprovedList::from_entries(entries);
         assert!(list.is_approved("a"));

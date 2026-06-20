@@ -65,7 +65,10 @@ pub fn decode_msg(data: &[u8]) -> Result<ControlMsg> {
 
 pub async fn send_msg(stream: &mut SendStream, msg: &ControlMsg) -> Result<()> {
     let data = encode_msg(msg);
-    stream.write_all(&data).await.context("send control message")?;
+    stream
+        .write_all(&data)
+        .await
+        .context("send control message")?;
     Ok(())
 }
 

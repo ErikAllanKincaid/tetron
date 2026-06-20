@@ -43,9 +43,7 @@ impl AclPolicy {
 
     pub fn check(&self, src: Ipv4Addr, dst: Ipv4Addr, dst_port: Option<u16>) -> bool {
         for rule in &self.rules {
-            if rule.src == src
-                && rule.dst == dst
-                && (rule.port.is_none() || rule.port == dst_port)
+            if rule.src == src && rule.dst == dst && (rule.port.is_none() || rule.port == dst_port)
             {
                 return rule.allow;
             }

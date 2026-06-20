@@ -18,7 +18,9 @@ fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
     if packet[0] >> 4 != 4 {
         return None;
     }
-    Some(Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]))
+    Some(Ipv4Addr::new(
+        packet[16], packet[17], packet[18], packet[19],
+    ))
 }
 
 pub async fn run_mesh(

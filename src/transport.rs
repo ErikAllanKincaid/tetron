@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::Connection, endpoint::presets};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::Connection, endpoint::presets,
+};
 
 pub fn network_alpn(network_name: &str) -> Vec<u8> {
     format!("pitopi/net/{network_name}").into_bytes()

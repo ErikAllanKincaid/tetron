@@ -277,7 +277,9 @@ async fn run_accept_loop(
                     ip: peer_ip,
                     is_coordinator: false,
                 };
-                s.members.add(new_member).expect("was approved, no collision");
+                s.members
+                    .add(new_member)
+                    .expect("was approved, no collision");
             }
 
             let (members, approved) = {
@@ -499,7 +501,17 @@ async fn cmd_join(
             }
         };
 
-        match enter_mesh(conn, &ep, name, &identity, &alpn, token.clone(), stats.clone()).await {
+        match enter_mesh(
+            conn,
+            &ep,
+            name,
+            &identity,
+            &alpn,
+            token.clone(),
+            stats.clone(),
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if token.is_cancelled() {
@@ -985,7 +997,11 @@ fn cmd_status() -> Result<()> {
         if !net.members.is_empty() {
             println!("    Members:");
             for member in &net.members {
-                let role_tag = if member.is_coordinator { " [coord]" } else { "" };
+                let role_tag = if member.is_coordinator {
+                    " [coord]"
+                } else {
+                    ""
+                };
                 println!("      {} ({}){}", member.ip, member.identity, role_tag);
             }
         }
@@ -1060,15 +1076,7 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
                     Ok(conn) => {
                         tracing::info!(network = %name, "connected");
                         if let Err(e) = join_mesh_shared(
-                            conn,
-                            &ep,
-                            &name,
-                            &identity,
-                            &alpn,
-                            peers,
-                            tun_tx,
-                            token,
-                            stats,
+                            conn, &ep, &name, &identity, &alpn, peers, tun_tx, token, stats,
                         )
                         .await
                         {

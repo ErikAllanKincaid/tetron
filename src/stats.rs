@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
@@ -86,8 +86,8 @@ impl Stats {
         let mins = duration.as_secs() / 60;
         let secs = duration.as_secs() % 60;
 
-        let total_bytes = self.bytes_rx.load(Ordering::Relaxed)
-            + self.bytes_tx.load(Ordering::Relaxed);
+        let total_bytes =
+            self.bytes_rx.load(Ordering::Relaxed) + self.bytes_tx.load(Ordering::Relaxed);
 
         tracing::info!(
             duration = format!("{}m{}s", mins, secs),
