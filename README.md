@@ -24,60 +24,76 @@ Under the hood, Pitopi creates a TUN device on each machine, captures IP packets
 # Build
 cargo build
 
+# Start the daemon (on both machines)
+sudo pitopi daemon &
+
 # Create a network (on machine A)
-sudo pitopi create --name gaming
-# > Network "gaming" created
-# > Your IP: 100.64.0.1
-# > Room code: ybnj-raqe-c5s6-...
-# > Share this code with peers to join
+pitopi create --name gaming
+# > Network 'gaming' created.
+# >   IP: 100.64.0.1
+# >   Room code: gaming/ybnj-raqe-c5s6-...
 
 # Join the network (on machine B)
-sudo pitopi join gaming/ybnj-raqe-c5s6-...
-# > Joined network "gaming"
-# > Your IP: 100.64.0.2
-# > Connected to 1 peer(s)
+pitopi join gaming/ybnj-raqe-c5s6-...
+# > Joined network 'gaming'.
+# >   IP: 100.64.0.2
 
 # Now you can reach each other
 ping 100.64.0.1   # from machine B
 ping 100.64.0.2   # from machine A
 ```
 
-Requires `sudo` because TUN devices need elevated privileges.
+The daemon requires `sudo` (creates TUN devices), but all other commands run unprivileged.
 
 ## Commands
 
 ```
+# Daemon (run once, manages all networks)
+sudo pitopi daemon                  Start the daemon (required for all other commands)
+sudo pitopi up                      Alias for daemon
+
+# Network management (talks to daemon via IPC)
 pitopi create [--name <name>]       Create a new network (you become the coordinator)
 pitopi join <code> [--name <name>]  Join a network using a room code or endpoint ID
-pitopi list                         List saved networks
-pitopi leave <name>                 Remove a network from saved config
-pitopi status                       Show active networks, peers, and connection quality
-pitopi up                           Connect to all saved networks
-pitopi down                         Disconnect from all networks
+pitopi leave <name>                 Leave a network (tears down connections, removes config)
+pitopi status                       Show active networks, peers, and IPs (live from daemon)
+pitopi down                         Shut down the daemon
+
+# Standalone (no daemon needed)
+pitopi list                         List saved networks from config file
+pitopi completions <shell>          Generate shell completions (bash, zsh, fish)
+
+# Service
 pitopi install-service              Install systemd (Linux) or launchd (macOS) service
 pitopi uninstall-service            Remove the system service
-pitopi completions <shell>          Generate shell completions (bash, zsh, fish)
 ```
+
+## Daemon architecture
+
+Pitopi uses a daemon/client split similar to Tailscale. The daemon (`pitopi daemon`) is a long-lived root process that owns the iroh endpoint, TUN device, and all peer connections. CLI commands talk to it over a Unix socket (`~/.config/pitopi/pitopi.sock`).
+
+You can dynamically create, join, and leave networks while the daemon is running — no restart needed.
 
 ## Multiple networks
 
-You can run multiple isolated networks simultaneously. Each gets its own TUN device and /24 subnet:
+You can run multiple isolated networks simultaneously through a single daemon:
 
 ```bash
-sudo pitopi create --name gaming    # 100.64.0.0/24
-sudo pitopi create --name work      # 100.64.1.0/24
+sudo pitopi daemon &               # start the daemon
+pitopi create --name gaming         # create first network
+pitopi create --name work           # create second network
+pitopi status                       # see both networks with live peer info
 ```
 
-Networks are fully isolated — different ALPN protocols, different TUN devices, no cross-talk.
+Networks are fully isolated — different ALPN protocols, different peer sets, no cross-talk.
 
 ## Running as a service
 
 ```bash
 sudo pitopi install-service    # installs systemd unit or launchd plist
-sudo pitopi up                 # connects to all saved networks
 ```
 
-The service runs `pitopi up` on boot, reconnecting to all saved networks automatically.
+The service runs `pitopi daemon` on boot, restoring all saved networks automatically.
 
 ## Configuration
 
@@ -122,7 +138,7 @@ See [TODO.md](TODO.md) for the full roadmap. Current status:
 - [x] DHT membership publishing for offline coordinator resilience
 - [x] ACL policy engine and audit logging
 - [x] Systemd/launchd service integration
-- [ ] Daemon architecture (pitopid + thin CLI client)
+- [x] Daemon architecture (daemon + thin CLI client via Unix socket IPC)
 - [ ] Social discovery (Discord, Slack, Steam)
 - [ ] macOS Network Extension (no sudo)
 - [ ] Windows, iOS, Android

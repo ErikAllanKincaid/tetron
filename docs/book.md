@@ -23,8 +23,9 @@ A complete guide to pitopi's architecture, protocols, and internals.
 15. [Shutdown](#15-shutdown)
 16. [DHT Membership](#16-dht-membership)
 17. [Network Lifecycle](#17-network-lifecycle)
-18. [Code Flow Diagrams](#18-code-flow-diagrams)
-19. [Security Model](#19-security-model)
+18. [Daemon Architecture](#18-daemon-architecture)
+19. [Code Flow Diagrams](#19-code-flow-diagrams)
+20. [Security Model](#20-security-model)
 
 ---
 
@@ -209,20 +210,32 @@ cargo build
 
 Requires Rust 2024 edition.
 
-### Creating a network
+### Starting the daemon
 
-One peer creates a network and becomes the coordinator:
+Before using any network commands, start the daemon:
 
 ```bash
-sudo pitopi create --name gaming
+sudo pitopi daemon
+```
+
+The daemon is a long-lived process that owns the iroh endpoint, TUN device, and all peer connections. It listens for commands on a Unix socket at `~/.config/pitopi/pitopi.sock`. On startup, it restores all previously saved networks from config.
+
+`pitopi up` is an alias for `pitopi daemon`.
+
+### Creating a network
+
+In another terminal, create a network:
+
+```bash
+pitopi create --name gaming
 ```
 
 This produces output like:
 
 ```
-network created: gaming (mode: Restricted)
-your virtual IP: 100.64.23.142
-share this room code: ybnj-raqe-c5s6-...
+Network 'gaming' created.
+  IP: 100.64.23.142
+  Room code: gaming/ybnj-raqe-c5s6-...
 ```
 
 The coordinator's IP is deterministically derived from their cryptographic identity. The room code is a human-friendly encoding of the coordinator's EndpointId.
@@ -232,26 +245,27 @@ The coordinator's IP is deterministically derived from their cryptographic ident
 Other peers join by providing the room code:
 
 ```bash
-sudo pitopi join ybnj-raqe-c5s6-... --name gaming
+pitopi join gaming/ybnj-raqe-c5s6-...
 ```
 
-The joiner connects to the coordinator, receives approval and a member list, creates a TUN device, and establishes direct connections to every other peer in the mesh.
+The joiner connects to the coordinator, receives approval and a member list, and establishes direct connections to every other peer in the mesh.
 
 ### Why sudo?
 
-TUN devices are virtual network interfaces. Creating them requires root privileges on both Linux and macOS. All commands that create TUN devices (`create`, `join`, `up`) check for root at startup and exit with a clear error if not running as root.
+TUN devices are virtual network interfaces. Creating them requires root privileges on both Linux and macOS. Only `pitopi daemon` (and its alias `pitopi up`) requires root. All other commands (`create`, `join`, `leave`, `status`, `down`) are thin IPC clients that talk to the daemon and run unprivileged.
 
 ### Other commands
 
 | Command | Description | Requires root |
 |---------|-------------|:---:|
-| `pitopi create --name NAME [--mode open\|restricted]` | Create a network | Yes |
-| `pitopi join CODE --name NAME` | Join a network | Yes |
-| `pitopi list` | Show saved networks | No |
-| `pitopi status` | Show network details and members | No |
-| `pitopi leave NAME` | Remove a network from config | No |
-| `pitopi up` | Connect to all saved networks | Yes |
-| `pitopi down` | Disconnect (stop the process) | No |
+| `pitopi daemon` | Start the daemon | Yes |
+| `pitopi up` | Alias for daemon | Yes |
+| `pitopi create --name NAME [--mode open\|restricted]` | Create a network (via daemon) | No |
+| `pitopi join CODE [--name NAME]` | Join a network (via daemon) | No |
+| `pitopi leave NAME` | Leave a network (via daemon) | No |
+| `pitopi status` | Show live network status from daemon | No |
+| `pitopi down` | Shut down the daemon | No |
+| `pitopi list` | Show saved networks from config file | No |
 | `pitopi install-service` | Install systemd/launchd service | Yes |
 | `pitopi uninstall-service` | Remove system service | Yes |
 | `pitopi completions SHELL` | Generate shell completions | No |
@@ -1319,35 +1333,33 @@ This chapter ties the modules together by walking through the complete lifecycle
 
 ### Creating a network
 
-When a user runs `sudo pitopi create --name gaming --mode open`:
+When a user runs `pitopi create --name gaming --mode open`, the CLI sends an `IpcRequest::Create` to the daemon. The daemon:
 
-1. **Load identity.** Read or generate the Ed25519 keypair from `~/.config/pitopi/secret_key`.
+1. **Check not duplicate.** Verify no network named "gaming" is already active.
 
 2. **Create identity provider.** Wrap the public key in `IrohIdentityProvider`, which derives the coordinator's virtual IP.
 
 3. **Derive DHT membership key.** Use blake3 to derive a per-network signing key from the coordinator's secret key.
 
-4. **Bind endpoint.** Create an iroh `Endpoint` with the ALPN `pitopi/net/gaming`.
+4. **Update ALPNs.** Call `endpoint.set_alpns()` to add `pitopi/net/gaming` to the shared endpoint.
 
 5. **Initialize membership.** Create a `MemberList` with self as the only member (marked `is_coordinator: true`). Create the membership policy based on the mode (`OpenPolicy` for open, `RestrictedPolicy` for restricted).
 
 6. **Start DHT publisher.** Create a pkarr client and spawn a background task that publishes membership to the DHT on changes and every 5 minutes.
 
-7. **Save config.** Write the network to `~/.config/pitopi/networks.toml`.
+7. **Create NetworkHandle.** Insert into the daemon's `networks` map with a child `CancellationToken`.
 
-8. **Create TUN.** Create a TUN device with the coordinator's IP and /10 netmask.
+8. **Save config.** Write the network to `~/.config/pitopi/networks.toml`.
 
-9. **Start forwarding.** Spawn the TUN read loop, TUN writer, and begin the accept loop.
-
-10. **Display room code.** Print the z-base-32 room code for sharing.
+9. **Return response.** Send `IpcResponse::Created` with room code and IP back to the CLI.
 
 ### Joining a network
 
-When a user runs `sudo pitopi join ybnj-raqe-... --name gaming`:
+When a user runs `pitopi join gaming/ybnj-raqe-...`, the CLI sends an `IpcRequest::Join` to the daemon. The daemon:
 
-1. **Parse room code.** Decode the room code to an `EndpointId`.
+1. **Parse room code.** Decode the room code to an `EndpointId` and network name.
 
-2. **Load identity and bind endpoint.** Same as create.
+2. **Update ALPNs.** Call `endpoint.set_alpns()` to add the network's ALPN.
 
 3. **Connect to coordinator (or any peer).** Use iroh to establish a QUIC connection. The first attempt goes to the coordinator. If the coordinator is offline, the joiner can connect to any peer that has the joiner's identity in its approved list.
 
@@ -1355,15 +1367,15 @@ When a user runs `sudo pitopi join ybnj-raqe-... --name gaming`:
 
 5. **Check for IP collision.** The joiner checks its own derived IP against the received member list. If a different identity already occupies the same IP, the joiner bails out with an error.
 
-6. **Save config.** Write the network membership, approved list, and DHT ID to disk.
+6. **Connect to mesh.** For each member in the list (excluding self and the peer who sent the Welcome), open a QUIC connection and send `MeshHello`.
 
-7. **Create TUN.** Create a TUN device with the joiner's IP.
+7. **Start tasks.** Spawn per-peer readers and a reconnect loop (with child `CancellationToken`).
 
-8. **Connect to mesh.** For each member in the list (excluding self and the peer who sent the Welcome), open a QUIC connection and send `MeshHello`.
+8. **Create NetworkHandle.** Insert into the daemon's `networks` map.
 
-9. **Start forwarding.** Spawn per-peer readers, the TUN writer, and the TUN read loop.
+9. **Save config.** Write the network membership, approved list, and DHT ID to disk.
 
-10. **Start listeners.** Spawn a control listener (for `MemberSync` and `MemberApproved` messages) and a mesh acceptor (for `MeshHello` from future peers, including approved peers).
+10. **Return response.** Send `IpcResponse::Joined` with assigned IP back to the CLI.
 
 ### Coordinator's accept loop
 
@@ -1428,25 +1440,87 @@ When the entire mesh session fails (e.g., `enter_mesh` returns an error):
 
 2. **Any peer can help.** Known peers accept reconnection requests because they hold the current member list. This is the "offline coordinator resilience" feature -- if the coordinator goes down, existing members can still reconnect to each other. DHT resolution enhances this by providing a potentially more up-to-date member list than the local config.
 
-### Bringing all networks up
+### Daemon startup
 
-When a user runs `sudo pitopi up`:
+When a user runs `sudo pitopi daemon` (or `sudo pitopi up`):
 
-1. **Load all saved networks** from config.
+1. **Load identity** from `~/.config/pitopi/secret_key`.
 
-2. **Create a single shared TUN device** using the node's identity-derived IP.
+2. **Create shared resources.** A single iroh Endpoint, TUN device, PeerTable, and Stats are created and shared across all networks.
 
-3. **Create a shared PeerTable** and forwarding loop.
+3. **Restore saved networks** from config. For each saved network, the daemon calls its internal create or join logic to bring it back up.
 
-4. **For each network:**
-   - If we're the coordinator: start an accept loop.
-   - If we're a member: connect to the coordinator and join the mesh.
+4. **Start accept loop.** A shared accept loop dispatches incoming connections by ALPN to the correct network's handler.
+
+5. **Start IPC listener.** Bind the Unix socket at `~/.config/pitopi/pitopi.sock` and accept client commands.
+
+6. **Block on shutdown.** Wait for `CancellationToken` (SIGINT/SIGTERM or `pitopi down`).
 
 All networks share the same TUN device and routing table, since the address space is flat and each peer has a globally unique IP.
 
 ---
 
-## 18. Code Flow Diagrams
+## 18. Daemon Architecture
+
+Pitopi uses a daemon/client split similar to Tailscale. The daemon (`pitopi daemon`) is a long-lived root process that owns all shared resources, while CLI commands are thin IPC clients.
+
+### Why a daemon?
+
+Without a daemon, each `pitopi create` or `pitopi join` was a blocking process that owned its own iroh endpoint and TUN device. There was no way to:
+
+- Manage multiple networks from a single process
+- Query live peer status
+- Dynamically create, join, or leave networks at runtime
+
+The daemon solves all three by centralizing resource ownership and accepting commands over IPC.
+
+### Shared state (`DaemonState`)
+
+The daemon holds:
+
+- **`endpoint`** — a single iroh `Endpoint` shared across all networks. ALPNs are updated dynamically via `Endpoint::set_alpns()` when networks are added or removed.
+- **`peers`** — a single `PeerTable` shared across all networks. Each `PeerEntry` is tagged with a network name so peers can be cleaned up per-network on leave.
+- **TUN device** — a single TUN device with a /10 netmask, shared across all networks.
+- **`networks`** — a `HashMap<String, NetworkHandle>` behind `RwLock`, mapping network names to their handles.
+- **`shutdown_token`** — master `CancellationToken` for clean shutdown.
+
+### Per-network state (`NetworkHandle`)
+
+Each active network has:
+
+- **`cancel`** — a child `CancellationToken` of the master. Cancelling it tears down only this network's tasks.
+- **`tasks`** — `JoinHandle`s for the network's background tasks (DHT publisher, reconnect loop, peer cleanup).
+- **`role`** — whether we're the coordinator or a member.
+- **`my_ip`** — our virtual IP in this network.
+- **`state`** — the `NetworkState` (member list, approved list, policy).
+
+### IPC protocol
+
+The Unix socket at `~/.config/pitopi/pitopi.sock` uses the same wire format as the peer-to-peer control protocol: 4-byte big-endian length prefix + JSON body. The types are defined in `src/ipc.rs`:
+
+- **`IpcRequest`** — `Create`, `Join`, `Leave`, `Status`, `Shutdown`
+- **`IpcResponse`** — `Ok`, `Error`, `Created`, `Joined`, `Status`
+
+The daemon accepts one connection at a time, reads a request, processes it, and sends a response. The CLI helpers (`ipc_create`, `ipc_join`, etc.) in `main.rs` handle the client side.
+
+### Dynamic ALPN management
+
+The key enabler for runtime network management is `Endpoint::set_alpns()`. When a network is created or joined, its ALPN (`pitopi/net/<name>`) is added to the endpoint. When a network is left, the ALPN is removed. The shared accept loop dispatches incoming connections to the correct network handler based on the ALPN.
+
+### Network teardown (`leave`)
+
+When a network is left:
+
+1. Cancel the per-network `CancellationToken` — stops DHT publisher, reconnect loop, and other tasks.
+2. Wait for all tasks to complete.
+3. Remove peers from the `PeerTable` using `remove_by_network()`.
+4. Remove the `NetworkHandle` from the `networks` map.
+5. Refresh ALPNs on the endpoint (removing the network's ALPN).
+6. Remove the network from config.
+
+---
+
+## 19. Code Flow Diagrams
 
 Visual reference for how data and control flow through the codebase.
 
@@ -1611,7 +1685,7 @@ spawn_peer_reader detects conn.read_datagram() error
 
 ---
 
-## 19. Security Model
+## 20. Security Model
 
 ### Transport security
 

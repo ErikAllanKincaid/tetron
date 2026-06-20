@@ -14,20 +14,18 @@ cargo -q clippy
 ### Running
 
 ```bash
-# Create a network (coordinator)
-sudo cargo -q run -- create --name gaming
+# Start the daemon (required first — owns TUN device and iroh endpoint)
+sudo cargo -q run -- daemon
 
-# Join using room code or raw endpoint ID
-sudo cargo -q run -- join <room-code-or-endpoint-id> --name gaming
+# In another terminal: create/join/manage networks (talks to daemon via IPC)
+cargo -q run -- create --name gaming
+cargo -q run -- join <room-code-or-endpoint-id> --name gaming
+cargo -q run -- leave gaming
+cargo -q run -- status              # live peer info from daemon
+cargo -q run -- down                # shut down the daemon
 
-# Manage networks
-cargo -q run -- list                # show saved networks
-cargo -q run -- leave gaming        # remove from config
-cargo -q run -- status              # show active connections
-
-# Connect/disconnect all saved networks
-sudo cargo -q run -- up
-cargo -q run -- down
+# Standalone (no daemon needed)
+cargo -q run -- list                # show saved networks from config
 
 # System service
 sudo cargo -q run -- install-service
@@ -37,7 +35,7 @@ sudo cargo -q run -- uninstall-service
 cargo -q run -- completions bash > /etc/bash_completion.d/pitopi
 ```
 
-Requires `sudo` for commands that create TUN devices (`create`, `join`, `up`).
+Only `daemon` (and its alias `up`) requires `sudo`. All other commands run unprivileged via IPC.
 
 ### Cross-compile & deploy
 
@@ -54,7 +52,9 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 
 ### Modules
 
-- `src/main.rs` — CLI (clap), coordinator/joiner orchestration, NetworkState, accept loop (approve → broadcast → welcome), mesh acceptor (welcome approved peers), peer reconnect loop
+- `src/main.rs` — thin CLI client (clap), IPC client functions, `spawn_path_logger`, service install/uninstall
+- `src/daemon.rs` — daemon process: DaemonState (shared endpoint + TUN + PeerTable), NetworkHandle per active network, IPC server over Unix socket, coordinator accept loop, joiner mesh logic, reconnect loop, DHT publisher
+- `src/ipc.rs` — IPC protocol types (IpcRequest, IpcResponse, NetworkStatus, PeerStatus), length-prefixed JSON wire helpers, socket path (`~/.config/pitopi/pitopi.sock`), client connect helper
 - `src/identity.rs` — persistent Ed25519 keypair at `~/.config/pitopi/secret_key`
 - `src/membership.rs` — IdentityProvider trait, FNV-1a IP derivation, MemberList, ApprovedList, GroupMode, MembershipPolicy
 - `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept
@@ -62,7 +62,7 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 - `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection, DisconnectEvent notification on peer drop
 - `src/dht.rs` — DHT membership publishing via iroh pkarr relay: key derivation (blake3), record encode/decode (DNS TXT), publish/resolve
 - `src/control.rs` — control protocol: Welcome, MemberApproved, JoinApproved, JoinDenied, MemberSync, MeshHello, MeshWelcome, ReconnectRequest, AdvertiseServices
-- `src/peers.rs` — PeerTable (routing by dest IP), PeerEntry with Connection + endpoint_id
+- `src/peers.rs` — PeerTable (routing by dest IP), PeerEntry with Connection + endpoint_id + network name, remove_by_network for teardown
 - `src/config.rs` — persistent network config at `~/.config/pitopi/networks.toml` (members + approved list + membership_dht_id)
 - `src/room_code.rs` — z-base-32 room codes with dashes for human-friendly sharing
 - `src/acl.rs` — ACL policy engine: default policies, per-rule src/dst/port matching, packet filtering (not yet wired in)
@@ -85,6 +85,8 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 **Mesh forwarding:** TUN read loop extracts dest IP from IPv4 header bytes 16-19, looks up PeerTable, sends datagram on correct connection. Per-peer reader tasks write incoming datagrams to a shared TUN writer channel.
 
 **Network isolation:** each network gets its own ALPN (`pitopi/net/<name>`). A single shared iroh Endpoint accepts connections for all networks, filtering by ALPN on accept. Single TUN device with /10 netmask shared across networks.
+
+**Daemon/IPC:** `pitopi daemon` starts a long-lived root process that owns the iroh Endpoint, TUN device, and PeerTable. CLI commands (`create`, `join`, `leave`, `status`, `down`) connect via Unix socket IPC (`~/.config/pitopi/pitopi.sock`) using the same length-prefixed JSON wire format as `control.rs`. The daemon uses `Endpoint::set_alpns()` to dynamically add/remove network ALPNs at runtime. Each active network gets a `NetworkHandle` with a child `CancellationToken` for clean teardown on leave.
 
 ## Key Dependencies
 
