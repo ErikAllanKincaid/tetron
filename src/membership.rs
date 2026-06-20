@@ -299,6 +299,10 @@ impl IdentityProvider for IrohIdentityProvider {
 pub struct MembershipData {
     pub members: Vec<Member>,
     pub approved: Vec<ApprovedEntry>,
+    #[serde(default)]
+    pub network_secret: [u8; 32],
+    #[serde(default)]
+    pub membership_signing_key: [u8; 32],
 }
 
 /// Produces a deterministic msgpack encoding of membership state.
@@ -314,6 +318,33 @@ pub fn canonical_membership_bytes(members: &MemberList, approved: &ApprovedList)
     let data = MembershipData {
         members: sorted_members,
         approved: sorted_approved,
+        network_secret: [0u8; 32],
+        membership_signing_key: [0u8; 32],
+    };
+    rmp_serde::to_vec_named(&data).expect("msgpack serialize")
+}
+
+/// Produces a deterministic msgpack encoding of membership state including secrets.
+/// Members and approved entries are sorted by identity string to ensure
+/// identical output regardless of HashMap iteration order.
+#[allow(dead_code)]
+pub fn canonical_membership_bytes_with_secrets(
+    members: &MemberList,
+    approved: &ApprovedList,
+    network_secret: &[u8; 32],
+    membership_signing_key: &[u8; 32],
+) -> Vec<u8> {
+    let mut sorted_members: Vec<Member> = members.all().into_iter().cloned().collect();
+    sorted_members.sort_by_key(|m| m.identity.to_string());
+
+    let mut sorted_approved: Vec<ApprovedEntry> = approved.all().into_iter().cloned().collect();
+    sorted_approved.sort_by_key(|a| a.identity.to_string());
+
+    let data = MembershipData {
+        members: sorted_members,
+        approved: sorted_approved,
+        network_secret: *network_secret,
+        membership_signing_key: *membership_signing_key,
     };
     rmp_serde::to_vec_named(&data).expect("msgpack serialize")
 }
@@ -724,5 +755,48 @@ mod tests {
         let result = verify_membership_data(&bytes, "badhash");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("hash mismatch"));
+    }
+
+    #[test]
+    fn membership_data_includes_secrets() {
+        let key = iroh::SecretKey::generate();
+        let mut members = MemberList::new();
+        members.add(Member {
+            identity: key.public(),
+            ip: Ipv4Addr::new(100, 64, 0, 1),
+            is_coordinator: true,
+        }).unwrap();
+        let approved = ApprovedList::new();
+        let secret = [42u8; 32];
+        let signing_key = [99u8; 32];
+
+        let bytes = canonical_membership_bytes_with_secrets(
+            &members, &approved, &secret, &signing_key,
+        );
+        let data: MembershipData = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(data.network_secret, secret);
+        assert_eq!(data.membership_signing_key, signing_key);
+    }
+
+    #[test]
+    fn different_secrets_produce_different_hashes() {
+        let key = iroh::SecretKey::generate();
+        let mut members = MemberList::new();
+        members.add(Member {
+            identity: key.public(),
+            ip: Ipv4Addr::new(100, 64, 0, 1),
+            is_coordinator: true,
+        }).unwrap();
+        let approved = ApprovedList::new();
+
+        let bytes_a = canonical_membership_bytes_with_secrets(
+            &members, &approved, &[1u8; 32], &[2u8; 32],
+        );
+        let bytes_b = canonical_membership_bytes_with_secrets(
+            &members, &approved, &[3u8; 32], &[2u8; 32],
+        );
+        let hash_a = blake3::hash(&bytes_a).to_hex().to_string();
+        let hash_b = blake3::hash(&bytes_b).to_hex().to_string();
+        assert_ne!(hash_a, hash_b);
     }
 }
