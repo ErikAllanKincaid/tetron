@@ -36,16 +36,21 @@ pub async fn run_mesh(
             _ = token.cancelled() => return Ok(()),
             result = tun.read_packet(&mut buf) => {
                 let n = result?;
-                if n > 0
-                    && let Some(dst) = dest_ip(&buf[..n])
-                {
-                    if let Some(conn) = peers.lookup(&dst) {
-                        match conn.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
-                            Ok(()) => stats.record_tx(n),
-                            Err(_) => stats.record_drop(),
+                if n > 0 {
+                    tracing::debug!(len = n, first_byte = buf[0], "TUN read");
+                    if let Some(dst) = dest_ip(&buf[..n]) {
+                        if let Some(conn) = peers.lookup(&dst) {
+                            tracing::debug!(%dst, "routing to peer");
+                            match conn.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
+                                Ok(()) => stats.record_tx(n),
+                                Err(_) => stats.record_drop(),
+                            }
+                        } else {
+                            tracing::debug!(%dst, "no peer for dst");
+                            stats.record_drop();
                         }
                     } else {
-                        stats.record_drop();
+                        tracing::debug!(len = n, "not IPv4, dropping");
                     }
                 }
             }

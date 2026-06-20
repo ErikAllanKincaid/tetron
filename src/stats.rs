@@ -60,8 +60,8 @@ impl Stats {
                         tracing::info!(
                             rx = rx - prev_rx,
                             tx = tx - prev_tx,
-                            bytes_rx = format_bytes(brx - prev_bytes_rx),
-                            bytes_tx = format_bytes(btx - prev_bytes_tx),
+                            bytes_rx = brx - prev_bytes_rx,
+                            bytes_tx = btx - prev_bytes_tx,
                             drops = drops - prev_drops,
                             "(30s)"
                         );
@@ -93,19 +93,9 @@ impl Stats {
             duration = format!("{}m{}s", mins, secs),
             total_rx = self.packets_rx.load(Ordering::Relaxed),
             total_tx = self.packets_tx.load(Ordering::Relaxed),
-            total_bytes = format_bytes(total_bytes),
+            total_bytes,
             "session complete"
         );
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_048_576 {
-        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{}B", bytes)
     }
 }
 
@@ -136,14 +126,5 @@ mod tests {
         stats.record_drop();
         stats.record_drop();
         assert_eq!(stats.drops.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0B");
-        assert_eq!(format_bytes(512), "512B");
-        assert_eq!(format_bytes(1024), "1.0KB");
-        assert_eq!(format_bytes(87244), "85.2KB");
-        assert_eq!(format_bytes(1_153_434), "1.1MB");
     }
 }
