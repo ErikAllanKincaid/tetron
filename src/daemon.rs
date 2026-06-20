@@ -164,6 +164,24 @@ impl DaemonState {
             membership_signing_key,
             acl: acl::AclData::empty(),
         };
+
+        // Load ACL from file if it exists.
+        // Note: network is not yet registered, so resolve short IDs directly from net_state.members.
+        let acl_path = self.acl_file_path(&name);
+        if acl_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&acl_path) {
+                let resolver = |short: &str| -> Option<EndpointId> {
+                    net_state.members.all().iter()
+                        .find(|m| m.identity.to_string().starts_with(short))
+                        .map(|m| m.identity)
+                };
+                if let Ok(data) = acl::parse_acl_file(&content, &resolver) {
+                    tracing::info!(network = %name, "loaded ACL from file on create");
+                    net_state.acl = data;
+                }
+            }
+        }
+
         net_state.refresh_snapshot();
         if let Some(snap) = &net_state.snapshot {
             let _ = self.blob_store.blobs().add_slice(&snap.msgpack_bytes).await;
@@ -187,6 +205,17 @@ impl DaemonState {
                 &[self.endpoint.id()],
             ).await {
                 tracing::warn!(error = %e, "failed to publish seed list");
+            }
+
+            // Publish ACL to DHT if non-empty
+            if !net_state.acl.tags.is_empty() || !net_state.acl.rules.is_empty() {
+                let acl_bytes = acl::canonical_acl_bytes(&net_state.acl);
+                let acl_hash = acl::acl_hash(&net_state.acl);
+                let _ = self.blob_store.blobs().add_slice(&acl_bytes).await;
+                let acl_key = dht::derive_acl_key(&self.secret_key, &name);
+                if let Err(e) = dht::publish_acl(&pkarr_client, &acl_key, &acl_hash).await {
+                    tracing::warn!(error = %e, "failed to publish ACL on create");
+                }
             }
         }
 
@@ -865,7 +894,19 @@ impl DaemonState {
             if let Err(e) = dht::publish_seed_list(&client, &seed_key, &[]).await {
                 tracing::warn!(error = %e, "failed to publish empty seed list on nuke");
             }
+
+            // Publish empty ACL
+            let acl_key = dht::derive_acl_key(&self.secret_key, name);
+            let empty_acl = acl::AclData::empty();
+            let empty_acl_hash = acl::acl_hash(&empty_acl);
+            if let Err(e) = dht::publish_acl(&client, &acl_key, &empty_acl_hash).await {
+                tracing::warn!(error = %e, "failed to publish empty ACL on nuke");
+            }
         }
+
+        // Remove the ACL file for this network
+        let acl_path = self.acl_file_path(name);
+        let _ = std::fs::remove_file(acl_path);
 
         // Leave the network (handles cleanup, config removal, etc.)
         self.leave_network(name).await
@@ -1787,21 +1828,21 @@ async fn join_mesh_shared(
 
     let (_send, mut recv) = initial_conn.accept_bi().await.context("accept control stream")?;
     let msg = control::recv_msg(&mut recv).await?;
-    let (members, approved, received_dht_id) = match msg {
-        ControlMsg::Welcome { members, approved, membership_dht_id, acl_dht_id: _ } => {
+    let (members, approved, received_dht_id, received_acl_dht_id) = match msg {
+        ControlMsg::Welcome { members, approved, membership_dht_id, acl_dht_id } => {
             tracing::info!(network = %network_name, "welcomed to network");
             if let Some(existing) = members.iter().find(|m| m.ip == my_ip && m.identity != my_identity) {
                 anyhow::bail!("IP collision: {} is already assigned to {}", my_ip, existing.identity);
             }
-            (members, approved, membership_dht_id)
+            (members, approved, membership_dht_id, acl_dht_id)
         }
         ControlMsg::JoinApproved { your_ip, members } => {
             tracing::info!(ip = %your_ip, network = %network_name, "joined network (legacy)");
-            (members, vec![], None)
+            (members, vec![], None, None)
         }
         ControlMsg::MemberSync { members, membership_dht_id } => {
             tracing::info!(network = %network_name, "reconnected via peer");
-            (members, vec![], membership_dht_id)
+            (members, vec![], membership_dht_id, None)
         }
         ControlMsg::JoinDenied { reason } => {
             anyhow::bail!("join denied: {reason}");
@@ -1879,6 +1920,57 @@ async fn join_mesh_shared(
         }
         Arc::new(std::sync::RwLock::new(ns))
     };
+
+    // Fetch ACL from DHT if coordinator provided an ACL DHT ID
+    if let Some(acl_id_str) = received_acl_dht_id {
+        if let Ok(acl_dht_id_parsed) = acl_id_str.parse::<EndpointId>()
+            && let Ok(pkarr_client) = dht::create_pkarr_client(ep)
+        {
+            match dht::resolve_acl_hash(&pkarr_client, acl_dht_id_parsed).await {
+                Ok(acl_hash) => {
+                    match acl_hash.parse::<blake3::Hash>() {
+                        Ok(b3_hash) => {
+                            let blob_hash = iroh_blobs::Hash::from_bytes(*b3_hash.as_bytes());
+                            let peer_ids: Vec<EndpointId> = peers
+                                .peers_for_network(network_name)
+                                .into_iter()
+                                .map(|(id, _)| id)
+                                .collect();
+                            let mut fetched = false;
+                            for pid in &peer_ids {
+                                if let Ok(conn) = transport::connect_to_peer_with_alpn(
+                                    ep, *pid, iroh_blobs::protocol::ALPN,
+                                ).await
+                                    && blob_store.remote().fetch(
+                                        conn, HashAndFormat::raw(blob_hash),
+                                    ).await.is_ok()
+                                {
+                                    fetched = true;
+                                    break;
+                                }
+                            }
+                            if fetched {
+                                if let Ok(bytes) = blob_store.blobs().get_bytes(blob_hash).await {
+                                    match acl::verify_acl_data(&bytes, &acl_hash) {
+                                        Ok(data) => {
+                                            shared_acl.set(network_name, data.clone());
+                                            live_state.write().unwrap().acl = data;
+                                            tracing::info!(network = %network_name, "ACL loaded from DHT on join");
+                                        }
+                                        Err(e) => tracing::warn!(error = %e, "ACL verification failed on join"),
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(network = %network_name, "could not fetch ACL blob from any peer on join");
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e, "invalid ACL hash from DHT"),
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to resolve ACL hash from DHT on join"),
+            }
+        }
+    }
 
     // Control listener
     tokio::spawn({
