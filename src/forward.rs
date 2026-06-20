@@ -1,3 +1,10 @@
+//! Mesh packet forwarding between TUN device and peer QUIC connections.
+//!
+//! Three concurrent tasks handle the data plane:
+//! - [`run_mesh`]: reads outgoing packets from TUN, routes to correct peer via [`PeerTable`]
+//! - [`spawn_peer_reader`]: one per peer, reads incoming datagrams and forwards to TUN writer
+//! - [`spawn_tun_writer`]: single task, writes incoming packets to the TUN device
+
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -12,11 +19,14 @@ use crate::peers::PeerTable;
 use crate::stats::Stats;
 use crate::tun::{TunReader, TunWriter};
 
+/// Sent by [`spawn_peer_reader`] when a peer connection drops,
+/// consumed by the reconnect loop (joiner) or cleanup task (coordinator).
 pub struct DisconnectEvent {
     pub endpoint_id: EndpointId,
     pub ip: Ipv4Addr,
 }
 
+/// Extracts the destination IPv4 address from bytes 16–19 of an IPv4 packet header.
 fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
     if packet.len() < 20 {
         return None;
@@ -29,6 +39,9 @@ fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
     ))
 }
 
+/// Main TUN read loop. Reads packets from the TUN device, extracts the destination IP,
+/// looks up the peer in [`PeerTable`], and sends the packet as a QUIC datagram.
+/// Packets with no matching peer are silently dropped.
 pub async fn run_mesh(
     mut tun: TunReader,
     peers: PeerTable,
@@ -66,6 +79,9 @@ pub async fn run_mesh(
     }
 }
 
+/// Spawns a task that reads QUIC datagrams from a single peer connection and
+/// forwards them to the TUN writer via `tun_tx`. On connection loss, sends a
+/// [`DisconnectEvent`] and exits.
 pub fn spawn_peer_reader(
     conn: Connection,
     peer_id: EndpointId,
@@ -99,6 +115,8 @@ pub fn spawn_peer_reader(
     })
 }
 
+/// Spawns a task that consumes packets from `tun_rx` and writes them to the TUN device.
+/// Single instance per session — serializes writes without a Mutex.
 pub fn spawn_tun_writer(
     mut tun: TunWriter,
     mut tun_rx: mpsc::Receiver<Vec<u8>>,

@@ -38,6 +38,8 @@ use iroh::endpoint::{PathEvent, Connection as IrohConnection};
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
+/// Logs iroh path events (opened, closed, selected) for a peer connection.
+/// Useful for debugging relay-to-direct path transitions.
 fn spawn_path_logger(conn: IrohConnection, label: String) {
     // Log current paths snapshot (events before subscription are missed)
     let paths = conn.paths();
@@ -73,6 +75,7 @@ fn spawn_path_logger(conn: IrohConnection, label: String) {
     });
 }
 
+/// Live membership state shared between the accept loop and DHT publisher.
 struct NetworkState {
     members: MemberList,
     approved: ApprovedList,
@@ -188,6 +191,7 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Publishes membership to the DHT on state changes (via `notify`) and every 5 minutes.
 fn spawn_dht_publisher(
     client: PkarrRelayClient,
     membership_key: SecretKey,
@@ -221,6 +225,7 @@ fn spawn_dht_publisher(
     });
 }
 
+/// Creates a new network: sets up endpoint, TUN device, DHT publisher, and accept loop.
 async fn cmd_create(
     name: &str,
     mode: GroupMode,
@@ -298,6 +303,8 @@ async fn cmd_create(
     .await
 }
 
+/// Coordinator's main loop: accepts incoming connections, checks policy, approves peers,
+/// broadcasts membership changes, and spawns per-peer datagram readers.
 #[allow(clippy::too_many_arguments)]
 async fn run_accept_loop(
     ep: &Endpoint,
@@ -582,6 +589,8 @@ async fn broadcast_control_msg(peers: &PeerTable, msg: &ControlMsg) {
     }
 }
 
+/// Joins an existing network with an outer reconnect loop. On full session loss,
+/// retries with exponential backoff, trying DHT peers and saved config as fallbacks.
 async fn cmd_join(
     node_id: EndpointId,
     name: &str,
@@ -648,6 +657,8 @@ async fn cmd_join(
     }
 }
 
+/// Tries connecting to any known peer (DHT-resolved first, then local config).
+/// Returns the first successful connection, or `None` if all fail.
 async fn try_reconnect_to_known_peers(
     ep: &Endpoint,
     network_name: &str,
@@ -720,9 +731,9 @@ async fn try_reconnect_to_known_peers(
     None
 }
 
-/// Shared join logic: handshake + peer connections + listeners.
+/// Shared join logic: receives Welcome/MemberSync, saves config, connects to all mesh
+/// peers, and spawns the control listener + mesh acceptor background tasks.
 /// Does NOT create a TUN device or run the forwarding loop.
-/// Returns Ok(()) once setup is complete; background tasks run until `token` is cancelled.
 #[allow(clippy::too_many_arguments)]
 async fn join_mesh_shared(
     initial_conn: iroh::endpoint::Connection,
@@ -1055,6 +1066,8 @@ async fn join_mesh_shared(
     Ok(())
 }
 
+/// Creates TUN device, sets up reconnect loop, joins the mesh, and runs the forwarding loop.
+/// Returns when the mesh session ends (connection lost or shutdown).
 async fn enter_mesh(
     initial_conn: iroh::endpoint::Connection,
     ep: &Endpoint,
@@ -1481,6 +1494,8 @@ fn cmd_uninstall_service() -> Result<()> {
     }
 }
 
+/// Coordinator-side: removes dead peers from the routing table on disconnect.
+/// Does not actively reconnect — peers reconnect to the coordinator.
 fn spawn_peer_cleanup(
     mut disconnect_rx: mpsc::Receiver<forward::DisconnectEvent>,
     peers: PeerTable,
@@ -1504,6 +1519,8 @@ fn spawn_peer_cleanup(
     });
 }
 
+/// Joiner-side: receives disconnect events, removes dead peers, and spawns
+/// per-peer reconnect tasks with exponential backoff (1s → 30s).
 #[allow(clippy::too_many_arguments)]
 fn spawn_reconnect_loop(
     mut disconnect_rx: mpsc::Receiver<forward::DisconnectEvent>,

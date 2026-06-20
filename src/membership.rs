@@ -1,3 +1,8 @@
+//! Network membership management: identity, IP derivation, member/approved lists, and policies.
+//!
+//! Virtual IPs are deterministically derived from [`EndpointId`] via FNV-1a hashing
+//! into the 100.64.0.0/10 CGNAT range (22-bit host space, ~4M addresses).
+
 use std::collections::HashMap;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -5,6 +10,7 @@ use std::net::Ipv4Addr;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
+/// A peer that has been admitted to the network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub identity: EndpointId,
@@ -12,6 +18,7 @@ pub struct Member {
     pub is_coordinator: bool,
 }
 
+/// Controls who can approve new members joining the network.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GroupMode {
@@ -41,6 +48,7 @@ impl std::str::FromStr for GroupMode {
     }
 }
 
+/// Two different identities hashed to the same virtual IP (extremely rare with 22-bit space).
 #[derive(Debug)]
 pub struct IpCollision {
     pub ip: Ipv4Addr,
@@ -62,6 +70,8 @@ impl fmt::Display for IpCollision {
 
 impl std::error::Error for IpCollision {}
 
+/// Active members of a network, keyed by [`EndpointId`]. Rejects additions
+/// that would create an IP collision with an existing member.
 #[derive(Debug, Clone)]
 pub struct MemberList {
     members: HashMap<EndpointId, Member>,
@@ -118,12 +128,15 @@ impl MemberList {
     }
 }
 
+/// A peer that has been approved by the coordinator but hasn't connected yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovedEntry {
     pub identity: EndpointId,
     pub ip: Ipv4Addr,
 }
 
+/// Pre-approved peers that the coordinator has broadcast but that haven't
+/// connected yet. Any peer holding this list can welcome them.
 #[derive(Debug, Clone)]
 pub struct ApprovedList {
     entries: HashMap<EndpointId, ApprovedEntry>,
@@ -188,10 +201,12 @@ impl ApprovedList {
     }
 }
 
+/// Determines whether a given member is allowed to approve new peers.
 pub trait MembershipPolicy: Send + Sync {
     fn can_authorize(&self, acceptor: &Member) -> bool;
 }
 
+/// Any member can approve new peers.
 pub struct OpenPolicy;
 
 impl MembershipPolicy for OpenPolicy {
@@ -200,6 +215,7 @@ impl MembershipPolicy for OpenPolicy {
     }
 }
 
+/// Only the coordinator can approve new peers.
 pub struct RestrictedPolicy;
 
 impl MembershipPolicy for RestrictedPolicy {
@@ -215,12 +231,17 @@ pub fn policy_for_mode(mode: GroupMode) -> Box<dyn MembershipPolicy> {
     }
 }
 
+/// Abstracts identity and IP derivation so the membership system doesn't
+/// depend directly on iroh types.
 pub trait IdentityProvider: Send + Sync {
     fn local_ip(&self) -> Ipv4Addr;
     fn local_identity(&self) -> EndpointId;
     fn derive_ip(&self, peer_identity: &EndpointId) -> Ipv4Addr;
 }
 
+/// Derives a deterministic virtual IP from an [`EndpointId`] using FNV-1a.
+/// Always produces an address in the 100.64.0.0/10 range, avoiding .0 and .1
+/// (network address and TUN gateway).
 pub fn derive_ip(identity: &EndpointId) -> Ipv4Addr {
     let id_str = identity.to_string();
     let mut hash: u32 = 2_166_136_261; // FNV-1a offset basis
@@ -240,6 +261,7 @@ pub fn derive_ip(identity: &EndpointId) -> Ipv4Addr {
     Ipv4Addr::from(base | host_bits)
 }
 
+/// [`IdentityProvider`] backed by an iroh [`EndpointId`].
 #[derive(Clone)]
 pub struct IrohIdentityProvider {
     endpoint_id: EndpointId,

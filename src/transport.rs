@@ -1,12 +1,19 @@
+//! iroh endpoint setup and peer connection management.
+//!
+//! Each network gets its own ALPN (`pitopi/net/<name>`) for isolation.
+//! A single shared iroh [`Endpoint`] handles all networks, filtering by ALPN on accept.
+
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::Connection, endpoint::presets,
 };
 
+/// Returns the ALPN protocol identifier for a network: `pitopi/net/<name>`.
 pub fn network_alpn(network_name: &str) -> Vec<u8> {
     format!("pitopi/net/{network_name}").into_bytes()
 }
 
+/// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
     alpns: Vec<Vec<u8>>,
@@ -23,6 +30,8 @@ pub async fn create_endpoint_with_alpns(
     Ok(ep)
 }
 
+/// Accepts an incoming connection and returns it along with the negotiated ALPN.
+/// The caller filters by ALPN to route to the correct network.
 pub async fn accept_connection_with_alpn(ep: &Endpoint) -> Result<(Connection, Vec<u8>)> {
     let incoming = ep.accept().await.context("no incoming connection")?;
     let conn = incoming.await.context("failed to accept connection")?;
@@ -35,6 +44,8 @@ pub async fn accept_connection_with_alpn(ep: &Endpoint) -> Result<(Connection, V
     Ok((conn, alpn))
 }
 
+/// Connects to a peer by EndpointId with a specific ALPN. iroh handles
+/// NAT traversal and falls back to relay if direct connection fails.
 pub async fn connect_to_peer_with_alpn(
     ep: &Endpoint,
     id: EndpointId,

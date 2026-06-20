@@ -1,5 +1,11 @@
+//! Graceful shutdown via SIGINT/SIGTERM.
+//!
+//! Returns a [`CancellationToken`] that fires when a shutdown signal is received.
+//! All long-running tasks select on this token to exit cleanly.
+
 use tokio_util::sync::CancellationToken;
 
+/// Creates a cancellation token that fires on SIGINT or SIGTERM.
 pub fn token() -> CancellationToken {
     let token = CancellationToken::new();
     let t = token.clone();

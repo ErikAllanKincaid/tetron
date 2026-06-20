@@ -1,9 +1,15 @@
+//! Packet and byte counters with periodic logging.
+//!
+//! Uses atomics for lock-free recording from concurrent peer reader tasks.
+//! A background logger prints 30-second interval stats and a session summary on shutdown.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 
+/// Lock-free packet/byte counters shared across all forwarding tasks.
 pub struct Stats {
     packets_rx: AtomicU64,
     packets_tx: AtomicU64,
@@ -39,6 +45,8 @@ impl Stats {
         self.drops.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Spawns a background task that logs stats every 30 seconds and prints
+    /// a session summary when the cancellation token fires.
     pub fn spawn_logger(self: &Arc<Self>, token: CancellationToken) {
         let stats = self.clone();
         tokio::spawn(async move {

@@ -1,3 +1,9 @@
+//! Routing table mapping virtual IPs to peer QUIC connections.
+//!
+//! The [`PeerTable`] is the bridge between the TUN forwarding loop and the mesh.
+//! It uses `RwLock` (not Mutex) for fast synchronous lookups — reads happen on
+//! every packet, writes only on connect/disconnect.
+
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
@@ -5,11 +11,16 @@ use std::sync::{Arc, RwLock};
 use iroh::EndpointId;
 use iroh::endpoint::Connection;
 
+/// Thread-safe routing table: virtual IP → QUIC connection.
+///
+/// Cloning is cheap (inner `Arc`). Used by `run_mesh` to route outgoing packets
+/// and by the accept/reconnect logic to register new peers.
 #[derive(Clone)]
 pub struct PeerTable {
     inner: Arc<RwLock<HashMap<Ipv4Addr, PeerEntry>>>,
 }
 
+/// A single peer's connection and identity.
 pub struct PeerEntry {
     pub conn: Connection,
     #[allow(dead_code)]
@@ -23,6 +34,8 @@ impl PeerTable {
         }
     }
 
+    /// Inserts or replaces a peer's connection. Replacing a dead connection with a
+    /// fresh one is how reconnection works — the TUN side sees the swap transparently.
     pub fn add(&self, ip: Ipv4Addr, conn: Connection, endpoint_id: EndpointId) {
         self.inner
             .write()
@@ -30,14 +43,19 @@ impl PeerTable {
             .insert(ip, PeerEntry { conn, endpoint_id });
     }
 
+    /// Returns the QUIC connection for a peer's virtual IP, if present.
+    /// Called on every outgoing packet by `run_mesh`.
     pub fn lookup(&self, ip: &Ipv4Addr) -> Option<Connection> {
         self.inner.read().unwrap().get(ip).map(|e| e.conn.clone())
     }
 
+    /// Removes a dead peer. Packets to this IP will be silently dropped until
+    /// a new connection is added via [`PeerTable::add`].
     pub fn remove(&self, ip: &Ipv4Addr) {
         self.inner.write().unwrap().remove(ip);
     }
 
+    /// Returns all (IP, Connection) pairs. Used for broadcasting control messages.
     pub fn all_connections(&self) -> Vec<(Ipv4Addr, Connection)> {
         self.inner
             .read()

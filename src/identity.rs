@@ -1,3 +1,8 @@
+//! Persistent Ed25519 identity stored at `~/.config/pitopi/secret_key`.
+//!
+//! The same keypair is used across restarts, giving each node a stable
+//! [`EndpointId`](iroh::EndpointId) and deterministic virtual IP.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -15,6 +20,7 @@ fn key_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("secret_key"))
 }
 
+/// Loads the secret key from disk, or generates and persists a new one.
 pub fn load_or_create() -> Result<SecretKey> {
     let path = key_path()?;
     if path.exists() {

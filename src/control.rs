@@ -1,3 +1,8 @@
+//! Length-prefixed JSON control protocol over QUIC bidirectional streams.
+//!
+//! Each message is encoded as a 4-byte big-endian length prefix followed by a JSON body.
+//! Control messages manage membership (join, approve, sync) and mesh topology (hello, reconnect).
+
 use std::net::Ipv4Addr;
 
 use anyhow::{Context, Result};
@@ -7,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::membership::{ApprovedEntry, Member};
 
+/// Control messages exchanged between peers over QUIC bidirectional streams.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMsg {
     JoinApproved {
