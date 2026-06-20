@@ -56,11 +56,11 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 - `src/daemon.rs` — daemon process: DaemonState (shared endpoint + TUN + PeerTable), NetworkHandle per active network, IPC server over Unix socket, coordinator accept loop, joiner mesh logic, reconnect loop, DHT publisher
 - `src/ipc.rs` — IPC protocol types (IpcRequest, IpcResponse, NetworkStatus, PeerStatus), length-prefixed JSON wire helpers, socket path (`/var/run/pitopi/pitopi.sock`), client connect helper
 - `src/identity.rs` — persistent Ed25519 keypair at `~/.config/pitopi/secret_key`
-- `src/membership.rs` — IdentityProvider trait, FNV-1a IP derivation, MemberList, ApprovedList, GroupMode, MembershipPolicy
+- `src/membership.rs` — IdentityProvider trait, FNV-1a IP derivation, MemberList, ApprovedList, GroupMode, MembershipPolicy, canonical msgpack serialization + blake3 hashing (MembershipData)
 - `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept
 - `src/tun.rs` — TUN device creation with /10 netmask, split into TunReader/TunWriter for lock-free I/O
 - `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection, DisconnectEvent notification on peer drop
-- `src/dht.rs` — DHT membership publishing via iroh pkarr relay: key derivation (blake3), record encode/decode (DNS TXT), publish/resolve
+- `src/dht.rs` — DHT membership publishing via iroh pkarr relay: key derivation (blake3), publishes blake3 hash of membership data (not member entries) as DNS TXT record, peers fetch full data via iroh-blobs protocol
 - `src/control.rs` — control protocol: Welcome, MemberApproved, JoinApproved, JoinDenied, MemberSync, MeshHello, MeshWelcome, ReconnectRequest, AdvertiseServices
 - `src/peers.rs` — PeerTable (routing by dest IP), PeerEntry with Connection + endpoint_id + network name, remove_by_network for teardown
 - `src/config.rs` — persistent network config at `~/.config/pitopi/networks.toml` (members + approved list + membership_dht_id)
@@ -78,7 +78,7 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 
 **Gatekeeper model:** coordinator approves identities and broadcasts MemberApproved. Any peer can then welcome an approved identity when it connects. The coordinator doesn't need to be online when the approved peer actually joins.
 
-**DHT membership:** coordinator derives a per-network signing key via `blake3::derive_key` from its secret key + network name. Publishes signed DNS TXT records (member/approved identities, no IPs — reconstructed via `derive_ip`) to iroh's pkarr relay (`dns.iroh.link/pkarr`). Peers learn the DHT ID from Welcome/MemberSync messages, persist it in config, and resolve it for reconnection and join fallback when the coordinator is offline. Best-effort — errors fall back to local config.
+**DHT membership:** coordinator derives a per-network signing key via `blake3::derive_key` from its secret key + network name. Publishes a blake3 hash of the canonical membership data (msgpack-serialized, sorted by identity) as a signed DNS TXT record to iroh's pkarr relay (`dns.iroh.link/pkarr`). The pkarr record contains only the hash — not member entries — so room size is not limited by DNS record size. Peers learn the DHT ID from Welcome/MemberSync messages, persist it in config. Every peer stores the membership blob in an in-memory iroh-blobs store (`MemStore`) and serves it via the iroh-blobs protocol (`/iroh-bytes/4` ALPN). When the coordinator is offline, joiners resolve the hash from pkarr, then fetch the membership blob from any online peer using iroh-blobs, verifying the blake3 hash matches before trusting the data.
 
 **Reconnection:** per-peer reader detects connection drop → sends DisconnectEvent on mpsc channel → coordinator side removes dead peer from PeerTable (peers reconnect to it); joiner side removes dead peer and spawns reconnect task with exponential backoff (1s–30s) → on success, sends MeshHello, adds new connection to PeerTable, spawns fresh peer reader. Packets to the peer drop silently during the gap.
 
@@ -91,11 +91,13 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 ## Key Dependencies
 
 - `iroh` — P2P QUIC transport with NAT traversal and relay fallback
+- `iroh-blobs` — content-addressed blob transfer for membership data exchange (MemStore, BlobsProtocol)
 - `iroh-dns` — pkarr `SignedPacket` for DHT membership records
-- `blake3` — key derivation for per-network DHT signing keys
+- `blake3` — key derivation for per-network DHT signing keys, membership data hashing
 - `tun` — cross-platform TUN device (macOS utun, Linux /dev/net/tun)
 - `tokio` — async runtime
 - `clap` + `clap_complete` — CLI parsing and shell completions
+- `rmp-serde` — msgpack serialization for canonical membership data (compact, deterministic)
 - `serde` + `serde_json` + `toml` — serialization for control messages and config
 - `dirs` — platform config directory resolution
 

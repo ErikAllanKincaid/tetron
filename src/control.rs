@@ -225,4 +225,5 @@ mod tests {
         let decoded = decode_msg(&bytes).unwrap();
         assert_eq!(msg, decoded);
     }
+
 }

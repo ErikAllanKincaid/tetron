@@ -5,8 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::endpoint::{Connection, Endpoint};
+use iroh::protocol::ProtocolHandler;
 use iroh::{EndpointId, SecretKey};
 use iroh::address_lookup::PkarrRelayClient;
+use iroh_blobs::store::mem::MemStore;
+use iroh_blobs::{BlobsProtocol, HashAndFormat};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -20,7 +23,8 @@ use crate::identity;
 use crate::ipc::{self, IpcRequest, IpcResponse, NetworkRole, NetworkStatus, PeerStatus};
 use crate::membership::{
     ApprovedEntry, ApprovedList, GroupMode, IdentityProvider, IrohIdentityProvider, Member,
-    MemberList, MembershipPolicy, policy_for_mode,
+    MemberList, MembershipPolicy, policy_for_mode, canonical_membership_bytes, membership_hash,
+    verify_membership_data,
 };
 use crate::peers::PeerTable;
 use crate::room_code;
@@ -31,9 +35,24 @@ use crate::tun;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
+#[derive(Clone)]
+struct MembershipSnapshot {
+    hash: String,
+    msgpack_bytes: Vec<u8>,
+}
+
 struct NetworkState {
     members: MemberList,
     approved: ApprovedList,
+    snapshot: Option<MembershipSnapshot>,
+}
+
+impl NetworkState {
+    fn refresh_snapshot(&mut self) {
+        let bytes = canonical_membership_bytes(&self.members, &self.approved);
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        self.snapshot = Some(MembershipSnapshot { hash, msgpack_bytes: bytes });
+    }
 }
 
 #[allow(dead_code)]
@@ -56,15 +75,18 @@ pub struct DaemonState {
     tun_tx: mpsc::Sender<Vec<u8>>,
     networks: Arc<std::sync::RwLock<HashMap<String, NetworkHandle>>>,
     shutdown_token: CancellationToken,
+    blob_store: MemStore,
+    blobs_proto: BlobsProtocol,
 }
 
 impl DaemonState {
     fn refresh_alpns(&self) {
         let networks = self.networks.read().unwrap();
-        let alpns: Vec<Vec<u8>> = networks
+        let mut alpns: Vec<Vec<u8>> = networks
             .keys()
             .map(|n| transport::network_alpn(n))
             .collect();
+        alpns.push(iroh_blobs::protocol::ALPN.to_vec());
         self.endpoint.set_alpns(alpns);
     }
 
@@ -113,10 +135,15 @@ impl DaemonState {
             })
             .expect("self-add cannot collide");
 
-        let net_state = NetworkState {
+        let mut net_state = NetworkState {
             members: member_list,
             approved: ApprovedList::new(),
+            snapshot: None,
         };
+        net_state.refresh_snapshot();
+        if let Some(snap) = &net_state.snapshot {
+            let _ = self.blob_store.blobs().add_slice(&snap.msgpack_bytes).await;
+        }
 
         // Save to config
         let member_entries = net_state.members.all().into_iter().map(|m| config::MemberEntry {
@@ -174,6 +201,8 @@ impl DaemonState {
             self.stats.clone(),
             Some(dht_notify),
             Some(dht_id),
+            self.blob_store.clone(),
+            self.blobs_proto.clone(),
         );
         tasks.push(accept_handle);
 
@@ -224,12 +253,24 @@ impl DaemonState {
         let alpn = transport::network_alpn(&network_name);
         let my_ip = self.identity.local_ip();
 
-        // Connect to coordinator
-        let conn = transport::connect_to_peer_with_alpn(
+        // Connect to coordinator, fall back to DHT if unreachable
+        let conn = match transport::connect_to_peer_with_alpn(
             &self.endpoint,
             parsed.endpoint_id,
             &alpn,
-        ).await.context("could not reach coordinator")?;
+        ).await {
+            Ok(c) => c,
+            Err(coordinator_err) => {
+                match self.try_dht_fallback_join(&network_name, &alpn).await {
+                    Ok(resp) => return Ok(resp),
+                    Err(fallback_err) => {
+                        return Err(coordinator_err.context(
+                            format!("coordinator unreachable and DHT fallback failed: {fallback_err}")
+                        ));
+                    }
+                }
+            }
+        };
 
         let cancel = self.shutdown_token.child_token();
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
@@ -261,6 +302,8 @@ impl DaemonState {
             disconnect_tx,
             cancel.clone(),
             self.stats.clone(),
+            self.blob_store.clone(),
+            self.blobs_proto.clone(),
         ).await?;
 
         let handle = NetworkHandle {
@@ -281,6 +324,111 @@ impl DaemonState {
             name: network_name,
             my_ip,
         })
+    }
+
+    async fn try_dht_fallback_join(&self, network_name: &str, alpn: &[u8]) -> Result<IpcResponse> {
+        let app_config = config::load()?;
+        let net_config = app_config.networks.iter()
+            .find(|n| n.name == network_name)
+            .context("network not in config")?;
+        let dht_id_str = net_config.membership_dht_id.as_ref()
+            .context("no DHT ID known for this network")?;
+        let dht_id: EndpointId = dht_id_str.parse()
+            .context("invalid DHT ID in config")?;
+
+        tracing::info!(network = %network_name, "coordinator unreachable, trying DHT fallback");
+
+        let pkarr_client = dht::create_pkarr_client(&self.endpoint)?;
+        let expected_hash = dht::resolve_membership_hash(&pkarr_client, dht_id).await?;
+
+        // Try connecting to known members from config to fetch membership blob
+        let my_identity = self.identity.local_identity();
+        let blob_hash = {
+            let b3_hash: blake3::Hash = expected_hash.parse()
+                .context("invalid membership hash from DHT")?;
+            iroh_blobs::Hash::from_bytes(*b3_hash.as_bytes())
+        };
+
+        for member in &net_config.members {
+            if member.identity == my_identity { continue; }
+
+            let blobs_conn = match transport::connect_to_peer_with_alpn(
+                &self.endpoint, member.identity, iroh_blobs::protocol::ALPN,
+            ).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if self.blob_store.remote().fetch(blobs_conn, HashAndFormat::raw(blob_hash)).await.is_err() {
+                continue;
+            }
+
+            let blob_bytes = match self.blob_store.blobs().get_bytes(blob_hash).await {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let data = verify_membership_data(&blob_bytes, &expected_hash)?;
+            tracing::info!(network = %network_name, members = data.members.len(), "membership resolved via DHT fallback");
+
+            let my_ip = self.identity.local_ip();
+            let cancel = self.shutdown_token.child_token();
+            let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
+
+            let tasks = vec![spawn_reconnect_loop(
+                disconnect_rx,
+                self.endpoint.clone(),
+                alpn.to_vec(),
+                network_name.to_string(),
+                my_identity,
+                my_ip,
+                self.peers.clone(),
+                self.tun_tx.clone(),
+                disconnect_tx.clone(),
+                cancel.clone(),
+                self.stats.clone(),
+            )];
+
+            // Connect to the same peer via network ALPN for mesh data
+            for m in &data.members {
+                if m.identity == my_identity { continue; }
+                if let Ok(peer_conn) = transport::connect_to_peer_with_alpn(&self.endpoint, m.identity, alpn).await {
+                    if let Ok((mut s, _)) = peer_conn.open_bi().await {
+                        let _ = control::send_msg(&mut s, &ControlMsg::MeshHello { identity: my_identity, ip: my_ip }).await;
+                    }
+                    crate::spawn_path_logger(peer_conn.clone(), m.identity.fmt_short().to_string());
+                    self.peers.add(m.ip, peer_conn.clone(), m.identity, network_name);
+                    forward::spawn_peer_reader(peer_conn, m.identity, m.ip, self.tun_tx.clone(), disconnect_tx.clone(), cancel.clone(), self.stats.clone());
+                }
+            }
+
+            let mut ns = NetworkState {
+                members: MemberList::from_members(data.members),
+                approved: ApprovedList::from_entries(data.approved),
+                snapshot: None,
+            };
+            ns.refresh_snapshot();
+            let live_state = Arc::new(std::sync::RwLock::new(ns));
+
+            let handle = NetworkHandle {
+                name: network_name.to_string(),
+                role: NetworkRole::Member,
+                my_ip,
+                state: live_state,
+                cancel,
+                tasks,
+                room_code: None,
+            };
+            self.networks.write().unwrap().insert(network_name.to_string(), handle);
+            self.refresh_alpns();
+
+            return Ok(IpcResponse::Joined {
+                name: network_name.to_string(),
+                my_ip,
+            });
+        }
+
+        anyhow::bail!("no peers reachable for DHT fallback")
     }
 
     async fn leave_network(&self, name: &str) -> IpcResponse {
@@ -344,13 +492,17 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
 
     // Load saved networks to determine initial ALPNs
     let app_config = config::load()?;
-    let alpns: Vec<Vec<u8>> = app_config
+    let mut alpns: Vec<Vec<u8>> = app_config
         .networks
         .iter()
         .map(|net| transport::network_alpn(&net.name))
         .collect();
 
+    alpns.push(iroh_blobs::protocol::ALPN.to_vec());
     let ep = transport::create_endpoint_with_alpns(key, alpns).await?;
+
+    let blob_store = MemStore::new();
+    let blobs_proto = BlobsProtocol::new(&blob_store, None);
 
     // Single TUN for all networks
     let (tun_reader, tun_writer) = tun::create(my_ip).context("failed to create TUN device")?;
@@ -373,6 +525,8 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
         tun_tx,
         networks: Arc::new(std::sync::RwLock::new(HashMap::new())),
         shutdown_token: token.clone(),
+        blob_store,
+        blobs_proto,
     });
 
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
@@ -506,12 +660,13 @@ fn spawn_dht_publisher(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let (members_snapshot, approved_snapshot) = {
+            let hash = {
                 let s = state.read().unwrap();
-                (s.members.clone(), s.approved.clone())
+                s.snapshot.as_ref().map(|snap| snap.hash.clone())
+                    .unwrap_or_else(|| membership_hash(&s.members, &s.approved))
             };
-            match dht::publish_membership(&client, &membership_key, &members_snapshot, &approved_snapshot).await {
-                Ok(()) => tracing::info!("published membership to DHT"),
+            match dht::publish_membership(&client, &membership_key, &hash).await {
+                Ok(()) => tracing::info!("published membership hash to DHT"),
                 Err(e) => tracing::warn!(error = %e, "failed to publish membership to DHT"),
             }
             tokio::select! {
@@ -560,6 +715,8 @@ fn spawn_coordinator_accept(
     stats: Arc<Stats>,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     dht_id: Option<String>,
+    blob_store: MemStore,
+    blobs_proto: BlobsProtocol,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = run_accept_loop(
@@ -576,6 +733,8 @@ fn spawn_coordinator_accept(
             stats,
             dht_notify,
             dht_id,
+            blob_store,
+            blobs_proto,
         ).await {
             tracing::warn!(network = %network_name, error = %e, "accept loop stopped");
         }
@@ -597,6 +756,8 @@ async fn run_accept_loop(
     stats: Arc<Stats>,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     dht_id: Option<String>,
+    blob_store: MemStore,
+    blobs_proto: BlobsProtocol,
 ) -> Result<()> {
     let self_member = {
         let s = state.read().unwrap();
@@ -611,6 +772,11 @@ async fn run_accept_loop(
             result = transport::accept_connection_with_alpn(ep) => {
                 match result {
                     Ok((conn, conn_alpn)) => {
+                        if conn_alpn == iroh_blobs::protocol::ALPN {
+                            let proto = blobs_proto.clone();
+                            tokio::spawn(async move { let _ = proto.accept(conn).await; });
+                            continue;
+                        }
                         if conn_alpn != alpn {
                             continue;
                         }
@@ -650,11 +816,16 @@ async fn run_accept_loop(
         let is_approved = state.read().unwrap().approved.is_approved(&remote_id);
         if is_approved {
             tracing::info!(ip = %peer_ip, "approved peer connecting");
-            {
+            let snap_bytes = {
                 let mut s = state.write().unwrap();
                 s.approved.remove(&remote_id);
                 let new_member = Member { identity: remote_id, ip: peer_ip, is_coordinator: false };
                 s.members.add(new_member).expect("was approved, no collision");
+                s.refresh_snapshot();
+                s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
+            };
+            if let Some(bytes) = snap_bytes {
+                let _ = blob_store.blobs().add_slice(&bytes).await;
             }
             if let Some(notify) = &dht_notify { notify.notify_one(); }
             let (members, approved) = {
@@ -716,11 +887,21 @@ async fn run_accept_loop(
         broadcast_control_msg(&peers, &ControlMsg::MemberApproved { identity: remote_id, ip: peer_ip }).await;
 
         // Promote to member
-        let add_collision: Option<String> = {
+        let (add_collision, snap_bytes): (Option<String>, Option<Vec<u8>>) = {
             let mut s = state.write().unwrap();
-            s.members.add(Member { identity: remote_id, ip: peer_ip, is_coordinator: false })
-                .err().map(|e| format!("IP collision: {e}"))
+            let result = s.members.add(Member { identity: remote_id, ip: peer_ip, is_coordinator: false })
+                .err().map(|e| format!("IP collision: {e}"));
+            if result.is_none() {
+                s.refresh_snapshot();
+            }
+            let bytes = s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone());
+            (result, bytes)
         };
+        if add_collision.is_none()
+            && let Some(bytes) = snap_bytes
+        {
+            let _ = blob_store.blobs().add_slice(&bytes).await;
+        }
         if let Some(reason) = add_collision {
             if let Ok((mut send, _)) = conn.open_bi().await {
                 let _ = control::send_msg(&mut send, &ControlMsg::JoinDenied { reason }).await;
@@ -766,6 +947,8 @@ async fn join_mesh_shared(
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
     stats: Arc<Stats>,
+    blob_store: MemStore,
+    blobs_proto: BlobsProtocol,
 ) -> Result<Arc<std::sync::RwLock<NetworkState>>> {
     let my_identity = identity.local_identity();
     let my_ip = identity.local_ip();
@@ -847,10 +1030,18 @@ async fn join_mesh_shared(
         }
     }
 
-    let live_state = Arc::new(std::sync::RwLock::new(NetworkState {
-        members: MemberList::from_members(members.clone()),
-        approved: ApprovedList::from_entries(approved),
-    }));
+    let live_state = {
+        let mut ns = NetworkState {
+            members: MemberList::from_members(members.clone()),
+            approved: ApprovedList::from_entries(approved),
+            snapshot: None,
+        };
+        ns.refresh_snapshot();
+        if let Some(snap) = &ns.snapshot {
+            let _ = blob_store.blobs().add_slice(&snap.msgpack_bytes).await;
+        }
+        Arc::new(std::sync::RwLock::new(ns))
+    };
 
     // Control listener
     tokio::spawn({
@@ -858,6 +1049,7 @@ async fn join_mesh_shared(
         let token = token.clone();
         let live_state = live_state.clone();
         let network_name = network_name.to_string();
+        let blob_store = blob_store.clone();
         async move {
             loop {
                 tokio::select! {
@@ -874,7 +1066,15 @@ async fn join_mesh_shared(
                                     }
                                     Ok(ControlMsg::MemberSync { members, membership_dht_id }) => {
                                         tracing::info!(count = members.len(), "member list updated");
-                                        live_state.write().unwrap().members = MemberList::from_members(members);
+                                        let snap_bytes = {
+                                            let mut s = live_state.write().unwrap();
+                                            s.members = MemberList::from_members(members);
+                                            s.refresh_snapshot();
+                                            s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
+                                        };
+                                        if let Some(bytes) = snap_bytes {
+                                            let _ = blob_store.blobs().add_slice(&bytes).await;
+                                        }
                                         if membership_dht_id.is_some()
                                             && let Ok(mut cfg) = config::load()
                                             && let Some(net) = cfg.networks.iter_mut().find(|n| n.name == network_name)
@@ -906,67 +1106,73 @@ async fn join_mesh_shared(
         let expected_alpn = alpn.to_vec();
         let live_state = live_state.clone();
         let network_name = network_name.to_string();
+        let blob_store = blob_store.clone();
+        let blobs_proto = blobs_proto.clone();
         async move {
             loop {
                 tokio::select! {
                     _ = token.cancelled() => return,
                     result = transport::accept_connection_with_alpn(&ep) => {
-                        match result {
-                            Ok((conn, conn_alpn)) => {
-                                if conn_alpn != expected_alpn { continue; }
-                                match conn.accept_bi().await {
-                                    Ok((_send, mut recv)) => {
-                                        let transport_id = conn.remote_id();
-                                        match control::recv_msg(&mut recv).await {
-                                            Ok(ControlMsg::MeshHello { identity: peer_identity, ip }) => {
-                                                if peer_identity != transport_id { continue; }
-                                                let (is_member, is_approved) = {
-                                                    let s = live_state.read().unwrap();
-                                                    (s.members.is_member(&peer_identity), s.approved.is_approved(&peer_identity))
-                                                };
-                                                if is_approved {
-                                                    {
-                                                        let mut s = live_state.write().unwrap();
-                                                        s.approved.remove(&peer_identity);
-                                                        let _ = s.members.add(Member { identity: peer_identity, ip, is_coordinator: false });
-                                                    }
-                                                    let (members, approved_list) = {
-                                                        let s = live_state.read().unwrap();
-                                                        (s.members.all().into_iter().cloned().collect::<Vec<_>>(),
-                                                         s.approved.all().into_iter().cloned().collect::<Vec<_>>())
-                                                    };
-                                                    if let Ok((mut send, _)) = conn.open_bi().await {
-                                                        let _ = control::send_msg(&mut send, &ControlMsg::Welcome {
-                                                            members: members.clone(), approved: approved_list, membership_dht_id: None,
-                                                        }).await;
-                                                    }
-                                                    peers.add(ip, conn.clone(), peer_identity, &network_name);
-                                                    forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
-                                                    broadcast_member_sync(&peers, &members, Some(ip), None).await;
-                                                } else if is_member {
-                                                    peers.add(ip, conn.clone(), peer_identity, &network_name);
-                                                    forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
-                                                }
+                        if let Ok((conn, conn_alpn)) = result {
+                            if conn_alpn == iroh_blobs::protocol::ALPN {
+                                let proto = blobs_proto.clone();
+                                tokio::spawn(async move { let _ = proto.accept(conn).await; });
+                                continue;
+                            }
+                            if conn_alpn != expected_alpn { continue; }
+                            if let Ok((_send, mut recv)) = conn.accept_bi().await {
+                                let transport_id = conn.remote_id();
+                                match control::recv_msg(&mut recv).await {
+                                    Ok(ControlMsg::MeshHello { identity: peer_identity, ip }) => {
+                                        if peer_identity != transport_id { continue; }
+                                        let (is_member, is_approved) = {
+                                            let s = live_state.read().unwrap();
+                                            (s.members.is_member(&peer_identity), s.approved.is_approved(&peer_identity))
+                                        };
+                                        if is_approved {
+                                            let snap_bytes = {
+                                                let mut s = live_state.write().unwrap();
+                                                s.approved.remove(&peer_identity);
+                                                let _ = s.members.add(Member { identity: peer_identity, ip, is_coordinator: false });
+                                                s.refresh_snapshot();
+                                                s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
+                                            };
+                                            if let Some(bytes) = snap_bytes {
+                                                let _ = blob_store.blobs().add_slice(&bytes).await;
                                             }
-                                            Ok(ControlMsg::ReconnectRequest { identity: peer_identity, ip }) => {
-                                                if peer_identity != transport_id { continue; }
-                                                let is_known = live_state.read().unwrap().members.is_member(&peer_identity);
-                                                if is_known {
-                                                    peers.add(ip, conn.clone(), peer_identity, &network_name);
-                                                    let current_members: Vec<Member> = live_state.read().unwrap().members.all().into_iter().cloned().collect();
-                                                    if let Ok((mut send, _)) = conn.open_bi().await {
-                                                        let _ = control::send_msg(&mut send, &ControlMsg::MemberSync { members: current_members, membership_dht_id: None }).await;
-                                                    }
-                                                    forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
-                                                }
+                                            let (members, approved_list) = {
+                                                let s = live_state.read().unwrap();
+                                                (s.members.all().into_iter().cloned().collect::<Vec<_>>(),
+                                                 s.approved.all().into_iter().cloned().collect::<Vec<_>>())
+                                            };
+                                            if let Ok((mut send, _)) = conn.open_bi().await {
+                                                let _ = control::send_msg(&mut send, &ControlMsg::Welcome {
+                                                    members: members.clone(), approved: approved_list, membership_dht_id: None,
+                                                }).await;
                                             }
-                                            _ => {}
+                                            peers.add(ip, conn.clone(), peer_identity, &network_name);
+                                            forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                                            broadcast_member_sync(&peers, &members, Some(ip), None).await;
+                                        } else if is_member {
+                                            peers.add(ip, conn.clone(), peer_identity, &network_name);
+                                            forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
                                         }
                                     }
-                                    Err(_) => {}
+                                    Ok(ControlMsg::ReconnectRequest { identity: peer_identity, ip }) => {
+                                        if peer_identity != transport_id { continue; }
+                                        let is_known = live_state.read().unwrap().members.is_member(&peer_identity);
+                                        if is_known {
+                                            peers.add(ip, conn.clone(), peer_identity, &network_name);
+                                            let current_members: Vec<Member> = live_state.read().unwrap().members.all().into_iter().cloned().collect();
+                                            if let Ok((mut send, _)) = conn.open_bi().await {
+                                                let _ = control::send_msg(&mut send, &ControlMsg::MemberSync { members: current_members, membership_dht_id: None }).await;
+                                            }
+                                            forward::spawn_peer_reader(conn, peer_identity, ip, tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
-                            Err(_) => {}
                         }
                     }
                 }
@@ -977,6 +1183,7 @@ async fn join_mesh_shared(
     Ok(live_state)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_reconnect_loop(
     mut disconnect_rx: mpsc::Receiver<forward::DisconnectEvent>,
     ep: Endpoint,

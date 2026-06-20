@@ -27,7 +27,6 @@ use iroh::{
 use iroh_dns::pkarr::SignedPacket;
 use url::Url;
 
-use crate::membership::{ApprovedEntry, ApprovedList, Member, MemberList, derive_ip};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,33 +61,27 @@ pub fn membership_dht_id(coordinator_key: &SecretKey, network_name: &str) -> End
 // Record encoding / decoding
 // ---------------------------------------------------------------------------
 
-/// Encodes the current membership state into a signed pkarr packet.
+/// Encodes a membership hash into a signed pkarr packet.
+///
+/// The record contains only the version tag and a blake3 hash pointer.
+/// Peers request the full membership data from any online peer using
+/// this hash.
 pub fn encode_membership_record(
     key: &SecretKey,
-    members: &MemberList,
-    approved: &ApprovedList,
+    hash: &str,
 ) -> Result<SignedPacket> {
-    let mut values = vec![RECORD_VERSION.to_string()];
-
-    for m in members.all() {
-        let role = if m.is_coordinator { "c" } else { "m" };
-        values.push(format!("{role},{}", m.identity));
-    }
-
-    for a in approved.all() {
-        values.push(format!("a,{}", a.identity));
-    }
-
+    let values = vec![RECORD_VERSION.to_string(), format!("h,{hash}")];
     SignedPacket::from_txt_strings(key, RECORD_NAME, values, RECORD_TTL)
         .map_err(|e| anyhow::anyhow!("failed to build signed packet: {e}"))
 }
 
-/// Decodes a signed pkarr packet into member and approved-entry lists.
+/// Decodes a signed pkarr packet, extracting the membership hash.
 ///
-/// IPs are reconstructed deterministically via [`derive_ip`].
+/// Accepts both hash-only records (`h,<blake3>`) and legacy member records
+/// (`c,`/`m,`/`a,` entries), skipping the latter for forward compatibility.
 pub fn decode_membership_record(
     packet: &SignedPacket,
-) -> Result<(Vec<Member>, Vec<ApprovedEntry>)> {
+) -> Result<String> {
     let records = packet.txt_records(RECORD_NAME);
     ensure!(!records.is_empty(), "no membership records found");
     ensure!(
@@ -97,36 +90,13 @@ pub fn decode_membership_record(
         records[0]
     );
 
-    let mut members = Vec::new();
-    let mut approved = Vec::new();
-
     for record in &records[1..] {
-        let (tag, identity_str) = record
-            .split_once(',')
-            .context("invalid record format: missing comma separator")?;
-        let identity: EndpointId = identity_str
-            .parse()
-            .context("invalid identity in membership record")?;
-        match tag {
-            "c" => members.push(Member {
-                ip: derive_ip(&identity),
-                identity,
-                is_coordinator: true,
-            }),
-            "m" => members.push(Member {
-                ip: derive_ip(&identity),
-                identity,
-                is_coordinator: false,
-            }),
-            "a" => approved.push(ApprovedEntry {
-                ip: derive_ip(&identity),
-                identity,
-            }),
-            _ => bail!("unknown record tag: {tag}"),
+        if let Some(hash) = record.strip_prefix("h,") {
+            return Ok(hash.to_string());
         }
     }
 
-    Ok((members, approved))
+    bail!("no membership hash found in record")
 }
 
 // ---------------------------------------------------------------------------
@@ -148,25 +118,24 @@ pub fn create_pkarr_client(ep: &Endpoint) -> Result<PkarrRelayClient> {
 // Publish / resolve
 // ---------------------------------------------------------------------------
 
-/// Encodes the membership state and publishes it to the pkarr relay.
+/// Publishes a membership hash to the pkarr relay.
 pub async fn publish_membership(
     client: &PkarrRelayClient,
     key: &SecretKey,
-    members: &MemberList,
-    approved: &ApprovedList,
+    hash: &str,
 ) -> Result<()> {
-    let packet = encode_membership_record(key, members, approved)?;
+    let packet = encode_membership_record(key, hash)?;
     client
         .publish(&packet)
         .await
         .map_err(|e| anyhow::anyhow!("failed to publish membership: {e}"))
 }
 
-/// Resolves and decodes membership from the pkarr relay.
-pub async fn resolve_membership(
+/// Resolves the membership hash from the pkarr relay.
+pub async fn resolve_membership_hash(
     client: &PkarrRelayClient,
     dht_id: EndpointId,
-) -> Result<(Vec<Member>, Vec<ApprovedEntry>)> {
+) -> Result<String> {
     let packet = client
         .resolve(dht_id)
         .await
@@ -182,17 +151,6 @@ pub async fn resolve_membership(
 mod tests {
     use super::*;
     use iroh::SecretKey;
-    use std::net::Ipv4Addr;
-
-    fn test_key(seed: u8) -> SecretKey {
-        let mut bytes = [0u8; 32];
-        bytes[0] = seed;
-        SecretKey::from_bytes(&bytes)
-    }
-
-    fn test_id(seed: u8) -> EndpointId {
-        test_key(seed).public()
-    }
 
     // -- Key derivation -------------------------------------------------------
 
@@ -220,113 +178,46 @@ mod tests {
         assert_eq!(dht_id, derived.public());
     }
 
-    // -- Encode / decode roundtrip -------------------------------------------
-
-    #[test]
-    fn test_encode_decode_roundtrip() {
-        let key = SecretKey::generate();
-        let mut members = MemberList::new();
-        members
-            .add(Member {
-                identity: test_id(1),
-                ip: Ipv4Addr::new(100, 64, 0, 2),
-                is_coordinator: true,
-            })
-            .unwrap();
-        members
-            .add(Member {
-                identity: test_id(2),
-                ip: Ipv4Addr::new(100, 64, 0, 3),
-                is_coordinator: false,
-            })
-            .unwrap();
-
-        let approved = ApprovedList::new();
-
-        let packet = encode_membership_record(&key, &members, &approved).unwrap();
-        let (decoded_members, decoded_approved) = decode_membership_record(&packet).unwrap();
-
-        assert_eq!(decoded_members.len(), 2);
-        assert_eq!(decoded_approved.len(), 0);
-        assert!(decoded_members.iter().any(|m| m.is_coordinator));
-    }
-
-    #[test]
-    fn test_encode_decode_with_approved() {
-        let key = SecretKey::generate();
-        let coord_id = test_id(1);
-        let pending_id = test_id(3);
-
-        let mut members = MemberList::new();
-        members
-            .add(Member {
-                identity: coord_id,
-                ip: derive_ip(&coord_id),
-                is_coordinator: true,
-            })
-            .unwrap();
-
-        let mut approved = ApprovedList::new();
-        approved
-            .approve(
-                ApprovedEntry {
-                    identity: pending_id,
-                    ip: derive_ip(&pending_id),
-                },
-                &members,
-            )
-            .unwrap();
-
-        let packet = encode_membership_record(&key, &members, &approved).unwrap();
-        let (dec_m, dec_a) = decode_membership_record(&packet).unwrap();
-
-        assert_eq!(dec_m.len(), 1);
-        assert_eq!(dec_a.len(), 1);
-        assert_eq!(dec_m[0].identity, coord_id);
-        assert_eq!(dec_a[0].identity, pending_id);
-        // IPs are reconstructed via derive_ip
-        assert_eq!(dec_m[0].ip, derive_ip(&coord_id));
-        assert_eq!(dec_a[0].ip, derive_ip(&pending_id));
-    }
-
-    #[test]
-    fn test_encode_decode_empty() {
-        let key = SecretKey::generate();
-        let members = MemberList::new();
-        let approved = ApprovedList::new();
-
-        let packet = encode_membership_record(&key, &members, &approved).unwrap();
-        let (dec_m, dec_a) = decode_membership_record(&packet).unwrap();
-
-        assert!(dec_m.is_empty());
-        assert!(dec_a.is_empty());
-    }
-
-    #[test]
-    fn test_record_version_check() {
-        let key = SecretKey::generate();
-        let members = MemberList::new();
-        let approved = ApprovedList::new();
-        let packet = encode_membership_record(&key, &members, &approved).unwrap();
-        let records = packet.txt_records("_pitopi");
-        assert_eq!(records[0], "v1");
-    }
-
     #[test]
     fn test_derive_membership_key_differs_from_source() {
-        // The derived key for a network should differ from the coordinator's own key
         let key = SecretKey::generate();
         let derived = derive_membership_key(&key, "gaming");
         assert_ne!(key.public(), derived.public());
     }
 
+    // -- Hash encode / decode roundtrip ---------------------------------------
+
+    #[test]
+    fn test_encode_decode_hash_roundtrip() {
+        let key = SecretKey::generate();
+        let hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let packet = encode_membership_record(&key, hash).unwrap();
+        let decoded = decode_membership_record(&packet).unwrap();
+        assert_eq!(decoded, hash);
+    }
+
+    #[test]
+    fn test_record_version_check() {
+        let key = SecretKey::generate();
+        let packet = encode_membership_record(&key, "somehash").unwrap();
+        let records = packet.txt_records("_pitopi");
+        assert_eq!(records[0], "v1");
+    }
+
+    #[test]
+    fn test_decode_skips_legacy_entries() {
+        let key = SecretKey::generate();
+        let values = vec!["v1", "c,legacy_id", "h,the_real_hash", "m,another_legacy"];
+        let packet = SignedPacket::from_txt_strings(&key, "_pitopi", values, 300).unwrap();
+        let hash = decode_membership_record(&packet).unwrap();
+        assert_eq!(hash, "the_real_hash");
+    }
+
     #[test]
     fn test_decode_rejects_unknown_version() {
-        // Build a packet with an unknown version
         let key = SecretKey::generate();
         let values = vec!["v99".to_string()];
-        let packet =
-            SignedPacket::from_txt_strings(&key, "_pitopi", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_pitopi", values, 300).unwrap();
         let result = decode_membership_record(&packet);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unsupported record version"));
@@ -334,27 +225,21 @@ mod tests {
 
     #[test]
     fn test_decode_rejects_empty_packet() {
-        // A packet with no _pitopi records at all
         let key = SecretKey::generate();
-        // Use a different record name so _pitopi has no entries
         let values = vec!["v1".to_string()];
-        let packet =
-            SignedPacket::from_txt_strings(&key, "_other", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_other", values, 300).unwrap();
         let result = decode_membership_record(&packet);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no membership records found"));
     }
 
     #[test]
-    fn test_decode_rejects_unknown_tag() {
+    fn test_decode_rejects_missing_hash() {
         let key = SecretKey::generate();
-        let packet = SignedPacket::from_txt_strings(
-            &key,
-            "_pitopi",
-            vec!["v1", "x,some_identity"],
-            300,
-        ).unwrap();
+        let values = vec!["v1", "c,some_identity"];
+        let packet = SignedPacket::from_txt_strings(&key, "_pitopi", values, 300).unwrap();
         let result = decode_membership_record(&packet);
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no membership hash"));
     }
 }

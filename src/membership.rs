@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::Ipv4Addr;
 
+use anyhow::{Result, bail};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
@@ -287,6 +288,54 @@ impl IdentityProvider for IrohIdentityProvider {
     fn derive_ip(&self, peer_identity: &EndpointId) -> Ipv4Addr {
         derive_ip(peer_identity)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical membership serialization + hashing
+// ---------------------------------------------------------------------------
+
+/// Serializable snapshot of membership state for hashing and peer exchange.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MembershipData {
+    pub members: Vec<Member>,
+    pub approved: Vec<ApprovedEntry>,
+}
+
+/// Produces a deterministic msgpack encoding of membership state.
+/// Members and approved entries are sorted by identity string to ensure
+/// identical output regardless of HashMap iteration order.
+pub fn canonical_membership_bytes(members: &MemberList, approved: &ApprovedList) -> Vec<u8> {
+    let mut sorted_members: Vec<Member> = members.all().into_iter().cloned().collect();
+    sorted_members.sort_by_key(|m| m.identity.to_string());
+
+    let mut sorted_approved: Vec<ApprovedEntry> = approved.all().into_iter().cloned().collect();
+    sorted_approved.sort_by_key(|a| a.identity.to_string());
+
+    let data = MembershipData {
+        members: sorted_members,
+        approved: sorted_approved,
+    };
+    rmp_serde::to_vec_named(&data).expect("msgpack serialize")
+}
+
+/// Computes the blake3 hash of the canonical membership encoding.
+pub fn membership_hash(members: &MemberList, approved: &ApprovedList) -> String {
+    let bytes = canonical_membership_bytes(members, approved);
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+/// Deserializes canonical msgpack bytes into [`MembershipData`].
+pub fn decode_membership_data(bytes: &[u8]) -> Result<MembershipData> {
+    rmp_serde::from_slice(bytes).map_err(|e| anyhow::anyhow!("invalid membership data: {e}"))
+}
+
+/// Verifies that bytes match the expected hash, then deserializes.
+pub fn verify_membership_data(bytes: &[u8], expected_hash: &str) -> Result<MembershipData> {
+    let actual = blake3::hash(bytes).to_hex().to_string();
+    if actual != expected_hash {
+        bail!("membership hash mismatch: expected {expected_hash}, got {actual}");
+    }
+    decode_membership_data(bytes)
 }
 
 #[cfg(test)]
@@ -597,5 +646,83 @@ mod tests {
         assert!(list.is_approved(&test_id(1)));
         assert!(list.is_approved(&test_id(2)));
         assert_eq!(list.all().len(), 2);
+    }
+
+    // -- Canonical serialization + hashing ------------------------------------
+
+    fn make_member_list(seeds: &[u8]) -> MemberList {
+        let mut list = MemberList::new();
+        for &seed in seeds {
+            let id = test_id(seed);
+            let _ = list.add(Member {
+                identity: id,
+                ip: derive_ip(&id),
+                is_coordinator: false,
+            });
+        }
+        list
+    }
+
+    #[test]
+    fn test_canonical_bytes_deterministic() {
+        let members = make_member_list(&[1, 2, 3]);
+        let approved = ApprovedList::new();
+        let a = canonical_membership_bytes(&members, &approved);
+        let b = canonical_membership_bytes(&members, &approved);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_canonical_bytes_order_independent() {
+        let m1 = make_member_list(&[1, 2, 3]);
+        let m2 = make_member_list(&[3, 1, 2]);
+        let approved = ApprovedList::new();
+        assert_eq!(
+            canonical_membership_bytes(&m1, &approved),
+            canonical_membership_bytes(&m2, &approved),
+        );
+    }
+
+    #[test]
+    fn test_membership_hash_changes_on_mutation() {
+        let members = make_member_list(&[1, 2]);
+        let approved = ApprovedList::new();
+        let h1 = membership_hash(&members, &approved);
+        let members2 = make_member_list(&[1, 2, 3]);
+        let h2 = membership_hash(&members2, &approved);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_membership_data_roundtrip() {
+        let members = make_member_list(&[1, 2]);
+        let mut approved = ApprovedList::new();
+        let id3 = test_id(3);
+        approved.approve(ApprovedEntry { identity: id3, ip: derive_ip(&id3) }, &members).unwrap();
+
+        let bytes = canonical_membership_bytes(&members, &approved);
+        let data = decode_membership_data(&bytes).unwrap();
+        assert_eq!(data.members.len(), 2);
+        assert_eq!(data.approved.len(), 1);
+    }
+
+    #[test]
+    fn test_verify_membership_data_ok() {
+        let members = make_member_list(&[1, 2]);
+        let approved = ApprovedList::new();
+        let bytes = canonical_membership_bytes(&members, &approved);
+        let hash = membership_hash(&members, &approved);
+        let data = verify_membership_data(&bytes, &hash).unwrap();
+        assert_eq!(data.members.len(), 2);
+    }
+
+    #[test]
+    fn test_verify_membership_data_bad_hash() {
+        let members = make_member_list(&[1, 2]);
+        let approved = ApprovedList::new();
+        let bytes = canonical_membership_bytes(&members, &approved);
+        let result = verify_membership_data(&bytes, "badhash");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("hash mismatch"));
     }
 }

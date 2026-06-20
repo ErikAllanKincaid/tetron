@@ -1327,16 +1327,27 @@ The coordinator publishes a `SignedPacket` (signed DNS TXT record) to `https://d
 
 ### Record format
 
-TXT records are stored under the `_pitopi` DNS name:
+The pkarr record contains only a blake3 hash pointer, not the membership data itself:
 
 ```
 "v1"                        // version sentinel (always first)
-"c,<hex_identity>"          // coordinator member
-"m,<hex_identity>"          // regular member  
-"a,<hex_identity>"          // approved (not yet connected)
+"h,<blake3_hex>"            // blake3 hash of canonical membership data
 ```
 
-IPs are **not** stored in the record -- they are reconstructed via `derive_ip()` on decode. This keeps entries compact (~66 bytes each), fitting approximately 12 members within the 1000-byte DNS payload limit.
+The full membership data is serialized as msgpack (sorted by identity for determinism) and stored in each peer's in-memory blob store (`MemStore` from iroh-blobs). Every peer serves blobs via the iroh-blobs protocol (`/iroh-bytes/4` ALPN), so any peer can provide the membership data to joiners. This removes the ~12-member limit that DNS TXT record size imposed.
+
+### Membership data exchange via iroh-blobs
+
+Every peer maintains an in-memory blob store (`MemStore`) and registers a `BlobsProtocol` handler. Whenever membership changes (via Welcome, MemberSync, or direct mutation), the peer computes the canonical msgpack bytes, adds them to the blob store via `blobs().add_slice()`, and the blob becomes available for fetching by any peer that knows the hash.
+
+Joiners that need the full membership (e.g., when coordinator is offline) fetch it via iroh-blobs:
+
+1. Resolve the blake3 hash from pkarr.
+2. Connect to any known peer from local config using the iroh-blobs ALPN (`/iroh-bytes/4`).
+3. Fetch the blob via `store.remote().fetch(conn, hash)`.
+4. Read the bytes via `store.blobs().get_bytes(hash)`.
+5. Verify `blake3::hash(bytes) == hash` before trusting the data.
+6. Deserialize to get the member and approved lists.
 
 ### Publishing
 
@@ -1351,13 +1362,14 @@ Publishing errors are logged as warnings -- they never crash the coordinator or 
 
 ### Resolution
 
-Peers learn the `membership_dht_id` from `Welcome` and `MemberSync` messages and persist it in their network config. They use it in two scenarios:
+Peers learn the `membership_dht_id` from `Welcome` and `MemberSync` messages and persist it in their network config. When joining a network and the coordinator is unreachable, the joiner:
 
-1. **Reconnection (`try_reconnect_to_known_peers`):** Before iterating saved members from local config, the peer tries resolving the DHT record for a potentially fresher member list.
+1. Resolves the membership hash from the pkarr relay using the saved DHT ID.
+2. Iterates known members from local config, attempting to connect to each via the iroh-blobs ALPN.
+3. Fetches the membership blob from the first reachable peer using `store.remote().fetch()`.
+4. Verifies the blob hash, deserializes, and connects to all mesh peers via the network ALPN.
 
-2. **Join fallback (`cmd_up` member path):** Before connecting to the coordinator, the peer tries DHT-resolved members. If any are reachable, it joins through them directly.
-
-Both paths are best-effort: if DHT resolution fails, the peer falls through to existing behavior (local config members, then coordinator).
+This is best-effort: if DHT resolution or all peer connections fail, the join fails with an error explaining both the coordinator and fallback failures.
 
 ### Security
 
