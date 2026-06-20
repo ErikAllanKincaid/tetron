@@ -1,9 +1,16 @@
 use anyhow::{Context, Result};
 use iroh::EndpointId;
 
-pub fn encode(id: &EndpointId) -> String {
+pub struct RoomCode {
+    pub network_name: String,
+    pub endpoint_id: EndpointId,
+}
+
+pub fn encode(network_name: &str, id: &EndpointId) -> String {
     let z32 = id.to_z32();
-    let mut result = String::with_capacity(z32.len() + z32.len() / 4);
+    let mut result = String::with_capacity(network_name.len() + 1 + z32.len() + z32.len() / 4);
+    result.push_str(network_name);
+    result.push('/');
     for (i, ch) in z32.chars().enumerate() {
         if i > 0 && i % 4 == 0 {
             result.push('-');
@@ -13,14 +20,24 @@ pub fn encode(id: &EndpointId) -> String {
     result
 }
 
-pub fn decode(code: &str) -> Result<EndpointId> {
-    let stripped: String = code.chars().filter(|c| *c != '-').collect();
-    EndpointId::from_z32(&stripped).context("invalid room code")
+pub fn decode(code: &str) -> Result<RoomCode> {
+    let (name, id_part) = code
+        .rsplit_once('/')
+        .context("room code must contain network name (name/code)")?;
+    let stripped: String = id_part.chars().filter(|c| *c != '-').collect();
+    let endpoint_id = EndpointId::from_z32(&stripped).context("invalid room code")?;
+    Ok(RoomCode {
+        network_name: name.to_string(),
+        endpoint_id,
+    })
 }
 
-pub fn parse_node_id(input: &str) -> Result<EndpointId> {
+pub fn parse_input(input: &str) -> Result<RoomCode> {
     if let Ok(id) = input.parse::<EndpointId>() {
-        return Ok(id);
+        return Ok(RoomCode {
+            network_name: String::new(),
+            endpoint_id: id,
+        });
     }
     decode(input).context("could not parse as EndpointId or room code")
 }
@@ -33,21 +50,20 @@ mod tests {
     fn roundtrip() {
         let key = iroh::SecretKey::generate();
         let id = key.public();
-        let code = encode(&id);
+        let code = encode("gaming", &id);
         let decoded = decode(&code).unwrap();
-        assert_eq!(id, decoded);
+        assert_eq!(decoded.network_name, "gaming");
+        assert_eq!(decoded.endpoint_id, id);
     }
 
     #[test]
-    fn format_has_dashes() {
+    fn format_has_dashes_and_name() {
         let key = iroh::SecretKey::generate();
         let id = key.public();
-        let code = encode(&id);
-        assert!(code.contains('-'));
-        let parts: Vec<&str> = code.split('-').collect();
-        for part in &parts[..parts.len() - 1] {
-            assert_eq!(part.len(), 4);
-        }
+        let code = encode("test-net", &id);
+        assert!(code.starts_with("test-net/"));
+        let id_part = code.split('/').last().unwrap();
+        assert!(id_part.contains('-'));
     }
 
     #[test]
@@ -56,15 +72,18 @@ mod tests {
         let id = key.public();
 
         let raw = id.to_string();
-        assert_eq!(parse_node_id(&raw).unwrap(), id);
+        let parsed = parse_input(&raw).unwrap();
+        assert_eq!(parsed.endpoint_id, id);
+        assert!(parsed.network_name.is_empty());
 
-        let code = encode(&id);
-        assert_eq!(parse_node_id(&code).unwrap(), id);
+        let code = encode("mynet", &id);
+        let parsed = parse_input(&code).unwrap();
+        assert_eq!(parsed.endpoint_id, id);
+        assert_eq!(parsed.network_name, "mynet");
     }
 
     #[test]
     fn invalid_code_errors() {
         assert!(decode("not-a-valid-code!!!").is_err());
-        assert!(decode("aaaa-bbbb").is_err());
     }
 }

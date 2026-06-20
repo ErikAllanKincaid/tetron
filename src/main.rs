@@ -1,5 +1,3 @@
-mod acl;
-mod audit;
 mod dht;
 mod config;
 mod control;
@@ -34,8 +32,46 @@ use membership::{
 use peers::PeerTable;
 use stats::Stats;
 
+use futures::StreamExt;
+use iroh::endpoint::{PathEvent, Connection as IrohConnection};
+
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+fn spawn_path_logger(conn: IrohConnection, label: String) {
+    // Log current paths snapshot (events before subscription are missed)
+    let paths = conn.paths();
+    for path in paths.iter() {
+        tracing::info!(
+            peer = %label,
+            addr = ?path.remote_addr(),
+            rtt = ?path.rtt(),
+            selected = path.is_selected(),
+            "existing path"
+        );
+    }
+
+    tokio::spawn(async move {
+        let mut events = conn.path_events();
+        while let Some(event) = events.next().await {
+            match event {
+                PathEvent::Opened { remote_addr, .. } => {
+                    tracing::info!(peer = %label, addr = ?remote_addr, "path opened");
+                }
+                PathEvent::Closed { remote_addr, .. } => {
+                    tracing::info!(peer = %label, addr = ?remote_addr, "path closed");
+                }
+                PathEvent::Selected { remote_addr, .. } => {
+                    tracing::info!(peer = %label, addr = ?remote_addr, "path selected");
+                }
+                PathEvent::Lagged { missed, .. } => {
+                    tracing::warn!(peer = %label, missed, "path events lagged");
+                }
+                _ => {}
+            }
+        }
+    });
+}
 
 struct NetworkState {
     members: MemberList,
@@ -226,16 +262,15 @@ async fn cmd_create(
     let mut app_config = config::load()?;
     save_network_config(&mut app_config, name, &ep, mode, Some(my_ip), &state, Some(dht_id.clone()))?;
 
-    let tun_dev = tun::TunDevice::create(my_ip).context("failed to create TUN device")?;
+    let (tun_reader, tun_writer) = tun::create(my_ip).context("failed to create TUN device")?;
 
     let peers = PeerTable::new();
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
 
-    forward::spawn_tun_writer(tun_dev.share(), tun_rx);
+    forward::spawn_tun_writer(tun_writer, tun_rx);
     tokio::spawn(forward::run_mesh(
-        tun_dev,
+        tun_reader,
         peers.clone(),
-        tun_tx.clone(),
         token.clone(),
         stats.clone(),
     ));
@@ -315,6 +350,7 @@ async fn run_accept_loop(
                 .into_iter()
                 .cloned()
                 .collect();
+            spawn_path_logger(conn.clone(), remote_id.fmt_short().to_string());
             peers.add(peer_ip, conn.clone(), remote_id);
             let token_c = token.clone();
             let stats_c = stats.clone();
@@ -746,7 +782,7 @@ async fn join_mesh_shared(
     let member_entries: Vec<config::MemberEntry> = members
         .iter()
         .map(|m| config::MemberEntry {
-            identity: m.identity.clone(),
+            identity: m.identity,
             ip: m.ip,
             is_coordinator: m.is_coordinator,
         })
@@ -754,7 +790,7 @@ async fn join_mesh_shared(
     let approved_config: Vec<config::ApprovedConfigEntry> = approved
         .iter()
         .map(|a| config::ApprovedConfigEntry {
-            identity: a.identity.clone(),
+            identity: a.identity,
             ip: a.ip,
         })
         .collect();
@@ -782,6 +818,7 @@ async fn join_mesh_shared(
     // Add the initial connection peer to routing table
     let remote_id = initial_conn.remote_id();
     let remote_ip = identity.derive_ip(&remote_id);
+    spawn_path_logger(initial_conn.clone(), remote_id.fmt_short().to_string());
     peers.add(remote_ip, initial_conn.clone(), remote_id);
     forward::spawn_peer_reader(
         initial_conn.clone(),
@@ -804,13 +841,13 @@ async fn join_mesh_shared(
                 control::send_msg(
                     &mut send,
                     &ControlMsg::MeshHello {
-                        identity: my_identity.clone(),
+                        identity: my_identity,
                         ip: my_ip,
                     },
                 )
                 .await?;
 
-                peers.add(member.ip, conn.clone(), member.identity.clone());
+                peers.add(member.ip, conn.clone(), member.identity);
                 forward::spawn_peer_reader(conn, tun_tx.clone(), token.clone(), stats.clone());
                 tracing::info!(peer_ip = %member.ip, "connected to mesh peer");
             }
@@ -917,7 +954,7 @@ async fn join_mesh_shared(
                                                         let mut s = live_state.write().unwrap();
                                                         s.approved.remove(&peer_identity);
                                                         let _ = s.members.add(Member {
-                                                            identity: peer_identity.clone(),
+                                                            identity: peer_identity,
                                                             ip,
                                                             is_coordinator: false,
                                                         });
@@ -1017,10 +1054,10 @@ async fn enter_mesh(
 ) -> Result<()> {
     let my_ip = identity.local_ip();
 
-    let tun_dev = tun::TunDevice::create(my_ip).context("failed to create TUN device")?;
+    let (tun_reader, tun_writer) = tun::create(my_ip).context("failed to create TUN device")?;
     let peers = PeerTable::new();
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
-    forward::spawn_tun_writer(tun_dev.share(), tun_rx);
+    forward::spawn_tun_writer(tun_writer, tun_rx);
 
     join_mesh_shared(
         initial_conn,
@@ -1035,7 +1072,7 @@ async fn enter_mesh(
     )
     .await?;
 
-    forward::run_mesh(tun_dev, peers, tun_tx, token, stats).await
+    forward::run_mesh(tun_reader, peers, token, stats).await
 }
 
 fn save_network_config(
@@ -1052,7 +1089,7 @@ fn save_network_config(
         .all()
         .into_iter()
         .map(|m| config::MemberEntry {
-            identity: m.identity.clone(),
+            identity: m.identity,
             ip: m.ip,
             is_coordinator: m.is_coordinator,
         })
@@ -1063,7 +1100,7 @@ fn save_network_config(
         .all()
         .into_iter()
         .map(|a| config::ApprovedConfigEntry {
-            identity: a.identity.clone(),
+            identity: a.identity,
             ip: a.ip,
         })
         .collect();
@@ -1175,14 +1212,13 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
     // Single TUN for all networks
     let identity = IrohIdentityProvider::new(public_key);
     let my_ip = identity.local_ip();
-    let tun_dev = tun::TunDevice::create(my_ip).context("failed to create TUN device")?;
+    let (tun_reader, tun_writer) = tun::create(my_ip).context("failed to create TUN device")?;
     let peers = PeerTable::new();
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
-    forward::spawn_tun_writer(tun_dev.share(), tun_rx);
+    forward::spawn_tun_writer(tun_writer, tun_rx);
     tokio::spawn(forward::run_mesh(
-        tun_dev,
+        tun_reader,
         peers.clone(),
-        tun_tx.clone(),
         token.clone(),
         stats.clone(),
     ));

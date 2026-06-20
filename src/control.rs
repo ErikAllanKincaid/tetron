@@ -61,7 +61,8 @@ pub fn encode_msg(msg: &ControlMsg) -> Vec<u8> {
     [len.as_slice(), &json].concat()
 }
 
-pub fn decode_msg(data: &[u8]) -> Result<ControlMsg> {
+#[cfg(test)]
+fn decode_msg(data: &[u8]) -> Result<ControlMsg> {
     anyhow::ensure!(data.len() >= 4, "message too short");
     let len = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
     anyhow::ensure!(data.len() >= 4 + len, "incomplete message");
@@ -205,7 +206,6 @@ mod tests {
 
     #[test]
     fn test_roundtrip_welcome_with_dht_id() {
-        use crate::membership::ApprovedEntry;
         let msg = ControlMsg::Welcome {
             members: vec![Member {
                 identity: test_id(1),

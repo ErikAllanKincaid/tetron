@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
-    pub identity: String,
+    pub identity: EndpointId,
     pub ip: Ipv4Addr,
     pub is_coordinator: bool,
 }
@@ -44,8 +44,8 @@ impl std::str::FromStr for GroupMode {
 #[derive(Debug)]
 pub struct IpCollision {
     pub ip: Ipv4Addr,
-    pub existing_identity: String,
-    pub new_identity: String,
+    pub existing_identity: EndpointId,
+    pub new_identity: EndpointId,
 }
 
 impl fmt::Display for IpCollision {
@@ -53,7 +53,9 @@ impl fmt::Display for IpCollision {
         write!(
             f,
             "IP collision: {} already assigned to {}, cannot assign to {}",
-            self.ip, self.existing_identity, self.new_identity
+            self.ip,
+            self.existing_identity.fmt_short(),
+            self.new_identity.fmt_short()
         )
     }
 }
@@ -62,7 +64,7 @@ impl std::error::Error for IpCollision {}
 
 #[derive(Debug, Clone)]
 pub struct MemberList {
-    members: HashMap<String, Member>,
+    members: HashMap<EndpointId, Member>,
 }
 
 impl MemberList {
@@ -78,19 +80,20 @@ impl MemberList {
         {
             return Err(IpCollision {
                 ip: member.ip,
-                existing_identity: existing.identity.clone(),
-                new_identity: member.identity.clone(),
+                existing_identity: existing.identity,
+                new_identity: member.identity,
             });
         }
-        self.members.insert(member.identity.clone(), member);
+        self.members.insert(member.identity, member);
         Ok(())
     }
 
-    pub fn remove(&mut self, identity: &str) -> Option<Member> {
+    #[cfg(test)]
+    pub fn remove(&mut self, identity: &EndpointId) -> Option<Member> {
         self.members.remove(identity)
     }
 
-    pub fn get(&self, identity: &str) -> Option<&Member> {
+    pub fn get(&self, identity: &EndpointId) -> Option<&Member> {
         self.members.get(identity)
     }
 
@@ -98,16 +101,12 @@ impl MemberList {
         self.members.values().find(|m| m.ip == ip)
     }
 
-    pub fn is_member(&self, identity: &str) -> bool {
+    pub fn is_member(&self, identity: &EndpointId) -> bool {
         self.members.contains_key(identity)
     }
 
     pub fn all(&self) -> Vec<&Member> {
         self.members.values().collect()
-    }
-
-    pub fn into_members(self) -> Vec<Member> {
-        self.members.into_values().collect()
     }
 
     pub fn from_members(members: Vec<Member>) -> Self {
@@ -121,13 +120,13 @@ impl MemberList {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovedEntry {
-    pub identity: String,
+    pub identity: EndpointId,
     pub ip: Ipv4Addr,
 }
 
 #[derive(Debug, Clone)]
 pub struct ApprovedList {
-    entries: HashMap<String, ApprovedEntry>,
+    entries: HashMap<EndpointId, ApprovedEntry>,
 }
 
 impl ApprovedList {
@@ -142,35 +141,33 @@ impl ApprovedList {
         entry: ApprovedEntry,
         members: &MemberList,
     ) -> Result<(), IpCollision> {
-        // Check collision against existing members
         if let Some(existing) = members.get_by_ip(entry.ip)
             && existing.identity != entry.identity
         {
             return Err(IpCollision {
                 ip: entry.ip,
-                existing_identity: existing.identity.clone(),
-                new_identity: entry.identity.clone(),
+                existing_identity: existing.identity,
+                new_identity: entry.identity,
             });
         }
-        // Check collision within approved list
         if let Some(existing) = self.get_by_ip(entry.ip)
             && existing.identity != entry.identity
         {
             return Err(IpCollision {
                 ip: entry.ip,
-                existing_identity: existing.identity.clone(),
-                new_identity: entry.identity.clone(),
+                existing_identity: existing.identity,
+                new_identity: entry.identity,
             });
         }
-        self.entries.insert(entry.identity.clone(), entry);
+        self.entries.insert(entry.identity, entry);
         Ok(())
     }
 
-    pub fn is_approved(&self, identity: &str) -> bool {
+    pub fn is_approved(&self, identity: &EndpointId) -> bool {
         self.entries.contains_key(identity)
     }
 
-    pub fn remove(&mut self, identity: &str) -> Option<ApprovedEntry> {
+    pub fn remove(&mut self, identity: &EndpointId) -> Option<ApprovedEntry> {
         self.entries.remove(identity)
     }
 
@@ -185,7 +182,7 @@ impl ApprovedList {
     pub fn from_entries(entries: Vec<ApprovedEntry>) -> Self {
         let mut list = Self::new();
         for e in entries {
-            list.entries.insert(e.identity.clone(), e);
+            list.entries.insert(e.identity, e);
         }
         list
     }
@@ -220,14 +217,14 @@ pub fn policy_for_mode(mode: GroupMode) -> Box<dyn MembershipPolicy> {
 
 pub trait IdentityProvider: Send + Sync {
     fn local_ip(&self) -> Ipv4Addr;
-    fn local_identity(&self) -> String;
-    fn derive_ip(&self, peer_identity: &str) -> Ipv4Addr;
-    fn verify_peer(&self, claimed_identity: &str, transport_identity: &str) -> bool;
+    fn local_identity(&self) -> EndpointId;
+    fn derive_ip(&self, peer_identity: &EndpointId) -> Ipv4Addr;
 }
 
-pub fn derive_ip(identity: &str) -> Ipv4Addr {
+pub fn derive_ip(identity: &EndpointId) -> Ipv4Addr {
+    let id_str = identity.to_string();
     let mut hash: u32 = 2_166_136_261; // FNV-1a offset basis
-    for &b in identity.as_bytes() {
+    for &b in id_str.as_bytes() {
         hash ^= b as u32;
         hash = hash.wrapping_mul(16_777_619); // FNV-1a prime
     }
@@ -251,7 +248,7 @@ pub struct IrohIdentityProvider {
 
 impl IrohIdentityProvider {
     pub fn new(endpoint_id: EndpointId) -> Self {
-        let ip = derive_ip(&endpoint_id.to_string());
+        let ip = derive_ip(&endpoint_id);
         Self { endpoint_id, ip }
     }
 }
@@ -261,16 +258,12 @@ impl IdentityProvider for IrohIdentityProvider {
         self.ip
     }
 
-    fn local_identity(&self) -> String {
-        self.endpoint_id.to_string()
+    fn local_identity(&self) -> EndpointId {
+        self.endpoint_id
     }
 
-    fn derive_ip(&self, peer_identity: &str) -> Ipv4Addr {
+    fn derive_ip(&self, peer_identity: &EndpointId) -> Ipv4Addr {
         derive_ip(peer_identity)
-    }
-
-    fn verify_peer(&self, claimed_identity: &str, transport_identity: &str) -> bool {
-        claimed_identity == transport_identity
     }
 }
 
@@ -278,37 +271,43 @@ impl IdentityProvider for IrohIdentityProvider {
 mod tests {
     use super::*;
 
+    fn test_id(seed: u8) -> EndpointId {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = seed;
+        let key = iroh::SecretKey::from(key_bytes);
+        key.public()
+    }
+
     #[test]
     fn test_derive_ip_deterministic() {
-        let ip1 = derive_ip("abc123");
-        let ip2 = derive_ip("abc123");
+        let id = test_id(1);
+        let ip1 = derive_ip(&id);
+        let ip2 = derive_ip(&id);
         assert_eq!(ip1, ip2);
     }
 
     #[test]
     fn test_derive_ip_in_cgnat_range() {
-        let ip = derive_ip("test-identity-string");
+        let id = test_id(1);
+        let ip = derive_ip(&id);
         let octets = ip.octets();
-        // 100.64.0.0/10 = first 10 bits fixed: 01100100.01xxxxxx
         assert_eq!(octets[0], 100);
         assert!(octets[1] >= 64 && octets[1] <= 127);
     }
 
     #[test]
     fn test_derive_ip_different_identities_differ() {
-        let ip1 = derive_ip("identity-a");
-        let ip2 = derive_ip("identity-b");
+        let ip1 = derive_ip(&test_id(1));
+        let ip2 = derive_ip(&test_id(2));
         assert_ne!(ip1, ip2);
     }
 
     #[test]
     fn test_derive_ip_avoids_reserved() {
-        // Hash could theoretically land on 100.64.0.0 or 100.64.0.1
-        // Test many inputs and verify none hit reserved addresses
         let reserved1 = Ipv4Addr::new(100, 64, 0, 0);
         let reserved2 = Ipv4Addr::new(100, 64, 0, 1);
-        for i in 0..10000 {
-            let ip = derive_ip(&format!("test-{i}"));
+        for i in 0..=255u8 {
+            let ip = derive_ip(&test_id(i));
             assert_ne!(ip, reserved1);
             assert_ne!(ip, reserved2);
         }
@@ -325,50 +324,40 @@ mod tests {
         assert_eq!(octets[0], 100);
         assert!(octets[1] >= 64 && octets[1] <= 127);
 
-        // derive_ip for same identity gives same result
-        let id_str = provider.local_identity();
-        assert_eq!(provider.derive_ip(&id_str), ip);
-    }
-
-    #[test]
-    fn test_iroh_verify_peer() {
-        let key = iroh::SecretKey::generate();
-        let endpoint_id = key.public();
-        let provider = IrohIdentityProvider::new(endpoint_id);
-
-        let id_str = endpoint_id.to_string();
-        assert!(provider.verify_peer(&id_str, &id_str));
-        assert!(!provider.verify_peer("wrong-identity", &id_str));
+        let id = provider.local_identity();
+        assert_eq!(provider.derive_ip(&id), ip);
     }
 
     #[test]
     fn test_member_list_add_and_lookup() {
+        let id = test_id(1);
         let mut list = MemberList::new();
         let member = Member {
-            identity: "peer-a".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         };
         list.add(member.clone()).unwrap();
-        assert!(list.is_member("peer-a"));
-        assert!(!list.is_member("peer-b"));
+        assert!(list.is_member(&id));
+        assert!(!list.is_member(&test_id(2)));
         assert_eq!(
-            list.get("peer-a").unwrap().ip,
+            list.get(&id).unwrap().ip,
             Ipv4Addr::new(100, 64, 10, 5)
         );
     }
 
     #[test]
     fn test_member_list_lookup_by_ip() {
+        let id = test_id(1);
         let mut list = MemberList::new();
         let member = Member {
-            identity: "peer-a".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         };
         list.add(member).unwrap();
         let found = list.get_by_ip(Ipv4Addr::new(100, 64, 10, 5)).unwrap();
-        assert_eq!(found.identity, "peer-a");
+        assert_eq!(found.identity, id);
         assert!(list.get_by_ip(Ipv4Addr::new(100, 64, 10, 6)).is_none());
     }
 
@@ -376,14 +365,14 @@ mod tests {
     fn test_member_list_ip_collision() {
         let mut list = MemberList::new();
         list.add(Member {
-            identity: "peer-a".to_string(),
+            identity: test_id(1),
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         })
         .unwrap();
         let result = list.add(Member {
-            identity: "peer-b".to_string(),
-            ip: Ipv4Addr::new(100, 64, 10, 5), // same IP, different identity
+            identity: test_id(2),
+            ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         });
         assert!(result.is_err());
@@ -391,49 +380,50 @@ mod tests {
 
     #[test]
     fn test_member_list_same_identity_updates() {
+        let id = test_id(1);
         let mut list = MemberList::new();
         list.add(Member {
-            identity: "peer-a".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         })
         .unwrap();
-        // Re-adding same identity with same IP is OK (idempotent)
         list.add(Member {
-            identity: "peer-a".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: true,
         })
         .unwrap();
-        assert!(list.get("peer-a").unwrap().is_coordinator);
+        assert!(list.get(&id).unwrap().is_coordinator);
     }
 
     #[test]
     fn test_member_list_remove() {
+        let id = test_id(1);
         let mut list = MemberList::new();
         list.add(Member {
-            identity: "peer-a".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 10, 5),
             is_coordinator: false,
         })
         .unwrap();
-        let removed = list.remove("peer-a");
+        let removed = list.remove(&id);
         assert!(removed.is_some());
-        assert!(!list.is_member("peer-a"));
-        assert!(list.remove("peer-a").is_none());
+        assert!(!list.is_member(&id));
+        assert!(list.remove(&id).is_none());
     }
 
     #[test]
     fn test_member_list_all() {
         let mut list = MemberList::new();
         list.add(Member {
-            identity: "a".to_string(),
+            identity: test_id(1),
             ip: Ipv4Addr::new(100, 64, 0, 2),
             is_coordinator: true,
         })
         .unwrap();
         list.add(Member {
-            identity: "b".to_string(),
+            identity: test_id(2),
             ip: Ipv4Addr::new(100, 64, 0, 3),
             is_coordinator: false,
         })
@@ -445,7 +435,7 @@ mod tests {
     fn test_open_policy_anyone_can_authorize() {
         let policy = OpenPolicy;
         let member = Member {
-            identity: "regular-peer".to_string(),
+            identity: test_id(1),
             ip: Ipv4Addr::new(100, 64, 0, 5),
             is_coordinator: false,
         };
@@ -456,12 +446,12 @@ mod tests {
     fn test_restricted_policy_only_coordinators() {
         let policy = RestrictedPolicy;
         let coordinator = Member {
-            identity: "coord".to_string(),
+            identity: test_id(1),
             ip: Ipv4Addr::new(100, 64, 0, 2),
             is_coordinator: true,
         };
         let regular = Member {
-            identity: "peer".to_string(),
+            identity: test_id(2),
             ip: Ipv4Addr::new(100, 64, 0, 3),
             is_coordinator: false,
         };
@@ -471,15 +461,16 @@ mod tests {
 
     #[test]
     fn test_approved_list_add_and_check() {
+        let id = test_id(1);
         let mut list = ApprovedList::new();
         let entry = ApprovedEntry {
-            identity: "peer-x".to_string(),
+            identity: id,
             ip: Ipv4Addr::new(100, 64, 5, 10),
         };
         let members = MemberList::new();
         list.approve(entry, &members).unwrap();
-        assert!(list.is_approved("peer-x"));
-        assert!(!list.is_approved("peer-y"));
+        assert!(list.is_approved(&id));
+        assert!(!list.is_approved(&test_id(2)));
     }
 
     #[test]
@@ -488,13 +479,13 @@ mod tests {
         let mut members = MemberList::new();
         members
             .add(Member {
-                identity: "existing".to_string(),
+                identity: test_id(1),
                 ip: Ipv4Addr::new(100, 64, 5, 10),
                 is_coordinator: false,
             })
             .unwrap();
         let entry = ApprovedEntry {
-            identity: "new-peer".to_string(),
+            identity: test_id(2),
             ip: Ipv4Addr::new(100, 64, 5, 10),
         };
         assert!(approved.approve(entry, &members).is_err());
@@ -507,7 +498,7 @@ mod tests {
         approved
             .approve(
                 ApprovedEntry {
-                    identity: "peer-a".to_string(),
+                    identity: test_id(1),
                     ip: Ipv4Addr::new(100, 64, 5, 10),
                 },
                 &members,
@@ -515,7 +506,7 @@ mod tests {
             .unwrap();
         let result = approved.approve(
             ApprovedEntry {
-                identity: "peer-b".to_string(),
+                identity: test_id(2),
                 ip: Ipv4Addr::new(100, 64, 5, 10),
             },
             &members,
@@ -525,12 +516,13 @@ mod tests {
 
     #[test]
     fn test_approved_list_same_identity_is_idempotent() {
+        let id = test_id(1);
         let mut approved = ApprovedList::new();
         let members = MemberList::new();
         approved
             .approve(
                 ApprovedEntry {
-                    identity: "peer-a".to_string(),
+                    identity: id,
                     ip: Ipv4Addr::new(100, 64, 5, 10),
                 },
                 &members,
@@ -539,7 +531,7 @@ mod tests {
         approved
             .approve(
                 ApprovedEntry {
-                    identity: "peer-a".to_string(),
+                    identity: id,
                     ip: Ipv4Addr::new(100, 64, 5, 10),
                 },
                 &members,
@@ -550,37 +542,38 @@ mod tests {
 
     #[test]
     fn test_approved_list_remove() {
+        let id = test_id(1);
         let mut approved = ApprovedList::new();
         let members = MemberList::new();
         approved
             .approve(
                 ApprovedEntry {
-                    identity: "peer-a".to_string(),
+                    identity: id,
                     ip: Ipv4Addr::new(100, 64, 5, 10),
                 },
                 &members,
             )
             .unwrap();
-        let removed = approved.remove("peer-a");
+        let removed = approved.remove(&id);
         assert!(removed.is_some());
-        assert!(!approved.is_approved("peer-a"));
+        assert!(!approved.is_approved(&id));
     }
 
     #[test]
     fn test_approved_list_from_entries() {
         let entries = vec![
             ApprovedEntry {
-                identity: "a".to_string(),
+                identity: test_id(1),
                 ip: Ipv4Addr::new(100, 64, 0, 2),
             },
             ApprovedEntry {
-                identity: "b".to_string(),
+                identity: test_id(2),
                 ip: Ipv4Addr::new(100, 64, 0, 3),
             },
         ];
         let list = ApprovedList::from_entries(entries);
-        assert!(list.is_approved("a"));
-        assert!(list.is_approved("b"));
+        assert!(list.is_approved(&test_id(1)));
+        assert!(list.is_approved(&test_id(2)));
         assert_eq!(list.all().len(), 2);
     }
 }

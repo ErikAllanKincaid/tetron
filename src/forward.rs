@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::peers::PeerTable;
 use crate::stats::Stats;
-use crate::tun::TunDevice;
+use crate::tun::{TunReader, TunWriter};
 
 fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
     if packet.len() < 20 {
@@ -24,9 +24,8 @@ fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
 }
 
 pub async fn run_mesh(
-    tun: TunDevice,
+    mut tun: TunReader,
     peers: PeerTable,
-    _tun_tx: mpsc::Sender<Vec<u8>>,
     token: CancellationToken,
     stats: Arc<Stats>,
 ) -> Result<()> {
@@ -43,7 +42,10 @@ pub async fn run_mesh(
                             tracing::debug!(%dst, "routing to peer");
                             match conn.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
                                 Ok(()) => stats.record_tx(n),
-                                Err(_) => stats.record_drop(),
+                                Err(e) => {
+                                    tracing::debug!(%dst, error = %e, "datagram send failed");
+                                    stats.record_drop();
+                                }
                             }
                         } else {
                             tracing::debug!(%dst, "no peer for dst");
@@ -76,7 +78,10 @@ pub fn spawn_peer_reader(
                                 return;
                             }
                         }
-                        Err(_) => return,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "peer reader connection lost");
+                            return;
+                        }
                     }
                 }
             }
@@ -85,7 +90,7 @@ pub fn spawn_peer_reader(
 }
 
 pub fn spawn_tun_writer(
-    tun: TunDevice,
+    mut tun: TunWriter,
     mut tun_rx: mpsc::Receiver<Vec<u8>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
