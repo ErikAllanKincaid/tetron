@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::acl;
 use crate::config;
 use crate::control::{self, ControlMsg};
 use crate::dht;
@@ -47,6 +48,7 @@ struct NetworkState {
     snapshot: Option<MembershipSnapshot>,
     network_secret: [u8; 32],
     membership_signing_key: [u8; 32],
+    acl: acl::AclData,
 }
 
 impl NetworkState {
@@ -105,14 +107,12 @@ impl DaemonState {
                 self.shutdown_token.cancel();
                 IpcResponse::Ok { message: "shutting down".to_string() }
             }
-            IpcRequest::AclTag { .. }
-            | IpcRequest::AclUntag { .. }
-            | IpcRequest::AclAllow { .. }
-            | IpcRequest::AclRemove { .. }
-            | IpcRequest::AclShow { .. }
-            | IpcRequest::AclApply { .. } => IpcResponse::Error {
-                message: "ACL commands not yet implemented".to_string(),
-            },
+            IpcRequest::AclTag { network, tag, peer_ids } => self.acl_tag(&network, &tag, &peer_ids).await,
+            IpcRequest::AclUntag { network, tag, peer_id } => self.acl_untag(&network, &tag, &peer_id).await,
+            IpcRequest::AclAllow { network, src, dst } => self.acl_allow(&network, &src, &dst).await,
+            IpcRequest::AclRemove { network, index } => self.acl_remove(&network, index).await,
+            IpcRequest::AclShow { network } => self.acl_show(&network),
+            IpcRequest::AclApply { network } => self.acl_apply(&network).await,
         }
     }
 
@@ -161,6 +161,7 @@ impl DaemonState {
             snapshot: None,
             network_secret,
             membership_signing_key,
+            acl: acl::AclData::empty(),
         };
         net_state.refresh_snapshot();
         if let Some(snap) = &net_state.snapshot {
@@ -244,6 +245,7 @@ impl DaemonState {
         tasks.push(spawn_peer_cleanup(disconnect_rx, self.peers.clone(), cancel.clone()));
 
         // Accept loop for this network
+        let acl_dht_id_str = Some(dht::acl_dht_id(&self.secret_key, &name).to_string());
         let accept_handle = spawn_coordinator_accept(
             self.endpoint.clone(),
             name.clone(),
@@ -257,6 +259,7 @@ impl DaemonState {
             self.stats.clone(),
             Some(dht_notify),
             Some(dht_id),
+            acl_dht_id_str,
             self.blob_store.clone(),
             self.blobs_proto.clone(),
         );
@@ -569,6 +572,7 @@ impl DaemonState {
                 snapshot: None,
                 network_secret: data.network_secret,
                 membership_signing_key: data.membership_signing_key,
+                acl: acl::AclData::empty(),
             };
             ns.refresh_snapshot();
             let live_state = Arc::new(std::sync::RwLock::new(ns));
@@ -655,7 +659,28 @@ impl DaemonState {
             snapshot: None,
             network_secret,
             membership_signing_key,
+            acl: acl::AclData::empty(),
         };
+
+        // Load persisted ACL file if it exists
+        let acl_path = self.acl_file_path(name);
+        if acl_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&acl_path)
+        {
+            let resolver = |short: &str| -> Option<EndpointId> {
+                net_state.members.all().iter()
+                    .find(|m| m.identity.to_string().starts_with(short))
+                    .map(|m| m.identity)
+            };
+            match acl::parse_acl_file(&content, &resolver) {
+                Ok(data) => {
+                    tracing::info!(network = %name, "restored ACL from file");
+                    net_state.acl = data;
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to parse persisted ACL file"),
+            }
+        }
+
         net_state.refresh_snapshot();
         if let Some(snap) = &net_state.snapshot {
             let _ = self.blob_store.blobs().add_slice(&snap.msgpack_bytes).await;
@@ -679,6 +704,17 @@ impl DaemonState {
                 &[self.endpoint.id()],
             ).await {
                 tracing::warn!(error = %e, "failed to publish seed list on restore");
+            }
+
+            // Publish ACL to DHT if non-empty
+            if !net_state.acl.tags.is_empty() || !net_state.acl.rules.is_empty() {
+                let acl_bytes = acl::canonical_acl_bytes(&net_state.acl);
+                let _ = self.blob_store.blobs().add_slice(&acl_bytes).await;
+                let acl_key = dht::derive_acl_key(&self.secret_key, name);
+                let hash = acl::acl_hash(&net_state.acl);
+                if let Err(e) = dht::publish_acl(&pkarr_client, &acl_key, &hash).await {
+                    tracing::warn!(error = %e, "failed to publish ACL on restore");
+                }
             }
         }
 
@@ -723,6 +759,7 @@ impl DaemonState {
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
         tasks.push(spawn_peer_cleanup(disconnect_rx, self.peers.clone(), cancel.clone()));
 
+        let acl_dht_id_str = Some(dht::acl_dht_id(&self.secret_key, name).to_string());
         let accept_handle = spawn_coordinator_accept(
             self.endpoint.clone(),
             name.to_string(),
@@ -736,6 +773,7 @@ impl DaemonState {
             self.stats.clone(),
             Some(dht_notify),
             Some(dht_id),
+            acl_dht_id_str,
             self.blob_store.clone(),
             self.blobs_proto.clone(),
         );
@@ -869,6 +907,210 @@ impl DaemonState {
             endpoint_id: self.endpoint.id().to_string(),
             networks: statuses,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // ACL helpers
+    // -----------------------------------------------------------------------
+
+    fn resolve_short_id(&self, network: &str, short: &str) -> Option<EndpointId> {
+        let networks = self.networks.read().unwrap();
+        let handle = networks.get(network)?;
+        let state = handle.state.read().unwrap();
+        state.members.all().iter()
+            .find(|m| m.identity.to_string().starts_with(short))
+            .map(|m| m.identity)
+    }
+
+    fn acl_file_path(&self, network: &str) -> std::path::PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("pitopi")
+            .join("acl")
+            .join(format!("{network}.acl"))
+    }
+
+    fn persist_acl(&self, network: &str, data: &acl::AclData) {
+        let path = self.acl_file_path(network);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let short_id = |id: &EndpointId| -> String { id.fmt_short().to_string() };
+        let content = acl::format_acl_file(data, &short_id);
+        if let Err(e) = std::fs::write(&path, content) {
+            tracing::warn!(error = %e, "failed to persist ACL file");
+        }
+    }
+
+    async fn publish_and_broadcast_acl(&self, network: &str, data: &acl::AclData) {
+        let hash = acl::acl_hash(data);
+        let bytes = acl::canonical_acl_bytes(data);
+        let _ = self.blob_store.blobs().add_slice(&bytes).await;
+
+        if let Ok(client) = dht::create_pkarr_client(&self.endpoint) {
+            let acl_key = dht::derive_acl_key(&self.secret_key, network);
+            if let Err(e) = dht::publish_acl(&client, &acl_key, &hash).await {
+                tracing::warn!(error = %e, "failed to publish ACL to DHT");
+            }
+        }
+
+        let msg = ControlMsg::AclUpdated { acl_hash: hash };
+        broadcast_control_msg(&self.peers, &msg).await;
+    }
+
+    async fn acl_tag(&self, network: &str, tag: &str, peer_ids: &[String]) -> IpcResponse {
+        let mut resolved = Vec::new();
+        for short in peer_ids {
+            match self.resolve_short_id(network, short) {
+                Some(id) => resolved.push(id),
+                None => return IpcResponse::Error {
+                    message: format!("unknown peer '{short}'"),
+                },
+            }
+        }
+
+        {
+            let networks = self.networks.read().unwrap();
+            let Some(handle) = networks.get(network) else {
+                return IpcResponse::Error { message: format!("network '{network}' not active") };
+            };
+            let mut state = handle.state.write().unwrap();
+            if let Some(assignment) = state.acl.tags.iter_mut().find(|a| a.tag == tag) {
+                for id in &resolved {
+                    if !assignment.members.contains(id) {
+                        assignment.members.push(*id);
+                    }
+                }
+            } else {
+                state.acl.tags.push(acl::TagAssignment {
+                    tag: tag.to_string(),
+                    members: resolved,
+                });
+            }
+        }
+
+        let acl = self.networks.read().unwrap().get(network).unwrap()
+            .state.read().unwrap().acl.clone();
+        self.persist_acl(network, &acl);
+        self.publish_and_broadcast_acl(network, &acl).await;
+        IpcResponse::Ok { message: format!("tagged '{tag}'") }
+    }
+
+    async fn acl_untag(&self, network: &str, tag: &str, peer_id: &str) -> IpcResponse {
+        let Some(id) = self.resolve_short_id(network, peer_id) else {
+            return IpcResponse::Error { message: format!("unknown peer '{peer_id}'") };
+        };
+
+        {
+            let networks = self.networks.read().unwrap();
+            let Some(handle) = networks.get(network) else {
+                return IpcResponse::Error { message: format!("network '{network}' not active") };
+            };
+            let mut state = handle.state.write().unwrap();
+            if let Some(assignment) = state.acl.tags.iter_mut().find(|a| a.tag == tag) {
+                assignment.members.retain(|m| m != &id);
+            }
+            state.acl.tags.retain(|a| !a.members.is_empty());
+        }
+
+        let acl = self.networks.read().unwrap().get(network).unwrap()
+            .state.read().unwrap().acl.clone();
+        self.persist_acl(network, &acl);
+        self.publish_and_broadcast_acl(network, &acl).await;
+        IpcResponse::Ok { message: format!("untagged '{peer_id}' from '{tag}'") }
+    }
+
+    async fn acl_allow(&self, network: &str, src: &str, dst: &str) -> IpcResponse {
+        let resolve = |s: &str| -> Option<acl::Target> {
+            if s == "all" { return Some(acl::Target::All); }
+            if let Some(id) = self.resolve_short_id(network, s) {
+                return Some(acl::Target::Identity(id));
+            }
+            Some(acl::Target::Tag(s.to_string()))
+        };
+
+        let Some(src_target) = resolve(src) else {
+            return IpcResponse::Error { message: format!("unknown src '{src}'") };
+        };
+        let Some(dst_target) = resolve(dst) else {
+            return IpcResponse::Error { message: format!("unknown dst '{dst}'") };
+        };
+
+        {
+            let networks = self.networks.read().unwrap();
+            let Some(handle) = networks.get(network) else {
+                return IpcResponse::Error { message: format!("network '{network}' not active") };
+            };
+            let mut state = handle.state.write().unwrap();
+            state.acl.rules.push(acl::AclRule { src: src_target, dst: dst_target });
+        }
+
+        let acl = self.networks.read().unwrap().get(network).unwrap()
+            .state.read().unwrap().acl.clone();
+        self.persist_acl(network, &acl);
+        self.publish_and_broadcast_acl(network, &acl).await;
+        IpcResponse::Ok { message: format!("added allow {src} -> {dst}") }
+    }
+
+    async fn acl_remove(&self, network: &str, index: usize) -> IpcResponse {
+        {
+            let networks = self.networks.read().unwrap();
+            let Some(handle) = networks.get(network) else {
+                return IpcResponse::Error { message: format!("network '{network}' not active") };
+            };
+            let mut state = handle.state.write().unwrap();
+            if index >= state.acl.rules.len() {
+                return IpcResponse::Error { message: format!("rule index {index} out of range") };
+            }
+            state.acl.rules.remove(index);
+        }
+
+        let acl = self.networks.read().unwrap().get(network).unwrap()
+            .state.read().unwrap().acl.clone();
+        self.persist_acl(network, &acl);
+        self.publish_and_broadcast_acl(network, &acl).await;
+        IpcResponse::Ok { message: format!("removed rule {index}") }
+    }
+
+    fn acl_show(&self, network: &str) -> IpcResponse {
+        let networks = self.networks.read().unwrap();
+        let Some(handle) = networks.get(network) else {
+            return IpcResponse::Error { message: format!("network '{network}' not active") };
+        };
+        let state = handle.state.read().unwrap();
+        let short_id = |id: &EndpointId| -> String { id.fmt_short().to_string() };
+        let display = acl::format_acl_show(&state.acl, &short_id);
+        IpcResponse::AclState { display }
+    }
+
+    async fn acl_apply(&self, network: &str) -> IpcResponse {
+        let path = self.acl_file_path(network);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => return IpcResponse::Error {
+                message: format!("failed to read {}: {e}", path.display()),
+            },
+        };
+        let network_str = network.to_string();
+        let resolver = |short: &str| -> Option<EndpointId> {
+            self.resolve_short_id(&network_str, short)
+        };
+        let data = match acl::parse_acl_file(&content, &resolver) {
+            Ok(d) => d,
+            Err(e) => return IpcResponse::Error { message: format!("parse error: {e}") },
+        };
+
+        {
+            let networks = self.networks.read().unwrap();
+            let Some(handle) = networks.get(network) else {
+                return IpcResponse::Error { message: format!("network '{network}' not active") };
+            };
+            let mut state = handle.state.write().unwrap();
+            state.acl = data.clone();
+        }
+
+        self.publish_and_broadcast_acl(network, &data).await;
+        IpcResponse::Ok { message: "ACL applied".to_string() }
     }
 }
 
@@ -1268,6 +1510,7 @@ fn spawn_coordinator_accept(
     stats: Arc<Stats>,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     dht_id: Option<String>,
+    acl_dht_id: Option<String>,
     blob_store: FsStore,
     blobs_proto: BlobsProtocol,
 ) -> JoinHandle<()> {
@@ -1286,6 +1529,7 @@ fn spawn_coordinator_accept(
             stats,
             dht_notify,
             dht_id,
+            acl_dht_id,
             blob_store,
             blobs_proto,
         ).await {
@@ -1309,6 +1553,7 @@ async fn run_accept_loop(
     stats: Arc<Stats>,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     dht_id: Option<String>,
+    acl_dht_id: Option<String>,
     blob_store: FsStore,
     blobs_proto: BlobsProtocol,
 ) -> Result<()> {
@@ -1388,7 +1633,7 @@ async fn run_accept_loop(
             };
             if let Ok((mut send, _)) = conn.open_bi().await {
                 let _ = control::send_msg(&mut send, &ControlMsg::Welcome {
-                    members: members.clone(), approved, membership_dht_id: dht_id.clone(), acl_dht_id: None,
+                    members: members.clone(), approved, membership_dht_id: dht_id.clone(), acl_dht_id: acl_dht_id.clone(),
                 }).await;
             }
             broadcast_member_sync(&peers, &members, Some(peer_ip), dht_id.clone()).await;
@@ -1473,7 +1718,7 @@ async fn run_accept_loop(
 
         if let Ok((mut send, _)) = conn.open_bi().await {
             let _ = control::send_msg(&mut send, &ControlMsg::Welcome {
-                members: members.clone(), approved, membership_dht_id: dht_id.clone(), acl_dht_id: None,
+                members: members.clone(), approved, membership_dht_id: dht_id.clone(), acl_dht_id: acl_dht_id.clone(),
             }).await;
         }
         broadcast_member_sync(&peers, &members, Some(peer_ip), dht_id.clone()).await;
@@ -1591,6 +1836,7 @@ async fn join_mesh_shared(
             snapshot: None,
             network_secret: [0u8; 32],
             membership_signing_key: [0u8; 32],
+            acl: acl::AclData::empty(),
         };
         ns.refresh_snapshot();
         if let Some(snap) = &ns.snapshot {
@@ -1606,6 +1852,8 @@ async fn join_mesh_shared(
         let live_state = live_state.clone();
         let network_name = network_name.to_string();
         let blob_store = blob_store.clone();
+        let peers_c = peers.clone();
+        let endpoint_c = ep.clone();
         async move {
             loop {
                 tokio::select! {
@@ -1637,6 +1885,40 @@ async fn join_mesh_shared(
                                         {
                                             net.membership_dht_id = membership_dht_id;
                                             let _ = config::save(&cfg);
+                                        }
+                                    }
+                                    Ok(ControlMsg::AclUpdated { acl_hash }) => {
+                                        tracing::info!(hash = %acl_hash, "received ACL update");
+                                        let blob_hash = match acl_hash.parse::<blake3::Hash>() {
+                                            Ok(h) => iroh_blobs::Hash::from_bytes(*h.as_bytes()),
+                                            Err(_) => continue,
+                                        };
+                                        // Fetch from any connected peer
+                                        let peer_ids: Vec<EndpointId> = peers_c.peers_for_network(&network_name)
+                                            .into_iter().map(|(id, _)| id).collect();
+                                        let mut fetched = false;
+                                        for pid in &peer_ids {
+                                            if let Ok(conn) = transport::connect_to_peer_with_alpn(
+                                                &endpoint_c, *pid, iroh_blobs::protocol::ALPN,
+                                            ).await
+                                                && blob_store.remote().fetch(
+                                                    conn, HashAndFormat::raw(blob_hash),
+                                                ).await.is_ok()
+                                            {
+                                                fetched = true;
+                                                break;
+                                            }
+                                        }
+                                        if fetched
+                                            && let Ok(bytes) = blob_store.blobs().get_bytes(blob_hash).await
+                                        {
+                                            match acl::verify_acl_data(&bytes, &acl_hash) {
+                                                Ok(data) => {
+                                                    live_state.write().unwrap().acl = data;
+                                                    tracing::info!("ACL updated");
+                                                }
+                                                Err(e) => tracing::warn!(error = %e, "ACL verification failed"),
+                                            }
                                         }
                                     }
                                     Ok(_) => {}
