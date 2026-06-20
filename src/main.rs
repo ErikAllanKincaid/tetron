@@ -25,14 +25,19 @@ use tokio_util::sync::CancellationToken;
 
 use control::ControlMsg;
 use membership::{
-    GroupMode, IdentityProvider, IrohIdentityProvider, Member, MemberList, MembershipPolicy,
-    policy_for_mode,
+    ApprovedEntry, ApprovedList, GroupMode, IdentityProvider, IrohIdentityProvider, Member,
+    MemberList, MembershipPolicy, policy_for_mode,
 };
 use peers::PeerTable;
 use stats::Stats;
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+struct NetworkState {
+    members: MemberList,
+    approved: ApprovedList,
+}
 
 #[derive(Parser)]
 #[command(name = "pitopi", about = "P2P mesh VPN powered by iroh")]
@@ -164,8 +169,13 @@ async fn cmd_create(
         })
         .expect("self-add cannot collide");
 
+    let state = NetworkState {
+        members: member_list,
+        approved: ApprovedList::new(),
+    };
+
     let mut app_config = config::load()?;
-    save_network_config(&mut app_config, name, &ep, mode, Some(my_ip), &member_list)?;
+    save_network_config(&mut app_config, name, &ep, mode, Some(my_ip), &state)?;
 
     let tun_dev = tun::TunDevice::create(my_ip).context("failed to create TUN device")?;
 
@@ -181,10 +191,10 @@ async fn cmd_create(
         stats.clone(),
     ));
 
-    let member_list = Arc::new(std::sync::RwLock::new(member_list));
+    let state = Arc::new(std::sync::RwLock::new(state));
 
     run_accept_loop(
-        &ep, &alpn, &identity, &*policy, member_list, peers, tun_tx, token, stats,
+        &ep, &alpn, &identity, &*policy, state, peers, tun_tx, token, stats,
     )
     .await
 }
@@ -195,15 +205,15 @@ async fn run_accept_loop(
     alpn: &[u8],
     identity: &IrohIdentityProvider,
     policy: &dyn MembershipPolicy,
-    member_list: Arc<std::sync::RwLock<MemberList>>,
+    state: Arc<std::sync::RwLock<NetworkState>>,
     peers: PeerTable,
     tun_tx: mpsc::Sender<Vec<u8>>,
     token: CancellationToken,
     stats: Arc<Stats>,
 ) -> Result<()> {
     let self_member = {
-        let list = member_list.read().unwrap();
-        list.get(&identity.local_identity()).cloned().unwrap()
+        let s = state.read().unwrap();
+        s.members.get(&identity.local_identity()).cloned().unwrap()
     };
 
     loop {
@@ -230,31 +240,79 @@ async fn run_accept_loop(
         let remote_id = conn.remote_id().to_string();
         let peer_ip = identity.derive_ip(&remote_id);
 
-        // Check if this is a known member reconnecting
-        let is_known = member_list.read().unwrap().is_member(&remote_id);
-
-        if is_known {
+        // Case 1: Known member reconnecting
+        let is_member = state.read().unwrap().members.is_member(&remote_id);
+        if is_member {
             tracing::info!(ip = %peer_ip, "known member reconnecting");
-            let members = member_list
+            let members: Vec<Member> = state
                 .read()
                 .unwrap()
+                .members
                 .all()
                 .into_iter()
                 .cloned()
-                .collect::<Vec<_>>();
+                .collect();
             peers.add(peer_ip, conn.clone(), remote_id);
-
-            let token_clone = token.clone();
-            let stats_clone = stats.clone();
-            let tun_tx_clone = tun_tx.clone();
+            let token_c = token.clone();
+            let stats_c = stats.clone();
+            let tun_tx_c = tun_tx.clone();
             tokio::spawn(async move {
                 send_member_sync(&conn, &members).await;
-                forward::spawn_peer_reader(conn, tun_tx_clone, token_clone, stats_clone);
+                forward::spawn_peer_reader(conn, tun_tx_c, token_c, stats_c);
             });
             continue;
         }
 
-        // New join — check policy
+        // Case 2: Approved but not yet connected as member
+        let is_approved = state.read().unwrap().approved.is_approved(&remote_id);
+        if is_approved {
+            tracing::info!(ip = %peer_ip, "approved peer connecting");
+
+            // Promote from approved to member
+            {
+                let mut s = state.write().unwrap();
+                s.approved.remove(&remote_id);
+                let new_member = Member {
+                    identity: remote_id.clone(),
+                    ip: peer_ip,
+                    is_coordinator: false,
+                };
+                s.members.add(new_member).expect("was approved, no collision");
+            }
+
+            let (members, approved) = {
+                let s = state.read().unwrap();
+                let m: Vec<Member> = s.members.all().into_iter().cloned().collect();
+                let a: Vec<ApprovedEntry> = s.approved.all().into_iter().cloned().collect();
+                (m, a)
+            };
+
+            // Send Welcome to new peer
+            if let Ok((mut send, _)) = conn.open_bi().await {
+                let _ = control::send_msg(
+                    &mut send,
+                    &ControlMsg::Welcome {
+                        members: members.clone(),
+                        approved,
+                    },
+                )
+                .await;
+            }
+
+            // Broadcast MemberSync to existing peers
+            broadcast_member_sync(&peers, &members, Some(peer_ip)).await;
+
+            peers.add(peer_ip, conn.clone(), remote_id);
+            let token_c = token.clone();
+            let stats_c = stats.clone();
+            let tun_tx_c = tun_tx.clone();
+            tokio::spawn(async move {
+                forward::spawn_peer_reader(conn, tun_tx_c, token_c, stats_c);
+            });
+            continue;
+        }
+
+        // Case 3: Unknown peer — check policy and approve
         if !policy.can_authorize(&self_member) {
             tracing::warn!(peer = %remote_id, "not authorized to accept new members");
             if let Ok((mut send, _)) = conn.open_bi().await {
@@ -269,58 +327,43 @@ async fn run_accept_loop(
             continue;
         }
 
-        // Check IP collision
-        let has_collision = {
-            let list = member_list.read().unwrap();
-            if let Some(existing) = list.get_by_ip(peer_ip) {
-                existing.identity != remote_id
-            } else {
-                false
-            }
-        };
-        if has_collision {
-            tracing::warn!(ip = %peer_ip, "IP collision, rejecting");
-            if let Ok((mut send, _)) = conn.open_bi().await {
-                let _ = control::send_msg(
-                    &mut send,
-                    &ControlMsg::JoinDenied {
-                        reason: "IP collision".to_string(),
-                    },
-                )
-                .await;
-            }
-            continue;
+        // Broadcast MemberApproved to existing peers
+        broadcast_control_msg(
+            &peers,
+            &ControlMsg::MemberApproved {
+                identity: remote_id.clone(),
+                ip: peer_ip,
+            },
+        )
+        .await;
+
+        // Immediately promote (peer is connected right now)
+        {
+            let mut s = state.write().unwrap();
+            let new_member = Member {
+                identity: remote_id.clone(),
+                ip: peer_ip,
+                is_coordinator: false,
+            };
+            let _ = s.members.add(new_member);
         }
 
-        // Accept the new member
-        let new_member = Member {
-            identity: remote_id.clone(),
-            ip: peer_ip,
-            is_coordinator: false,
+        let (members, approved) = {
+            let s = state.read().unwrap();
+            let m: Vec<Member> = s.members.all().into_iter().cloned().collect();
+            let a: Vec<ApprovedEntry> = s.approved.all().into_iter().cloned().collect();
+            (m, a)
         };
-        member_list
-            .write()
-            .unwrap()
-            .add(new_member)
-            .expect("checked above");
 
-        let members: Vec<Member> = member_list
-            .read()
-            .unwrap()
-            .all()
-            .into_iter()
-            .cloned()
-            .collect();
-        peers.add(peer_ip, conn.clone(), remote_id);
-        tracing::info!(ip = %peer_ip, "new member joined");
+        tracing::info!(ip = %peer_ip, "new member approved and joined");
 
-        // Send JoinApproved to new peer
+        // Send Welcome to new peer
         if let Ok((mut send, _)) = conn.open_bi().await {
             let _ = control::send_msg(
                 &mut send,
-                &ControlMsg::JoinApproved {
-                    your_ip: peer_ip,
+                &ControlMsg::Welcome {
                     members: members.clone(),
+                    approved,
                 },
             )
             .await;
@@ -329,11 +372,12 @@ async fn run_accept_loop(
         // Broadcast MemberSync to existing peers
         broadcast_member_sync(&peers, &members, Some(peer_ip)).await;
 
-        let tun_tx_clone = tun_tx.clone();
-        let token_clone = token.clone();
-        let stats_clone = stats.clone();
+        peers.add(peer_ip, conn.clone(), remote_id);
+        let token_c = token.clone();
+        let stats_c = stats.clone();
+        let tun_tx_c = tun_tx.clone();
         tokio::spawn(async move {
-            forward::spawn_peer_reader(conn, tun_tx_clone, token_clone, stats_clone);
+            forward::spawn_peer_reader(conn, tun_tx_c, token_c, stats_c);
         });
     }
 }
@@ -366,6 +410,14 @@ async fn broadcast_member_sync(
             && let Err(e) = control::send_msg(&mut send, &msg).await
         {
             tracing::warn!(peer_ip = %ip, error = %e, "failed to sync members");
+        }
+    }
+}
+
+async fn broadcast_control_msg(peers: &PeerTable, msg: &ControlMsg) {
+    for (_ip, conn) in peers.all_connections() {
+        if let Ok((mut send, _)) = conn.open_bi().await {
+            let _ = control::send_msg(&mut send, msg).await;
         }
     }
 }
@@ -481,16 +533,32 @@ async fn join_mesh_shared(
     let my_identity = identity.local_identity();
     let my_ip = identity.local_ip();
 
-    // Receive initial control message (JoinApproved, MemberSync, or JoinDenied)
+    // Receive initial control message (Welcome, JoinApproved, MemberSync, or JoinDenied)
     let (_send, mut recv) = initial_conn
         .accept_bi()
         .await
         .context("accept control stream")?;
 
     let msg = control::recv_msg(&mut recv).await?;
-    let members = match msg {
+    let (members, approved) = match msg {
+        ControlMsg::Welcome { members, approved } => {
+            tracing::info!(network = %network_name, "welcomed to network");
+            // Joiner-side collision check
+            if let Some(existing) = members
+                .iter()
+                .find(|m| m.ip == my_ip && m.identity != my_identity)
+            {
+                anyhow::bail!(
+                    "IP collision: {} is already assigned to {}",
+                    my_ip,
+                    existing.identity
+                );
+            }
+            (members, approved)
+        }
         ControlMsg::JoinApproved { your_ip, members } => {
-            tracing::info!(ip = %your_ip, network = %network_name, "joined network");
+            // Backward compat: old coordinators still send JoinApproved
+            tracing::info!(ip = %your_ip, network = %network_name, "joined network (legacy)");
             if your_ip != my_ip {
                 tracing::warn!(
                     expected = %my_ip,
@@ -498,17 +566,17 @@ async fn join_mesh_shared(
                     "coordinator assigned different IP than identity-derived"
                 );
             }
-            members
+            (members, vec![])
         }
         ControlMsg::MemberSync { members } => {
             tracing::info!(network = %network_name, "reconnected via peer");
-            members
+            (members, vec![])
         }
         ControlMsg::JoinDenied { reason } => {
             anyhow::bail!("join denied: {reason}");
         }
         other => {
-            anyhow::bail!("expected JoinApproved or MemberSync, got {other:?}");
+            anyhow::bail!("expected Welcome or MemberSync, got {other:?}");
         }
     };
 
@@ -521,6 +589,13 @@ async fn join_mesh_shared(
             is_coordinator: m.is_coordinator,
         })
         .collect();
+    let approved_config: Vec<config::ApprovedConfigEntry> = approved
+        .iter()
+        .map(|a| config::ApprovedConfigEntry {
+            identity: a.identity.clone(),
+            ip: a.ip,
+        })
+        .collect();
     let mut app_config = config::load()?;
     config::upsert_network(
         &mut app_config,
@@ -530,7 +605,7 @@ async fn join_mesh_shared(
             group_mode: GroupMode::Restricted,
             my_ip: Some(my_ip),
             members: member_entries,
-            approved: vec![],
+            approved: approved_config,
         },
     );
     config::save(&app_config)?;
@@ -580,14 +655,17 @@ async fn join_mesh_shared(
         }
     }
 
-    // Shared live member list for mesh_acceptor (updated on ReconnectRequest)
-    let live_members = Arc::new(std::sync::RwLock::new(members.clone()));
+    // Shared live state for mesh_acceptor and control_listener
+    let live_state = Arc::new(std::sync::RwLock::new(NetworkState {
+        members: MemberList::from_members(members.clone()),
+        approved: ApprovedList::from_entries(approved),
+    }));
 
     // Listen for control messages from initial connection
     let _control_listener = tokio::spawn({
         let initial_conn = initial_conn.clone();
         let token = token.clone();
-        let live_members = live_members.clone();
+        let live_state = live_state.clone();
         async move {
             loop {
                 tokio::select! {
@@ -596,9 +674,16 @@ async fn join_mesh_shared(
                         match result {
                             Ok((_send, mut recv)) => {
                                 match control::recv_msg(&mut recv).await {
+                                    Ok(ControlMsg::MemberApproved { identity, ip }) => {
+                                        tracing::info!(peer = %identity, ip = %ip, "peer approved by coordinator");
+                                        let entry = ApprovedEntry { identity, ip };
+                                        let mut s = live_state.write().unwrap();
+                                        let members = s.members.clone();
+                                        let _ = s.approved.approve(entry, &members);
+                                    }
                                     Ok(ControlMsg::MemberSync { members }) => {
                                         tracing::info!(count = members.len(), "member list updated");
-                                        *live_members.write().unwrap() = members;
+                                        live_state.write().unwrap().members = MemberList::from_members(members);
                                     }
                                     Ok(other) => {
                                         tracing::debug!(?other, "unhandled control message");
@@ -624,7 +709,7 @@ async fn join_mesh_shared(
         let stats = stats.clone();
         let tun_tx = tun_tx.clone();
         let expected_alpn = alpn.to_vec();
-        let live_members = live_members.clone();
+        let live_state = live_state.clone();
         async move {
             loop {
                 tokio::select! {
@@ -644,21 +729,71 @@ async fn join_mesh_shared(
                                                     tracing::warn!(claimed = %peer_identity, actual = %transport_id, "identity mismatch in MeshHello");
                                                     continue;
                                                 }
-                                                tracing::info!(peer_ip = %ip, "mesh peer connected");
-                                                peers.add(ip, conn.clone(), peer_identity);
-                                                forward::spawn_peer_reader(conn, tun_tx.clone(), token.clone(), stats.clone());
+
+                                                let (is_member, is_approved) = {
+                                                    let s = live_state.read().unwrap();
+                                                    (s.members.is_member(&peer_identity), s.approved.is_approved(&peer_identity))
+                                                };
+
+                                                if is_approved {
+                                                    // Welcome the approved peer
+                                                    tracing::info!(peer_ip = %ip, "welcoming approved peer");
+                                                    {
+                                                        let mut s = live_state.write().unwrap();
+                                                        s.approved.remove(&peer_identity);
+                                                        let _ = s.members.add(Member {
+                                                            identity: peer_identity.clone(),
+                                                            ip,
+                                                            is_coordinator: false,
+                                                        });
+                                                    }
+                                                    let (members, approved_list) = {
+                                                        let s = live_state.read().unwrap();
+                                                        let m: Vec<Member> = s.members.all().into_iter().cloned().collect();
+                                                        let a: Vec<ApprovedEntry> = s.approved.all().into_iter().cloned().collect();
+                                                        (m, a)
+                                                    };
+                                                    if let Ok((mut send, _)) = conn.open_bi().await {
+                                                        let _ = control::send_msg(
+                                                            &mut send,
+                                                            &ControlMsg::Welcome {
+                                                                members: members.clone(),
+                                                                approved: approved_list,
+                                                            },
+                                                        ).await;
+                                                    }
+                                                    peers.add(ip, conn.clone(), peer_identity);
+                                                    forward::spawn_peer_reader(conn, tun_tx.clone(), token.clone(), stats.clone());
+                                                    // Broadcast updated member list
+                                                    broadcast_member_sync(&peers, &members, Some(ip)).await;
+                                                } else if is_member {
+                                                    tracing::info!(peer_ip = %ip, "known peer reconnecting via mesh");
+                                                    peers.add(ip, conn.clone(), peer_identity);
+                                                    forward::spawn_peer_reader(conn, tun_tx.clone(), token.clone(), stats.clone());
+                                                } else {
+                                                    tracing::info!(peer_ip = %ip, "mesh peer connected");
+                                                    peers.add(ip, conn.clone(), peer_identity);
+                                                    forward::spawn_peer_reader(conn, tun_tx.clone(), token.clone(), stats.clone());
+                                                }
                                             }
                                             Ok(ControlMsg::ReconnectRequest { identity: peer_identity, ip }) => {
                                                 if peer_identity != transport_id {
                                                     tracing::warn!(claimed = %peer_identity, actual = %transport_id, "identity mismatch in ReconnectRequest");
                                                     continue;
                                                 }
-                                                let is_known = live_members.read().unwrap().iter().any(|m| m.identity == peer_identity);
+                                                let is_known = live_state.read().unwrap().members.is_member(&peer_identity);
                                                 if is_known {
                                                     tracing::info!(peer_ip = %ip, "known peer reconnecting");
                                                     peers.add(ip, conn.clone(), peer_identity);
 
-                                                    let current_members = live_members.read().unwrap().clone();
+                                                    let current_members: Vec<Member> = live_state
+                                                        .read()
+                                                        .unwrap()
+                                                        .members
+                                                        .all()
+                                                        .into_iter()
+                                                        .cloned()
+                                                        .collect();
                                                     if let Ok((mut send, _)) = conn.open_bi().await {
                                                         let _ = control::send_msg(
                                                             &mut send,
@@ -735,15 +870,26 @@ fn save_network_config(
     ep: &Endpoint,
     mode: GroupMode,
     my_ip: Option<Ipv4Addr>,
-    member_list: &MemberList,
+    state: &NetworkState,
 ) -> Result<()> {
-    let member_entries: Vec<config::MemberEntry> = member_list
+    let member_entries: Vec<config::MemberEntry> = state
+        .members
         .all()
         .into_iter()
         .map(|m| config::MemberEntry {
             identity: m.identity.clone(),
             ip: m.ip,
             is_coordinator: m.is_coordinator,
+        })
+        .collect();
+
+    let approved_entries: Vec<config::ApprovedConfigEntry> = state
+        .approved
+        .all()
+        .into_iter()
+        .map(|a| config::ApprovedConfigEntry {
+            identity: a.identity.clone(),
+            ip: a.ip,
         })
         .collect();
 
@@ -755,7 +901,7 @@ fn save_network_config(
             group_mode: mode,
             my_ip,
             members: member_entries,
-            approved: vec![],
+            approved: approved_entries,
         },
     );
     config::save(app_config)
@@ -923,10 +1069,13 @@ async fn cmd_up(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
                         is_coordinator: true,
                     })
                     .unwrap();
-                let member_list = Arc::new(std::sync::RwLock::new(member_list));
+                let state = Arc::new(std::sync::RwLock::new(NetworkState {
+                    members: member_list,
+                    approved: ApprovedList::new(),
+                }));
                 let alpn = transport::network_alpn(&name);
                 if let Err(e) = run_accept_loop(
-                    &ep, &alpn, &identity, &*policy, member_list, peers, tun_tx, token, stats,
+                    &ep, &alpn, &identity, &*policy, state, peers, tun_tx, token, stats,
                 )
                 .await
                 {
