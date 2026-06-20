@@ -68,6 +68,135 @@ All peers live in the `100.64.0.0/10` range, which is the IANA-assigned Carrier-
 
 WireGuard is excellent for static, pre-configured tunnels between known endpoints. Pitopi solves a different problem: you don't know your peers' IP addresses, you don't want to configure port forwarding, and you want peers to find each other by cryptographic identity alone. iroh handles the hard part -- discovering peers through relay servers, punching through NATs, and falling back to relayed connections when direct paths aren't possible.
 
+### Network topology
+
+A user can be part of multiple networks simultaneously. Each network is an independent full mesh -- every peer connects directly to every other peer. Networks are completely isolated from each other (different ALPNs, different member lists).
+
+Your device sits at the center of all your networks. Each network is a full-mesh bubble, and you participate in all of them simultaneously:
+
+```
+  .-------------------------------------. .-------------------------------------.
+  |        My gaming network :)          | |         My work network :(          |
+  |                                      | |                                     |
+  |          (Friend 1)                  | |           (Co-worker 1)             |
+  |           /  |  \                    | |             /   |   \               |
+  |          /   |   \                   | |            /    |    \              |
+  |         /    |    \                  | |           /     |     \             |
+  | (Minecraft)  |  (Your)--------------+-+---(Your)--    (Company)             |
+  |  (server)----|  (device)             | |   (device)\    |    (server 1)     |
+  |         \    |    /                  | |            \   |     /              |
+  |          \   |   /                   | |             \  |    /               |
+  |           \  |  /                    | |           (Co-worker 2)             |
+  |          (Friend 2)                  | |                |                    |
+  |                                      | |             (Company)              |
+  |  every peer <---> every peer         | |             (server 2)             |
+  '--------------------------------------' '-------------------------------------'
+```
+
+One pitopi process, one TUN device, one routing table -- shared across all your networks.
+
+### Enterprise use case
+
+In a company, different departments run separate networks. Shared services (like Jenkins) join multiple networks, sitting at the overlap:
+
+```
+  .-------------------------------. .-------------------------------.
+  |         Accounting            | |          Technology            |
+  |                               | |                               |
+  | (server) (server) (server)    | |    (server) (server) (server) |
+  |                               | |                               |
+  | (User 1) (User 2) (User 3)   | |   (User 1) (User 2) (User 3) |
+  |                       .-------+-+-------.                       |
+  |                       |    (Jenkins)    |                       |
+  '-----------------------|                 |-----------------------'
+                          '-------+-+-------'
+                     .------------+-+----------------------------.
+                     |          Webpage                          |
+                     |                                           |
+                     |  (server) (server) (server)               |
+                     |                                           |
+                     |  (User 1) (User 2) (User 3)              |
+                     '-------------------------------------------'
+
+  Jenkins is a member of ALL THREE networks.
+  It can reach accounting servers, tech servers, and web servers.
+  But User 1 in "accounting" CANNOT reach servers in "technology" --
+  networks are isolated unless a device explicitly joins both.
+```
+
+### Joining a network (invitation)
+
+The coordinator creates a network and shares its room code. That code is the invitation:
+
+```
+                                         .-------------------------.
+                                         |    User's network       |
+  (Friend 1) <--- invitation ---------- |                         |
+                   (room code)           |     (User's device)     |
+                                         |                         |
+                                         '-------------------------'
+
+  1.  User creates network:    sudo pitopi create --name gaming
+      --> prints room code:    gaming/ybnr-xfmo-...
+
+  2.  User shares room code with Friend 1 (chat, email, etc.)
+
+  3.  Friend 1 joins:          sudo pitopi join gaming/ybnr-xfmo-...
+      --> coordinator approves
+      --> Friend 1 gets Welcome (member list, approved list)
+      --> Friend 1 connects to all existing peers
+      --> full mesh established
+```
+
+### Per-node architecture
+
+Inside each peer, the stack looks like this:
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Applications                    │
+│            (Minecraft, SSH, curl, ...)            │
+└──────────────────────┬──────────────────────────┘
+                       │ regular TCP/UDP to 100.64.x.x
+                       ▼
+┌─────────────────────────────────────────────────┐
+│               TUN device (kernel)                │
+│         100.64.0.0/10 — captures all traffic     │
+│         to the virtual network range             │
+└──────┬──────────────────────────────┬────────────┘
+       │ read                         │ write
+       ▼                              ▼
+┌─────────────┐               ┌─────────────┐
+│  TunReader  │               │  TunWriter  │
+│  (run_mesh) │               │  (tun_rx)   │
+└──────┬──────┘               └──────▲──────┘
+       │                              │
+       │ dest_ip → PeerTable          │ tun_tx channel
+       │ lookup → Connection          │
+       ▼                              │
+┌─────────────────────┐    ┌──────────┴──────────┐
+│    PeerTable        │    │  spawn_peer_reader   │
+│  ┌───────────────┐  │    │  (one per peer)      │
+│  │100.64.23.5    │──┼──▶ │                      │
+│  │  → conn to A  │  │    │  conn.read_datagram()│
+│  │100.64.87.12   │  │    │    → tun_tx.send()   │
+│  │  → conn to B  │  │    └─────────────────────┘
+│  │100.64.42.200  │  │
+│  │  → conn to C  │  │
+│  └───────────────┘  │
+└──────────┬──────────┘
+           │ conn.send_datagram()
+           ▼
+┌─────────────────────────────────────────────────┐
+│              iroh QUIC endpoint                  │
+│    NAT traversal, hole-punching, relay fallback  │
+│    TLS 1.3 + Ed25519 identity authentication     │
+└──────────────────────┬──────────────────────────┘
+                       │ encrypted UDP
+                       ▼
+                   Internet
+```
+
 ---
 
 ## 2. Getting Started
@@ -852,9 +981,107 @@ This flexibility means users can paste either format in the `join` command. When
 
 The ACL module provides a packet-level firewall for filtering traffic at the forwarding layer. While not yet wired into the main forwarding loop, it defines the data structures and logic for rule-based packet filtering.
 
-### Policy structure
+### Layered policy model
 
-An ACL policy has a default action and a list of rules:
+Access control in pitopi is layered -- both the network admin (coordinator) and individual users define policy. The most restrictive rule wins:
+
+```
+  .----------------------------------------------------------------------.
+  |                     Network (coordinator's ACL)                       |
+  |                                                                       |
+  |   Admin sets network-wide rules:                                      |
+  |     - tag:tech cannot access tag:accounting                           |
+  |     - tag:accounting cannot access tag:tech                           |
+  |     - everyone can access tag:infra                                   |
+  |                                                                       |
+  |   .--------------------.  .--------------------.  .----------------. |
+  |   |  User A            |  |  User B            |  |  Server C      | |
+  |   |  tags: [tech]      |  |  tags: [accounting]|  |  tags: [infra] | |
+  |   |                    |  |                    |  |                | |
+  |   |  User's own ACL:   |  |  User's own ACL:   |  |  Server ACL:   | |
+  |   |  "block all my     |  |  "allow only       |  |  "allow only   | |
+  |   |   ports except     |  |   port 443"        |  |   port 25565"  | |
+  |   |   22 and 8080"     |  |                    |  |                | |
+  |   '--------------------'  '--------------------'  '----------------' |
+  '----------------------------------------------------------------------'
+
+  Packet from User A to Server C (port 25565):
+    1. Admin ACL:  tech -> infra?  ALLOW (admin says everyone can reach infra)
+    2. User A ACL: outbound?       ALLOW (User A doesn't restrict outbound)
+    3. Server ACL: inbound 25565?  ALLOW (Server C allows 25565)
+    --> packet delivered
+
+  Packet from User A to User B (port 443):
+    1. Admin ACL:  tech -> accounting?  DENY  (admin blocks cross-department)
+    --> packet dropped (never reaches User B's ACL)
+```
+
+The admin's network-wide policy is evaluated first. If allowed, the sender's outbound ACL is checked, then the receiver's inbound ACL. All three must allow the packet.
+
+Pitopi's own control traffic (QUIC streams for membership, mesh hello, etc.) is always exempt -- ACLs only filter data-plane packets tunneled through the TUN device.
+
+### Tags
+
+Tags are labels attached to peers by the coordinator. They enable group-based policies without listing individual IPs:
+
+```
+  .---------- "company" network -----------.
+  |                                         |
+  |  tag:tech         tag:accounting        |
+  |  .----------.     .----------.          |
+  |  | (User 1) |     | (User 4) |         |
+  |  | (User 2) |     | (User 5) |         |
+  |  | (User 3) |     | (User 6) |         |
+  |  '----------'     '----------'          |
+  |         \             /                 |
+  |          \ BLOCKED   /                  |
+  |           \  by     /                   |
+  |            \ admin /                    |
+  |             X    X                      |
+  |            / \  / \                     |
+  |           / ALLOWED\                    |
+  |          /    by    \                   |
+  |         /    admin   \                  |
+  |  tag:infra                              |
+  |  .-----------------------------.        |
+  |  | (Jenkins) (DB) (Monitoring) |        |
+  |  '-----------------------------'        |
+  '-----------------------------------------'
+
+  Admin ACL:
+    deny  tag:tech      -> tag:accounting
+    deny  tag:accounting -> tag:tech
+    allow *             -> tag:infra
+    allow tag:infra     -> *
+```
+
+Tags are assigned at approval time and stored in the member/approved lists. A peer can have multiple tags.
+
+### User self-policy
+
+Every user can define their own inbound ACL, independent of the admin's network policy. This lets users lock down their own device:
+
+```
+  User A's local ACL (~/.config/pitopi/acl.toml):
+
+    default = "deny-all"
+
+    [[rules]]
+    port = 22
+    allow = true
+
+    [[rules]]
+    port = 8080
+    allow = true
+
+  Effect: User A accepts SSH and web traffic, drops everything else.
+  Even if the admin's network ACL allows traffic to User A,
+  User A's own policy has the final say on inbound packets.
+```
+
+### Policy structure (current implementation)
+
+The current ACL implementation works at the IP+port level:
 
 ```rust
 pub struct AclPolicy {
