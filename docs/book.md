@@ -641,7 +641,7 @@ Each peer connection gets a dedicated reader task that receives QUIC datagrams a
 2. Send the raw packet bytes through the `tun_tx` channel to the TUN writer.
 3. Record received bytes in stats.
 
-If the connection drops or the channel closes, the reader task exits silently.
+If the connection drops, the reader sends a `DisconnectEvent` (containing the peer's `EndpointId` and IP) on the disconnect channel and exits. This triggers automatic reconnection on the joiner side (see below).
 
 ### TUN writer (`spawn_tun_writer`)
 
@@ -1170,17 +1170,35 @@ Every peer in the mesh can welcome approved peers, not just the coordinator. The
 
 ### Reconnecting after disconnection
 
-When a peer's connection drops (network glitch, machine sleep, etc.):
+Reconnection operates at two levels:
 
-1. **Detect disconnection.** The peer reader task exits when `conn.read_datagram()` returns an error.
+#### Per-peer reconnection (within a mesh session)
 
-2. **Reconnect loop.** The `cmd_join` function runs in a loop with exponential backoff. On disconnection, it:
+When a single peer's connection drops while the mesh is running:
+
+1. **Detect disconnection.** The peer reader task's `conn.read_datagram()` returns an error. It sends a `DisconnectEvent` on an mpsc channel and exits.
+
+2. **Coordinator side (`spawn_peer_cleanup`).** Receives the event and removes the dead peer from the `PeerTable`. The coordinator doesn't actively reconnect — peers reconnect to it.
+
+3. **Joiner side (`spawn_reconnect_loop`).** Receives the event, removes the dead peer from the `PeerTable`, and spawns a per-peer reconnect task with exponential backoff (1s initial, 30s max):
+   - Connects to the peer via `transport::connect_to_peer_with_alpn`
+   - Sends `MeshHello` to re-establish the relationship
+   - Adds the new `Connection` to the `PeerTable`
+   - Spawns a fresh `spawn_peer_reader` (which feeds back into the same disconnect channel)
+
+4. **During the gap.** The `PeerTable` has no entry for the disconnected peer's IP, so `run_mesh` silently drops packets destined for it. Once the new connection lands, traffic resumes transparently.
+
+#### Full session reconnection (coordinator/all peers lost)
+
+When the entire mesh session fails (e.g., `enter_mesh` returns an error):
+
+1. **Reconnect loop.** The `cmd_join` function runs in an outer loop with exponential backoff. On disconnection, it:
    - Tries resolving membership from the DHT (if a `membership_dht_id` is saved in config) for a potentially fresher member list.
    - Tries the coordinator first.
    - If the coordinator is unavailable, tries every known peer from the saved config.
    - On successful connection, re-enters the mesh (receives MemberSync, reconnects to peers).
 
-3. **Any peer can help.** Known peers accept reconnection requests because they hold the current member list. This is the "offline coordinator resilience" feature -- if the coordinator goes down, existing members can still reconnect to each other. DHT resolution enhances this by providing a potentially more up-to-date member list than the local config.
+2. **Any peer can help.** Known peers accept reconnection requests because they hold the current member list. This is the "offline coordinator resilience" feature -- if the coordinator goes down, existing members can still reconnect to each other. DHT resolution enhances this by providing a potentially more up-to-date member list than the local config.
 
 ### Bringing all networks up
 

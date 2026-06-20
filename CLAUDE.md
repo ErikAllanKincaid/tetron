@@ -54,12 +54,12 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 
 ### Modules
 
-- `src/main.rs` — CLI (clap), coordinator/joiner orchestration, NetworkState, accept loop (approve → broadcast → welcome), mesh acceptor (welcome approved peers)
+- `src/main.rs` — CLI (clap), coordinator/joiner orchestration, NetworkState, accept loop (approve → broadcast → welcome), mesh acceptor (welcome approved peers), peer reconnect loop
 - `src/identity.rs` — persistent Ed25519 keypair at `~/.config/pitopi/secret_key`
 - `src/membership.rs` — IdentityProvider trait, FNV-1a IP derivation, MemberList, ApprovedList, GroupMode, MembershipPolicy
 - `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept
 - `src/tun.rs` — TUN device creation with /10 netmask, split into TunReader/TunWriter for lock-free I/O
-- `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection
+- `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection, DisconnectEvent notification on peer drop
 - `src/dht.rs` — DHT membership publishing via iroh pkarr relay: key derivation (blake3), record encode/decode (DNS TXT), publish/resolve
 - `src/control.rs` — control protocol: Welcome, MemberApproved, JoinApproved, JoinDenied, MemberSync, MeshHello, MeshWelcome, ReconnectRequest, AdvertiseServices
 - `src/peers.rs` — PeerTable (routing by dest IP), PeerEntry with Connection + endpoint_id
@@ -79,6 +79,8 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 **Gatekeeper model:** coordinator approves identities and broadcasts MemberApproved. Any peer can then welcome an approved identity when it connects. The coordinator doesn't need to be online when the approved peer actually joins.
 
 **DHT membership:** coordinator derives a per-network signing key via `blake3::derive_key` from its secret key + network name. Publishes signed DNS TXT records (member/approved identities, no IPs — reconstructed via `derive_ip`) to iroh's pkarr relay (`dns.iroh.link/pkarr`). Peers learn the DHT ID from Welcome/MemberSync messages, persist it in config, and resolve it for reconnection and join fallback when the coordinator is offline. Best-effort — errors fall back to local config.
+
+**Reconnection:** per-peer reader detects connection drop → sends DisconnectEvent on mpsc channel → coordinator side removes dead peer from PeerTable (peers reconnect to it); joiner side removes dead peer and spawns reconnect task with exponential backoff (1s–30s) → on success, sends MeshHello, adds new connection to PeerTable, spawns fresh peer reader. Packets to the peer drop silently during the gap.
 
 **Mesh forwarding:** TUN read loop extracts dest IP from IPv4 header bytes 16-19, looks up PeerTable, sends datagram on correct connection. Per-peer reader tasks write incoming datagrams to a shared TUN writer channel.
 
@@ -109,3 +111,4 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 - Room codes: `<network_name>/<z-base-32-endpoint-id-with-dashes>`, parsed via `room_code::parse_input()`
 - Use split/sink patterns for I/O — never share I/O resources (TUN, sockets, streams) behind a Mutex. Always split into separate read/write halves for concurrent access
 - Avoid Mutex wherever possible — prefer channels (mpsc), split I/O, atomics, or RwLock (only for fast non-async state)
+- Always update docs (CLAUDE.md, docs/book.md, README.md) after finishing a feature or significant change
