@@ -139,6 +139,29 @@ Rules are evaluated first-match-wins. Supports TCP, UDP, ICMP, port ranges (e.g.
 
 The `self` keyword can be used to reference your own device in ACL and firewall commands (e.g. `pitopi acl gaming tag servers self`).
 
+### Tor transport
+
+Route all your network traffic through Tor for IP-level anonymity. Requires building with the `tor` feature and a running Tor daemon:
+
+```bash
+# Build with Tor support
+cargo build --features tor
+
+# Start Tor (in a separate terminal)
+tor --ControlPort 9051 --CookieAuthentication 0
+
+# Create a network over Tor
+pitopi create --tor --hostname alice
+
+# Join over Tor
+pitopi join 3f8a...c7d2 --tor --hostname bob
+
+# Status shows [tor] for Tor-routed connections
+pitopi status
+```
+
+Tor runs alongside the default relay transport — iroh picks the best path automatically. Both peers must use `--tor` to communicate over Tor; otherwise they fall back to relay.
+
 ### Magic DNS
 
 Every peer gets a hostname resolvable under the `.pi` domain. No more memorizing IPs:
@@ -163,8 +186,8 @@ Hostnames propagate via the membership blob and MeshHello messages — they're r
 |---------|-------------|:---:|
 | `sudo pitopi daemon` | Start the daemon (owns TUN + endpoint) | — |
 | `sudo pitopi up` | Alias for `daemon` | — |
-| `pitopi create` | Create a network (generates three-word name + join code) | Yes |
-| `pitopi join KEY [--name ALIAS]` | Join a network by public key join code | Yes |
+| `pitopi create [--tor]` | Create a network (generates three-word name + join code) | Yes |
+| `pitopi join KEY [--name ALIAS] [--tor]` | Join a network by public key join code | Yes |
 | `pitopi leave NAME` | Leave a network and remove config | Yes |
 | `pitopi nuke NAME [--force]` | Publish empty records to DHT then leave | Yes |
 | `pitopi hostname NET NAME` | Change your hostname on a network | Yes |
@@ -250,6 +273,7 @@ See [TODO.md](TODO.md) for the full roadmap. Current status:
 - [x] Local device firewall with port/protocol/peer filtering
 - [x] Magic DNS with .pi domain resolution
 - [x] Dual-stack IPv6/IPv4 with stable addresses
+- [x] Tor transport (optional, per-peer)
 - [x] Systemd/launchd service integration
 - [x] Daemon architecture with Unix socket IPC
 - [ ] Social discovery (Discord, Slack, Steam)

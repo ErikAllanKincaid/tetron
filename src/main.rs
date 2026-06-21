@@ -87,6 +87,9 @@ enum Command {
         /// Your hostname within the network (e.g. "alice" → alice.gaming.pi). Random if not set
         #[arg(long)]
         hostname: Option<String>,
+        /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
+        #[arg(long)]
+        tor: bool,
     },
     /// Join an existing network using its public key
     Join {
@@ -98,6 +101,9 @@ enum Command {
         /// Your hostname within the network (e.g. "bob" → bob.gaming.pi). Random if not set
         #[arg(long)]
         hostname: Option<String>,
+        /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
+        #[arg(long)]
+        tor: bool,
     },
     /// List networks (queries daemon if running, falls back to saved config)
     List,
@@ -242,12 +248,14 @@ async fn main() -> Result<()> {
             mode,
             name,
             hostname,
-        } => ipc_create(mode, name, hostname).await,
+            tor,
+        } => ipc_create(mode, name, hostname, tor).await,
         Command::Join {
             network_key,
             name,
             hostname,
-        } => ipc_join(&network_key, name.as_deref(), hostname).await,
+            tor,
+        } => ipc_join(&network_key, name.as_deref(), hostname, tor).await,
         Command::Nuke { name, force } => ipc_nuke(&name, force).await,
         Command::Status => ipc_status().await,
         Command::Daemon | Command::Up => {
@@ -341,7 +349,8 @@ async fn cmd_list() -> Result<()> {
 // IPC client commands (require daemon running)
 // ---------------------------------------------------------------------------
 
-async fn ipc_create(mode: GroupMode, name: Option<String>, hostname: Option<String>) -> Result<()> {
+async fn ipc_create(mode: GroupMode, name: Option<String>, hostname: Option<String>, tor: bool) -> Result<()> {
+    let transport = if tor { Some(config::TransportMode::Tor) } else { None };
     let mut stream = ipc::connect().await?;
     ipc::send_msg(
         &mut stream,
@@ -349,6 +358,7 @@ async fn ipc_create(mode: GroupMode, name: Option<String>, hostname: Option<Stri
             mode,
             name,
             hostname,
+            transport,
         },
     )
     .await?;
@@ -376,7 +386,8 @@ async fn ipc_create(mode: GroupMode, name: Option<String>, hostname: Option<Stri
     Ok(())
 }
 
-async fn ipc_join(network_key: &str, name: Option<&str>, hostname: Option<String>) -> Result<()> {
+async fn ipc_join(network_key: &str, name: Option<&str>, hostname: Option<String>, tor: bool) -> Result<()> {
+    let transport = if tor { Some(config::TransportMode::Tor) } else { None };
     let mut stream = ipc::connect().await?;
     ipc::send_msg(
         &mut stream,
@@ -384,6 +395,7 @@ async fn ipc_join(network_key: &str, name: Option<&str>, hostname: Option<String
             network_key: network_key.to_string(),
             name: name.map(|s| s.to_string()),
             hostname,
+            transport,
         },
     )
     .await?;
@@ -501,6 +513,7 @@ async fn ipc_status() -> Result<()> {
                                 let conn_type = match ci.conn_type {
                                     ipc::ConnType::Direct => "direct",
                                     ipc::ConnType::Relay => "relay",
+                                    ipc::ConnType::Tor => "tor",
                                     ipc::ConnType::Unknown => "?",
                                 };
                                 print!(" [{conn_type}");

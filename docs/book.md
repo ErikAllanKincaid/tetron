@@ -614,6 +614,29 @@ iroh handles NAT traversal automatically. The typical flow:
 
 This means pitopi works without any port forwarding, dynamic DNS, or firewall configuration.
 
+### Tor transport
+
+Pitopi supports routing traffic through the Tor network for IP-level anonymity. This is an optional feature enabled at build time with `--features tor` and at runtime with the `--tor` flag on `create` or `join`.
+
+When Tor is enabled, the daemon:
+1. Connects to a local Tor daemon via the control port (9051)
+2. Creates a Tor hidden service derived from the iroh SecretKey
+3. Adds the Tor transport alongside the default relay transport
+
+The Tor onion address is derived deterministically from the iroh identity — no separate address discovery or exchange is needed. Any EndpointId maps to exactly one onion address. iroh's path selection runs both transports simultaneously and picks the best path (Tor has higher RTT, so relay wins when both are available).
+
+**Requirements:**
+- Build with `cargo build --features tor`
+- A running Tor daemon: `tor --ControlPort 9051 --CookieAuthentication 0`
+
+**Usage:**
+```bash
+pitopi create --tor --hostname alice
+pitopi join <key> --tor --hostname bob
+```
+
+The `--tor` preference is saved per-network in `networks.toml`. On daemon restart, if any saved network uses Tor, the Tor transport is automatically enabled.
+
 ---
 
 ## 6. Control Protocol

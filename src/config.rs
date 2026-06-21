@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::membership::GroupMode;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, derive_more::IsVariant)]
+pub enum TransportMode {
+    #[default]
+    Default,
+    Tor,
+}
+
 #[allow(dead_code)]
 mod secret_key_hex {
     use iroh::SecretKey;
@@ -107,6 +114,8 @@ pub struct NetworkConfig {
     pub network_secret_key: Option<SecretKey>,
     #[serde(default)]
     pub network_public_key: Option<EndpointId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<TransportMode>,
 }
 
 /// Top-level config stored at `~/.config/pitopi/networks.toml`.
@@ -196,6 +205,7 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
+                    transport: None,
                 },
                 NetworkConfig {
                     name: "work".to_string(),
@@ -206,6 +216,7 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
+                    transport: None,
                 },
             ],
         };
@@ -236,6 +247,7 @@ mod tests {
             network_secret_key: None,
             network_public_key: None,
             my_hostname: None,
+            transport: None,
         };
         upsert_network(&mut config, net);
         assert_eq!(config.networks.len(), 1);
@@ -255,6 +267,7 @@ mod tests {
                 network_secret_key: None,
                 network_public_key: None,
                 my_hostname: None,
+                transport: None,
             }],
         };
         let updated = NetworkConfig {
@@ -266,6 +279,7 @@ mod tests {
             network_secret_key: None,
             network_public_key: None,
             my_hostname: None,
+            transport: None,
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
@@ -286,6 +300,7 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
+                    transport: None,
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
@@ -296,6 +311,7 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
+                    transport: None,
                 },
             ],
         };
@@ -333,6 +349,7 @@ mod tests {
                 network_secret_key: None,
                 network_public_key: None,
                 my_hostname: None,
+                transport: None,
             }],
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -355,6 +372,7 @@ mod tests {
                 network_secret_key: Some(secret.clone()),
                 network_public_key: Some(public),
                 my_hostname: None,
+                transport: None,
             }],
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();

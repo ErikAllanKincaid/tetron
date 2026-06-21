@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+use crate::config::TransportMode;
 use crate::membership::GroupMode;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,12 +18,16 @@ pub enum IpcRequest {
         name: Option<String>,
         #[serde(default)]
         hostname: Option<String>,
+        #[serde(default)]
+        transport: Option<TransportMode>,
     },
     Join {
         network_key: String,
         name: Option<String>,
         #[serde(default)]
         hostname: Option<String>,
+        #[serde(default)]
+        transport: Option<TransportMode>,
     },
     Leave {
         name: String,
@@ -134,7 +139,7 @@ pub struct NetworkStatus {
     pub peers: Vec<PeerStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
 pub enum NetworkRole {
     Coordinator,
     Member,
@@ -166,10 +171,11 @@ pub struct ConnectionInfo {
     pub lost_packets: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
 pub enum ConnType {
     Direct,
     Relay,
+    Tor,
     Unknown,
 }
 
@@ -223,6 +229,7 @@ mod tests {
             mode: GroupMode::Open,
             name: None,
             hostname: None,
+            transport: None,
         };
         let json = serde_json::to_vec(&req).unwrap();
         let decoded: IpcRequest = serde_json::from_slice(&json).unwrap();

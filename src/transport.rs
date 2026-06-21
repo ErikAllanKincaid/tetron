@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::Connection, endpoint::presets,
 };
+#[cfg(feature = "tor")]
+use std::sync::Arc;
 
 pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
     let full = network_pubkey.to_string();
@@ -15,16 +17,39 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 }
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
+/// When `tor` is true and the `tor` feature is enabled, adds the Tor custom transport
+/// alongside the default relay transport.
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
     alpns: Vec<Vec<u8>>,
+    tor: bool,
 ) -> Result<Endpoint> {
-    let ep = Endpoint::builder(presets::N0)
-        .secret_key(secret_key)
+    #[allow(unused_mut)]
+    let mut builder = Endpoint::builder(presets::N0)
+        .secret_key(secret_key.clone())
         .alpns(alpns)
         .clear_ip_transports()
         .bind_addr("0.0.0.0:0")
-        .context("invalid bind address")?
+        .context("invalid bind address")?;
+
+    #[cfg(feature = "tor")]
+    if tor {
+        let tor_transport = iroh_tor_transport::TorCustomTransport::builder()
+            .build(secret_key)
+            .await
+            .context("failed to create Tor transport — is Tor running with ControlPort 9051?")?;
+        builder = builder
+            .add_custom_transport(tor_transport.clone() as Arc<dyn iroh::endpoint::transports::CustomTransport>)
+            .address_lookup(tor_transport.discovery());
+        tracing::info!("Tor transport enabled");
+    }
+
+    #[cfg(not(feature = "tor"))]
+    if tor {
+        anyhow::bail!("Tor support requires building with --features tor");
+    }
+
+    let ep = builder
         .bind()
         .await
         .context("failed to bind iroh endpoint")?;

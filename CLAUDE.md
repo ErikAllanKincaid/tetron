@@ -6,6 +6,7 @@ P2P mesh VPN powered by [iroh](https://iroh.computer). Connects peers by cryptog
 
 ```bash
 cargo -q build
+cargo -q build --features tor              # build with Tor transport support
 cargo -q check
 cargo -q test
 cargo -q clippy
@@ -24,6 +25,8 @@ cargo -q run -- create --hostname alice     # create with a chosen DNS hostname
 cargo -q run -- join <public-key>           # join by public key (the join code)
 cargo -q run -- join <public-key> --name my-net  # join with a local alias
 cargo -q run -- join <public-key> --hostname bob # join with a chosen DNS hostname
+cargo -q run -- create --tor                # create with Tor transport (requires tor feature + Tor daemon)
+cargo -q run -- join <public-key> --tor     # join with Tor transport
 cargo -q run -- leave my-net
 cargo -q run -- nuke my-net                 # publish empty record + leave
 cargo -q run -- hostname my-net alice        # change hostname on existing network
@@ -81,7 +84,7 @@ App (Minecraft, etc.) → TUN device (100.64.x.x / 200::x) → pitopi → iroh Q
 - `src/ipc.rs` — IPC protocol types (IpcRequest, IpcResponse, NetworkStatus, PeerStatus), length-prefixed JSON wire helpers, socket path (`/var/run/pitopi/pitopi.sock`), client connect helper; `IpcRequest::Create` has no `name` field, `IpcRequest::Join { network_key, name: Option }`, `IpcRequest::Nuke { name, force }`, `IpcRequest::AclTag`, `AclUntag`, `AclAllow`, `AclRemove`, `AclShow`, `AclApply`, `FirewallAdd`, `FirewallRemove`, `FirewallShow`, `FirewallDefault`, `SetHostname`; `IpcResponse::Created { name, network_key, my_ip, my_ipv6 }`, `IpcResponse::AclState`, `IpcResponse::FirewallState`; `NetworkStatus` includes `my_ipv6`, `PeerStatus` includes `ipv6`
 - `src/identity.rs` — persistent Ed25519 keypair at `~/.config/pitopi/secret_key`
 - `src/membership.rs` — IdentityProvider trait (provides both IPv4 and IPv6), FNV-1a IPv4 derivation, `derive_ipv6()` (blake3 hash into `200::/7`, 120-bit space), `derive_ip_with_index()` for collision-resistant addressing, MemberList, ApprovedList, GroupMode, MembershipPolicy, canonical msgpack serialization + blake3 hashing; `GroupBlob { members, approved, acl }`, `canonical_group_bytes()`, `group_blob_hash()`, `decode_group_blob()`, `verify_group_blob()`
-- `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept
+- `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept; optional Tor transport via `iroh-tor-transport` (behind `tor` feature flag): `create_endpoint_with_alpns(key, alpns, tor)` adds `TorCustomTransport` alongside relay when `tor=true`
 - `src/tun.rs` — TUN device creation with both IPv4 (/10 netmask) and IPv6 (`200::/7`) addresses, returns `(TunReader, TunWriter, String)` with tun name, `add_ipv6_address()` platform helper, split into TunReader/TunWriter for lock-free I/O
 - `src/forward.rs` — multi-peer forwarding: TUN → dual-stack routing table lookup (IPv4 or IPv6) → correct peer connection, DisconnectEvent notification on peer drop; `SharedAcl` stores `Arc<AclData>` (refcount bump instead of deep clone), `SmolStr` for network keys; network ACL enforcement + local firewall enforcement in `run_mesh` (outbound: local→peer) and `spawn_peer_reader` (inbound: peer→local); labeled drop counters via `stats.record_drop(DropReason::*)`
 - `src/dht.rs` — single pkarr record type per network: `encode_network_record(key, blob_hash, seed_peers)`, `decode_network_record(packet)`, `publish_network()`, `resolve_network()`; only the coordinator (holder of per-network secret key) can publish
@@ -123,11 +126,14 @@ A background `spawn_group_poller()` checks the pkarr record every 60s and fetche
 
 **Daemon/IPC:** `pitopi daemon` starts a long-lived root process that owns the iroh Endpoint, TUN device, PeerTable, and ProtocolRouter. CLI commands (`create`, `join`, `leave`, `nuke`, `status`, `down`) connect via Unix socket IPC (`/var/run/pitopi/pitopi.sock`) using length-prefixed JSON. The daemon uses `Endpoint::set_alpns()` to dynamically add/remove network ALPNs at runtime. Each active network registers a `MeshProtocol` handler (wrapping `CoordinatorAcceptState` or `MemberAcceptState` via `AcceptHandler` enum) with the ProtocolRouter and gets a `NetworkHandle` with a child `CancellationToken` for clean teardown on leave. `create` generates a per-network keypair and local alias; `join` accepts a public key string and resolves it via pkarr; `nuke` publishes empty record before leaving.
 
+**Tor transport (optional):** When a network is created/joined with `--tor` (requires `tor` cargo feature), the daemon adds `TorCustomTransport` from `iroh-tor-transport` alongside the default relay transport. The Tor onion address is derived deterministically from the iroh `SecretKey` — no separate discovery needed. `TorAddressLookup` maps any `EndpointId` to its Tor address automatically. Both transports run simultaneously; iroh's path selection picks the best path (Tor has higher RTT, so relay wins when both are available; Tor is used when both peers are Tor-only). Requires a running Tor daemon: `tor --ControlPort 9051 --CookieAuthentication 0`. Transport preference is persisted per-network in config via `TransportMode`. Status display shows `[tor]` for Tor-routed connections.
+
 **Magic DNS:** The daemon runs a UDP DNS responder on `127.0.0.1:53` that answers A and AAAA queries for `*.pi` names. Resolution scheme: `<hostname>.<network>.pi` for fully-qualified lookups, `<hostname>.pi` for flat single-network lookups. Each peer gets a hostname (random noun from word list, or user-chosen via `--hostname`). Hostnames are stored in the `Member` struct and propagated via GroupBlob. The daemon maintains an in-memory `HostnameTable` (network → hostname → `HostnameEntry` with both IPv4 and IPv6 addresses). System DNS is configured on daemon start via platform detection: macOS uses `/etc/resolver/pi` (scoped resolver), Linux tries systemd-resolved (`resolvectl domain ~pi`), resolvconf, or direct `/etc/resolv.conf` modification. All file modifications are backed up to `<path>.before-pitopi` and restored on daemon shutdown or crash recovery.
 
 ## Key Dependencies
 
-- `iroh` — P2P QUIC transport with NAT traversal and relay fallback
+- `iroh` — P2P QUIC transport with NAT traversal and relay fallback; `unstable-custom-transports` feature enables pluggable transport API
+- `iroh-tor-transport` — (optional, `tor` feature) Tor hidden service transport for iroh; derives onion address from iroh SecretKey, handles stream-to-datagram bridging; requires running Tor daemon with `ControlPort 9051`
 - `iroh-blobs` — content-addressed blob transfer for membership and ACL data exchange (FsStore, BlobsProtocol)
 - `iroh-dns` — pkarr `SignedPacket` for DHT membership records
 - `blake3` — GroupBlob hashing, data integrity verification
@@ -162,4 +168,5 @@ A background `spawn_group_poller()` checks the pkarr record every 60s and fetche
 - Join code: per-network public key string, printed at create time; the only way to join a network
 - Use split/sink patterns for I/O — never share I/O resources (TUN, sockets, streams) behind a Mutex. Always split into separate read/write halves for concurrent access
 - Avoid Mutex wherever possible — prefer channels (mpsc), split I/O, atomics, or RwLock (only for fast non-async state)
+- Tor transport requires `tor` cargo feature + running Tor daemon with `ControlPort 9051`; per-network transport preference persists in `NetworkConfig.transport`
 - Always update docs (CLAUDE.md, docs/book.md, README.md) after finishing a feature or significant change

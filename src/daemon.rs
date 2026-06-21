@@ -495,8 +495,8 @@ impl DaemonState {
 
     async fn handle_request(&self, req: IpcRequest) -> IpcResponse {
         match req {
-            IpcRequest::Create { mode, name, hostname } => self.create_network(mode, name, hostname).await,
-            IpcRequest::Join { network_key, name, hostname } => self.join_network(&network_key, name.as_deref(), hostname).await,
+            IpcRequest::Create { mode, name, hostname, transport: _ } => self.create_network(mode, name, hostname).await,
+            IpcRequest::Join { network_key, name, hostname, transport: _ } => self.join_network(&network_key, name.as_deref(), hostname).await,
             IpcRequest::Leave { name } => self.leave_network(&name).await,
             IpcRequest::Nuke { name, force } => self.nuke_network(&name, force).await,
             IpcRequest::Status => self.status(),
@@ -646,6 +646,7 @@ impl DaemonState {
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
+            transport: None,
         });
         config::save(&app_config)?;
 
@@ -1199,6 +1200,7 @@ impl DaemonState {
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
+            transport: None,
         });
         config::save(&app_config)?;
 
@@ -1422,6 +1424,8 @@ impl DaemonState {
                 let addr = path.remote_addr();
                 let ct = if addr.is_relay() {
                     ipc::ConnType::Relay
+                } else if addr.is_custom() {
+                    ipc::ConnType::Tor
                 } else {
                     ipc::ConnType::Direct
                 };
@@ -1858,7 +1862,10 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         .collect();
 
     alpns.push(iroh_blobs::protocol::ALPN.to_vec());
-    let ep = transport::create_endpoint_with_alpns(key, alpns).await?;
+    let use_tor = app_config.networks.iter().any(|net| {
+        net.transport.as_ref().is_some_and(|t| t.is_tor())
+    });
+    let ep = transport::create_endpoint_with_alpns(key, alpns, use_tor).await?;
 
     let blobs_dir = dirs::config_dir()
         .context("no config directory")?
@@ -2395,6 +2402,7 @@ async fn join_mesh_shared(
         approved: approved_config,
         network_secret_key: None,
         network_public_key: Some(net_pubkey),
+        transport: None,
     });
     config::save(&app_config)?;
 
