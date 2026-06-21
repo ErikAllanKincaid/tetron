@@ -774,6 +774,11 @@ async fn ipc_files(action: Option<FilesAction>) -> Result<()> {
             }
         }
         Some(FilesAction::Accept { id, output }) => {
+            let output = output.or_else(|| {
+                dirs::download_dir()
+                    .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+                    .map(|p| p.to_string_lossy().to_string())
+            });
             ipc::send_msg(
                 &mut stream,
                 &ipc::IpcRequest::AcceptFile { id, output },

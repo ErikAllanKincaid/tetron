@@ -19,9 +19,10 @@ pub trait DnsConfigurator: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
-pub fn detect_and_configure() -> Result<Box<dyn DnsConfigurator>> {
+pub fn detect_and_configure(tun_name: &str) -> Result<Box<dyn DnsConfigurator>> {
     #[cfg(target_os = "macos")]
     {
+        let _ = tun_name;
         let configurator = MacosResolver;
         configurator.apply()?;
         return Ok(Box::new(configurator));
@@ -29,7 +30,7 @@ pub fn detect_and_configure() -> Result<Box<dyn DnsConfigurator>> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Some(c) = try_systemd_resolved() {
+        if let Some(c) = try_systemd_resolved(tun_name) {
             c.apply()?;
             return Ok(Box::new(c));
         }
@@ -128,14 +129,14 @@ impl DnsConfigurator for MacosResolver {
 /// Update system search domains so bare hostnames resolve through pitopi.
 /// Sets search domains to `pi` + `<network>.pi` for each active network.
 /// Call whenever networks are joined or left.
-pub fn update_search_domains(network_names: &[String]) {
+pub fn update_search_domains(network_names: &[String], tun_name: &str) {
     let mut domains: Vec<String> = network_names
         .iter()
         .map(|n| format!("{n}.{DNS_DOMAIN}"))
         .collect();
     domains.push(DNS_DOMAIN.to_string());
 
-    if let Err(e) = set_search_domains(&domains) {
+    if let Err(e) = set_search_domains(&domains, tun_name) {
         tracing::warn!(error = %e, "failed to update search domains");
     } else {
         tracing::info!(domains = ?domains, "updated search domains");
@@ -143,24 +144,25 @@ pub fn update_search_domains(network_names: &[String]) {
 }
 
 /// Remove all pitopi search domains (called on daemon shutdown).
-pub fn clear_search_domains() {
-    if let Err(e) = set_search_domains(&[]) {
+pub fn clear_search_domains(tun_name: &str) {
+    if let Err(e) = set_search_domains(&[], tun_name) {
         tracing::warn!(error = %e, "failed to clear search domains");
     }
 }
 
-fn set_search_domains(pitopi_domains: &[String]) -> Result<()> {
+fn set_search_domains(pitopi_domains: &[String], tun_name: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let _ = tun_name;
         set_search_domains_macos(pitopi_domains)
     }
     #[cfg(target_os = "linux")]
     {
-        set_search_domains_linux(pitopi_domains)
+        set_search_domains_linux(pitopi_domains, tun_name)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = pitopi_domains;
+        let _ = (pitopi_domains, tun_name);
         Ok(())
     }
 }
@@ -241,12 +243,10 @@ fn set_search_domains_macos(pitopi_domains: &[String]) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn set_search_domains_linux(pitopi_domains: &[String]) -> Result<()> {
+fn set_search_domains_linux(pitopi_domains: &[String], tun_name: &str) -> Result<()> {
     use std::process::Command;
-    // Try systemd-resolved first
     if Command::new("resolvectl").arg("status").output().is_ok_and(|o| o.status.success()) {
-        let mut args = vec!["domain".to_string(), "utun_pitopi".to_string()];
-        // Keep the routing domain
+        let mut args = vec!["domain".to_string(), tun_name.to_string()];
         args.push(format!("~{DNS_DOMAIN}"));
         args.extend(pitopi_domains.iter().cloned());
         let status = Command::new("resolvectl")
@@ -268,14 +268,14 @@ struct SystemdResolved {
 }
 
 #[cfg(target_os = "linux")]
-fn try_systemd_resolved() -> Option<SystemdResolved> {
+fn try_systemd_resolved(tun_name: &str) -> Option<SystemdResolved> {
     use std::process::Command;
     let output = Command::new("resolvectl").arg("status").output().ok()?;
     if !output.status.success() {
         return None;
     }
     Some(SystemdResolved {
-        tun_iface: "utun_pitopi".to_string(),
+        tun_iface: tun_name.to_string(),
     })
 }
 

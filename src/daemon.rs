@@ -676,13 +676,29 @@ impl ProtocolRouter {
                                     let pending = router.pending_files.clone();
                                     let counter = router.file_id_counter.clone();
                                     let remote_id = conn.remote_id();
-                                    if let Ok((_send, mut recv)) = conn.accept_bi().await
-                                        && let Ok(control::ControlMsg::FileOffer { from, filename, size, mime_type, blob_hash }) = control::recv_msg(&mut recv).await
-                                        && from == remote_id
-                                    {
-                                        let id = counter.fetch_add(1, Ordering::Relaxed);
-                                        tracing::info!(from = %from.fmt_short(), filename = %filename, size, "file offer received");
-                                        pending.lock().unwrap().push(PendingFile { id, from, filename, size, mime_type, blob_hash });
+                                    match conn.accept_bi().await {
+                                        Ok((_send, mut recv)) => {
+                                            match control::recv_msg(&mut recv).await {
+                                                Ok(control::ControlMsg::FileOffer { from, filename, size, mime_type, blob_hash }) => {
+                                                    if from == remote_id {
+                                                        let id = counter.fetch_add(1, Ordering::Relaxed);
+                                                        tracing::info!(from = %from.fmt_short(), filename = %filename, size, "file offer received");
+                                                        pending.lock().unwrap().push(PendingFile { id, from, filename, size, mime_type, blob_hash });
+                                                    } else {
+                                                        tracing::warn!(claimed = %from.fmt_short(), actual = %remote_id.fmt_short(), "file offer identity mismatch");
+                                                    }
+                                                }
+                                                Ok(other) => {
+                                                    tracing::warn!(msg = ?other, "unexpected control message on FILES_ALPN");
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(error = %e, peer = %remote_id.fmt_short(), "failed to read file offer");
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, peer = %remote_id.fmt_short(), "failed to accept bi stream for file offer");
+                                        }
                                     }
                                 }
                                 _ => {
@@ -761,6 +777,7 @@ pub struct DaemonState {
     protocol_router: Arc<ProtocolRouter>,
     hostname_table: dns::HostnameTable,
     mdns_enabled: bool,
+    tun_name: String,
 }
 
 impl DaemonState {
@@ -774,7 +791,7 @@ impl DaemonState {
         self.endpoint.set_alpns(alpns);
 
         let network_names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
-        dns_config::update_search_domains(&network_names);
+        dns_config::update_search_domains(&network_names, &self.tun_name);
     }
 
     async fn handle_request(&self, req: IpcRequest) -> IpcResponse {
@@ -2521,8 +2538,16 @@ impl DaemonState {
             format!("{name}{suffix}")
         };
         if let Some((ip, _)) = dns::resolve_name(&qualified, &suffix, &self.hostname_table).await {
+            // Try connected peers first
             if let Some((_, eid, _)) = self.peers.lookup_v4(&ip) {
                 return Some(eid);
+            }
+            // Fall back to member list (peer may be offline or it's us)
+            for entry in self.networks.iter() {
+                let state = entry.value().state.read().unwrap();
+                if let Some(m) = state.members.all().iter().find(|m| m.ip == ip) {
+                    return Some(m.identity);
+                }
             }
         }
         self.resolve_short_id_any_network(name)
@@ -2534,7 +2559,7 @@ impl DaemonState {
             None => {
                 return IpcResponse::Error {
                     message: format!("unknown peer '{peer}'"),
-                }
+                };
             }
         };
 
@@ -2544,7 +2569,7 @@ impl DaemonState {
             Err(e) => {
                 return IpcResponse::Error {
                     message: format!("cannot read '{}': {e}", file_path.display()),
-                }
+                };
             }
         };
 
@@ -2570,22 +2595,25 @@ impl DaemonState {
             blob_hash: hash,
         };
 
-        match transport::connect_to_peer_with_alpn(
-            &self.endpoint,
-            peer_id,
-            transport::FILES_ALPN,
-        )
-        .await
+        match transport::connect_to_peer_with_alpn(&self.endpoint, peer_id, transport::FILES_ALPN)
+            .await
         {
-            Ok(conn) => {
-                if let Ok((mut send, _)) = conn.open_bi().await
-                    && let Err(e) = control::send_msg(&mut send, &msg).await
-                {
+            Ok(conn) => match conn.open_bi().await {
+                Ok((mut send, _)) => {
+                    if let Err(e) = control::send_msg(&mut send, &msg).await {
+                        return IpcResponse::Error {
+                            message: format!("failed to send offer: {e}"),
+                        };
+                    }
+                    let _ = send.finish();
+                    let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+                }
+                Err(e) => {
                     return IpcResponse::Error {
-                        message: format!("failed to send offer: {e}"),
+                        message: format!("failed to open stream: {e}"),
                     };
                 }
-            }
+            },
             Err(e) => {
                 return IpcResponse::Error {
                     message: format!("cannot reach peer '{peer}': {e}"),
@@ -2594,12 +2622,7 @@ impl DaemonState {
         }
 
         IpcResponse::Ok {
-            message: format!(
-                "offered {} ({}) to {}",
-                filename,
-                format_size(size),
-                peer
-            ),
+            message: format!("offered {} ({}) to {}", filename, format_size(size), peer),
         }
     }
 
@@ -2627,7 +2650,7 @@ impl DaemonState {
                 None => {
                     return IpcResponse::Error {
                         message: format!("no pending file with id {id}"),
-                    }
+                    };
                 }
             }
         };
@@ -2744,7 +2767,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     // Single TUN for all networks
     let my_ipv6 = derive_ipv6(&identity.local_identity());
-    let (tun_reader, tun_writer, _tun_name) =
+    let (tun_reader, tun_writer, tun_name) =
         tun::create(my_ip, my_ipv6).context("failed to create TUN device")?;
     let peers = PeerTable::new();
     let shared_acl = forward::SharedAcl::new();
@@ -2779,7 +2802,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     // Configure system DNS to route .pi queries to 127.0.0.1
     dns_config::restore_stale_backups();
-    let dns_configurator = match dns_config::detect_and_configure() {
+    let dns_configurator = match dns_config::detect_and_configure(&tun_name) {
         Ok(c) => {
             tracing::info!(backend = c.name(), "system DNS configured for .pitopi");
             Some(c)
@@ -2855,6 +2878,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         protocol_router: protocol_router.clone(),
         hostname_table,
         mdns_enabled,
+        tun_name: tun_name.clone(),
     });
 
     // Accept loop — dispatches connections via ProtocolHandler by ALPN
@@ -2957,7 +2981,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
                     && let Err(e) = configurator.revert() {
                         tracing::warn!(error = %e, "failed to revert DNS configuration");
                     }
-                dns_config::clear_search_domains();
+                dns_config::clear_search_domains(&tun_name);
                 let _ = std::fs::remove_file(&socket_path);
                 return Ok(());
             }
@@ -3218,7 +3242,7 @@ async fn spawn_coordinator_hello_reader(
 ) {
     let result: Result<()> = async {
         let (_send, mut recv) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            Duration::from_secs(5),
             conn.accept_bi(),
         ).await.context("timeout waiting for MeshHello")?
         .context("accept bi for MeshHello")?;
