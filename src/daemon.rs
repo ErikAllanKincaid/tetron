@@ -1474,7 +1474,7 @@ impl DaemonState {
         };
 
         let rule = firewall::FirewallRule { direction, action, protocol, port, peer };
-        let mut config = self.firewall.get_config();
+        let mut config = (*self.firewall.get_config()).clone();
         config.rules.push(rule);
         self.firewall.update(config.clone());
         if let Err(e) = firewall::save_firewall(&config) {
@@ -1484,10 +1484,11 @@ impl DaemonState {
     }
 
     fn firewall_remove(&self, index: usize) -> IpcResponse {
-        let mut config = self.firewall.get_config();
-        if index >= config.rules.len() {
-            return IpcResponse::Error { message: format!("index {index} out of range (have {} rules)", config.rules.len()) };
+        let current = self.firewall.get_config();
+        if index >= current.rules.len() {
+            return IpcResponse::Error { message: format!("index {index} out of range (have {} rules)", current.rules.len()) };
         }
+        let mut config = (*current).clone();
         config.rules.remove(index);
         self.firewall.update(config.clone());
         if let Err(e) = firewall::save_firewall(&config) {
@@ -1508,7 +1509,7 @@ impl DaemonState {
             Ok(a) => a,
             Err(e) => return IpcResponse::Error { message: e.to_string() },
         };
-        let mut config = self.firewall.get_config();
+        let mut config = (*self.firewall.get_config()).clone();
         config.default_action = action;
         self.firewall.update(config.clone());
         if let Err(e) = firewall::save_firewall(&config) {

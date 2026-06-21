@@ -4,6 +4,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use iroh::EndpointId;
 use iroh::endpoint::Connection;
+use smol_str::SmolStr;
 
 #[derive(Clone)]
 pub struct PeerTable {
@@ -15,7 +16,7 @@ pub struct PeerTable {
 pub struct PeerEntry {
     pub conn: Connection,
     pub endpoint_id: EndpointId,
-    pub network: String,
+    pub network: SmolStr,
 }
 
 impl PeerTable {
@@ -27,18 +28,18 @@ impl PeerTable {
     }
 
     pub fn add(&self, ip: Ipv4Addr, ipv6: Ipv6Addr, conn: Connection, endpoint_id: EndpointId, network: &str) {
-        let net = network.to_string();
+        let net = SmolStr::new(network);
         self.v4.insert(ip, PeerEntry { conn: conn.clone(), endpoint_id, network: net.clone() });
         self.v6.insert(ipv6, PeerEntry { conn, endpoint_id, network: net });
     }
 
-    pub fn lookup_v4(&self, ip: &Ipv4Addr) -> Option<(Connection, EndpointId, String)> {
+    pub fn lookup_v4(&self, ip: &Ipv4Addr) -> Option<(Connection, EndpointId, SmolStr)> {
         self.v4
             .get(ip)
             .map(|e| (e.conn.clone(), e.endpoint_id, e.network.clone()))
     }
 
-    pub fn lookup_v6(&self, ip: &Ipv6Addr) -> Option<(Connection, EndpointId, String)> {
+    pub fn lookup_v6(&self, ip: &Ipv6Addr) -> Option<(Connection, EndpointId, SmolStr)> {
         self.v6
             .get(ip)
             .map(|e| (e.conn.clone(), e.endpoint_id, e.network.clone()))

@@ -33,10 +33,11 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
@@ -128,7 +129,7 @@ struct Flow {
 
 #[derive(Clone)]
 pub struct SharedFirewall {
-    inner: Arc<RwLock<FirewallConfig>>,
+    inner: Arc<ArcSwap<FirewallConfig>>,
     /// Stateful connection tracker: outbound-initiated flows whose return
     /// traffic is allowed in even under a deny default.
     conntrack: Arc<DashMap<Flow, Instant>>,
@@ -137,7 +138,7 @@ pub struct SharedFirewall {
 impl SharedFirewall {
     pub fn new(config: FirewallConfig) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(config)),
+            inner: Arc::new(ArcSwap::from_pointee(config)),
             conntrack: Arc::new(DashMap::new()),
         }
     }
@@ -150,7 +151,7 @@ impl SharedFirewall {
         dst_port: u16,
         peer: &EndpointId,
     ) -> Option<Action> {
-        let config = self.inner.read().unwrap();
+        let config = self.inner.load();
         for rule in &config.rules {
             if rule.direction != direction {
                 continue;
@@ -177,7 +178,7 @@ impl SharedFirewall {
     }
 
     fn default_action(&self) -> Action {
-        self.inner.read().unwrap().default_action
+        self.inner.load().default_action
     }
 
     /// Stateless rule + default evaluation (no connection tracking).
@@ -303,11 +304,11 @@ impl SharedFirewall {
     }
 
     pub fn update(&self, config: FirewallConfig) {
-        *self.inner.write().unwrap() = config;
+        self.inner.store(Arc::new(config));
     }
 
-    pub fn get_config(&self) -> FirewallConfig {
-        self.inner.read().unwrap().clone()
+    pub fn get_config(&self) -> Arc<FirewallConfig> {
+        self.inner.load_full()
     }
 }
 

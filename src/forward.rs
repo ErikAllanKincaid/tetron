@@ -13,6 +13,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use iroh::EndpointId;
 use iroh::endpoint::Connection;
+use smol_str::SmolStr;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -68,7 +69,7 @@ pub(crate) fn evaluate_inbound(
 
 #[derive(Clone)]
 pub struct SharedAcl {
-    inner: Arc<DashMap<String, AclData>>,
+    inner: Arc<DashMap<SmolStr, Arc<AclData>>>,
 }
 
 impl SharedAcl {
@@ -79,18 +80,18 @@ impl SharedAcl {
     }
 
     pub fn set(&self, network: &str, acl: AclData) {
-        self.inner.insert(network.to_string(), acl);
+        self.inner.insert(SmolStr::new(network), Arc::new(acl));
     }
 
     pub fn remove(&self, network: &str) {
         self.inner.remove(network);
     }
 
-    pub fn get(&self, network: &str) -> AclData {
+    pub fn get(&self, network: &str) -> Arc<AclData> {
         self.inner
             .get(network)
-            .map(|e| e.value().clone())
-            .unwrap_or_else(AclData::empty)
+            .map(|e| Arc::clone(e.value()))
+            .unwrap_or_else(|| Arc::new(AclData::empty()))
     }
 }
 
