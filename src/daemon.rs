@@ -1406,6 +1406,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
         firewall::FirewallConfig::default()
     });
     let shared_firewall = SharedFirewall::new(fw_config);
+    shared_firewall.clone().spawn_evictor(token.clone());
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
     forward::spawn_tun_writer(tun_writer, tun_rx);
     tokio::spawn(forward::run_mesh(
@@ -1423,15 +1424,16 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
     // Start DNS resolver
     let dns_table = hostname_table.clone();
     let dns_token = token.clone();
+    let dns_ip = my_ip;
     tokio::spawn(async move {
-        if let Err(e) = dns::spawn_dns_server(dns_table, dns_token).await {
+        if let Err(e) = dns::spawn_dns_server(dns_ip, dns_table, dns_token).await {
             tracing::warn!(error = %e, "DNS server failed to start (Magic DNS disabled)");
         }
     });
 
-    // Configure system DNS to route .pitopi queries to us
+    // Configure system DNS to route .pi queries to our TUN IP
     dns_config::restore_stale_backups();
-    let dns_configurator = match dns_config::detect_and_configure() {
+    let dns_configurator = match dns_config::detect_and_configure(my_ip) {
         Ok(c) => {
             tracing::info!(backend = c.name(), "system DNS configured for .pitopi");
             Some(c)

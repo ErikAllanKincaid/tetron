@@ -60,7 +60,7 @@ pub(crate) fn evaluate_inbound(
     let Some(info) = firewall::parse_packet_info(packet) else {
         return InboundDecision::DropMalformed;
     };
-    if firewall.evaluate(Direction::In, info.protocol, info.dst_port, peer_id) == Action::Deny {
+    if firewall.evaluate_packet(Direction::In, &info, peer_id) == Action::Deny {
         return InboundDecision::DropFirewall;
     }
     InboundDecision::Accept
@@ -130,7 +130,7 @@ pub async fn run_mesh(
                                 stats.record_drop();
                                 continue;
                             }
-                            if firewall.evaluate(Direction::Out, info.protocol, info.dst_port, &peer_endpoint_id) == Action::Deny {
+                            if firewall.evaluate_packet(Direction::Out, &info, &peer_endpoint_id) == Action::Deny {
                                 tracing::debug!(dst = %info.dst_ip, port = info.dst_port, "firewall denied outbound");
                                 stats.record_drop();
                                 continue;

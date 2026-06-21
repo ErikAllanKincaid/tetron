@@ -1324,13 +1324,13 @@ App DNS query (e.g., "alice.gaming.pi")
 System resolver (macOS /etc/resolver/pi, Linux systemd-resolved, etc.)
     |  routes only .pi queries to pitopi
     v
-pitopi DNS server (UDP, 100.64.0.1:53)
+pitopi DNS server (UDP, <my-ip>:53)
     |  looks up HostnameTable (network → hostname → IP)
     v
 A record response (100.64.x.x)
 ```
 
-The daemon runs a minimal UDP DNS responder bound to the TUN gateway address (100.64.0.1:53). It only handles A queries for `.pi` names — everything else gets REFUSED, so normal DNS is never affected.
+The daemon runs a minimal UDP DNS responder bound to the device's own TUN IP (e.g. 100.91.237.103:53). It only handles A queries for `.pi` names — everything else gets REFUSED, so normal DNS is never affected.
 
 ### Hostname assignment
 
@@ -1348,10 +1348,10 @@ Pitopi configures the OS to split-route `.pi` queries to its local resolver. The
 
 | Platform | Method | How |
 |----------|--------|-----|
-| macOS | Scoped resolver | Writes `/etc/resolver/pi` — macOS natively routes queries for that TLD |
-| Linux | systemd-resolved | `resolvectl dns <tun> 100.64.0.1` + `resolvectl domain <tun> ~pi` |
+| macOS | Scoped resolver | Writes `/etc/resolver/pi` with the device's TUN IP — macOS natively routes queries for that TLD |
+| Linux | systemd-resolved | `resolvectl dns <tun> <my-ip>` + `resolvectl domain <tun> ~pi` |
 | Linux | resolvconf | Pipes config to `resolvconf -a tun-pitopi.inet` |
-| Linux | Direct | Prepends `nameserver 100.64.0.1` to `/etc/resolv.conf` (fallback) |
+| Linux | Direct | Prepends `nameserver <my-ip>` to `/etc/resolv.conf` (fallback) |
 
 ### Backup and crash recovery
 

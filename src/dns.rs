@@ -23,10 +23,11 @@ pub fn new_hostname_table() -> HostnameTable {
 }
 
 pub async fn spawn_dns_server(
+    bind_ip: std::net::Ipv4Addr,
     table: HostnameTable,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
-    let addr: SocketAddr = "100.64.0.1:53".parse().unwrap();
+    let addr = SocketAddr::new(bind_ip.into(), 53);
     let socket = UdpSocket::bind(addr).await?;
     tracing::info!("DNS resolver listening on {addr}");
 
@@ -69,14 +70,21 @@ async fn handle_query(data: &[u8], table: &HostnameTable) -> Option<Vec<u8>> {
 
     let suffix = format!(".{DNS_DOMAIN}");
     if !name_lower.ends_with(&suffix) {
+        tracing::debug!(name = %name_lower, "DNS query for non-.{} domain, refusing", DNS_DOMAIN);
         return Some(make_refused(&packet));
     }
 
     let ip = resolve_name(&name_lower, &suffix, table).await;
 
     match ip {
-        Some(addr) => Some(make_a_response(&packet, &question.qname, addr)),
-        None => Some(make_nxdomain(&packet)),
+        Some(addr) => {
+            tracing::info!(name = %name_lower, ip = %addr, "DNS resolved");
+            Some(make_a_response(&packet, &question.qname, addr))
+        }
+        None => {
+            tracing::info!(name = %name_lower, "DNS query NXDOMAIN");
+            Some(make_nxdomain(&packet))
+        }
     }
 }
 

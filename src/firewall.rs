@@ -1,10 +1,46 @@
+//! Local device firewall for VPN traffic flowing through the TUN device.
+//!
+//! ## Scope — what is and isn't filtered
+//!
+//! This firewall only inspects **IP packets carried inside the VPN** (datagrams
+//! read from the TUN device on the outbound side, and QUIC datagrams from peers
+//! on the inbound side — see `forward::run_mesh` / `forward::evaluate_inbound`).
+//!
+//! The pitopi/iroh **control plane** (`Welcome`, `MemberSync`, `BlobUpdated`,
+//! `MeshHello`, `ReconnectRequest`, …) travels over QUIC *bidirectional streams*,
+//! not datagrams, and the iroh transport itself runs on the host's real network
+//! interfaces — neither ever enters the TUN device. **The firewall therefore
+//! cannot block pitopi/iroh connections**, regardless of rules. Blocking the VPN
+//! transport itself is deliberately impossible from the firewall policy.
+//!
+//! ## Stateful behaviour
+//!
+//! The firewall is **stateful for TCP and UDP**: when this device initiates an
+//! outbound connection, the flow is tracked, and return traffic for that flow is
+//! allowed in even under a `deny` default policy or a targeted inbound deny. This
+//! means:
+//!
+//! - `default allow` + `deny in tcp port 22` → blocks unsolicited inbound to SSH
+//!   while leaving all your own outbound connections (and their return traffic)
+//!   working. This is the recommended pattern for "allow basic traffic, block
+//!   specific ports".
+//! - `default deny` + `allow out ...` rules → lets you initiate exactly the
+//!   outbound connections you permit; their return traffic is auto-allowed, and
+//!   all unsolicited inbound is denied.
+//!
+//! Explicit rules always win (first-match). Established return traffic only
+//! bypasses the *default* action, never an explicit rule.
+
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use dashmap::DashMap;
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,19 +108,48 @@ impl Default for FirewallConfig {
     }
 }
 
+/// How long an idle TCP flow stays "established" (return traffic still allowed).
+const TCP_FLOW_TIMEOUT: Duration = Duration::from_secs(300);
+/// UDP is connectionless: use a short window so return traffic for a recent
+/// outbound query/datagram is allowed, but stale entries expire quickly.
+const UDP_FLOW_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A normalized connection flow, keyed by protocol + the local and peer
+/// (ip, port) endpoints. Direction-agnostic: both directions of one connection
+/// map to the same `Flow`, so return traffic matches the outbound entry.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct Flow {
+    proto: u8,
+    local_ip: Ipv4Addr,
+    local_port: u16,
+    peer_ip: Ipv4Addr,
+    peer_port: u16,
+}
+
 #[derive(Clone)]
 pub struct SharedFirewall {
     inner: Arc<RwLock<FirewallConfig>>,
+    /// Stateful connection tracker: outbound-initiated flows whose return
+    /// traffic is allowed in even under a deny default.
+    conntrack: Arc<DashMap<Flow, Instant>>,
 }
 
 impl SharedFirewall {
     pub fn new(config: FirewallConfig) -> Self {
         Self {
             inner: Arc::new(RwLock::new(config)),
+            conntrack: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn evaluate(&self, direction: Direction, protocol: u8, dst_port: u16, peer: &EndpointId) -> Action {
+    /// First matching explicit rule's action, or `None` if no rule matches.
+    fn match_rule(
+        &self,
+        direction: Direction,
+        protocol: u8,
+        dst_port: u16,
+        peer: &EndpointId,
+    ) -> Option<Action> {
         let config = self.inner.read().unwrap();
         for rule in &config.rules {
             if rule.direction != direction {
@@ -94,8 +159,9 @@ impl SharedFirewall {
                 continue;
             }
             if let Some(ref range) = rule.port
-                && !range.contains(dst_port) {
-                    continue;
+                && !range.contains(dst_port)
+            {
+                continue;
             }
             match &rule.peer {
                 PeerFilter::Any => {}
@@ -105,9 +171,135 @@ impl SharedFirewall {
                     }
                 }
             }
-            return rule.action;
+            return Some(rule.action);
         }
-        config.default_action
+        None
+    }
+
+    fn default_action(&self) -> Action {
+        self.inner.read().unwrap().default_action
+    }
+
+    /// Stateless rule + default evaluation (no connection tracking).
+    /// Retained for compatibility and direct rule testing; the data plane uses
+    /// [`Self::evaluate_packet`] which is stateful.
+    #[allow(dead_code)]
+    pub fn evaluate(
+        &self,
+        direction: Direction,
+        protocol: u8,
+        dst_port: u16,
+        peer: &EndpointId,
+    ) -> Action {
+        self.match_rule(direction, protocol, dst_port, peer)
+            .unwrap_or_else(|| self.default_action())
+    }
+
+    /// Stateful evaluation of a fully-parsed packet. This is what the data plane
+    /// (`forward.rs`) calls. See the module docs for the full semantics.
+    ///
+    /// Order:
+    /// 1. Explicit rules (first-match wins) — for both directions.
+    /// 2. If outbound and permitted: record/refresh the flow so the peer's return
+    ///    traffic is recognized. Denied outbound is never tracked (otherwise a
+    ///    denied connection could whitelist its own return traffic).
+    /// 3. If inbound and no explicit rule matched: allow established return
+    ///    traffic; otherwise fall back to the default action.
+    pub fn evaluate_packet(
+        &self,
+        direction: Direction,
+        info: &PacketInfo,
+        peer: &EndpointId,
+    ) -> Action {
+        let proto = info.protocol;
+        let (local_ip, local_port, peer_ip, peer_port) = match direction {
+            Direction::Out => (info.src_ip, info.src_port, info.dst_ip, info.dst_port),
+            Direction::In => (info.dst_ip, info.dst_port, info.src_ip, info.src_port),
+        };
+        let flow = Flow {
+            proto,
+            local_ip,
+            local_port,
+            peer_ip,
+            peer_port,
+        };
+
+        // 1. Explicit rules always win.
+        if let Some(action) = self.match_rule(direction, proto, info.dst_port, peer) {
+            if direction == Direction::Out && action == Action::Allow {
+                self.track_outbound(&flow, info);
+            }
+            return action;
+        }
+
+        match direction {
+            Direction::Out => {
+                let default = self.default_action();
+                if default == Action::Allow {
+                    self.track_outbound(&flow, info);
+                }
+                default
+            }
+            Direction::In => {
+                // No explicit inbound rule. Allow established return traffic so
+                // `default deny` (or targeted inbound denies) don't sever this
+                // device's own outbound connections.
+                if self.flow_active(&flow) {
+                    self.conntrack.insert(flow, Instant::now());
+                    Action::Allow
+                } else {
+                    self.default_action()
+                }
+            }
+        }
+    }
+
+    /// Records or refreshes an outbound flow. TCP FIN/RST evict the flow
+    /// immediately so a closed connection stops whitelisting return traffic.
+    fn track_outbound(&self, flow: &Flow, info: &PacketInfo) {
+        if flow.proto == 6 {
+            let fin = info.tcp_flags & 0x01 != 0;
+            let rst = info.tcp_flags & 0x04 != 0;
+            if fin || rst {
+                self.conntrack.remove(flow);
+                return;
+            }
+        }
+        self.conntrack.insert(flow.clone(), Instant::now());
+    }
+
+    /// True if `flow` is a tracked, non-expired outbound-initiated connection.
+    fn flow_active(&self, flow: &Flow) -> bool {
+        let timeout = if flow.proto == 6 {
+            TCP_FLOW_TIMEOUT
+        } else {
+            UDP_FLOW_TIMEOUT
+        };
+        if let Some(ts) = self.conntrack.get(flow)
+            && ts.elapsed() < timeout
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Periodically evicts idle flows so the tracker doesn't grow unbounded.
+    /// Call once from the daemon with the daemon's cancellation token.
+    pub fn spawn_evictor(self, token: CancellationToken) {
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                        let now = Instant::now();
+                        self.conntrack.retain(|flow, ts| {
+                            let timeout = if flow.proto == 6 { TCP_FLOW_TIMEOUT } else { UDP_FLOW_TIMEOUT };
+                            now.duration_since(*ts) < timeout
+                        });
+                    }
+                }
+            }
+        });
     }
 
     pub fn update(&self, config: FirewallConfig) {
@@ -134,6 +326,10 @@ pub struct PacketInfo {
     pub protocol: u8,
     pub src_port: u16,
     pub dst_port: u16,
+    /// TCP flags byte (offset 13 of the TCP header). 0 for non-TCP. Used by the
+    /// stateful tracker to detect SYN/FIN/RST. Bits: FIN 0x01, SYN 0x02,
+    /// RST 0x04, ACK 0x10.
+    pub tcp_flags: u8,
 }
 
 pub fn parse_packet_info(packet: &[u8]) -> Option<PacketInfo> {
@@ -162,7 +358,14 @@ pub fn parse_packet_info(packet: &[u8]) -> Option<PacketInfo> {
         (0, 0)
     };
 
-    Some(PacketInfo { src_ip, dst_ip, protocol, src_port, dst_port })
+    // TCP flags live at byte 13 of the TCP header (byte 12 is data-offset/reserved).
+    let tcp_flags = if protocol == 6 && packet.len() >= header_len + 14 {
+        packet[header_len + 13]
+    } else {
+        0
+    };
+
+    Some(PacketInfo { src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags })
 }
 
 pub fn firewall_path() -> Result<PathBuf> {
@@ -476,5 +679,237 @@ mod tests {
         assert_eq!(decoded.default_action, Action::Deny);
         assert_eq!(decoded.rules.len(), 1);
         assert_eq!(decoded.rules[0].port.as_ref().unwrap().start, 443);
+    }
+
+    // -- Stateful connection tracking -----------------------------------------
+
+    const SYN: u8 = 0x02;
+    const ACK: u8 = 0x10;
+    const FIN: u8 = 0x01;
+    const RST: u8 = 0x04;
+
+    /// Builds a 40-byte IPv4/TCP packet with the given 5-tuple and flags.
+    fn tcp_pkt(src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, flags: u8) -> PacketInfo {
+        let mut p = vec![0u8; 40];
+        p[0] = 0x45; // IPv4, IHL=5
+        p[9] = 6; // TCP
+        p[12..16].copy_from_slice(&src.octets());
+        p[16..20].copy_from_slice(&dst.octets());
+        p[20] = (src_port >> 8) as u8;
+        p[21] = src_port as u8;
+        p[22] = (dst_port >> 8) as u8;
+        p[23] = dst_port as u8;
+        p[32] = 0x50; // data offset 5
+        p[33] = flags;
+        parse_packet_info(&p).unwrap()
+    }
+
+    fn udp_pkt(src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16) -> PacketInfo {
+        let mut p = vec![0u8; 28];
+        p[0] = 0x45;
+        p[9] = 17; // UDP
+        p[12..16].copy_from_slice(&src.octets());
+        p[16..20].copy_from_slice(&dst.octets());
+        p[20] = (src_port >> 8) as u8;
+        p[21] = src_port as u8;
+        p[22] = (dst_port >> 8) as u8;
+        p[23] = dst_port as u8;
+        parse_packet_info(&p).unwrap()
+    }
+
+    #[test]
+    fn default_allow_plus_deny_in_22_blocks_ssh_but_allows_return() {
+        // Recommended pattern: allow basic traffic, block specific ports.
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Allow,
+            rules: vec![FirewallRule {
+                direction: Direction::In,
+                action: Action::Deny,
+                protocol: Protocol::Tcp,
+                port: Some(PortRange { start: 22, end: 22 }),
+                peer: PeerFilter::Any,
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(1);
+
+        // Unsolicited inbound to port 22 -> blocked.
+        let inbound_ssh = tcp_pkt(peer, 51000, me, 22, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::In, &inbound_ssh, &peer_id), Action::Deny);
+
+        // Outbound SSH to a peer's port 22 -> allowed (default allow).
+        let outbound_ssh = tcp_pkt(me, 54321, peer, 22, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &outbound_ssh, &peer_id), Action::Allow);
+
+        // Return traffic peer:22 -> me:54321 -> allowed (not matched by deny-in-22,
+        // and would be allowed by default anyway).
+        let ret = tcp_pkt(peer, 22, me, 54321, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &ret, &peer_id), Action::Allow);
+    }
+
+    #[test]
+    fn default_deny_allows_return_traffic_for_initiated_connections() {
+        // Strict policy: default deny everywhere, allow outbound HTTPS only.
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Deny,
+            rules: vec![FirewallRule {
+                direction: Direction::Out,
+                action: Action::Allow,
+                protocol: Protocol::Tcp,
+                port: Some(PortRange { start: 443, end: 443 }),
+                peer: PeerFilter::Any,
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(1);
+
+        // We initiate HTTPS: outbound SYN me:50000 -> peer:443, allowed by rule.
+        let syn = tcp_pkt(me, 50000, peer, 443, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &syn, &peer_id), Action::Allow);
+
+        // Return traffic peer:443 -> me:50000: no explicit rule matches, but the
+        // flow is established from our outbound SYN -> allowed.
+        let ret = tcp_pkt(peer, 443, me, 50000, SYN | ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &ret, &peer_id), Action::Allow);
+
+        // Unsolicited inbound to some other port -> denied by default.
+        let unsolicited = tcp_pkt(peer, 1234, me, 8080, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::In, &unsolicited, &peer_id), Action::Deny);
+
+        // Outbound to a non-allowed port -> denied by default, and NOT tracked
+        // (so its would-be return traffic is also denied).
+        let blocked_out = tcp_pkt(me, 40000, peer, 6667, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &blocked_out, &peer_id), Action::Deny);
+        let blocked_ret = tcp_pkt(peer, 6667, me, 40000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &blocked_ret, &peer_id), Action::Deny);
+    }
+
+    #[test]
+    fn tcp_fin_evicts_flow_so_return_traffic_stops() {
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Deny,
+            rules: vec![FirewallRule {
+                direction: Direction::Out,
+                action: Action::Allow,
+                protocol: Protocol::Tcp,
+                port: Some(PortRange { start: 443, end: 443 }),
+                peer: PeerFilter::Any,
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(2);
+
+        // Establish the flow.
+        let syn = tcp_pkt(me, 50000, peer, 443, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &syn, &peer_id), Action::Allow);
+        let ret = tcp_pkt(peer, 443, me, 50000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &ret, &peer_id), Action::Allow);
+
+        // We close with FIN. Flow should be evicted.
+        let fin = tcp_pkt(me, 50000, peer, 443, FIN | ACK);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &fin, &peer_id), Action::Allow);
+
+        // Now return traffic from the closed flow is denied again.
+        let after = tcp_pkt(peer, 443, me, 50000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &after, &peer_id), Action::Deny);
+    }
+
+    #[test]
+    fn udp_return_traffic_tracked_within_flow() {
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Deny,
+            rules: vec![FirewallRule {
+                direction: Direction::Out,
+                action: Action::Allow,
+                protocol: Protocol::Udp,
+                port: Some(PortRange { start: 53, end: 53 }),
+                peer: PeerFilter::Any,
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(3);
+
+        // Outbound DNS query me:53000 -> peer:53.
+        let q = udp_pkt(me, 53000, peer, 53);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &q, &peer_id), Action::Allow);
+
+        // Return response peer:53 -> me:53000 allowed via established flow.
+        let resp = udp_pkt(peer, 53, me, 53000);
+        assert_eq!(fw.evaluate_packet(Direction::In, &resp, &peer_id), Action::Allow);
+
+        // Unsolicited inbound UDP -> denied.
+        let unsolicited = udp_pkt(peer, 9999, me, 53);
+        assert_eq!(fw.evaluate_packet(Direction::In, &unsolicited, &peer_id), Action::Deny);
+    }
+
+    #[test]
+    fn explicit_inbound_rule_still_wins_over_established() {
+        // If a peer is explicitly denied inbound, established-bypass must NOT
+        // override it (explicit rules always win).
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Allow,
+            rules: vec![FirewallRule {
+                direction: Direction::In,
+                action: Action::Deny,
+                protocol: Protocol::Tcp,
+                port: None,
+                peer: PeerFilter::Identity(test_id(9)),
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let bad_peer = test_id(9);
+
+        // Even if we (somehow) had an outbound flow to bad_peer, inbound from
+        // them hits the explicit deny first.
+        let syn = tcp_pkt(me, 50000, peer, 443, SYN);
+        fw.evaluate_packet(Direction::Out, &syn, &bad_peer); // track
+        let ret = tcp_pkt(peer, 443, me, 50000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &ret, &bad_peer), Action::Deny);
+    }
+
+    #[test]
+    fn parse_packet_extracts_tcp_flags() {
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let syn = tcp_pkt(me, 1000, peer, 443, SYN);
+        assert_eq!(syn.tcp_flags & SYN, SYN);
+        assert_eq!(syn.tcp_flags & ACK, 0);
+        let synack = tcp_pkt(peer, 443, me, 1000, SYN | ACK);
+        assert_eq!(synack.tcp_flags & (SYN | ACK), SYN | ACK);
+    }
+
+    #[test]
+    fn tcp_rst_evicts_flow() {
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_action: Action::Deny,
+            rules: vec![FirewallRule {
+                direction: Direction::Out,
+                action: Action::Allow,
+                protocol: Protocol::Tcp,
+                port: Some(PortRange { start: 443, end: 443 }),
+                peer: PeerFilter::Any,
+            }],
+        });
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(4);
+
+        let syn = tcp_pkt(me, 50000, peer, 443, SYN);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &syn, &peer_id), Action::Allow);
+        let ret = tcp_pkt(peer, 443, me, 50000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &ret, &peer_id), Action::Allow);
+
+        // Peer sends RST (inbound). We don't track inbound-eviction, but our own
+        // outbound RST should evict. Send an outbound RST.
+        let rst = tcp_pkt(me, 50000, peer, 443, RST | ACK);
+        assert_eq!(fw.evaluate_packet(Direction::Out, &rst, &peer_id), Action::Allow);
+
+        let after = tcp_pkt(peer, 443, me, 50000, ACK);
+        assert_eq!(fw.evaluate_packet(Direction::In, &after, &peer_id), Action::Deny);
     }
 }
