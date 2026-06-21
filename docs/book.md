@@ -18,14 +18,15 @@ A complete guide to pitopi's architecture, protocols, and internals.
 10. [Configuration](#10-configuration)
 11. [Three-Word Names](#11-three-word-names)
 12. [Access Control](#12-access-control)
-13. [Audit Logging](#13-audit-logging)
-14. [Statistics](#14-statistics)
-15. [Shutdown](#15-shutdown)
-16. [DHT Membership](#16-dht-membership)
-17. [Network Lifecycle](#17-network-lifecycle)
-18. [Daemon Architecture](#18-daemon-architecture)
-19. [Code Flow Diagrams](#19-code-flow-diagrams)
-20. [Security Model](#20-security-model)
+13. [Local Device Firewall](#13-local-device-firewall)
+14. [Audit Logging](#14-audit-logging)
+15. [Statistics](#15-statistics)
+16. [Shutdown](#16-shutdown)
+17. [DHT Membership](#17-dht-membership)
+18. [Network Lifecycle](#18-network-lifecycle)
+19. [Daemon Architecture](#19-daemon-architecture)
+20. [Code Flow Diagrams](#20-code-flow-diagrams)
+21. [Security Model](#21-security-model)
 
 ---
 
@@ -830,10 +831,12 @@ run_mesh()                    spawn_peer_reader() [one per peer]
 This is the main forwarding loop. It reads packets from the TUN device in a tight loop:
 
 1. Read a packet from TUN into a 1500-byte buffer.
-2. Extract the destination IP from bytes 16-19 of the IPv4 header.
+2. Parse the IPv4 header with `parse_packet_info()` — extracts source/destination IP, protocol, and TCP/UDP ports.
 3. Look up the destination IP in the `PeerTable`.
-4. If found, send the packet as a QUIC datagram on that peer's connection.
-5. If not found (unknown destination), record a dropped packet in stats.
+4. Check network ACL (`SharedAcl`): is this local identity allowed to send to the peer?
+5. Check local firewall (`SharedFirewall`): is this outbound packet allowed by direction/protocol/port/peer rules?
+6. If allowed, send the packet as a QUIC datagram on that peer's connection.
+7. If denied or not found, record a dropped packet in stats.
 
 The function takes ownership of the `TunReader` half:
 
@@ -851,8 +854,10 @@ pub async fn run_mesh(
 Each peer connection gets a dedicated reader task that receives QUIC datagrams and forwards them to the TUN device:
 
 1. Wait for a datagram from the peer's QUIC connection.
-2. Send the raw packet bytes through the `tun_tx` channel to the TUN writer.
-3. Record received bytes in stats.
+2. Check network ACL: is this peer allowed to send to us?
+3. Check local firewall: is this inbound packet allowed by direction/protocol/port/peer rules?
+4. If allowed, send the raw packet bytes through the `tun_tx` channel to the TUN writer.
+5. Record received bytes in stats.
 
 If the connection drops, the reader sends a `DisconnectEvent` (containing the peer's `EndpointId` and IP) on the disconnect channel and exits. This triggers automatic reconnection on the joiner side (see below).
 
@@ -860,19 +865,18 @@ If the connection drops, the reader sends a `DisconnectEvent` (containing the pe
 
 A single task reads from the `tun_rx` channel and writes packets to the TUN device. This serializes writes to the TUN, avoiding concurrent access.
 
-### Destination IP extraction
+### Packet parsing
 
-The `dest_ip()` function reads the destination address directly from the IPv4 header:
+The `parse_packet_info()` function (in `src/firewall.rs`) parses the IPv4 header to extract routing and firewall-relevant fields:
 
-```rust
-fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
-    if packet.len() < 20 { return None; }    // minimum IPv4 header
-    if packet[0] >> 4 != 4 { return None; }  // must be IPv4
-    Some(Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]))
-}
-```
+- **Version check**: byte 0, high nibble must be 4 (IPv4)
+- **IHL**: byte 0, low nibble gives header length in 32-bit words
+- **Protocol**: byte 9 (6=TCP, 17=UDP, 1=ICMP)
+- **Source IP**: bytes 12-15
+- **Destination IP**: bytes 16-19
+- **TCP/UDP ports**: at offset `IHL*4` (source port) and `IHL*4+2` (destination port)
 
-Bytes 16-19 of an IPv4 header contain the 32-bit destination address. The function also validates that the packet is long enough to contain a complete header and that the version nibble indicates IPv4.
+Returns a `PacketInfo` struct with all fields, or `None` for non-IPv4 or too-short packets. The forwarding loop uses `dst_ip` for routing and `protocol`/`dst_port` for firewall evaluation.
 
 ---
 
@@ -1190,9 +1194,114 @@ pitopi acl gaming allow servers servers
 # all traffic must go through a server
 ```
 
+### The `self` keyword
+
+When referencing peers in ACL or firewall commands, you can use the literal `self` to refer to the local device's EndpointId. This is convenient when tagging your own device:
+
+```bash
+pitopi acl gaming tag servers self
+```
+
 ---
 
-## 13. Audit Logging
+## 13. Local Device Firewall
+
+**Module:** `src/firewall.rs`
+
+The local device firewall gives each peer control over its own inbound and outbound traffic, independent of the coordinator-managed network ACL. While the network ACL is a top-down policy ("the coordinator decides who can talk to whom"), the local firewall is bottom-up ("I decide what reaches my ports").
+
+### Policy model
+
+Rules are evaluated **first-match-wins** with a configurable default action:
+
+- **Default allow** (the default): all traffic passes unless explicitly denied.
+- **Default deny**: all traffic is blocked unless explicitly allowed.
+
+This is different from the network ACL (which is allow-only). The firewall supports both allow and deny rules, and the order matters — the first matching rule wins.
+
+### Rule structure
+
+Each rule specifies:
+
+- **Direction**: `in` (packets arriving from peers) or `out` (packets leaving to peers)
+- **Action**: `allow` or `deny`
+- **Protocol**: `tcp`, `udp`, `icmp`, or `any`
+- **Port**: optional port number or range (e.g., `22`, `80-443`). Applies to the destination port.
+- **Peer**: optional peer identity filter. If set, the rule only matches packets from/to that specific peer.
+
+### Packet parsing
+
+The firewall parses IPv4 packet headers to extract the protocol number and TCP/UDP port numbers. This happens via `parse_packet_info()` which reads:
+
+- Protocol field (byte 9 of IPv4 header)
+- Source and destination ports (first 4 bytes after the IP header, for TCP/UDP only)
+
+ICMP packets have no ports, so port-based rules don't match ICMP traffic (use protocol-only rules for ICMP).
+
+### Enforcement
+
+The firewall is checked **after** the network ACL, in both directions:
+
+- **Inbound** (`spawn_peer_reader`): after the network ACL allows the packet, the firewall checks direction=in, the destination port, and the sending peer's identity.
+- **Outbound** (`run_mesh`): after the network ACL allows the packet, the firewall checks direction=out, the destination port, and the target peer's identity.
+
+The `SharedFirewall` is an `Arc<RwLock<FirewallConfig>>` — read locks on the hot path are uncontended and sub-nanosecond. Rule changes via IPC are rare.
+
+### CLI commands
+
+```bash
+# Show current rules and default policy
+pitopi firewall show
+
+# Set default policy
+pitopi firewall default deny
+
+# Add rules (direction action [options])
+pitopi firewall add in allow --proto tcp --port 443
+pitopi firewall add in allow --peer ab3f
+pitopi firewall add out deny --proto any --peer e71a
+pitopi firewall add in deny
+
+# Remove a rule by index
+pitopi firewall remove 2
+```
+
+### Persistence
+
+Firewall rules are stored in `~/.config/pitopi/firewall.toml`:
+
+```toml
+default_action = "allow"
+
+[[rules]]
+direction = "in"
+action = "deny"
+protocol = "tcp"
+port = "22"
+peer = "any"
+```
+
+The file is loaded at daemon startup and saved on every rule change.
+
+### Example: lock down a server
+
+```bash
+# Deny all inbound by default
+pitopi firewall default deny
+
+# Allow SSH from a trusted admin peer
+pitopi firewall add in allow --proto tcp --port 22 --peer ab3f
+
+# Allow HTTPS from anyone
+pitopi firewall add in allow --proto tcp --port 443
+
+# Allow all outbound
+pitopi firewall add out allow
+```
+
+---
+
+## 14. Audit Logging
 
 **Module:** `src/audit.rs`
 
@@ -1236,7 +1345,7 @@ audit.log_disconnect(peer_ip, &endpoint_id);
 
 ---
 
-## 14. Statistics
+## 15. Statistics
 
 **Module:** `src/stats.rs`
 
@@ -1268,7 +1377,7 @@ Byte counts are logged as raw values (no formatting) for easy parsing and script
 
 ---
 
-## 15. Shutdown
+## 16. Shutdown
 
 **Module:** `src/shutdown.rs`
 
@@ -1304,7 +1413,7 @@ The shutdown is cooperative, not forceful. Each task exits at its next `tokio::s
 
 ---
 
-## 16. DHT Network Records
+## 17. DHT Network Records
 
 **Module:** `src/dht.rs`
 
@@ -1386,7 +1495,7 @@ The single-record model eliminates the MITM vulnerability of name-based director
 
 ---
 
-## 17. Network Lifecycle
+## 18. Network Lifecycle
 
 This chapter ties the modules together by walking through the complete lifecycle of a network.
 
@@ -1537,7 +1646,7 @@ All networks share the same TUN device and routing table, since the address spac
 
 ---
 
-## 18. Daemon Architecture
+## 19. Daemon Architecture
 
 Pitopi uses a daemon/client split similar to Tailscale. The daemon (`pitopi daemon`) is a long-lived root process that owns all shared resources, while CLI commands are thin IPC clients.
 
@@ -1597,7 +1706,7 @@ When a network is left:
 
 ---
 
-## 19. Code Flow Diagrams
+## 20. Code Flow Diagrams
 
 Visual reference for how data and control flow through the codebase.
 
@@ -1769,7 +1878,7 @@ spawn_peer_reader detects conn.read_datagram() error
 
 ---
 
-## 20. Security Model
+## 21. Security Model
 
 ### Transport security
 
@@ -1792,6 +1901,16 @@ Pitopi separates *authorization* (who can approve a new identity) from *welcome*
 - **Open mode:** Any member can both authorize and welcome new peers. No coordinator involvement needed at all.
 
 Unknown peers (not in either the member list or the approved list) are always rejected by the mesh acceptor. A peer must be explicitly approved before any node will let it in.
+
+### Two-layer access control
+
+Traffic filtering happens at two independent layers, both enforced at the packet forwarding level:
+
+1. **Network ACL** (coordinator-managed): identity/tag-based allow rules distributed to all peers via GroupBlob. Controls who can talk to whom within the network. See [Section 12](#12-access-control).
+
+2. **Local device firewall** (device-managed): per-device rules with direction, protocol, port, and peer filters. Each device controls its own firewall independently. See [Section 13](#13-local-device-firewall).
+
+Both layers must allow a packet for it to pass. The network ACL is checked first, then the local firewall. This means a device can always restrict its own traffic further, even if the coordinator allows it.
 
 ### IP address integrity
 

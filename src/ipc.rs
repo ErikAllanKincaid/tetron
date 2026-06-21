@@ -56,6 +56,20 @@ pub enum IpcRequest {
     AclApply {
         network: String,
     },
+    FirewallAdd {
+        direction: String,
+        action: String,
+        protocol: String,
+        port: Option<String>,
+        peer: Option<String>,
+    },
+    FirewallRemove {
+        index: usize,
+    },
+    FirewallShow,
+    FirewallDefault {
+        action: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -80,6 +94,9 @@ pub enum IpcResponse {
         networks: Vec<NetworkStatus>,
     },
     AclState {
+        display: String,
+    },
+    FirewallState {
         display: String,
     },
 }

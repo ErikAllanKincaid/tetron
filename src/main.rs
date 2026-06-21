@@ -5,6 +5,7 @@ mod dns;
 mod dns_config;
 mod config;
 mod control;
+mod firewall;
 mod forward;
 mod hostname;
 mod identity;
@@ -132,6 +133,11 @@ enum Command {
         #[command(subcommand)]
         action: AclAction,
     },
+    /// Manage local device firewall rules
+    Firewall {
+        #[command(subcommand)]
+        action: FirewallAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -166,6 +172,38 @@ enum AclAction {
     Show,
     /// Apply ACL rules from the config file
     Apply,
+}
+
+#[derive(Subcommand)]
+enum FirewallAction {
+    /// Add a firewall rule
+    Add {
+        /// Direction: in or out
+        direction: String,
+        /// Action: allow or deny
+        action: String,
+        /// Protocol: tcp, udp, icmp, any
+        #[arg(long, short = 'p', default_value = "any")]
+        proto: String,
+        /// Port or port range (e.g. 22, 80-443)
+        #[arg(long, short = 'P')]
+        port: Option<String>,
+        /// Peer short ID (omit for any peer)
+        #[arg(long)]
+        peer: Option<String>,
+    },
+    /// Remove a rule by index
+    Remove {
+        /// Rule index (from 'firewall show')
+        index: usize,
+    },
+    /// Show current firewall rules
+    Show,
+    /// Set default policy (allow or deny)
+    Default {
+        /// Default action: allow or deny
+        action: String,
+    },
 }
 
 fn check_root() {
@@ -207,6 +245,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Acl { network, action } => ipc_acl(&network, action).await,
+        Command::Firewall { action } => ipc_firewall(action).await,
     }
 }
 
@@ -410,6 +449,27 @@ async fn ipc_acl(network: &str, action: AclAction) -> Result<()> {
     match resp {
         ipc::IpcResponse::Ok { message } => println!("{}", message),
         ipc::IpcResponse::AclState { display } => print!("{}", display),
+        ipc::IpcResponse::Error { message } => eprintln!("Error: {}", message),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
+async fn ipc_firewall(action: FirewallAction) -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    let req = match action {
+        FirewallAction::Add { direction, action, proto, port, peer } => ipc::IpcRequest::FirewallAdd {
+            direction, action, protocol: proto, port, peer,
+        },
+        FirewallAction::Remove { index } => ipc::IpcRequest::FirewallRemove { index },
+        FirewallAction::Show => ipc::IpcRequest::FirewallShow,
+        FirewallAction::Default { action } => ipc::IpcRequest::FirewallDefault { action },
+    };
+    ipc::send_msg(&mut stream, &req).await?;
+    let resp: ipc::IpcResponse = ipc::recv_msg(&mut stream).await?;
+    match resp {
+        ipc::IpcResponse::Ok { message } => println!("{}", message),
+        ipc::IpcResponse::FirewallState { display } => print!("{}", display),
         ipc::IpcResponse::Error { message } => eprintln!("Error: {}", message),
         other => eprintln!("Unexpected response: {:?}", other),
     }

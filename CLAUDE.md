@@ -36,6 +36,14 @@ cargo -q run -- acl my-net remove 0
 cargo -q run -- acl my-net show
 cargo -q run -- acl my-net apply   # re-publish current ACL to peers
 
+# Local device firewall (per-device, requires daemon running)
+cargo -q run -- firewall show                              # show rules + default policy
+cargo -q run -- firewall default deny                      # set default policy to deny
+cargo -q run -- firewall add in allow --proto tcp --port 443  # allow inbound HTTPS
+cargo -q run -- firewall add in allow --peer ab3f          # allow all from peer ab3f
+cargo -q run -- firewall add out deny --peer e71a          # block outbound to peer
+cargo -q run -- firewall remove 0                          # remove rule by index
+
 # Standalone (no daemon needed)
 cargo -q run -- list                # show saved networks from config
 
@@ -68,17 +76,18 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 - `src/main.rs` — thin CLI client (clap), IPC client functions, `spawn_path_logger`, service install/uninstall; `pitopi create` (generates network, prints join code), `pitopi join <public-key> [--name alias]`, `pitopi nuke <name>`, `pitopi acl <network> tag/untag/allow/remove/show/apply` subcommands
 - `src/daemon.rs` — daemon process: DaemonState (shared endpoint + TUN + PeerTable + ProtocolRouter), NetworkHandle per active network, IPC server over Unix socket, ProtocolRouter dispatches connections via iroh ProtocolHandler by ALPN (MeshProtocol per network + BlobsProtocol for blob transfers), coordinator accept loop, joiner mesh logic, reconnect loop, single DHT publisher (`spawn_network_publisher`), group poller (`spawn_group_poller`), local alias generation, `nuke_network()`, `restore_coordinator_network()`, ACL state on NetworkHandle, IPC handlers for ACL commands, ACL included in GroupBlob, ACL load from file on startup, empty record publish on nuke
 - `src/network_name.rs` — local alias generation: adjective-noun-noun word lists embedded at compile time, `generate_name()` (random selection via rand), `is_valid_name()` for validation
-- `src/ipc.rs` — IPC protocol types (IpcRequest, IpcResponse, NetworkStatus, PeerStatus), length-prefixed JSON wire helpers, socket path (`/var/run/pitopi/pitopi.sock`), client connect helper; `IpcRequest::Create` has no `name` field, `IpcRequest::Join { network_key, name: Option }`, `IpcRequest::Nuke { name, force }`, `IpcRequest::AclTag`, `AclUntag`, `AclAllow`, `AclRemove`, `AclShow`, `AclApply`; `IpcResponse::Created { name, network_key, my_ip }`, `IpcResponse::AclState`
+- `src/ipc.rs` — IPC protocol types (IpcRequest, IpcResponse, NetworkStatus, PeerStatus), length-prefixed JSON wire helpers, socket path (`/var/run/pitopi/pitopi.sock`), client connect helper; `IpcRequest::Create` has no `name` field, `IpcRequest::Join { network_key, name: Option }`, `IpcRequest::Nuke { name, force }`, `IpcRequest::AclTag`, `AclUntag`, `AclAllow`, `AclRemove`, `AclShow`, `AclApply`, `FirewallAdd`, `FirewallRemove`, `FirewallShow`, `FirewallDefault`; `IpcResponse::Created { name, network_key, my_ip }`, `IpcResponse::AclState`, `IpcResponse::FirewallState`
 - `src/identity.rs` — persistent Ed25519 keypair at `~/.config/pitopi/secret_key`
 - `src/membership.rs` — IdentityProvider trait, FNV-1a IP derivation, MemberList, ApprovedList, GroupMode, MembershipPolicy, canonical msgpack serialization + blake3 hashing; `GroupBlob { members, approved, acl }`, `canonical_group_bytes()`, `group_blob_hash()`, `decode_group_blob()`, `verify_group_blob()`
 - `src/transport.rs` — iroh endpoint setup, per-network ALPN, connect/accept
 - `src/tun.rs` — TUN device creation with /10 netmask, split into TunReader/TunWriter for lock-free I/O
-- `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection, DisconnectEvent notification on peer drop; ACL enforcement in `run_mesh` (outbound: local→peer) and `spawn_peer_reader` (inbound: peer→local); denied packets dropped with `stats.record_drop()`
+- `src/forward.rs` — multi-peer forwarding: TUN → routing table → correct peer connection, DisconnectEvent notification on peer drop; network ACL enforcement + local firewall enforcement in `run_mesh` (outbound: local→peer) and `spawn_peer_reader` (inbound: peer→local); denied packets dropped with `stats.record_drop()`
 - `src/dht.rs` — single pkarr record type per network: `encode_network_record(key, blob_hash, seed_peers)`, `decode_network_record(packet)`, `publish_network()`, `resolve_network()`; only the coordinator (holder of per-network secret key) can publish
 - `src/control.rs` — control protocol: Welcome, MemberApproved, JoinApproved, JoinDenied, MemberSync, MeshHello, MeshWelcome, ReconnectRequest, AdvertiseServices, `BlobUpdated { hash: blake3::Hash }`
 - `src/peers.rs` — PeerTable (routing by dest IP), PeerEntry with Connection + endpoint_id + network name, remove_by_network for teardown; `SharedAcl` type, `PeerTable::lookup_full()` for ACL-aware routing
 - `src/config.rs` — persistent network config at `~/.config/pitopi/networks.toml` (members + approved list); `NetworkConfig` has `network_secret_key: Option<SecretKey>` (hex-serialized via custom serde adapter, coordinators only) and `network_public_key: Option<EndpointId>` (the join code)
 - `src/acl.rs` — identity/tag-based ACL policy engine: AclData (tags + allow-only rules), rule evaluation by EndpointId with tag support, `.acl` file parser/formatter; distributed as part of GroupBlob via iroh blobs; no rules = allow-all, any rules = deny-all except explicit allows
+- `src/firewall.rs` — local device firewall: per-device port/protocol/peer filtering independent of network ACL. `SharedFirewall` (Arc<RwLock<FirewallConfig>>) with first-match-wins rule evaluation, `parse_packet_info()` for IPv4/TCP/UDP header parsing; persisted to `~/.config/pitopi/firewall.toml`; enforced in `forward.rs` after network ACL checks; supports direction (in/out), protocol (tcp/udp/icmp/any), port ranges, per-peer identity filters; `self` keyword resolves to local EndpointId in ACL and firewall commands
 - `src/dns.rs` — Magic DNS resolver: UDP DNS server on 100.64.0.1:53, answers A queries for `*.pi` names from in-memory HostnameTable (network → hostname → IP), returns REFUSED for non-.pi queries; `spawn_dns_server()`, `HostnameTable` type, `new_hostname_table()`
 - `src/dns_config.rs` — OS-level DNS configuration: `DnsConfigurator` trait with `apply()`/`revert()`, platform detection chain (macOS scoped resolver `/etc/resolver/pi`, Linux systemd-resolved/resolvconf/direct), backup/restore of modified files (`.before-pitopi` suffix), crash recovery on daemon start
 - `src/hostname.rs` — hostname generation (`generate_hostname()` from NOUNS_B word list), validation (`is_valid_hostname()`), collision resolution (`resolve_collision()`)
@@ -95,6 +104,8 @@ App (Minecraft, etc.) → TUN device (100.64.x.x) → pitopi → iroh QUIC datag
 **Nuke:** publishes pkarr record with empty GroupBlob hash + empty seed list → removes ACL file → leaves the network (tears down connections, removes from config).
 
 **ACL management:** Coordinator uses `pitopi acl` CLI commands (tag/untag/allow/remove/show/apply) to manage identity/tag-based allow rules. Changes are persisted to `~/.config/pitopi/acl/<network>.acl`, included in the GroupBlob, serialized as canonical msgpack, hashed with blake3, published to pkarr, and broadcast to all peers via `BlobUpdated` control message. Peers fetch the blob, verify the hash, and enforce rules at the PeerTable routing layer. No rules = allow-all; any rules = deny-all except explicitly allowed traffic.
+
+**Local firewall:** Each device has its own firewall rules (independent of coordinator-managed network ACL). Rules specify direction (in/out), action (allow/deny), protocol (tcp/udp/icmp/any), optional port or port range, and optional peer identity filter. Evaluated first-match-wins with a configurable default action (allow by default). Enforced in `forward.rs` after network ACL checks — both inbound (`spawn_peer_reader`, checks dst port) and outbound (`run_mesh`, checks dst port). Persisted to `~/.config/pitopi/firewall.toml`. Managed via `pitopi firewall` CLI commands through IPC. The `self` keyword in `resolve_short_id` resolves to the local device's EndpointId for use in both ACL and firewall commands.
 
 **Gatekeeper model:** coordinator approves identities and broadcasts MemberApproved. Any peer can then welcome an approved identity when it connects. The coordinator doesn't need to be online when the approved peer actually joins.
 
@@ -139,6 +150,7 @@ A background `spawn_group_poller()` checks the pkarr record every 60s and fetche
 - Identity persists to `~/.config/pitopi/secret_key` — same EndpointId across restarts
 - Config persists to `~/.config/pitopi/networks.toml`
 - ACL rules persist to `~/.config/pitopi/acl/<network>.acl` (text format: `tag <name> <peer-ids>` and `allow <src> -> <dst>` lines)
+- Firewall rules persist to `~/.config/pitopi/firewall.toml` (per-device, loaded at daemon startup)
 - macOS TUN requires destination address (point-to-point interface)
 - Control messages: length-prefixed JSON (4-byte BE length + JSON body) over QUIC bidirectional streams
 - Local aliases: adjective-noun-noun format (e.g., `gentle-amber-fox`), generated at create time; purely local display names with no protocol significance — the join code is the per-network public key string

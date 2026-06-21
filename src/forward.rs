@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::acl::AclData;
+use crate::firewall::{self, Action, Direction, SharedFirewall};
 use crate::peers::PeerTable;
 use crate::stats::Stats;
 use crate::tun::{TunReader, TunWriter};
@@ -56,19 +57,6 @@ pub struct DisconnectEvent {
     pub ip: Ipv4Addr,
 }
 
-/// Extracts the destination IPv4 address from bytes 16–19 of an IPv4 packet header.
-fn dest_ip(packet: &[u8]) -> Option<Ipv4Addr> {
-    if packet.len() < 20 {
-        return None;
-    }
-    if packet[0] >> 4 != 4 {
-        return None;
-    }
-    Some(Ipv4Addr::new(
-        packet[16], packet[17], packet[18], packet[19],
-    ))
-}
-
 /// Main TUN read loop. Reads packets from the TUN device, extracts the destination IP,
 /// looks up the peer in [`PeerTable`], and sends the packet as a QUIC datagram.
 /// Packets with no matching peer are silently dropped.
@@ -77,6 +65,7 @@ pub async fn run_mesh(
     peers: PeerTable,
     local_id: EndpointId,
     shared_acl: SharedAcl,
+    firewall: SharedFirewall,
     token: CancellationToken,
     stats: Arc<Stats>,
 ) -> Result<()> {
@@ -88,24 +77,30 @@ pub async fn run_mesh(
                 let n = result?;
                 if n > 0 {
                     tracing::debug!(len = n, first_byte = buf[0], "TUN read");
-                    if let Some(dst) = dest_ip(&buf[..n]) {
-                        if let Some((conn, peer_endpoint_id, network)) = peers.lookup_full(&dst) {
+                    let pkt = &buf[..n];
+                    if let Some(info) = firewall::parse_packet_info(pkt) {
+                        if let Some((conn, peer_endpoint_id, network)) = peers.lookup_full(&info.dst_ip) {
                             let acl = shared_acl.get(&network);
                             if !acl.is_allowed(&local_id, &peer_endpoint_id) {
-                                tracing::debug!(%dst, "ACL denied outbound");
+                                tracing::debug!(dst = %info.dst_ip, "ACL denied outbound");
                                 stats.record_drop();
                                 continue;
                             }
-                            tracing::debug!(%dst, "routing to peer");
-                            match conn.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
+                            if firewall.evaluate(Direction::Out, info.protocol, info.dst_port, &peer_endpoint_id) == Action::Deny {
+                                tracing::debug!(dst = %info.dst_ip, port = info.dst_port, "firewall denied outbound");
+                                stats.record_drop();
+                                continue;
+                            }
+                            tracing::debug!(dst = %info.dst_ip, "routing to peer");
+                            match conn.send_datagram(Bytes::copy_from_slice(pkt)) {
                                 Ok(()) => stats.record_tx(n),
                                 Err(e) => {
-                                    tracing::debug!(%dst, error = %e, "datagram send failed");
+                                    tracing::debug!(dst = %info.dst_ip, error = %e, "datagram send failed");
                                     stats.record_drop();
                                 }
                             }
                         } else {
-                            tracing::debug!(%dst, "no peer for dst");
+                            tracing::debug!(dst = %info.dst_ip, "no peer for dst");
                             stats.record_drop();
                         }
                     } else {
@@ -128,6 +123,7 @@ pub fn spawn_peer_reader(
     local_id: EndpointId,
     network: String,
     shared_acl: SharedAcl,
+    firewall: SharedFirewall,
     tun_tx: mpsc::Sender<Vec<u8>>,
     disconnect_tx: mpsc::Sender<DisconnectEvent>,
     token: CancellationToken,
@@ -143,6 +139,11 @@ pub fn spawn_peer_reader(
                             if !shared_acl.get(&network).is_allowed(&peer_id, &local_id) {
                                 stats.record_drop();
                                 continue;
+                            }
+                            if let Some(info) = firewall::parse_packet_info(&datagram)
+                                && firewall.evaluate(Direction::In, info.protocol, info.dst_port, &peer_id) == Action::Deny {
+                                    stats.record_drop();
+                                    continue;
                             }
                             stats.record_rx(datagram.len());
                             if tun_tx.send(datagram.to_vec()).await.is_err() {
@@ -181,25 +182,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dest_ip_valid_ipv4() {
-        let mut packet = vec![0u8; 20];
+    fn test_parse_packet_valid_ipv4() {
+        let mut packet = vec![0u8; 24];
         packet[0] = 0x45;
+        packet[9] = 6; // TCP
         packet[16] = 100;
         packet[17] = 64;
         packet[18] = 0;
         packet[19] = 3;
-        assert_eq!(dest_ip(&packet), Some(Ipv4Addr::new(100, 64, 0, 3)));
+        let info = firewall::parse_packet_info(&packet).unwrap();
+        assert_eq!(info.dst_ip, Ipv4Addr::new(100, 64, 0, 3));
+        assert_eq!(info.protocol, 6);
     }
 
     #[test]
-    fn test_dest_ip_too_short() {
-        assert_eq!(dest_ip(&[0x45; 10]), None);
+    fn test_parse_packet_too_short() {
+        assert!(firewall::parse_packet_info(&[0x45; 10]).is_none());
     }
 
     #[test]
-    fn test_dest_ip_not_ipv4() {
+    fn test_parse_packet_not_ipv4() {
         let mut packet = vec![0u8; 20];
         packet[0] = 0x60;
-        assert_eq!(dest_ip(&packet), None);
+        assert!(firewall::parse_packet_info(&packet).is_none());
     }
 }

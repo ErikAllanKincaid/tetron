@@ -22,6 +22,7 @@ use crate::control::{self, ControlMsg};
 use crate::dht;
 use crate::dns;
 use crate::dns_config;
+use crate::firewall::{self, SharedFirewall};
 use crate::forward;
 use crate::identity;
 use crate::ipc::{self, IpcRequest, IpcResponse, NetworkRole, NetworkStatus, PeerStatus};
@@ -174,6 +175,7 @@ pub struct DaemonState {
     shutdown_token: CancellationToken,
     blob_store: FsStore,
     shared_acl: forward::SharedAcl,
+    firewall: SharedFirewall,
     protocol_router: Arc<ProtocolRouter>,
     hostname_table: dns::HostnameTable,
 }
@@ -203,6 +205,12 @@ impl DaemonState {
             IpcRequest::AclRemove { network, index } => self.acl_remove(&network, index).await,
             IpcRequest::AclShow { network } => self.acl_show(&network),
             IpcRequest::AclApply { network } => self.acl_apply(&network).await,
+            IpcRequest::FirewallAdd { direction, action, protocol, port, peer } => {
+                self.firewall_add(&direction, &action, &protocol, port.as_deref(), peer.as_deref())
+            }
+            IpcRequest::FirewallRemove { index } => self.firewall_remove(index),
+            IpcRequest::FirewallShow => self.firewall_show(),
+            IpcRequest::FirewallDefault { action } => self.firewall_default(&action),
         }
     }
 
@@ -355,6 +363,7 @@ impl DaemonState {
             Some(dht_notify),
             self.blob_store.clone(),
             self.shared_acl.clone(),
+            self.firewall.clone(),
         );
         tasks.push(accept_handle);
 
@@ -491,6 +500,7 @@ impl DaemonState {
             cancel.clone(),
             self.stats.clone(),
             self.shared_acl.clone(),
+            self.firewall.clone(),
         )];
 
         // Apply ACL from group blob
@@ -510,6 +520,7 @@ impl DaemonState {
             self.stats.clone(),
             self.blob_store.clone(),
             self.shared_acl.clone(),
+            self.firewall.clone(),
             net_pubkey,
             conn_rx,
         ).await?;
@@ -654,6 +665,7 @@ impl DaemonState {
                 cancel.clone(),
                 self.stats.clone(),
                 self.shared_acl.clone(),
+                self.firewall.clone(),
             )];
 
             self.shared_acl.set(network_name, data.acl.clone());
@@ -666,7 +678,7 @@ impl DaemonState {
                     }
                     crate::spawn_path_logger(peer_conn.clone(), m.identity.fmt_short().to_string());
                     self.peers.add(m.ip, peer_conn.clone(), m.identity, network_name);
-                    forward::spawn_peer_reader(peer_conn, m.identity, m.ip, self.endpoint.id(), network_name.to_string(), self.shared_acl.clone(), self.tun_tx.clone(), disconnect_tx.clone(), cancel.clone(), self.stats.clone());
+                    forward::spawn_peer_reader(peer_conn, m.identity, m.ip, self.endpoint.id(), network_name.to_string(), self.shared_acl.clone(), self.firewall.clone(), self.tun_tx.clone(), disconnect_tx.clone(), cancel.clone(), self.stats.clone());
                 }
             }
 
@@ -868,6 +880,7 @@ impl DaemonState {
             Some(dht_notify),
             self.blob_store.clone(),
             self.shared_acl.clone(),
+            self.firewall.clone(),
         );
         tasks.push(accept_handle);
 
@@ -1013,11 +1026,27 @@ impl DaemonState {
     // -----------------------------------------------------------------------
 
     fn resolve_short_id(&self, network: &str, short: &str) -> Option<EndpointId> {
+        if short == "self" {
+            return Some(self.endpoint.id());
+        }
         let handle = self.networks.get(network)?;
         let state = handle.state.read().unwrap();
         state.members.all().iter()
             .find(|m| m.identity.to_string().starts_with(short))
             .map(|m| m.identity)
+    }
+
+    fn resolve_short_id_any_network(&self, short: &str) -> Option<EndpointId> {
+        if short == "self" {
+            return Some(self.endpoint.id());
+        }
+        for entry in self.networks.iter() {
+            let state = entry.value().state.read().unwrap();
+            if let Some(m) = state.members.all().iter().find(|m| m.identity.to_string().starts_with(short)) {
+                return Some(m.identity);
+            }
+        }
+        None
     }
 
     fn acl_file_path(&self, network: &str) -> std::path::PathBuf {
@@ -1242,6 +1271,82 @@ impl DaemonState {
         self.publish_and_broadcast_acl(network, &data).await;
         IpcResponse::Ok { message: "ACL applied".to_string() }
     }
+
+    // -----------------------------------------------------------------------
+    // Firewall handlers
+    // -----------------------------------------------------------------------
+
+    fn firewall_add(&self, direction: &str, action: &str, protocol: &str, port: Option<&str>, peer: Option<&str>) -> IpcResponse {
+        let direction = match firewall::parse_direction(direction) {
+            Ok(d) => d,
+            Err(e) => return IpcResponse::Error { message: e.to_string() },
+        };
+        let action = match firewall::parse_action(action) {
+            Ok(a) => a,
+            Err(e) => return IpcResponse::Error { message: e.to_string() },
+        };
+        let protocol = match firewall::parse_protocol(protocol) {
+            Ok(p) => p,
+            Err(e) => return IpcResponse::Error { message: e.to_string() },
+        };
+        let port = match port {
+            Some(s) => match firewall::parse_port_range(s) {
+                Ok(r) => Some(r),
+                Err(e) => return IpcResponse::Error { message: e.to_string() },
+            },
+            None => None,
+        };
+        let peer = match peer {
+            Some(s) => match self.resolve_short_id_any_network(s) {
+                Some(id) => firewall::PeerFilter::Identity(id),
+                None => return IpcResponse::Error { message: format!("unknown peer '{s}'") },
+            },
+            None => firewall::PeerFilter::Any,
+        };
+
+        let rule = firewall::FirewallRule { direction, action, protocol, port, peer };
+        let mut config = self.firewall.get_config();
+        config.rules.push(rule);
+        self.firewall.update(config.clone());
+        if let Err(e) = firewall::save_firewall(&config) {
+            tracing::warn!(error = %e, "failed to persist firewall config");
+        }
+        IpcResponse::Ok { message: "rule added".to_string() }
+    }
+
+    fn firewall_remove(&self, index: usize) -> IpcResponse {
+        let mut config = self.firewall.get_config();
+        if index >= config.rules.len() {
+            return IpcResponse::Error { message: format!("index {index} out of range (have {} rules)", config.rules.len()) };
+        }
+        config.rules.remove(index);
+        self.firewall.update(config.clone());
+        if let Err(e) = firewall::save_firewall(&config) {
+            tracing::warn!(error = %e, "failed to persist firewall config");
+        }
+        IpcResponse::Ok { message: "rule removed".to_string() }
+    }
+
+    fn firewall_show(&self) -> IpcResponse {
+        let config = self.firewall.get_config();
+        let short_id = |id: &EndpointId| -> String { id.fmt_short().to_string() };
+        let display = firewall::format_firewall_show(&config, &short_id);
+        IpcResponse::FirewallState { display }
+    }
+
+    fn firewall_default(&self, action: &str) -> IpcResponse {
+        let action = match firewall::parse_action(action) {
+            Ok(a) => a,
+            Err(e) => return IpcResponse::Error { message: e.to_string() },
+        };
+        let mut config = self.firewall.get_config();
+        config.default_action = action;
+        self.firewall.update(config.clone());
+        if let Err(e) = firewall::save_firewall(&config) {
+            tracing::warn!(error = %e, "failed to persist firewall config");
+        }
+        IpcResponse::Ok { message: format!("default set to {}", if action == firewall::Action::Allow { "allow" } else { "deny" }) }
+    }
 }
 
 pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<()> {
@@ -1278,6 +1383,11 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
     let (tun_reader, tun_writer) = tun::create(my_ip).context("failed to create TUN device")?;
     let peers = PeerTable::new();
     let shared_acl = forward::SharedAcl::new();
+    let fw_config = firewall::load_firewall().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load firewall config, using defaults");
+        firewall::FirewallConfig::default()
+    });
+    let shared_firewall = SharedFirewall::new(fw_config);
     let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>(256);
     forward::spawn_tun_writer(tun_writer, tun_rx);
     tokio::spawn(forward::run_mesh(
@@ -1285,6 +1395,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
         peers.clone(),
         public_key,
         shared_acl.clone(),
+        shared_firewall.clone(),
         token.clone(),
         stats.clone(),
     ));
@@ -1324,6 +1435,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<Stats>) -> Result<(
         shutdown_token: token.clone(),
         blob_store,
         shared_acl,
+        firewall: shared_firewall,
         protocol_router: protocol_router.clone(),
         hostname_table,
     });
@@ -1657,6 +1769,7 @@ fn spawn_coordinator_accept(
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     blob_store: FsStore,
     shared_acl: forward::SharedAcl,
+    firewall: SharedFirewall,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = run_accept_loop(
@@ -1674,6 +1787,7 @@ fn spawn_coordinator_accept(
             dht_notify,
             blob_store,
             shared_acl,
+            firewall,
         ).await {
             tracing::warn!(network = %network_name, error = %e, "accept loop stopped");
         }
@@ -1696,6 +1810,7 @@ async fn run_accept_loop(
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     blob_store: FsStore,
     shared_acl: forward::SharedAcl,
+    firewall: SharedFirewall,
 ) -> Result<()> {
     let self_member = {
         let s = state.read().unwrap();
@@ -1732,9 +1847,10 @@ async fn run_accept_loop(
             let local_id = ep.id();
             let network_c = network_name.to_string();
             let shared_acl_c = shared_acl.clone();
+            let firewall_c = firewall.clone();
             tokio::spawn(async move {
                 send_member_sync(&conn, &members).await;
-                forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
+                forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, firewall_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
             });
             continue;
         }
@@ -1774,8 +1890,9 @@ async fn run_accept_loop(
             let local_id = ep.id();
             let network_c = network_name.to_string();
             let shared_acl_c = shared_acl.clone();
+            let firewall_c = firewall.clone();
             tokio::spawn(async move {
-                forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
+                forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, firewall_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
             });
             continue;
         }
@@ -1862,8 +1979,9 @@ async fn run_accept_loop(
         let local_id = ep.id();
         let network_c = network_name.to_string();
         let shared_acl_c = shared_acl.clone();
+        let firewall_c = firewall.clone();
         tokio::spawn(async move {
-            forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
+            forward::spawn_peer_reader(conn, remote_id, peer_ip, local_id, network_c, shared_acl_c, firewall_c, tun_tx_c, disconnect_tx_c, token_c, stats_c);
         });
     }
 }
@@ -1882,6 +2000,7 @@ async fn join_mesh_shared(
     stats: Arc<Stats>,
     blob_store: FsStore,
     shared_acl: forward::SharedAcl,
+    firewall: SharedFirewall,
     net_pubkey: EndpointId,
     conn_rx: mpsc::Receiver<Connection>,
 ) -> Result<Arc<std::sync::RwLock<NetworkState>>> {
@@ -1940,7 +2059,7 @@ async fn join_mesh_shared(
     peers.add(remote_ip, initial_conn.clone(), remote_id, network_name);
     forward::spawn_peer_reader(
         initial_conn.clone(), remote_id, remote_ip,
-        ep.id(), network_name.to_string(), shared_acl.clone(),
+        ep.id(), network_name.to_string(), shared_acl.clone(), firewall.clone(),
         tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone(),
     );
 
@@ -1954,7 +2073,7 @@ async fn join_mesh_shared(
                 let (mut send, _recv) = conn.open_bi().await?;
                 control::send_msg(&mut send, &ControlMsg::MeshHello { identity: my_identity, ip: my_ip, hostname: None }).await?;
                 peers.add(member.ip, conn.clone(), member.identity, network_name);
-                forward::spawn_peer_reader(conn, member.identity, member.ip, ep.id(), network_name.to_string(), shared_acl.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                forward::spawn_peer_reader(conn, member.identity, member.ip, ep.id(), network_name.to_string(), shared_acl.clone(), firewall.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
                 tracing::info!(peer_ip = %member.ip, "connected to mesh peer");
             }
             Err(e) => {
@@ -2117,11 +2236,11 @@ async fn join_mesh_shared(
                                     }).await;
                                 }
                                 peers.add(ip, conn.clone(), peer_identity, &network_name);
-                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), firewall.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
                                 broadcast_member_sync(&peers, &members, Some(ip)).await;
                             } else if is_member {
                                 peers.add(ip, conn.clone(), peer_identity, &network_name);
-                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), firewall.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
                             }
                         }
                         Ok(ControlMsg::ReconnectRequest { identity: peer_identity, ip }) => {
@@ -2133,7 +2252,7 @@ async fn join_mesh_shared(
                                 if let Ok((mut send, _)) = conn.open_bi().await {
                                     let _ = control::send_msg(&mut send, &ControlMsg::MemberSync { members: current_members }).await;
                                 }
-                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
+                                forward::spawn_peer_reader(conn, peer_identity, ip, ep.id(), network_name.clone(), shared_acl.clone(), firewall.clone(), tun_tx.clone(), disconnect_tx.clone(), token.clone(), stats.clone());
                             }
                         }
                         _ => {}
@@ -2160,6 +2279,7 @@ fn spawn_reconnect_loop(
     token: CancellationToken,
     stats: Arc<Stats>,
     shared_acl: forward::SharedAcl,
+    firewall: SharedFirewall,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -2184,6 +2304,7 @@ fn spawn_reconnect_loop(
             let token = token.clone();
             let stats = stats.clone();
             let shared_acl = shared_acl.clone();
+            let firewall = firewall.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -2208,7 +2329,7 @@ fn spawn_reconnect_loop(
                             }
                             tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "reconnected to peer");
                             peers.add(peer_ip, conn.clone(), peer_id, &network_name);
-                            forward::spawn_peer_reader(conn, peer_id, peer_ip, my_identity, network_name, shared_acl, tun_tx, disconnect_tx, token, stats);
+                            forward::spawn_peer_reader(conn, peer_id, peer_ip, my_identity, network_name, shared_acl, firewall, tun_tx, disconnect_tx, token, stats);
                             return;
                         }
                         Err(e) => { tracing::debug!(error = %e, "reconnect attempt failed"); }

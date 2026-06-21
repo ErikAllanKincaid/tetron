@@ -110,6 +110,32 @@ pitopi acl gaming apply
 
 ACL rules are distributed to all peers via iroh-blobs and enforced at the packet forwarding layer on every node. ACL state is persisted to `~/.config/pitopi/acl/<network>.acl`.
 
+### Local device firewall
+
+Each device can set its own firewall rules independently of the network ACL. This lets you protect your ports regardless of what the coordinator allows:
+
+```bash
+# Block all inbound traffic by default
+pitopi firewall default deny
+
+# Allow inbound HTTPS and SSH from a trusted peer
+pitopi firewall add in allow --proto tcp --port 443
+pitopi firewall add in allow --proto tcp --port 22 --peer ab3f
+
+# Allow all outbound
+pitopi firewall add out allow
+
+# Check current rules
+pitopi firewall show
+
+# Remove a rule by index
+pitopi firewall remove 0
+```
+
+Rules are evaluated first-match-wins. Supports TCP, UDP, ICMP, port ranges (e.g. `80-443`), and per-peer filters. Firewall state is persisted to `~/.config/pitopi/firewall.toml`.
+
+The `self` keyword can be used to reference your own device in ACL and firewall commands (e.g. `pitopi acl gaming tag servers self`).
+
 ## Commands
 
 | Command | Description | Needs daemon |
@@ -127,6 +153,10 @@ ACL rules are distributed to all peers via iroh-blobs and enforced at the packet
 | `pitopi acl NAME allow SRC DST` | Add an allow rule (coordinator) | Yes |
 | `pitopi acl NAME show` | Display current ACL state | Yes |
 | `pitopi acl NAME apply` | Push ACL changes to all peers | Yes |
+| `pitopi firewall show` | Show local firewall rules | Yes |
+| `pitopi firewall default ACTION` | Set default policy (allow/deny) | Yes |
+| `pitopi firewall add DIR ACTION` | Add a firewall rule | Yes |
+| `pitopi firewall remove INDEX` | Remove a rule by index | Yes |
 | `pitopi install-service` | Install systemd/launchd service | No |
 | `pitopi uninstall-service` | Remove system service | No |
 | `pitopi completions SHELL` | Generate shell completions | No |
@@ -185,6 +215,7 @@ See [TODO.md](TODO.md) for the full roadmap. Current status:
 - [x] Public key join codes for secure network sharing
 - [x] DHT network records for offline coordinator resilience
 - [x] Distributed ACLs with tag-based allow rules (coordinator-managed, enforced on all peers)
+- [x] Local device firewall with port/protocol/peer filtering
 - [x] Systemd/launchd service integration
 - [x] Daemon architecture with Unix socket IPC
 - [ ] Social discovery (Discord, Slack, Steam)
