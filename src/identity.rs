@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use iroh::{EndpointId, SecretKey};
+use iroh::SecretKey;
 
 use crate::control::DeviceCert;
 
@@ -56,10 +56,6 @@ pub fn load_collision_index() -> Result<u32> {
 
 fn device_cert_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("device_cert"))
-}
-
-pub fn create_device_cert(user_secret: &SecretKey, device_pubkey: &EndpointId) -> DeviceCert {
-    DeviceCert::create(user_secret, device_pubkey)
 }
 
 pub fn store_device_cert(cert: &DeviceCert) -> Result<()> {

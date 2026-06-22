@@ -886,7 +886,6 @@ pub struct NetworkHandle {
 
 pub struct DaemonState {
     endpoint: Endpoint,
-    secret_key: SecretKey,
     identity: IrohIdentityProvider,
     peers: PeerTable,
     stats: Arc<ForwardMetrics>,
@@ -3150,7 +3149,6 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     ));
     let daemon = Arc::new(DaemonState {
         endpoint: ep,
-        secret_key: key,
         identity,
         peers,
         stats: stats.clone(),

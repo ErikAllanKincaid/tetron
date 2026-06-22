@@ -27,13 +27,6 @@ pub struct Member {
     pub device_cert: Option<DeviceCert>,
 }
 
-impl Member {
-    /// Returns the user identity this device belongs to.
-    /// For device 0 / legacy nodes, this equals the transport identity.
-    pub fn effective_user_identity(&self) -> EndpointId {
-        self.user_identity.unwrap_or(self.identity)
-    }
-}
 
 /// Controls who can approve new members joining the network.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
