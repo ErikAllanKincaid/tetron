@@ -76,7 +76,7 @@ sudo ray restart         # restart the service (e.g. after upgrading the binary)
 sudo ray install         # install/refresh the service and start it
 ```
 
-> `ray restart` and `ray install` need root because they manage the system service directly (rewrite the unit file or bounce it via `systemctl`/`launchctl`).
+> `ray restart` and `ray install` need root because they manage the system service directly. `ray install` rewrites the unit file (or launchd plist) and restarts; `ray restart` only bounces the running service via `systemctl`/`launchctl` without touching the unit.
 
 That's the whole loop. Run `ray --help` to discover the rest (`acl`, `firewall`, `send`, `pair`, `mdns`, …).
 
