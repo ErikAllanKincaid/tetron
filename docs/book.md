@@ -230,9 +230,11 @@ Before using any network commands, start the service:
 sudo ray up
 ```
 
-`ray up` installs the system service (a systemd unit on Linux, a launchd plist on macOS) if it isn't already present, then starts it. The service runs `ray daemon`, a long-lived process that owns the iroh endpoint, TUN device, and all peer connections. It listens for commands on a Unix socket at `/var/run/rayfish/rayfish.sock`. On startup, it restores all previously saved networks from config.
+The **first** `ray up` installs the system service (a systemd unit on Linux, a launchd plist on macOS) if it isn't already present, then starts it. The service runs `ray daemon`, a long-lived process that owns the iroh endpoint, TUN device, and all peer connections. It listens for commands on a Unix socket at `/var/run/rayfish/rayfish.sock`. On startup, it restores all previously saved networks from config.
 
-`ray daemon` runs the daemon loop in the foreground and is invoked by the service — you normally use `ray up` rather than calling it directly. To stop and remove the service, run `sudo ray uninstall`.
+Once the daemon is running, `ray up` and `ray down` toggle the **VPN's active state** rather than the daemon process itself. `ray down` puts the daemon on **standby** — it brings the TUN interface down, reverts system DNS, and drops all network connections, but the daemon process keeps running. `ray up` reactivates it (TUN back up, DNS reconfigured, networks reconnected). Because the already-privileged daemon performs the TUN/DNS work, both commands are ordinary unprivileged IPC calls — only the very first `ray up` (when no daemon is running) needs `sudo` to install and start the service. This is the same split Tailscale uses between the always-running `tailscaled` and the `tailscale up`/`tailscale down` client commands.
+
+`ray daemon` runs the daemon loop in the foreground and is invoked by the service — you normally use `ray up` rather than calling it directly. To stop and remove the service entirely, run `sudo ray uninstall`.
 
 ### Creating a network
 
@@ -299,11 +301,14 @@ ray leave gaming
 
 This tears down all connections for that network, removes peers from the routing table, and deletes it from the saved config.
 
-### Shutting down
+### Standby
 
 ```bash
-ray down    # signals the daemon to shut down gracefully
+ray down    # standby: tears down the TUN + DNS and drops connections; the daemon keeps running
+ray up      # reactivate (no root needed)
 ```
+
+`ray down` does **not** stop the daemon process — it puts it on standby so it can be brought back up without root. To stop and remove the service entirely, use `sudo ray uninstall`.
 
 ### Socket permissions
 
@@ -319,19 +324,19 @@ The daemon automatically sets the socket to `root:rayfish` with mode `0660` if t
 
 ### Why sudo?
 
-TUN devices are virtual network interfaces. Creating them requires root privileges on both Linux and macOS. Only `ray up` (and the service-internal `ray daemon`) requires root. All other commands are thin IPC clients that talk to the daemon and run unprivileged.
+TUN devices are virtual network interfaces. Creating them requires root privileges on both Linux and macOS. Only the service-internal `ray daemon` (and the first `ray up`, which installs and starts that service) requires root. All other commands — including `ray up`/`ray down` once the daemon is running — are thin IPC clients that talk to the daemon and run unprivileged.
 
 ### All commands
 
 | Command | Description | Needs daemon |
 |---------|-------------|:---:|
-| `sudo ray up` | Install the service if needed and start it | — |
+| `ray up` | Activate the VPN (unprivileged once the daemon runs; `sudo` only to first install/start the service) | — |
 | `ray create [--name NAME]` | Create a network (custom or random name + join code) | Yes |
 | `ray join KEY [--name ALIAS]` | Join a network by public key | Yes |
 | `ray leave NAME` | Leave a network and remove config | Yes |
 | `ray nuke NAME [--force]` | Publish empty record to DHT then leave | Yes |
 | `ray status` | Show all networks (active + inactive), peers, traffic | No* |
-| `ray down` | Shut down the daemon | Yes |
+| `ray down` | Put the daemon on standby (TUN down, DNS reverted; process keeps running) | Yes |
 | `ray acl NAME tag TAG PEERS…` | Assign a tag to one or more peers | Yes |
 | `ray acl NAME untag TAG PEERS…` | Remove a tag from peers | Yes |
 | `ray acl NAME allow SRC DST` | Add an allow rule | Yes |
@@ -1914,7 +1919,7 @@ Each active network has:
 
 The Unix socket at `/var/run/rayfish/rayfish.sock` uses the same wire format as the peer-to-peer control protocol: 4-byte big-endian length prefix + msgpack body, framed via `tokio_util::codec::Framed` with a `MsgpackCodec`. A single `IpcMessage` enum carries both request and response variants:
 
-- **Request variants** — `Create`, `Join`, `Leave`, `Nuke`, `Status`, `Shutdown`, `AclTag`, `AclUntag`, `AclAllow`, `AclRemove`, `AclShow`, `AclApply`, `FirewallAdd`, `FirewallRemove`, `FirewallShow`, `FirewallDefault`, `SetHostname`, `SendFile`, `ListFiles`, `AcceptFile`
+- **Request variants** — `Create`, `Join`, `Leave`, `Nuke`, `Status`, `Shutdown`, `Up`, `Down`, `AclTag`, `AclUntag`, `AclAllow`, `AclRemove`, `AclShow`, `AclApply`, `FirewallAdd`, `FirewallRemove`, `FirewallShow`, `FirewallDefault`, `SetHostname`, `SendFile`, `ListFiles`, `AcceptFile`
 - **Response variants** — `Ok`, `Error`, `Created` (with generated name + join code + IP), `Joined`, `StatusResponse`, `AclState`, `FirewallState`, `FileList`
 
 The daemon accepts one connection at a time, reads a request, processes it, and sends a response. The CLI helpers (`ipc_create`, `ipc_join`, etc.) in `main.rs` handle the client side.

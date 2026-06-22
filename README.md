@@ -92,7 +92,7 @@ cargo build
 sudo ray up    # installs the system service if needed, then starts the daemon
 ```
 
-> `ray up` needs root (the daemon creates the TUN device and owns the iroh endpoint). Every other command runs unprivileged and talks to the daemon over a Unix socket.
+> The **first** `ray up` needs root to install the system service and start the daemon (which creates the TUN device and owns the iroh endpoint). After that the daemon stays running, so `ray up` and `ray down` are ordinary unprivileged IPC calls — `down` puts the daemon on **standby** (TUN down, DNS reverted) without killing it, and `up` reactivates it. Every other command also runs unprivileged and talks to the daemon over a Unix socket.
 
 ### Basic usage
 
@@ -119,9 +119,10 @@ ray status
 ping alice.gaming.ray    # from the joiner
 ping bob.ray             # from the coordinator (flat lookup)
 
-# Leave a network / shut down
+# Leave a network / put the daemon on standby
 ray leave gaming
-ray down
+ray down       # standby: tears down the TUN + DNS, daemon keeps running
+ray up         # reactivate (no root needed — the daemon is already running)
 ```
 
 ---
@@ -249,14 +250,14 @@ Tor runs alongside the default relay transport and iroh picks the best path. Bot
 
 | Command | Description | Needs daemon |
 |---------|-------------|:---:|
-| `sudo ray up` | Install the service if needed and start it | — |
+| `ray up` | Activate the VPN (unprivileged if the daemon is running; `sudo` only needed to first install/start the service) | — |
 | `ray create [--tor]` | Create a network (generates name + join code) | Yes |
 | `ray join KEY [--name ALIAS] [--tor]` | Join a network by join code | Yes |
 | `ray leave NAME` | Leave a network and remove config | Yes |
 | `ray nuke NAME [--force]` | Publish empty DHT records, then leave | Yes |
 | `ray hostname NET NAME` | Change your hostname on a network | Yes |
 | `ray status` | Show all networks, peers, traffic | No* |
-| `ray down` | Shut down the daemon | Yes |
+| `ray down` | Put the daemon on standby (TUN down, DNS reverted; process keeps running) | Yes |
 | `ray acl NAME tag TAG PEERS…` | Tag peers (coordinator) | Yes |
 | `ray acl NAME allow SRC DST` | Add an allow rule (coordinator) | Yes |
 | `ray acl NAME show` | Display ACL state | Yes |

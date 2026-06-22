@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -903,6 +903,11 @@ pub struct DaemonState {
     pairing_secret: Arc<std::sync::Mutex<Option<[u8; 32]>>>,
     device_cert: Option<control::DeviceCert>,
     device_user_map: peers::DeviceUserMap,
+    /// Whether the VPN is currently active (TUN up, networks connected) or on
+    /// standby. Toggled by the `Up`/`Down` IPC commands.
+    active: Arc<AtomicBool>,
+    /// The system-DNS configurator owned while active, so `Down` can revert it.
+    dns_configurator: Arc<std::sync::Mutex<Option<Box<dyn dns_config::DnsConfigurator>>>>,
 }
 
 impl DaemonState {
@@ -919,7 +924,11 @@ impl DaemonState {
         dns_config::update_search_domains(&network_names, &self.tun_name);
     }
 
-    async fn handle_request(&self, req: IpcMessage, peer_cred: Option<(u32, u32)>) -> IpcMessage {
+    async fn handle_request(
+        self: &Arc<Self>,
+        req: IpcMessage,
+        peer_cred: Option<(u32, u32)>,
+    ) -> IpcMessage {
         match req {
             IpcMessage::Create {
                 mode,
@@ -939,6 +948,8 @@ impl DaemonState {
             IpcMessage::Leave { name } => self.leave_network(&name).await,
             IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
             IpcMessage::Status => self.status(),
+            IpcMessage::Up => self.activate().await,
+            IpcMessage::Down => self.deactivate().await,
             IpcMessage::Shutdown => {
                 self.shutdown_token.cancel();
                 IpcMessage::Ok {
@@ -2003,23 +2014,162 @@ impl DaemonState {
         self.leave_network(name).await
     }
 
-    async fn leave_network(&self, name: &str) -> IpcMessage {
-        let handle = self.networks.remove(name).map(|(_, v)| v);
-        let was_active = handle.is_some();
-
-        if let Some(handle) = handle {
-            handle.cancel.cancel();
-            for task in handle.tasks {
-                let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
-            }
-
-            self.peers.remove_by_network(name);
-            self.shared_acl.remove(name);
-            dns::remove_network(&self.hostname_table, &self.reverse_table, name).await;
-            self.protocol_router
-                .unregister(&transport::network_alpn(&handle.network_key));
-            self.refresh_alpns();
+    /// Activate the VPN: bring the TUN interface up, configure system DNS, and
+    /// reconnect every saved network. Idempotent — a no-op if already active.
+    /// Runs entirely inside the (root) daemon, so the IPC client needs no
+    /// privileges.
+    async fn activate(self: &Arc<Self>) -> IpcMessage {
+        if self.active.swap(true, Ordering::SeqCst) {
+            return IpcMessage::Ok {
+                message: "already up".into(),
+            };
         }
+
+        if let Err(e) = tun::set_link_up(&self.tun_name) {
+            tracing::warn!(error = %e, "failed to bring TUN interface up");
+        }
+
+        // Configure system DNS to route .ray queries to our local resolver.
+        dns_config::restore_stale_backups();
+        match dns_config::detect_and_configure(&self.tun_name) {
+            Ok(c) => {
+                tracing::info!(backend = c.name(), "system DNS configured for .ray");
+                *self.dns_configurator.lock().unwrap() = Some(c);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to configure system DNS (Magic DNS requires manual setup)");
+            }
+        }
+
+        // Reconnect every saved network.
+        let app_config = match config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load config during activate");
+                return IpcMessage::Ok {
+                    message: "VPN up (no saved networks reconnected)".into(),
+                };
+            }
+        };
+        let mut count = 0;
+        for net in &app_config.networks {
+            count += 1;
+            if net.network_secret_key.is_some() {
+                // We hold the secret key — restore as coordinator.
+                let name = net.name.clone();
+                let mode = net.group_mode;
+                let daemon_c = Arc::clone(self);
+                tokio::spawn(async move {
+                    match daemon_c.restore_coordinator_network(&name, mode).await {
+                        Ok(IpcMessage::Created { name, .. }) => {
+                            tracing::info!(network = %name, "restored coordinator network");
+                        }
+                        Ok(IpcMessage::Error { message }) => {
+                            tracing::warn!(network = %name, error = %message, "failed to restore network");
+                        }
+                        Err(e) => {
+                            tracing::warn!(network = %name, error = %e, "failed to restore network");
+                        }
+                        _ => {}
+                    }
+                });
+            } else {
+                // We're a member — rejoin via DHT lookup.
+                let name = net.name.clone();
+                let persisted_hostname = net.my_hostname.clone();
+                let net_pubkey = match &net.network_public_key {
+                    Some(k) => k.to_string(),
+                    None => {
+                        tracing::warn!(network = %name, "no network public key in config, skipping restore");
+                        continue;
+                    }
+                };
+                let daemon_c = Arc::clone(self);
+                tokio::spawn(async move {
+                    match daemon_c
+                        .join_network_inner(&net_pubkey, Some(&name), persisted_hostname)
+                        .await
+                    {
+                        Ok(IpcMessage::Joined { name, my_ip, .. }) => {
+                            tracing::info!(network = %name, ip = %my_ip, "restored member network");
+                        }
+                        Ok(IpcMessage::Error { message }) => {
+                            tracing::warn!(network = %name, error = %message, "failed to restore network");
+                        }
+                        Err(e) => {
+                            tracing::warn!(network = %name, error = %e, "failed to restore network");
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+
+        tracing::info!(networks = count, "VPN activated");
+        IpcMessage::Ok {
+            message: "VPN up".into(),
+        }
+    }
+
+    /// Put the daemon on standby: tear down active network connections, revert
+    /// system DNS, and bring the TUN interface down. The daemon process keeps
+    /// running so it can be reactivated with `activate`. Idempotent.
+    async fn deactivate(&self) -> IpcMessage {
+        if !self.active.swap(false, Ordering::SeqCst) {
+            return IpcMessage::Ok {
+                message: "already on standby".into(),
+            };
+        }
+
+        let names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
+        for name in &names {
+            self.teardown_network_runtime(name).await;
+        }
+
+        // Revert system DNS (extract the configurator before reverting so the
+        // mutex guard isn't held across the call).
+        let configurator = self.dns_configurator.lock().unwrap().take();
+        if let Some(configurator) = configurator
+            && let Err(e) = dns_config::revert(configurator.as_ref())
+        {
+            tracing::warn!(error = %e, "failed to revert DNS configuration");
+        }
+        dns_config::clear_search_domains(&self.tun_name);
+
+        if let Err(e) = tun::set_link_down(&self.tun_name) {
+            tracing::warn!(error = %e, "failed to bring TUN interface down");
+        }
+
+        tracing::info!("VPN on standby");
+        IpcMessage::Ok {
+            message: "VPN down (daemon still running)".into(),
+        }
+    }
+
+    /// Tear down a network's runtime state (connections, ALPN, DNS entries,
+    /// background tasks) without touching its persisted config. Returns whether
+    /// the network was active. Shared by `leave_network` (which also forgets the
+    /// config) and `deactivate` (which keeps it for later reactivation).
+    async fn teardown_network_runtime(&self, name: &str) -> bool {
+        let Some(handle) = self.networks.remove(name).map(|(_, v)| v) else {
+            return false;
+        };
+        handle.cancel.cancel();
+        for task in handle.tasks {
+            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        }
+
+        self.peers.remove_by_network(name);
+        self.shared_acl.remove(name);
+        dns::remove_network(&self.hostname_table, &self.reverse_table, name).await;
+        self.protocol_router
+            .unregister(&transport::network_alpn(&handle.network_key));
+        self.refresh_alpns();
+        true
+    }
+
+    async fn leave_network(&self, name: &str) -> IpcMessage {
+        let was_active = self.teardown_network_runtime(name).await;
 
         // Remove from config even if the network wasn't active
         let removed_from_config = if let Ok(mut app_config) = config::load()
@@ -2100,6 +2250,7 @@ impl DaemonState {
         IpcMessage::StatusResponse {
             endpoint_id: self.endpoint.id(),
             mdns_enabled: self.mdns_enabled,
+            active: self.active.load(Ordering::SeqCst),
             networks: statuses,
             packets_rx: self.stats.packets_rx.get(),
             packets_tx: self.stats.packets_tx.get(),
@@ -3041,7 +3192,9 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // Single TUN for all networks
     let my_ipv6 = derive_ipv6(&identity.local_identity());
     let (tun_reader, tun_writer, tun_name) =
-        tun::create(my_ip, my_ipv6).context("failed to create TUN device")?;
+        tun::create(my_ip, my_ipv6)
+            .await
+            .context("failed to create TUN device")?;
     let peers = PeerTable::new();
     let shared_acl = forward::SharedAcl::new();
     let fw_config = firewall::load_firewall().unwrap_or_else(|e| {
@@ -3077,18 +3230,8 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         }
     });
 
-    // Configure system DNS to route .ray queries to 127.0.0.1
-    dns_config::restore_stale_backups();
-    let dns_configurator = match dns_config::detect_and_configure(&tun_name) {
-        Ok(c) => {
-            tracing::info!(backend = c.name(), "system DNS configured for .rayfish");
-            Some(c)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to configure system DNS (Magic DNS requires manual setup)");
-            None
-        }
-    };
+    // System DNS configuration and network reconnection happen in
+    // `DaemonState::activate()`, invoked once below (and again on `ray up`).
 
     // mDNS local peer discovery
     let mdns_enabled = app_config.mdns_enabled;
@@ -3166,6 +3309,8 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         pairing_secret,
         device_cert,
         device_user_map,
+        active: Arc::new(AtomicBool::new(false)),
+        dns_configurator: Arc::new(std::sync::Mutex::new(None)),
     });
 
     // Accept loop — dispatches connections via ProtocolHandler by ALPN
@@ -3195,58 +3340,10 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
 
-    // Restore saved networks
-    for net in &app_config.networks {
-        if net.network_secret_key.is_some() {
-            // We have the secret key — restore as coordinator
-            let name = net.name.clone();
-            let mode = net.group_mode;
-            let daemon_c = daemon.clone();
-            tokio::spawn(async move {
-                match daemon_c.restore_coordinator_network(&name, mode).await {
-                    Ok(IpcMessage::Created { name, .. }) => {
-                        tracing::info!(network = %name, "restored coordinator network");
-                    }
-                    Ok(IpcMessage::Error { message }) => {
-                        tracing::warn!(network = %name, error = %message, "failed to restore network");
-                    }
-                    Err(e) => {
-                        tracing::warn!(network = %name, error = %e, "failed to restore network");
-                    }
-                    _ => {}
-                }
-            });
-        } else {
-            // We're a member — rejoin via DHT lookup
-            let name = net.name.clone();
-            let persisted_hostname = net.my_hostname.clone();
-            let net_pubkey = match &net.network_public_key {
-                Some(k) => k.to_string(),
-                None => {
-                    tracing::warn!(network = %name, "no network public key in config, skipping restore");
-                    continue;
-                }
-            };
-            let daemon_c = daemon.clone();
-            tokio::spawn(async move {
-                match daemon_c
-                    .join_network_inner(&net_pubkey, Some(&name), persisted_hostname)
-                    .await
-                {
-                    Ok(IpcMessage::Joined { name, my_ip, .. }) => {
-                        tracing::info!(network = %name, ip = %my_ip, "restored member network");
-                    }
-                    Ok(IpcMessage::Error { message }) => {
-                        tracing::warn!(network = %name, error = %message, "failed to restore network");
-                    }
-                    Err(e) => {
-                        tracing::warn!(network = %name, error = %e, "failed to restore network");
-                    }
-                    _ => {}
-                }
-            });
-        }
-    }
+    // Enter the active state: bring up DNS and reconnect saved networks. The
+    // daemon starts active by default so a fresh boot behaves like before;
+    // `ray down` / `ray up` toggle this at runtime without restarting.
+    daemon.activate().await;
 
     // IPC server
     let socket_path = ipc::socket_path();
@@ -3264,11 +3361,8 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         tokio::select! {
             _ = token.cancelled() => {
                 tracing::info!("daemon shutting down");
-                if let Some(ref configurator) = dns_configurator
-                    && let Err(e) = dns_config::revert(configurator.as_ref()) {
-                        tracing::warn!(error = %e, "failed to revert DNS configuration");
-                    }
-                dns_config::clear_search_domains(&tun_name);
+                // Revert DNS, drop connections, and bring the TUN down.
+                daemon.deactivate().await;
                 let _ = std::fs::remove_file(&socket_path);
                 return Ok(());
             }
@@ -3318,7 +3412,7 @@ fn set_socket_group_permissions(path: &std::path::Path) {
     tracing::info!("socket owned by root:rayfish (0660)");
 }
 
-async fn handle_ipc_client(stream: UnixStream, daemon: &DaemonState) -> Result<()> {
+async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<DaemonState>) -> Result<()> {
     let peer_cred = stream.peer_cred().ok().map(|c| (c.uid(), c.gid()));
     let mut framed = ipc::framed(stream);
     let req = ipc::recv(&mut framed).await?;

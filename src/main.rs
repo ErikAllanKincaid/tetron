@@ -314,10 +314,7 @@ async fn main() -> Result<()> {
             stats.spawn_logger(token.clone());
             daemon::run_daemon(token, stats).await
         }
-        Command::Up => {
-            check_root();
-            cmd_up()
-        }
+        Command::Up => cmd_up().await,
         Command::Down => ipc_down().await,
         Command::Uninstall => cmd_uninstall_service(),
         Command::Completions { shell } => {
@@ -535,6 +532,7 @@ async fn ipc_status() -> Result<()> {
         ipc::IpcMessage::StatusResponse {
             endpoint_id,
             mdns_enabled,
+            active,
             networks,
             packets_rx,
             packets_tx,
@@ -546,6 +544,15 @@ async fn ipc_status() -> Result<()> {
                 "  {} {}",
                 style::label("endpoint"),
                 style::value(&endpoint_id.to_string())
+            );
+            println!(
+                "  {} {}",
+                style::label("state   "),
+                if active {
+                    style::green("up")
+                } else {
+                    style::faint("standby (ray up to activate)")
+                }
             );
             println!(
                 "  {} {}",
@@ -580,12 +587,7 @@ async fn ipc_status() -> Result<()> {
                     }
                     println!("  {}", style::faint(&format!("({})", net.my_ip)));
                     if let Some(ref key) = net.network_key {
-                        let short = format!(
-                            "{}…{}",
-                            &key[..8.min(key.len())],
-                            &key[key.len().saturating_sub(4)..]
-                        );
-                        println!("    {}  {}", style::label("join   "), style::rose(&short));
+                        println!("    {}  {}", style::label("join   "), style::rose(key));
                     }
                     println!(
                         "    {}  {}",
@@ -680,9 +682,12 @@ async fn ipc_status() -> Result<()> {
     Ok(())
 }
 
+/// `ray down`: put the daemon on standby (tear down the TUN, revert DNS, drop
+/// connections) while leaving the daemon process running so `ray up` can
+/// reactivate it without root.
 async fn ipc_down() -> Result<()> {
     let mut stream = ipc::connect().await?;
-    ipc::send(&mut stream,ipc::IpcMessage::Shutdown).await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Down).await?;
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
@@ -1071,8 +1076,37 @@ fn ensure_service_installed() -> Result<()> {
     }
 }
 
-/// `ray up`: install/refresh the service, then (re)start it.
-fn cmd_up() -> Result<()> {
+/// `ray up`: activate the VPN.
+///
+/// If the daemon is already running (the common case — the system service
+/// starts it at boot), this is just an unprivileged IPC call asking the daemon
+/// to bring the TUN up, configure DNS, and reconnect networks. Only when no
+/// daemon is reachable do we fall back to installing/starting the system
+/// service, which requires root.
+async fn cmd_up() -> Result<()> {
+    if let Ok(mut stream) = ipc::connect().await {
+        ipc::send(&mut stream, ipc::IpcMessage::Up).await?;
+        match ipc::recv(&mut stream).await? {
+            ipc::IpcMessage::Ok { message } => println!("{message}"),
+            ipc::IpcMessage::Error { message } => eprintln!("Error: {message}"),
+            other => eprintln!("Unexpected response: {other:?}"),
+        }
+        return Ok(());
+    }
+
+    // No daemon reachable — install and start the system service (needs root).
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!(
+            "rayfish service is not running. Start it with: sudo ray up\n\
+             (the daemon needs root to install the system service and create the TUN device)"
+        );
+        std::process::exit(1);
+    }
+    install_and_start_service()
+}
+
+/// Install/refresh the system service and (re)start it. Requires root.
+fn install_and_start_service() -> Result<()> {
     ensure_service_installed()?;
 
     #[cfg(target_os = "linux")]

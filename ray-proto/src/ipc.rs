@@ -35,6 +35,14 @@ pub enum IpcMessage {
     },
     Status,
     Shutdown,
+    /// Activate the VPN: bring the TUN interface up, configure system DNS, and
+    /// reconnect all saved networks. Handled by the already-running daemon, so
+    /// no root privileges are needed on the client.
+    Up,
+    /// Put the daemon on standby: tear down active network connections, revert
+    /// system DNS, and bring the TUN interface down. The daemon process keeps
+    /// running so it can be reactivated with `Up`.
+    Down,
     AclTag {
         network: String,
         tag: String,
@@ -114,6 +122,8 @@ pub enum IpcMessage {
     StatusResponse {
         endpoint_id: EndpointId,
         mdns_enabled: bool,
+        /// Whether the VPN is active (TUN up, networks connected) or on standby.
+        active: bool,
         networks: Vec<NetworkStatus>,
         packets_rx: u64,
         packets_tx: u64,
@@ -366,6 +376,7 @@ mod tests {
         let resp = IpcMessage::StatusResponse {
             endpoint_id: ep_id,
             mdns_enabled: true,
+            active: true,
             networks: vec![NetworkStatus {
                 name: "gaming".to_string(),
                 role: NetworkRole::Coordinator,
