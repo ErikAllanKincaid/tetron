@@ -977,7 +977,7 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    fn refresh_alpns(&self) {
+    async fn refresh_alpns(&self) {
         let alpns = self.protocol_router.alpns();
         let alpn_strs: Vec<String> = alpns
             .iter()
@@ -987,7 +987,7 @@ impl DaemonState {
         self.endpoint.set_alpns(alpns);
 
         let network_names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
-        dns_config::update_search_domains(&network_names, &self.tun_name);
+        dns_config::update_search_domains(&network_names, &self.tun_name).await;
     }
 
     /// Tailscale-style access control. Read-only queries are open to any local
@@ -1387,7 +1387,7 @@ impl DaemonState {
             tasks,
         };
         self.networks.insert(name.clone(), handle);
-        self.refresh_alpns();
+        self.refresh_alpns().await;
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network created");
 
@@ -1648,7 +1648,7 @@ impl DaemonState {
             tasks,
         };
         self.networks.insert(display_name.to_string(), handle);
-        self.refresh_alpns();
+        self.refresh_alpns().await;
 
         // Register hostnames in DNS table
         dns::update_hostname(
@@ -1857,7 +1857,7 @@ impl DaemonState {
                 tasks,
             };
             self.networks.insert(network_name.to_string(), handle);
-            self.refresh_alpns();
+            self.refresh_alpns().await;
 
             return Ok(IpcMessage::Joined {
                 name: network_name.to_string(),
@@ -2127,7 +2127,7 @@ impl DaemonState {
             tasks,
         };
         self.networks.insert(name.to_string(), handle);
-        self.refresh_alpns();
+        self.refresh_alpns().await;
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network restored (coordinator)");
 
@@ -2232,7 +2232,7 @@ impl DaemonState {
 
         // Configure system DNS to route .ray queries to our local resolver.
         dns_config::restore_stale_backups();
-        match dns_config::detect_and_configure(&self.tun_name) {
+        match dns_config::detect_and_configure(&self.tun_name).await {
             Ok(c) => {
                 tracing::info!(backend = c.name(), "system DNS configured for .ray");
                 *self.dns_configurator.lock().unwrap() = Some(c);
@@ -2343,11 +2343,11 @@ impl DaemonState {
         // mutex guard isn't held across the call).
         let configurator = self.dns_configurator.lock().unwrap().take();
         if let Some(configurator) = configurator
-            && let Err(e) = dns_config::revert(configurator.as_ref())
+            && let Err(e) = dns_config::revert(configurator.as_ref()).await
         {
             tracing::warn!(error = %e, "failed to revert DNS configuration");
         }
-        dns_config::clear_search_domains(&self.tun_name);
+        dns_config::clear_search_domains(&self.tun_name).await;
 
         if let Err(e) = tun::set_link_down(&self.tun_name) {
             tracing::warn!(error = %e, "failed to bring TUN interface down");
@@ -2377,7 +2377,7 @@ impl DaemonState {
         dns::remove_network(&self.hostname_table, &self.reverse_table, name).await;
         self.protocol_router
             .unregister(&transport::network_alpn(&handle.network_key));
-        self.refresh_alpns();
+        self.refresh_alpns().await;
         true
     }
 

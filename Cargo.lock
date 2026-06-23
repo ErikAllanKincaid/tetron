@@ -3575,6 +3575,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "argon2",
+ "async-trait",
  "blake3",
  "bs58",
  "bytes",

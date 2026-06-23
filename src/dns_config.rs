@@ -7,76 +7,54 @@
 #[allow(unused_imports)]
 use anyhow::Context;
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::DNS_DOMAIN;
 
 const RESOLVER_IP: &str = "127.0.0.1";
 
+#[async_trait]
 pub trait DnsConfigurator: Send + Sync {
-    fn apply(&self) -> Result<()>;
-    fn revert(&self) -> Result<()>;
+    async fn apply(&self) -> Result<()>;
+    async fn revert(&self) -> Result<()>;
     fn name(&self) -> &'static str;
 }
 
-/// Run `f` on a dedicated OS thread, off the async runtime.
-///
-/// The Linux DNS backends use `zbus::blocking`, which internally drives its own
-/// executor via `block_on`. Calling that directly from a tokio worker thread
-/// panics with "Cannot start a runtime from within a runtime". A scoped thread
-/// runs the work on a plain (non-runtime) thread while still borrowing locals.
-#[cfg(target_os = "linux")]
-fn off_runtime<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
-    std::thread::scope(|s| s.spawn(f).join().expect("DNS worker thread panicked"))
+/// Revert a DNS configuration.
+pub async fn revert(configurator: &dyn DnsConfigurator) -> Result<()> {
+    configurator.revert().await
 }
 
-/// Revert a DNS configuration, running blocking backends off the async runtime.
-pub fn revert(configurator: &dyn DnsConfigurator) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        return off_runtime(|| configurator.revert());
-    }
-    #[allow(unreachable_code)]
-    configurator.revert()
-}
-
-pub fn detect_and_configure(tun_name: &str) -> Result<Box<dyn DnsConfigurator>> {
+pub async fn detect_and_configure(tun_name: &str) -> Result<Box<dyn DnsConfigurator>> {
     #[cfg(target_os = "macos")]
     {
         let _ = tun_name;
         let configurator = MacosDynamicStoreDns;
-        configurator.apply()?;
+        configurator.apply().await?;
         return Ok(Box::new(configurator));
     }
 
     #[cfg(target_os = "linux")]
     {
-        // The D-Bus backends use zbus::blocking, so run detection + apply off the
-        // async runtime to avoid the nested-runtime panic.
-        return off_runtime(|| {
-            if let Some(c) = try_systemd_resolved_dbus(tun_name) {
-                c.apply()?;
-                return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
-            }
-            if let Some(c) = try_networkmanager_dbus(tun_name) {
-                c.apply()?;
-                return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
-            }
-            if let Some(c) = try_systemd_resolved_cli(tun_name) {
-                c.apply()?;
-                return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
-            }
-            if let Some(c) = try_resolvconf() {
-                c.apply()?;
-                return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
-            }
-            let c = DirectResolvConf;
-            c.apply()?;
-            Ok(Box::new(c) as Box<dyn DnsConfigurator>)
-        });
+        if let Some(c) = try_systemd_resolved_dbus(tun_name).await {
+            c.apply().await?;
+            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+        }
+        if let Some(c) = try_networkmanager_dbus(tun_name).await {
+            c.apply().await?;
+            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+        }
+        if let Some(c) = try_systemd_resolved_cli(tun_name) {
+            c.apply().await?;
+            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+        }
+        if let Some(c) = try_resolvconf() {
+            c.apply().await?;
+            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+        }
+        let c = DirectResolvConf;
+        c.apply().await?;
+        return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
     }
 
     #[allow(unreachable_code)]
@@ -127,14 +105,14 @@ pub fn restore_stale_backups() {
 /// Configures search domains (`<network>.ray`, `pi`) and supplemental match
 /// domains (each network name + `pi`) so the OS routes queries to rayfish.
 /// Call whenever networks are joined or left.
-pub fn update_search_domains(network_names: &[String], tun_name: &str) {
+pub async fn update_search_domains(network_names: &[String], tun_name: &str) {
     let mut search: Vec<String> = network_names
         .iter()
         .map(|n| format!("{n}.{DNS_DOMAIN}"))
         .collect();
     search.push(DNS_DOMAIN.to_string());
 
-    if let Err(e) = set_search_domains(&search, network_names, tun_name) {
+    if let Err(e) = set_search_domains(&search, network_names, tun_name).await {
         tracing::warn!(error = %e, "failed to update search domains");
     } else {
         tracing::info!(search = ?search, match_domains = ?network_names, "updated search domains");
@@ -142,13 +120,13 @@ pub fn update_search_domains(network_names: &[String], tun_name: &str) {
 }
 
 /// Remove all rayfish search domains (called on daemon shutdown).
-pub fn clear_search_domains(tun_name: &str) {
-    if let Err(e) = set_search_domains(&[], &[], tun_name) {
+pub async fn clear_search_domains(tun_name: &str) {
+    if let Err(e) = set_search_domains(&[], &[], tun_name).await {
         tracing::warn!(error = %e, "failed to clear search domains");
     }
 }
 
-fn set_search_domains(
+async fn set_search_domains(
     rayfish_domains: &[String],
     network_names: &[String],
     tun_name: &str,
@@ -160,7 +138,7 @@ fn set_search_domains(
     }
     #[cfg(target_os = "linux")]
     {
-        off_runtime(|| set_search_domains_linux(rayfish_domains, network_names, tun_name))
+        set_search_domains_linux(rayfish_domains, network_names, tun_name).await
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -186,6 +164,8 @@ mod macos {
         kSCPropNetDNSSearchDomains, kSCPropNetDNSServerAddresses,
         kSCPropNetDNSSupplementalMatchDomains,
     };
+
+    use async_trait::async_trait;
 
     use super::{DNS_DOMAIN, DnsConfigurator, RESOLVER_IP};
 
@@ -255,8 +235,9 @@ mod macos {
 
     pub struct MacosDynamicStoreDns;
 
+    #[async_trait]
     impl DnsConfigurator for MacosDynamicStoreDns {
-        fn apply(&self) -> Result<()> {
+        async fn apply(&self) -> Result<()> {
             init_store()?;
             write_dns_config(&[DNS_DOMAIN.to_string()], &[])?;
             tracing::info!(
@@ -266,7 +247,7 @@ mod macos {
             Ok(())
         }
 
-        fn revert(&self) -> Result<()> {
+        async fn revert(&self) -> Result<()> {
             if let Some(store) = STORE.get() {
                 let store = store.lock().unwrap();
                 store.0.remove(SC_DNS_KEY);
@@ -294,7 +275,7 @@ fn write_dns_config_macos(search_domains: &[String], network_names: &[String]) -
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-fn set_search_domains_linux(
+async fn set_search_domains_linux(
     rayfish_domains: &[String],
     network_names: &[String],
     tun_name: &str,
@@ -303,7 +284,7 @@ fn set_search_domains_linux(
 
     // Try D-Bus first
     if let Some(idx) = ifindex {
-        if let Ok(conn) = zbus::blocking::Connection::system() {
+        if let Ok(conn) = zbus::Connection::system().await {
             let mut domains: Vec<(String, bool)> = vec![(DNS_DOMAIN.to_string(), true)];
             // Each network name as a routing domain (~network)
             for name in network_names {
@@ -312,13 +293,15 @@ fn set_search_domains_linux(
             for d in rayfish_domains {
                 domains.push((d.clone(), false));
             }
-            let reply = conn.call_method(
-                Some("org.freedesktop.resolve1"),
-                "/org/freedesktop/resolve1",
-                Some("org.freedesktop.resolve1.Manager"),
-                "SetLinkDomains",
-                &(idx as i32, &domains),
-            );
+            let reply = conn
+                .call_method(
+                    Some("org.freedesktop.resolve1"),
+                    "/org/freedesktop/resolve1",
+                    Some("org.freedesktop.resolve1.Manager"),
+                    "SetLinkDomains",
+                    &(idx as i32, &domains),
+                )
+                .await;
             if reply.is_ok() {
                 return Ok(());
             }
@@ -371,17 +354,19 @@ struct SystemdResolvedDBus {
 }
 
 #[cfg(target_os = "linux")]
-fn try_systemd_resolved_dbus(tun_name: &str) -> Option<SystemdResolvedDBus> {
+async fn try_systemd_resolved_dbus(tun_name: &str) -> Option<SystemdResolvedDBus> {
     let ifindex = linux::get_ifindex(tun_name)? as i32;
-    let conn = zbus::blocking::Connection::system().ok()?;
+    let conn = zbus::Connection::system().await.ok()?;
     // Check that resolved is available on the bus
-    let reply = conn.call_method(
-        Some("org.freedesktop.resolve1"),
-        "/org/freedesktop/resolve1",
-        Some("org.freedesktop.DBus.Peer"),
-        "Ping",
-        &(),
-    );
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.resolve1"),
+            "/org/freedesktop/resolve1",
+            Some("org.freedesktop.DBus.Peer"),
+            "Ping",
+            &(),
+        )
+        .await;
     if reply.is_err() {
         return None;
     }
@@ -389,10 +374,12 @@ fn try_systemd_resolved_dbus(tun_name: &str) -> Option<SystemdResolvedDBus> {
 }
 
 #[cfg(target_os = "linux")]
+#[async_trait]
 impl DnsConfigurator for SystemdResolvedDBus {
-    fn apply(&self) -> Result<()> {
-        let conn =
-            zbus::blocking::Connection::system().context("failed to connect to system D-Bus")?;
+    async fn apply(&self) -> Result<()> {
+        let conn = zbus::Connection::system()
+            .await
+            .context("failed to connect to system D-Bus")?;
 
         // SetLinkDNS(ifindex, [(family, address)])
         // AF_INET = 2, address = [127, 0, 0, 1]
@@ -404,6 +391,7 @@ impl DnsConfigurator for SystemdResolvedDBus {
             "SetLinkDNS",
             &(self.ifindex, &dns_addrs),
         )
+        .await
         .context("SetLinkDNS failed")?;
 
         // SetLinkDomains(ifindex, [(domain, routing_only)])
@@ -415,6 +403,7 @@ impl DnsConfigurator for SystemdResolvedDBus {
             "SetLinkDomains",
             &(self.ifindex, &domains),
         )
+        .await
         .context("SetLinkDomains failed")?;
 
         tracing::info!(
@@ -424,15 +413,17 @@ impl DnsConfigurator for SystemdResolvedDBus {
         Ok(())
     }
 
-    fn revert(&self) -> Result<()> {
-        if let Ok(conn) = zbus::blocking::Connection::system() {
-            let _ = conn.call_method(
-                Some("org.freedesktop.resolve1"),
-                "/org/freedesktop/resolve1",
-                Some("org.freedesktop.resolve1.Manager"),
-                "RevertLink",
-                &(self.ifindex,),
-            );
+    async fn revert(&self) -> Result<()> {
+        if let Ok(conn) = zbus::Connection::system().await {
+            let _ = conn
+                .call_method(
+                    Some("org.freedesktop.resolve1"),
+                    "/org/freedesktop/resolve1",
+                    Some("org.freedesktop.resolve1.Manager"),
+                    "RevertLink",
+                    &(self.ifindex,),
+                )
+                .await;
         }
         tracing::info!("reverted systemd-resolved D-Bus configuration");
         Ok(())
@@ -453,8 +444,8 @@ struct NetworkManagerDns {
 }
 
 #[cfg(target_os = "linux")]
-fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
-    let conn = zbus::blocking::Connection::system().ok()?;
+async fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
+    let conn = zbus::Connection::system().await.ok()?;
 
     // Check that NetworkManager is on the bus
     conn.call_method(
@@ -464,6 +455,7 @@ fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
         "Ping",
         &(),
     )
+    .await
     .ok()?;
 
     // Check NM DNS mode — if "systemd-resolved" or "none", skip (resolved handles it)
@@ -475,6 +467,7 @@ fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
             "Get",
             &("org.freedesktop.NetworkManager.DnsManager", "Mode"),
         )
+        .await
         .ok()?;
 
     if let Ok(mode) = dns_reply.body().deserialize::<zbus::zvariant::Value>() {
@@ -495,9 +488,9 @@ fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
 
 #[cfg(target_os = "linux")]
 impl NetworkManagerDns {
-    fn get_device_path(
+    async fn get_device_path(
         &self,
-        conn: &zbus::blocking::Connection,
+        conn: &zbus::Connection,
     ) -> Result<zbus::zvariant::OwnedObjectPath> {
         let reply = conn
             .call_method(
@@ -507,6 +500,7 @@ impl NetworkManagerDns {
                 "GetDeviceByIpIface",
                 &(&*self.tun_iface,),
             )
+            .await
             .context("GetDeviceByIpIface")?;
         reply
             .body()
@@ -516,11 +510,14 @@ impl NetworkManagerDns {
 }
 
 #[cfg(target_os = "linux")]
+#[async_trait]
 impl DnsConfigurator for NetworkManagerDns {
-    fn apply(&self) -> Result<()> {
-        let conn = zbus::blocking::Connection::system().context("D-Bus system bus")?;
+    async fn apply(&self) -> Result<()> {
+        let conn = zbus::Connection::system()
+            .await
+            .context("D-Bus system bus")?;
 
-        let device_path = self.get_device_path(&conn)?;
+        let device_path = self.get_device_path(&conn).await?;
 
         // Get the Ip4Config object path for this device
         let reply = conn
@@ -531,6 +528,7 @@ impl DnsConfigurator for NetworkManagerDns {
                 "Get",
                 &("org.freedesktop.NetworkManager.Device", "Ip4Config"),
             )
+            .await
             .context("get Ip4Config")?;
 
         let config_val: zbus::zvariant::OwnedValue = reply
@@ -542,41 +540,45 @@ impl DnsConfigurator for NetworkManagerDns {
             if config_path.as_str() != "/" {
                 // Set DNS nameservers via D-Bus Properties — 127.0.0.1 as u32 (network byte order)
                 let dns_servers: Vec<u32> = vec![0x0100007f]; // 127.0.0.1 in NBO
-                let _ = conn.call_method(
-                    Some("org.freedesktop.NetworkManager"),
-                    config_path.as_str(),
-                    Some("org.freedesktop.DBus.Properties"),
-                    "Set",
-                    &(
-                        "org.freedesktop.NetworkManager.IP4Config",
-                        "Nameservers",
-                        zbus::zvariant::Value::from(dns_servers),
-                    ),
-                );
+                let _ = conn
+                    .call_method(
+                        Some("org.freedesktop.NetworkManager"),
+                        config_path.as_str(),
+                        Some("org.freedesktop.DBus.Properties"),
+                        "Set",
+                        &(
+                            "org.freedesktop.NetworkManager.IP4Config",
+                            "Nameservers",
+                            zbus::zvariant::Value::from(dns_servers),
+                        ),
+                    )
+                    .await;
             }
         }
 
         // Also set DNS search domain on the device connection settings
-        let _ = conn.call_method(
-            Some("org.freedesktop.NetworkManager"),
-            device_path.as_str(),
-            Some("org.freedesktop.NetworkManager.Device"),
-            "Reapply",
-            &(
-                std::collections::HashMap::<
-                    String,
-                    std::collections::HashMap<String, zbus::zvariant::Value>,
-                >::new(),
-                0u64,
-                0u32,
-            ),
-        );
+        let _ = conn
+            .call_method(
+                Some("org.freedesktop.NetworkManager"),
+                device_path.as_str(),
+                Some("org.freedesktop.NetworkManager.Device"),
+                "Reapply",
+                &(
+                    std::collections::HashMap::<
+                        String,
+                        std::collections::HashMap<String, zbus::zvariant::Value>,
+                    >::new(),
+                    0u64,
+                    0u32,
+                ),
+            )
+            .await;
 
         tracing::info!("configured NetworkManager DNS via D-Bus for .{DNS_DOMAIN}");
         Ok(())
     }
 
-    fn revert(&self) -> Result<()> {
+    async fn revert(&self) -> Result<()> {
         tracing::info!("NetworkManager DNS reverts on interface removal");
         Ok(())
     }
@@ -608,18 +610,21 @@ fn try_systemd_resolved_cli(tun_name: &str) -> Option<SystemdResolvedCli> {
 }
 
 #[cfg(target_os = "linux")]
+#[async_trait]
 impl DnsConfigurator for SystemdResolvedCli {
-    fn apply(&self) -> Result<()> {
-        use std::process::Command;
+    async fn apply(&self) -> Result<()> {
+        use tokio::process::Command;
         let status = Command::new("resolvectl")
             .args(["dns", &self.tun_iface, RESOLVER_IP])
             .status()
+            .await
             .context("resolvectl dns")?;
         anyhow::ensure!(status.success(), "resolvectl dns failed");
 
         let status = Command::new("resolvectl")
             .args(["domain", &self.tun_iface, &format!("~{DNS_DOMAIN}")])
             .status()
+            .await
             .context("resolvectl domain")?;
         anyhow::ensure!(status.success(), "resolvectl domain failed");
 
@@ -630,11 +635,12 @@ impl DnsConfigurator for SystemdResolvedCli {
         Ok(())
     }
 
-    fn revert(&self) -> Result<()> {
-        use std::process::Command;
+    async fn revert(&self) -> Result<()> {
+        use tokio::process::Command;
         let _ = Command::new("resolvectl")
             .args(["revert", &self.tun_iface])
-            .status();
+            .status()
+            .await;
         tracing::info!("reverted systemd-resolved CLI configuration");
         Ok(())
     }
@@ -693,10 +699,13 @@ impl Resolvconf {
 }
 
 #[cfg(target_os = "linux")]
+#[async_trait]
 impl DnsConfigurator for Resolvconf {
-    fn apply(&self) -> Result<()> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
+    async fn apply(&self) -> Result<()> {
+        use std::process::Stdio;
+
+        use tokio::io::AsyncWriteExt;
+        use tokio::process::Command;
         let config = format!("nameserver {RESOLVER_IP}\nsearch {DNS_DOMAIN}\n");
         let iface = self.iface_name();
         let mut child = Command::new("resolvconf")
@@ -704,8 +713,13 @@ impl DnsConfigurator for Resolvconf {
             .stdin(Stdio::piped())
             .spawn()
             .context("spawning resolvconf")?;
-        child.stdin.as_mut().unwrap().write_all(config.as_bytes())?;
-        let status = child.wait()?;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(config.as_bytes())
+            .await?;
+        let status = child.wait().await?;
         anyhow::ensure!(status.success(), "resolvconf -a failed");
         let variant_name = match self.variant {
             ResolvconfVariant::Debian => "debian",
@@ -718,10 +732,13 @@ impl DnsConfigurator for Resolvconf {
         Ok(())
     }
 
-    fn revert(&self) -> Result<()> {
-        use std::process::Command;
+    async fn revert(&self) -> Result<()> {
+        use tokio::process::Command;
         let iface = self.iface_name();
-        let _ = Command::new("resolvconf").args(["-d", iface]).status();
+        let _ = Command::new("resolvconf")
+            .args(["-d", iface])
+            .status()
+            .await;
         tracing::info!("reverted resolvconf configuration");
         Ok(())
     }
@@ -748,22 +765,26 @@ fn backup_path(original: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn backup_file(path: &std::path::Path) -> Result<()> {
+async fn backup_file(path: &std::path::Path) -> Result<()> {
     let backup = backup_path(path);
     if path.exists() {
-        std::fs::copy(path, &backup).with_context(|| format!("backing up {}", path.display()))?;
+        tokio::fs::copy(path, &backup)
+            .await
+            .with_context(|| format!("backing up {}", path.display()))?;
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn restore_file(path: &std::path::Path) -> Result<()> {
+async fn restore_file(path: &std::path::Path) -> Result<()> {
     let backup = backup_path(path);
     if backup.exists() {
-        std::fs::copy(&backup, path).with_context(|| format!("restoring {}", path.display()))?;
-        std::fs::remove_file(&backup)?;
+        tokio::fs::copy(&backup, path)
+            .await
+            .with_context(|| format!("restoring {}", path.display()))?;
+        tokio::fs::remove_file(&backup).await?;
     } else if path.exists() {
-        std::fs::remove_file(path)?;
+        tokio::fs::remove_file(path).await?;
     }
     Ok(())
 }
@@ -772,22 +793,25 @@ fn restore_file(path: &std::path::Path) -> Result<()> {
 struct DirectResolvConf;
 
 #[cfg(target_os = "linux")]
+#[async_trait]
 impl DnsConfigurator for DirectResolvConf {
-    fn apply(&self) -> Result<()> {
+    async fn apply(&self) -> Result<()> {
         use std::path::Path;
         let path = Path::new("/etc/resolv.conf");
-        backup_file(path)?;
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        backup_file(path).await?;
+        let existing = tokio::fs::read_to_string(path).await.unwrap_or_default();
         let new_content = format!("{HEADER_COMMENT}nameserver {RESOLVER_IP}\n{existing}");
-        std::fs::write(path, new_content).context("writing /etc/resolv.conf")?;
+        tokio::fs::write(path, new_content)
+            .await
+            .context("writing /etc/resolv.conf")?;
         tracing::info!("configured /etc/resolv.conf directly (fallback)");
         Ok(())
     }
 
-    fn revert(&self) -> Result<()> {
+    async fn revert(&self) -> Result<()> {
         use std::path::Path;
         let path = Path::new("/etc/resolv.conf");
-        restore_file(path)?;
+        restore_file(path).await?;
         tracing::info!("reverted /etc/resolv.conf");
         Ok(())
     }
