@@ -10,14 +10,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
-use dashmap::DashMap;
 use iroh::EndpointId;
 use iroh::endpoint::{Connection, ConnectionError, VarInt};
-use smol_str::SmolStr;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::acl::AclData;
 use crate::firewall::{self, Direction, SharedFirewall};
 use crate::peers::{DeviceUserMap, PeerTable};
 use crate::stats::{DropReason, ForwardMetrics};
@@ -30,34 +27,27 @@ const MAX_PEER_DATAGRAM: usize = 1500;
 
 /// Decision returned by [`evaluate_inbound`] for a datagram received from a peer.
 pub(crate) enum InboundDecision {
-    /// Packet passed ACL + firewall checks and may be written to the TUN.
+    /// Packet passed the firewall check and may be written to the TUN.
     Accept,
-    /// Dropped by the network ACL.
-    DropAcl,
     /// Dropped by the local firewall.
     DropFirewall,
     /// Dropped: too large or not a parseable IP packet.
     DropMalformed,
 }
 
-/// Pure evaluation of an inbound peer datagram against ACL, firewall, and basic
+/// Pure evaluation of an inbound peer datagram against the firewall and basic
 /// packet validity. Extracted from [`spawn_peer_reader`] so it can be unit-tested.
 ///
 /// Non-IP / truncated / oversized packets are rejected (`DropMalformed`) rather
 /// than passed through — previously such packets bypassed the firewall entirely.
 pub(crate) fn evaluate_inbound(
     packet: &[u8],
-    acl: &AclData,
     firewall: &SharedFirewall,
     peer_id: &EndpointId,
-    local_id: &EndpointId,
     network: &str,
 ) -> InboundDecision {
     if packet.len() > MAX_PEER_DATAGRAM {
         return InboundDecision::DropMalformed;
-    }
-    if !acl.is_allowed(peer_id, local_id) {
-        return InboundDecision::DropAcl;
     }
     let Some(info) = firewall::parse_packet_info(packet) else {
         return InboundDecision::DropMalformed;
@@ -69,34 +59,6 @@ pub(crate) fn evaluate_inbound(
         return InboundDecision::DropFirewall;
     }
     InboundDecision::Accept
-}
-
-#[derive(Clone)]
-pub struct SharedAcl {
-    inner: Arc<DashMap<SmolStr, Arc<AclData>>>,
-}
-
-impl SharedAcl {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(DashMap::new()),
-        }
-    }
-
-    pub fn set(&self, network: &str, acl: AclData) {
-        self.inner.insert(SmolStr::new(network), Arc::new(acl));
-    }
-
-    pub fn remove(&self, network: &str) {
-        self.inner.remove(network);
-    }
-
-    pub fn get(&self, network: &str) -> Arc<AclData> {
-        self.inner
-            .get(network)
-            .map(|e| Arc::clone(e.value()))
-            .unwrap_or_else(|| Arc::new(AclData::empty()))
-    }
 }
 
 /// Application close code a peer sends when it deliberately leaves a network
@@ -125,12 +87,9 @@ pub struct DisconnectEvent {
 pub async fn run_mesh(
     mut tun: TunReader,
     peers: PeerTable,
-    local_id: EndpointId,
-    shared_acl: SharedAcl,
     firewall: SharedFirewall,
     token: CancellationToken,
     stats: Arc<ForwardMetrics>,
-    device_user_map: DeviceUserMap,
 ) -> Result<()> {
     let mut buf = vec![0u8; 1500];
     loop {
@@ -156,22 +115,8 @@ pub async fn run_mesh(
                     stats.record_drop(DropReason::NoPeer);
                     continue;
                 };
-                let local_user = device_user_map.resolve(&local_id);
-                let peer_user = device_user_map.resolve(&route.endpoint_id);
-                // Reachability is "we share a network". With overlapping
-                // membership, allow if *any* shared network's ACL permits
-                // (union); the default ACL is allow-all, so this is a no-op
-                // for users who don't set ACL rules. The firewall is the
-                // real per-host gate.
-                let acl_allowed = route
-                    .shared_networks
-                    .iter()
-                    .any(|net| shared_acl.get(net).is_allowed(&local_user, &peer_user));
-                if !acl_allowed {
-                    tracing::debug!(dst = %info.dst_ip, "ACL denied outbound");
-                    stats.record_drop(DropReason::Acl);
-                    continue;
-                }
+                // Reachability is "we share a network" — enforced by connection
+                // existence. The per-host firewall is the fine-grained gate.
                 if firewall.evaluate_packet(Direction::Out, &info, &route.endpoint_id, Some(&route.network)).is_deny() {
                     tracing::debug!(dst = %info.dst_ip, port = info.dst_port, "firewall denied outbound");
                     stats.record_drop(DropReason::Firewall);
@@ -199,9 +144,7 @@ pub fn spawn_peer_reader(
     peer_id: EndpointId,
     peer_ip: Ipv4Addr,
     peer_ipv6: std::net::Ipv6Addr,
-    local_id: EndpointId,
     network: String,
-    shared_acl: SharedAcl,
     firewall: SharedFirewall,
     tun_tx: mpsc::Sender<Vec<u8>>,
     disconnect_tx: mpsc::Sender<DisconnectEvent>,
@@ -243,24 +186,14 @@ pub fn spawn_peer_reader(
                 },
             };
 
-            let acl = shared_acl.get(&network);
             let peer_user = device_user_map.resolve(&peer_id);
-            let local_user = device_user_map.resolve(&local_id);
-            match evaluate_inbound(
-                &datagram,
-                &acl,
-                &firewall,
-                &peer_user,
-                &local_user,
-                &network,
-            ) {
+            match evaluate_inbound(&datagram, &firewall, &peer_user, &network) {
                 InboundDecision::Accept => {
                     stats.record_rx(datagram.len());
                     if tun_tx.send(datagram.to_vec()).await.is_err() {
                         return;
                     }
                 }
-                InboundDecision::DropAcl => stats.record_drop(DropReason::Acl),
                 InboundDecision::DropFirewall => stats.record_drop(DropReason::Firewall),
                 InboundDecision::DropMalformed => stats.record_drop(DropReason::Malformed),
             }
@@ -287,7 +220,6 @@ pub fn spawn_tun_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl;
     use crate::firewall::Action;
 
     #[test]
@@ -342,58 +274,31 @@ mod tests {
 
     #[test]
     fn inbound_oversized_datagram_dropped_as_malformed() {
-        let acl = AclData::empty();
         let fw = SharedFirewall::new(firewall::FirewallConfig::default());
         let peer = iroh::SecretKey::generate().public();
-        let me = iroh::SecretKey::generate().public();
         let huge = vec![0u8; MAX_PEER_DATAGRAM + 1];
         assert!(matches!(
-            evaluate_inbound(&huge, &acl, &fw, &peer, &me, "test-net"),
+            evaluate_inbound(&huge, &fw, &peer, "test-net"),
             InboundDecision::DropMalformed
         ));
     }
 
     #[test]
     fn inbound_ipv6_evaluated_by_firewall() {
-        let acl = AclData::empty();
         let fw = inbound_fw(Action::Deny, vec![]);
         let peer = iroh::SecretKey::generate().public();
-        let me = iroh::SecretKey::generate().public();
         let mut pkt = vec![0u8; 40];
         pkt[0] = 0x60; // IPv6
         pkt[6] = 6; // TCP
         assert!(matches!(
-            evaluate_inbound(&pkt, &acl, &fw, &peer, &me, "test-net"),
+            evaluate_inbound(&pkt, &fw, &peer, "test-net"),
             InboundDecision::DropFirewall
-        ));
-    }
-
-    #[test]
-    fn inbound_acl_denied_before_firewall() {
-        let peer = iroh::SecretKey::generate().public();
-        let me = iroh::SecretKey::generate().public();
-        let acl = AclData {
-            tags: vec![],
-            rules: vec![acl::AclRule {
-                src: acl::Target::Identity(peer),
-                dst: acl::Target::Identity(me),
-            }],
-        };
-        // Rule allows peer->me, so a different src should be denied. Use a third id.
-        let other = iroh::SecretKey::generate().public();
-        let fw = SharedFirewall::new(firewall::FirewallConfig::default());
-        let pkt = make_tcp_packet(443);
-        assert!(matches!(
-            evaluate_inbound(&pkt, &acl, &fw, &other, &me, "test-net"),
-            InboundDecision::DropAcl
         ));
     }
 
     #[test]
     fn inbound_firewall_denied_port() {
         let peer = iroh::SecretKey::generate().public();
-        let me = iroh::SecretKey::generate().public();
-        let acl = AclData::empty();
         let fw = inbound_fw(
             Action::Allow,
             vec![firewall::FirewallRule {
@@ -408,11 +313,11 @@ mod tests {
         let blocked = make_tcp_packet(22);
         let allowed = make_tcp_packet(80);
         assert!(matches!(
-            evaluate_inbound(&blocked, &acl, &fw, &peer, &me, "test-net"),
+            evaluate_inbound(&blocked, &fw, &peer, "test-net"),
             InboundDecision::DropFirewall
         ));
         assert!(matches!(
-            evaluate_inbound(&allowed, &acl, &fw, &peer, &me, "test-net"),
+            evaluate_inbound(&allowed, &fw, &peer, "test-net"),
             InboundDecision::Accept
         ));
     }
@@ -420,12 +325,10 @@ mod tests {
     #[test]
     fn inbound_clean_tcp_accepted() {
         let peer = iroh::SecretKey::generate().public();
-        let me = iroh::SecretKey::generate().public();
-        let acl = AclData::empty();
         let fw = SharedFirewall::new(firewall::FirewallConfig::default());
         let pkt = make_tcp_packet(443);
         assert!(matches!(
-            evaluate_inbound(&pkt, &acl, &fw, &peer, &me, "test-net"),
+            evaluate_inbound(&pkt, &fw, &peer, "test-net"),
             InboundDecision::Accept
         ));
     }

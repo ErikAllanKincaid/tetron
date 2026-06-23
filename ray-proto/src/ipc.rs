@@ -58,31 +58,6 @@ pub enum IpcMessage {
     /// system DNS, and bring the TUN interface down. The daemon process keeps
     /// running so it can be reactivated with `Up`.
     Down,
-    AclTag {
-        network: String,
-        tag: String,
-        peer_ids: Vec<String>,
-    },
-    AclUntag {
-        network: String,
-        tag: String,
-        peer_id: String,
-    },
-    AclAllow {
-        network: String,
-        src: String,
-        dst: String,
-    },
-    AclRemove {
-        network: String,
-        index: usize,
-    },
-    AclShow {
-        network: String,
-    },
-    AclApply {
-        network: String,
-    },
     FirewallAdd {
         direction: String,
         action: String,
@@ -179,9 +154,6 @@ pub enum IpcMessage {
         packets_tx: u64,
         bytes_rx: u64,
         bytes_tx: u64,
-    },
-    AclState {
-        display: String,
     },
     FirewallState {
         display: String,
@@ -414,44 +386,6 @@ mod tests {
                 assert_eq!(name, "test");
                 assert_eq!(network_key, key);
                 assert_eq!(my_ip, Ipv4Addr::new(100, 64, 10, 5));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_acl_tag_roundtrip() {
-        let req = IpcMessage::AclTag {
-            network: "gentle-amber-fox".to_string(),
-            tag: "servers".to_string(),
-            peer_ids: vec!["ab3f".to_string(), "d92c".to_string()],
-        };
-        let bytes = rmp_serde::to_vec(&req).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::AclTag {
-                network,
-                tag,
-                peer_ids,
-            } => {
-                assert_eq!(network, "gentle-amber-fox");
-                assert_eq!(tag, "servers");
-                assert_eq!(peer_ids.len(), 2);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_acl_state_roundtrip() {
-        let resp = IpcMessage::AclState {
-            display: "Tags:\n  servers: ab3f\n".to_string(),
-        };
-        let bytes = rmp_serde::to_vec(&resp).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::AclState { display } => {
-                assert!(display.contains("servers"));
             }
             _ => panic!("wrong variant"),
         }

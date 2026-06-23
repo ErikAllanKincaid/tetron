@@ -46,15 +46,13 @@ pub struct PeerEntry {
     pub conns: HashMap<SmolStr, Connection>,
 }
 
-/// Result of a routing lookup: a connection to send over, plus the full set of
-/// networks shared with the peer (for union ACL checks in the forwarding path).
+/// Result of a routing lookup: a connection to send over and the network it
+/// belongs to (used as firewall context on the forwarding path).
 pub struct PeerRoute {
     pub conn: Connection,
     pub endpoint_id: EndpointId,
     /// The network whose connection was chosen to route over.
     pub network: SmolStr,
-    /// All networks we currently share a live connection with this peer, sorted.
-    pub shared_networks: Vec<SmolStr>,
 }
 
 impl PeerEntry {
@@ -62,13 +60,10 @@ impl PeerEntry {
     /// routing for a multi-homed peer is stable across lookups.
     fn route(&self) -> Option<PeerRoute> {
         let (network, conn) = self.conns.iter().min_by(|a, b| a.0.cmp(b.0))?;
-        let mut shared_networks: Vec<SmolStr> = self.conns.keys().cloned().collect();
-        shared_networks.sort();
         Some(PeerRoute {
             conn: conn.clone(),
             endpoint_id: self.endpoint_id,
             network: network.clone(),
-            shared_networks,
         })
     }
 }

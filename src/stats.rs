@@ -15,7 +15,6 @@ use crate::peers::PeerTable;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelValue)]
 pub enum DropReason {
-    Acl,
     Firewall,
     SendFailure,
     NoPeer,
@@ -23,8 +22,7 @@ pub enum DropReason {
 }
 
 impl DropReason {
-    const ALL: [DropReason; 5] = [
-        DropReason::Acl,
+    const ALL: [DropReason; 4] = [
         DropReason::Firewall,
         DropReason::SendFailure,
         DropReason::NoPeer,
@@ -237,14 +235,14 @@ mod tests {
     #[test]
     fn test_record_drop() {
         let stats = ForwardMetrics::default();
-        stats.record_drop(DropReason::Acl);
         stats.record_drop(DropReason::Firewall);
-        stats.record_drop(DropReason::Acl);
+        stats.record_drop(DropReason::NoPeer);
+        stats.record_drop(DropReason::Firewall);
         assert_eq!(
             stats
                 .drops
                 .get(&DropLabels {
-                    reason: DropReason::Acl
+                    reason: DropReason::Firewall
                 })
                 .unwrap()
                 .get(),
@@ -254,7 +252,7 @@ mod tests {
             stats
                 .drops
                 .get(&DropLabels {
-                    reason: DropReason::Firewall
+                    reason: DropReason::NoPeer
                 })
                 .unwrap()
                 .get(),

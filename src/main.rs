@@ -1,4 +1,3 @@
-mod acl;
 mod config;
 mod control;
 mod daemon;
@@ -152,13 +151,6 @@ enum Command {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
-    /// Manage ACL rules for a network
-    Acl {
-        /// Three-word network name
-        network: String,
-        #[command(subcommand)]
-        action: AclAction,
-    },
     /// Mint and manage one-time invite codes for a network (coordinator only)
     Invite {
         /// Network name to issue/manage invites for
@@ -259,40 +251,6 @@ enum PairAction {
         /// The encrypted backup string
         backup: String,
     },
-}
-
-#[derive(Subcommand)]
-enum AclAction {
-    /// Assign a tag to peers
-    Tag {
-        /// Tag name
-        tag: String,
-        /// Peer ID short hex prefixes
-        peer_ids: Vec<String>,
-    },
-    /// Remove a tag from a peer
-    Untag {
-        /// Tag name
-        tag: String,
-        /// Peer ID short hex prefix
-        peer_id: String,
-    },
-    /// Add an allow rule
-    Allow {
-        /// Source (tag name, peer ID, or "all")
-        src: String,
-        /// Destination (tag name, peer ID, or "all")
-        dst: String,
-    },
-    /// Remove a rule by index
-    Remove {
-        /// Rule index (from 'acl show')
-        index: usize,
-    },
-    /// Show current ACL rules and tags
-    Show,
-    /// Apply ACL rules from the config file
-    Apply,
 }
 
 #[derive(Subcommand)]
@@ -596,7 +554,6 @@ async fn main() -> Result<()> {
             clap_complete::generate(shell, &mut Cli::command(), "ray", &mut std::io::stdout());
             Ok(())
         }
-        Command::Acl { network, action } => ipc_acl(&network, action).await,
         Command::Invite { network, action } => ipc_invite(&network, action).await,
         Command::Requests { network } => ipc_requests(&network).await,
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
@@ -1109,46 +1066,6 @@ async fn ipc_set_hostname(network: &str, hostname: &str) -> Result<()> {
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => eprintln!("Error: {}", message),
-        other => eprintln!("Unexpected response: {:?}", other),
-    }
-    Ok(())
-}
-
-async fn ipc_acl(network: &str, action: AclAction) -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    let req = match action {
-        AclAction::Tag { tag, peer_ids } => ipc::IpcMessage::AclTag {
-            network: network.to_string(),
-            tag,
-            peer_ids,
-        },
-        AclAction::Untag { tag, peer_id } => ipc::IpcMessage::AclUntag {
-            network: network.to_string(),
-            tag,
-            peer_id,
-        },
-        AclAction::Allow { src, dst } => ipc::IpcMessage::AclAllow {
-            network: network.to_string(),
-            src,
-            dst,
-        },
-        AclAction::Remove { index } => ipc::IpcMessage::AclRemove {
-            network: network.to_string(),
-            index,
-        },
-        AclAction::Show => ipc::IpcMessage::AclShow {
-            network: network.to_string(),
-        },
-        AclAction::Apply => ipc::IpcMessage::AclApply {
-            network: network.to_string(),
-        },
-    };
-    ipc::send(&mut stream, req).await?;
-    let resp = ipc::recv(&mut stream).await?;
-    match resp {
-        ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::AclState { display } => print!("{}", display),
         ipc::IpcMessage::Error { message } => eprintln!("Error: {}", message),
         other => eprintln!("Unexpected response: {:?}", other),
     }

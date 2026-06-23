@@ -320,15 +320,12 @@ impl IdentityProvider for IrohIdentityProvider {
 // Canonical membership serialization + hashing
 // ---------------------------------------------------------------------------
 
-use crate::acl::AclData;
-
 /// The single authoritative blob for a network, published by the coordinator.
-/// Contains all state a joiner needs: members, approved list, and ACL rules.
+/// Contains all state a joiner needs: members and the approved list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupBlob {
     pub members: Vec<Member>,
     pub approved: Vec<ApprovedEntry>,
-    pub acl: AclData,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -339,7 +336,6 @@ pub struct GroupBlob {
 pub fn canonical_group_bytes(
     members: &MemberList,
     approved: &ApprovedList,
-    acl: &AclData,
     name: Option<&str>,
 ) -> Vec<u8> {
     let mut sorted_members: Vec<Member> = members.all().into_iter().cloned().collect();
@@ -351,7 +347,6 @@ pub fn canonical_group_bytes(
     let data = GroupBlob {
         members: sorted_members,
         approved: sorted_approved,
-        acl: acl.clone(),
         name: name.map(|s| s.to_string()),
     };
     rmp_serde::to_vec_named(&data).expect("msgpack serialize")
@@ -360,10 +355,9 @@ pub fn canonical_group_bytes(
 pub fn group_blob_hash(
     members: &MemberList,
     approved: &ApprovedList,
-    acl: &AclData,
     name: Option<&str>,
 ) -> blake3::Hash {
-    let bytes = canonical_group_bytes(members, approved, acl, name);
+    let bytes = canonical_group_bytes(members, approved, name);
     blake3::hash(&bytes)
 }
 
@@ -877,9 +871,8 @@ mod tests {
     fn test_canonical_bytes_deterministic() {
         let members = make_member_list(&[1, 2, 3]);
         let approved = ApprovedList::new();
-        let acl = crate::acl::AclData::empty();
-        let a = canonical_group_bytes(&members, &approved, &acl, None);
-        let b = canonical_group_bytes(&members, &approved, &acl, None);
+        let a = canonical_group_bytes(&members, &approved, None);
+        let b = canonical_group_bytes(&members, &approved, None);
         assert_eq!(a, b);
     }
 
@@ -888,10 +881,9 @@ mod tests {
         let m1 = make_member_list(&[1, 2, 3]);
         let m2 = make_member_list(&[3, 1, 2]);
         let approved = ApprovedList::new();
-        let acl = crate::acl::AclData::empty();
         assert_eq!(
-            canonical_group_bytes(&m1, &approved, &acl, None),
-            canonical_group_bytes(&m2, &approved, &acl, None),
+            canonical_group_bytes(&m1, &approved, None),
+            canonical_group_bytes(&m2, &approved, None),
         );
     }
 
@@ -899,10 +891,9 @@ mod tests {
     fn test_group_blob_hash_changes_on_mutation() {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
-        let acl = crate::acl::AclData::empty();
-        let h1 = group_blob_hash(&members, &approved, &acl, None);
+        let h1 = group_blob_hash(&members, &approved, None);
         let members2 = make_member_list(&[1, 2, 3]);
-        let h2 = group_blob_hash(&members2, &approved, &acl, None);
+        let h2 = group_blob_hash(&members2, &approved, None);
         assert_ne!(h1, h2);
     }
 
@@ -923,9 +914,8 @@ mod tests {
                 &members,
             )
             .unwrap();
-        let acl = crate::acl::AclData::empty();
 
-        let bytes = canonical_group_bytes(&members, &approved, &acl, None);
+        let bytes = canonical_group_bytes(&members, &approved, None);
         let data = decode_group_blob(&bytes).unwrap();
         assert_eq!(data.members.len(), 2);
         assert_eq!(data.approved.len(), 1);
@@ -935,9 +925,8 @@ mod tests {
     fn test_verify_group_blob_ok() {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
-        let acl = crate::acl::AclData::empty();
-        let bytes = canonical_group_bytes(&members, &approved, &acl, None);
-        let hash = group_blob_hash(&members, &approved, &acl, None);
+        let bytes = canonical_group_bytes(&members, &approved, None);
+        let hash = group_blob_hash(&members, &approved, None);
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members.len(), 2);
     }
@@ -946,29 +935,11 @@ mod tests {
     fn test_verify_group_blob_bad_hash() {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
-        let acl = crate::acl::AclData::empty();
-        let bytes = canonical_group_bytes(&members, &approved, &acl, None);
+        let bytes = canonical_group_bytes(&members, &approved, None);
         let bad_hash = blake3::hash(b"wrong data");
         let result = verify_group_blob(&bytes, &bad_hash);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("hash mismatch"));
-    }
-
-    #[test]
-    fn test_group_blob_acl_changes_hash() {
-        let members = make_member_list(&[1, 2]);
-        let approved = ApprovedList::new();
-        let acl_empty = crate::acl::AclData::empty();
-        let acl_with_rule = crate::acl::AclData {
-            tags: vec![],
-            rules: vec![crate::acl::AclRule {
-                src: crate::acl::Target::All,
-                dst: crate::acl::Target::All,
-            }],
-        };
-        let h1 = group_blob_hash(&members, &approved, &acl_empty, None);
-        let h2 = group_blob_hash(&members, &approved, &acl_with_rule, None);
-        assert_ne!(h1, h2);
     }
 
     // -- validate_member / validate_approved ---------------------------------
@@ -1093,7 +1064,6 @@ mod tests {
         let blob = GroupBlob {
             members: vec![bad_member],
             approved: vec![],
-            acl: crate::acl::AclData::empty(),
             name: None,
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
@@ -1115,7 +1085,6 @@ mod tests {
         let blob = GroupBlob {
             members: vec![bad_member],
             approved: vec![],
-            acl: crate::acl::AclData::empty(),
             name: None,
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
