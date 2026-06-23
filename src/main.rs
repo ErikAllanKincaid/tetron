@@ -10,6 +10,7 @@ mod forward;
 mod hostname;
 mod identity;
 mod ipc;
+mod logdir;
 mod membership;
 mod network_name;
 mod peers;
@@ -121,6 +122,8 @@ enum Command {
     },
     /// Show status of all networks (active + saved)
     Status,
+    /// Collect diagnostics (logs + metrics) and open a pre-filled GitHub issue
+    Report,
     /// Run the daemon in the foreground (invoked by the system service)
     #[command(hide = true)]
     Daemon,
@@ -290,15 +293,210 @@ fn check_root() {
     }
 }
 
+/// Guards that must outlive the process: the file appender's `WorkerGuard`
+/// (flushes buffered log lines) and, under the `otel` feature, the OpenTelemetry
+/// tracer provider (flushed on drop so in-flight spans are exported).
+#[derive(Default)]
+struct LogGuard {
+    _appender: Option<tracing_appender::non_blocking::WorkerGuard>,
+    #[cfg(feature = "otel")]
+    otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
+
+impl Drop for LogGuard {
+    fn drop(&mut self) {
+        #[cfg(feature = "otel")]
+        if let Some(provider) = self.otel_provider.take() {
+            let _ = provider.shutdown();
+        }
+    }
+}
+
+/// Build the tracing subscriber. The console layer (stdout) is always present;
+/// the daemon additionally gets a rolling daily file layer under [`logdir::log_dir`]
+/// so that `ray report` has on-disk logs to bundle. With the `otel` feature and an
+/// OTLP endpoint configured, spans are also exported to an OpenTelemetry collector.
+/// The returned [`LogGuard`] must be kept alive for the lifetime of the process.
+fn init_tracing(to_file: bool) -> LogGuard {
+    use tracing_subscriber::prelude::*;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // Console layer — unchanged behavior (human text on stdout).
+    let console_layer = tracing_subscriber::fmt::layer();
+
+    // File layer — daemon only, human text with ANSI stripped, rotated daily.
+    let (file_layer, appender_guard) = if to_file {
+        match std::fs::create_dir_all(logdir::log_dir()) {
+            Ok(()) => {
+                let appender = tracing_appender::rolling::daily(logdir::log_dir(), "rayfish.log");
+                let (writer, guard) = tracing_appender::non_blocking(appender);
+                let layer = tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer);
+                (Some(layer), Some(guard))
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: cannot create log directory {}: {e} (file logging disabled)",
+                    logdir::log_dir().display()
+                );
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    let mut guard = LogGuard {
+        _appender: appender_guard,
+        #[cfg(feature = "otel")]
+        otel_provider: None,
+    };
+
+    // OTLP span export layer — only built when the feature is on AND an endpoint
+    // is configured. Type-erased to `Box<dyn Layer>` so the `None` case has a
+    // concrete type; the daemon flushes the provider on shutdown via `LogGuard`.
+    let otel_layer = build_otel_layer(&mut guard);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console_layer)
+        .with(file_layer)
+        .with(otel_layer)
+        .init();
+    guard
+}
+
+#[cfg(feature = "otel")]
+fn build_otel_layer<S>(
+    guard: &mut LogGuard,
+) -> Option<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> + Send + Sync,
+{
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::Layer as _;
+
+    // Respect the standard OTLP env vars: do nothing unless an endpoint is set.
+    if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none()
+        && std::env::var_os("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_none()
+    {
+        return None;
+    }
+
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("otel: failed to build OTLP exporter: {e}");
+            return None;
+        }
+    };
+
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name("rayfish")
+        .build();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource)
+        .build();
+    let tracer = provider.tracer("rayfish");
+    guard.otel_provider = Some(provider);
+
+    tracing::info!("OpenTelemetry OTLP span export enabled");
+    Some(tracing_opentelemetry::layer().with_tracer(tracer).boxed())
+}
+
+/// No-op when the `otel` feature is disabled; the registry sees an inert layer.
+#[cfg(not(feature = "otel"))]
+fn build_otel_layer(_guard: &mut LogGuard) -> Option<tracing_subscriber::layer::Identity> {
+    None
+}
+
+/// Install a fail-fast panic hook (daemon only). On any panic — including in a
+/// spawned tokio task, which the runtime would otherwise swallow — it records the
+/// crash (message, location, thread, backtrace) via `tracing::error!` (rolling file
+/// log + any OTLP exporter) and synchronously appends it to `panic.log` in the log
+/// dir, then **aborts the process**.
+///
+/// Rationale: a panic is an invariant violation. For a VPN daemon, limping on with
+/// a dead subsystem (e.g. a stalled forwarding loop) is worse than a clean restart —
+/// and a live-but-broken process won't trip the service manager's restart. Aborting
+/// lets systemd/launchd restart from known-good state; peers then reconnect. The
+/// crash is captured (durably in `panic.log`) and bundled by `ray report`.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string();
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+
+        tracing::error!(
+            location = %location,
+            thread = %thread,
+            "panic: {message}\n{backtrace}"
+        );
+        // Durable, synchronous capture — survives even though abort() skips the
+        // async log appender's flush.
+        if let Err(e) = append_panic_log(&location, &thread, &message, &backtrace) {
+            eprintln!("failed to write panic log: {e}");
+        }
+
+        // Print the standard panic message to stderr (journal), then fail fast so
+        // the service manager restarts the daemon cleanly.
+        default_hook(info);
+        std::process::abort();
+    }));
+}
+
+/// Append a panic record to `<log_dir>/panic.log`. Best-effort durability in case
+/// the tracing pipeline itself is implicated in the crash.
+fn append_panic_log(
+    location: &str,
+    thread: &str,
+    message: &str,
+    backtrace: &std::backtrace::Backtrace,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = logdir::log_dir();
+    std::fs::create_dir_all(&dir)?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("panic.log"))?;
+    writeln!(f, "=== panic @ unix {ts} ===")?;
+    writeln!(f, "thread:   {thread}")?;
+    writeln!(f, "location: {location}")?;
+    writeln!(f, "message:  {message}")?;
+    writeln!(f, "backtrace:\n{backtrace}\n")?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
     let cli = Cli::parse();
+    // Keep the appender guard alive for the whole process so file logs flush.
+    let _log_guard = init_tracing(matches!(cli.command, Command::Daemon));
 
     match cli.command {
         Command::Leave { name } => ipc_leave(&name).await,
@@ -316,8 +514,10 @@ async fn main() -> Result<()> {
         } => ipc_join(&network_key, name.as_deref(), hostname, tor).await,
         Command::Nuke { name, force } => ipc_nuke(&name, force).await,
         Command::Status => ipc_status().await,
+        Command::Report => ipc_report().await,
         Command::Daemon => {
             check_root();
+            install_panic_hook();
             let token = shutdown::token();
             let stats = Arc::new(stats::ForwardMetrics::default());
             stats.spawn_logger(token.clone());
@@ -759,6 +959,61 @@ async fn ipc_down() -> Result<()> {
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
+}
+
+/// Base repository for `ray report`. Swap this for a managed upload endpoint
+/// once the diagnostics service exists; the rest of the flow stays the same.
+const REPORT_REPO_URL: &str = "https://github.com/rayfish/rayfish";
+
+/// Ask the daemon to build a diagnostic bundle, then open a pre-filled GitHub
+/// issue so the user can attach it. The bundle is built daemon-side (logs are
+/// root-owned) and written to a path owned by the invoking user.
+async fn ipc_report() -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Report).await?;
+    let resp = ipc::recv(&mut stream).await?;
+    match resp {
+        ipc::IpcMessage::ReportBundle {
+            path,
+            issue_title,
+            issue_body,
+        } => {
+            println!("Diagnostic bundle written to:\n  {path}\n");
+            println!(
+                "Review it before sharing — it contains your logs, virtual IPs, and peer IDs,\n\
+                 but no private keys."
+            );
+            let url = url::Url::parse_with_params(
+                &format!("{REPORT_REPO_URL}/issues/new"),
+                &[
+                    ("title", issue_title.as_str()),
+                    ("body", issue_body.as_str()),
+                ],
+            )?;
+            println!("\nOpening a pre-filled GitHub issue — attach the bundle above.");
+            if !open_url(url.as_str()) {
+                println!("\nCouldn't open a browser. Open this URL manually:\n{url}");
+            }
+        }
+        ipc::IpcMessage::Error { message } => eprintln!("Error: {}", message),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
+/// Best-effort: open `url` in the user's default browser. Returns false if no
+/// opener is available (e.g. headless), so the caller can print it instead.
+fn open_url(url: &str) -> bool {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 async fn ipc_set_hostname(network: &str, hostname: &str) -> Result<()> {

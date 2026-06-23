@@ -83,6 +83,14 @@ sudo ray set-operator bob # let user 'bob' run ray without sudo
 
 That's the whole loop. Run `ray --help` to discover the rest (`acl`, `firewall`, `send`, `pair`, `mdns`, …).
 
+### Something went wrong?
+
+```bash
+ray report               # bundle logs + metrics, open a pre-filled GitHub issue
+```
+
+The daemon writes rolling logs to `/var/log/rayfish/` (Linux) or `/Library/Logs/rayfish/` (macOS). `ray report` collects those logs, current metrics, and a sanitized status snapshot (**no private keys**) into a `.tgz`, then opens a pre-filled GitHub issue for you to attach it. The bundle is written locally first, so you can review it before sharing.
+
 ---
 
 ## Building

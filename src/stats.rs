@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iroh_metrics::{Counter, EncodeLabelSet, EncodeLabelValue, Family, Gauge, MetricsGroup};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::peers::PeerTable;
@@ -34,6 +35,19 @@ impl DropReason {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelSet)]
 pub struct DropLabels {
     pub reason: DropReason,
+}
+
+/// A point-in-time copy of the forwarding counters, suitable for diagnostics
+/// bundles. Serializable so it can be rendered or embedded as needed.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricsSnapshot {
+    pub packets_rx: u64,
+    pub packets_tx: u64,
+    pub bytes_rx: u64,
+    pub bytes_tx: u64,
+    /// `(reason, count)` for each drop reason, in `DropReason::ALL` order.
+    pub drops: Vec<(String, u64)>,
+    pub uptime_secs: u64,
 }
 
 #[derive(Debug, MetricsGroup)]
@@ -66,16 +80,33 @@ impl ForwardMetrics {
         self.drops.get_or_create(&DropLabels { reason }).inc();
     }
 
+    fn drop_count(&self, reason: DropReason) -> u64 {
+        self.drops
+            .get(&DropLabels { reason })
+            .map(|c| c.get())
+            .unwrap_or(0)
+    }
+
     fn total_drops(&self) -> u64 {
-        DropReason::ALL
+        DropReason::ALL.iter().map(|r| self.drop_count(*r)).sum()
+    }
+
+    /// Read the current counters into a serializable snapshot for diagnostics
+    /// (`ray report`) and ad-hoc inspection. `start` is the daemon start time,
+    /// used to compute uptime.
+    pub fn snapshot(&self, start: Instant) -> MetricsSnapshot {
+        let drops = DropReason::ALL
             .iter()
-            .map(|r| {
-                self.drops
-                    .get(&DropLabels { reason: *r })
-                    .map(|c| c.get())
-                    .unwrap_or(0)
-            })
-            .sum()
+            .map(|r| (format!("{r:?}"), self.drop_count(*r)))
+            .collect();
+        MetricsSnapshot {
+            packets_rx: self.packets_rx.get(),
+            packets_tx: self.packets_tx.get(),
+            bytes_rx: self.bytes_rx.get(),
+            bytes_tx: self.bytes_tx.get(),
+            drops,
+            uptime_secs: start.elapsed().as_secs(),
+        }
     }
 
     pub fn spawn_logger(self: &Arc<Self>, token: CancellationToken) {
@@ -230,5 +261,27 @@ mod tests {
             1
         );
         assert_eq!(stats.total_drops(), 3);
+    }
+
+    #[test]
+    fn test_snapshot() {
+        let stats = ForwardMetrics::default();
+        stats.record_rx(100);
+        stats.record_tx(50);
+        stats.record_drop(DropReason::NoPeer);
+
+        let snap = stats.snapshot(Instant::now());
+        assert_eq!(snap.packets_rx, 1);
+        assert_eq!(snap.bytes_rx, 100);
+        assert_eq!(snap.packets_tx, 1);
+        assert_eq!(snap.bytes_tx, 50);
+        // One entry per drop reason, in DropReason::ALL order.
+        assert_eq!(snap.drops.len(), DropReason::ALL.len());
+        let no_peer = snap
+            .drops
+            .iter()
+            .find(|(r, _)| r == "NoPeer")
+            .map(|(_, c)| *c);
+        assert_eq!(no_peer, Some(1));
     }
 }

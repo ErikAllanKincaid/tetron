@@ -23,6 +23,14 @@ path = "src/main.rs"
 [features]
 default = []
 tor = ["dep:iroh-tor-transport"]
+# Export tracing spans to an OpenTelemetry collector over OTLP/HTTP. Activated at
+# runtime only when an OTEL endpoint is configured (standard OTEL_* env vars).
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 ray-proto = { path = "ray-proto" }
@@ -49,7 +57,18 @@ libc = "0.2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
+tracing-appender = "0.2"
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-client",
+], optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+tar = "0.4"
+flate2 = "1"
 tun = { version = "0.8.13", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

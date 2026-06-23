@@ -34,6 +34,10 @@ pub enum IpcMessage {
         force: bool,
     },
     Status,
+    /// Build a diagnostic bundle (logs + metrics + sanitized status) on disk and
+    /// return its path plus a pre-filled GitHub issue title/body. Open to any
+    /// local user, like `Status`.
+    Report,
     Shutdown,
     /// Activate the VPN: bring the TUN interface up, configure system DNS, and
     /// reconnect all saved networks. Handled by the already-running daemon, so
@@ -149,6 +153,14 @@ pub enum IpcMessage {
     },
     PairingComplete {
         user_identity: EndpointId,
+    },
+    /// A diagnostic bundle was written to `path` (a `.tgz`, owned by the caller).
+    /// `issue_title`/`issue_body` pre-fill a GitHub issue; the user attaches the
+    /// bundle file manually.
+    ReportBundle {
+        path: String,
+        issue_title: String,
+        issue_body: String,
     },
 }
 
@@ -368,6 +380,23 @@ mod tests {
         match decoded {
             IpcMessage::AclState { display } => {
                 assert!(display.contains("servers"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_report_bundle_roundtrip() {
+        let resp = IpcMessage::ReportBundle {
+            path: "/tmp/rayfish-report-123.tgz".to_string(),
+            issue_title: "[report] diagnostics".to_string(),
+            issue_body: "body".to_string(),
+        };
+        let bytes = rmp_serde::to_vec(&resp).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::ReportBundle { path, .. } => {
+                assert!(path.ends_with(".tgz"));
             }
             _ => panic!("wrong variant"),
         }

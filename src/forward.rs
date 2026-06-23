@@ -193,11 +193,16 @@ pub fn spawn_peer_reader(
     stats: Arc<ForwardMetrics>,
     device_user_map: DeviceUserMap,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => return,
-                result = conn.read_datagram() => {
+    use tracing::Instrument as _;
+    // Tag every event from this reader (drops, connection-lost) with the peer
+    // and network so the report bundle's logs are correlatable per peer.
+    let span = tracing::info_span!("peer", peer = %peer_id.fmt_short(), net = %network);
+    tokio::spawn(
+        async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    result = conn.read_datagram() => {
                     match result {
                         Ok(datagram) => {
                             let acl = shared_acl.get(&network);
@@ -229,7 +234,9 @@ pub fn spawn_peer_reader(
                 }
             }
         }
-    })
+        }
+        .instrument(span),
+    )
 }
 
 /// Spawns a task that consumes packets from `tun_rx` and writes them to the TUN device.

@@ -5,7 +5,7 @@ P2P mesh VPN powered by [iroh](https://iroh.computer). Connects peers by cryptog
 ## Build
 
 ```bash
-cargo -q build                 # add --features tor for Tor transport
+cargo -q build                 # add --features tor for Tor transport, --features otel for OTLP span export
 cargo -q check
 cargo -q test
 cargo -q clippy
@@ -22,6 +22,7 @@ ray join <public-key> [--name alias] [--hostname h] [--tor]
 ray leave <net> | nuke <net>   # nuke = publish empty record then leave
 ray hostname <net> <name>      # change hostname on existing network
 ray status                     # all networks (works without daemon)
+ray report                     # bundle logs+metrics, open a pre-filled GitHub issue
 ray up | down                  # activate / standby (TUN + DNS), daemon stays running
 
 ray acl <net> tag|untag|allow|remove|show|apply ...   # coordinator-only network ACL
@@ -74,7 +75,8 @@ A single iroh Endpoint and TUN device are shared across all networks. Each netwo
 - `src/dns.rs` — Magic DNS server on `127.0.0.1:53` (A/AAAA/PTR/SOA for `*.ray`); forward `HostnameTable` + `ReverseLookupTable`.
 - `src/dns_config.rs` — OS DNS config (`DnsConfigurator` trait). macOS: SCDynamicStore. Linux detection chain: systemd-resolved D-Bus → NetworkManager D-Bus → resolvectl → resolvconf → `/etc/resolv.conf`.
 - `src/hostname.rs` / `src/network_name.rs` — hostname + local-alias generation and collision resolution.
-- `src/stats.rs` — iroh-metrics `ForwardMetrics`/`PeerMetrics`, Prometheus export on `:9090`.
+- `src/stats.rs` — iroh-metrics `ForwardMetrics`/`PeerMetrics`, Prometheus export on `:9090`; `ForwardMetrics::snapshot()` reads counters into a serializable `MetricsSnapshot` for `ray report`.
+- `src/logdir.rs` — daemon log directory (`/var/log/rayfish` on Linux, `/Library/Logs/rayfish` on macOS). The daemon writes rolling daily files there via `tracing-appender` (set up in `main::init_tracing`); `ray report` bundles them.
 - `src/shutdown.rs` — SIGINT/SIGTERM via `CancellationToken`. `src/audit.rs` — append-only audit log (not yet wired in).
 
 ### Key flows
@@ -89,11 +91,15 @@ A single iroh Endpoint and TUN device are shared across all networks. Each netwo
 - **Reconnection:** per-peer reader detects drop → coordinator removes the dead peer; joiner reconnects with exponential backoff (1s–30s) then re-sends `MeshHello`.
 - **Leave:** `ray leave` gracefully closes its connections with `forward::LEAVE_CODE` before local teardown. Peers see `DisconnectEvent.intentional = true`: the coordinator prunes the member from the roster, republishes the blob, and reuses the join-time `broadcast_member_sync` so other members drop it immediately (the `MemberSync` receiver replaces the whole list); the 60s group poller is the backstop. A plain timeout/reset is *not* intentional, so an offline (but not departed) peer stays a known member.
 - **up/down:** the daemon (endpoint, IPC, blob store, metrics) is always-on; the active VPN state (TUN up + system DNS + connected networks) is toggled by `activate()`/`deactivate()` tracked in `DaemonState.active`.
+- **Report:** `ray report` → daemon `build_report()` gathers sysinfo + a `ForwardMetrics::snapshot()` + the *sanitized* `StatusResponse` (no secret keys) + recent log files, writes a `.tgz` to `/tmp`, and chowns it to the calling UID. The CLI prints the path and opens a pre-filled GitHub issue (`REPORT_REPO_URL`) for the user to attach the bundle. The bundle is local-first, so the user reviews it before sharing; a managed upload service can later replace the GitHub step.
 - **Tor (optional):** `--tor` adds `TorCustomTransport` alongside relay; onion address derived from the iroh `SecretKey`. Needs a Tor daemon (`ControlPort 9051`).
 
 ## Conventions
 
-- Use `cargo -q` for all cargo commands; `tracing` for logging (INFO default, `RUST_LOG` to override).
+- Use `cargo -q` for all cargo commands; `tracing` for logging (INFO default, `RUST_LOG` to override). The daemon also writes rolling daily log files under `src/logdir::log_dir()` (console output is unchanged for CLI commands). `main::init_tracing` composes the layers (console + file + optional OTLP) and returns a `LogGuard` that must stay alive for the process.
+- Tracing carries spans, not just flat events: network lifecycle handlers (`create/join/leave/nuke_network`) use `#[tracing::instrument]`, and the per-peer reader (`forward::spawn_peer_reader`) + reconnect loop wrap their tasks in `info_span!("peer"/"reconnect", net=…, peer=…)` so report-bundle logs are correlatable per peer/network.
+- `otel` feature (off by default): adds a `tracing-opentelemetry` layer exporting spans over OTLP/HTTP. Activated at runtime only when `OTEL_EXPORTER_OTLP_ENDPOINT` (or `..._TRACES_ENDPOINT`) is set; the provider is flushed on shutdown via `LogGuard::drop`.
+- Panics are fail-fast in the daemon: `main::install_panic_hook` (set only for `ray daemon`) records the panic via `tracing::error!` and synchronously appends it to `panic.log` in the log dir, then calls `std::process::abort()`. The service unit restarts it (`Restart=on-failure` / launchd `KeepAlive`); `panic.log` is bundled by `ray report` (and flags the issue title/body when present). A live-but-broken daemon would not trip the restart, so we crash cleanly rather than limp.
 - Never share I/O resources (TUN, sockets, streams) behind a Mutex — split into read/write halves. Avoid Mutex generally: prefer channels, atomics, or `RwLock`/`ArcSwap` for fast non-async state.
 - ALPN per network: `rayfish/net/<pubkey-prefix>` (first 16 hex chars). File ALPN `rayfish/files/1`, pairing ALPN `rayfish/pair/1`.
 - TUN MTU 1200. Wire format (control + IPC): 4-byte BE length + msgpack body.

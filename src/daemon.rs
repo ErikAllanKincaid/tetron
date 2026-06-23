@@ -39,7 +39,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
@@ -955,6 +955,8 @@ pub struct DaemonState {
     identity: IrohIdentityProvider,
     peers: PeerTable,
     stats: Arc<ForwardMetrics>,
+    /// When the daemon process started, used for uptime in diagnostics.
+    start: Instant,
     tun_tx: mpsc::Sender<Vec<u8>>,
     networks: Arc<DashMap<String, NetworkHandle>>,
     shutdown_token: CancellationToken,
@@ -1003,6 +1005,7 @@ impl DaemonState {
         if matches!(
             req,
             IpcMessage::Status
+                | IpcMessage::Report
                 | IpcMessage::AclShow { .. }
                 | IpcMessage::FirewallShow
                 | IpcMessage::ListFiles
@@ -1088,6 +1091,7 @@ impl DaemonState {
             IpcMessage::Leave { name } => self.leave_network(&name).await,
             IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
             IpcMessage::Status => self.status(),
+            IpcMessage::Report => self.build_report(peer_cred),
             IpcMessage::Up => self.activate().await,
             IpcMessage::Down => self.deactivate().await,
             IpcMessage::Shutdown => {
@@ -1146,6 +1150,7 @@ impl DaemonState {
         }
     }
 
+    #[tracing::instrument(skip(self, hostname), fields(mode = ?mode))]
     async fn create_network(
         &self,
         mode: GroupMode,
@@ -1399,6 +1404,7 @@ impl DaemonState {
         })
     }
 
+    #[tracing::instrument(skip(self, hostname), fields(net = name.unwrap_or(network_key)))]
     async fn join_network(
         &self,
         network_key: &str,
@@ -2139,6 +2145,7 @@ impl DaemonState {
         })
     }
 
+    #[tracing::instrument(skip(self), fields(net = name))]
     async fn nuke_network(&self, name: &str, force: bool) -> IpcMessage {
         // Check we're the coordinator and whether other members exist
         let (is_coordinator, has_other_members) = {
@@ -2381,6 +2388,7 @@ impl DaemonState {
         true
     }
 
+    #[tracing::instrument(skip(self), fields(net = name))]
     async fn leave_network(&self, name: &str) -> IpcMessage {
         // Gracefully close our connections with the leave code BEFORE teardown
         // drops them, so each peer's reader sees an intentional close and the
@@ -2477,6 +2485,123 @@ impl DaemonState {
             packets_tx: self.stats.packets_tx.get(),
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
+        }
+    }
+
+    /// Assemble a diagnostic `.tgz` (logs + metrics + sanitized status + system
+    /// info) on disk and return its path plus a pre-filled GitHub issue. Runs
+    /// daemon-side because the log files are root-owned; the resulting bundle is
+    /// chowned to the calling user so an unprivileged `ray report` can attach it.
+    ///
+    /// Sanitization: the bundle is built only from already-public material — the
+    /// `StatusResponse` (which never carries secret keys), counters, and the log
+    /// files. It never touches `secret_key` or `network_secret_key`.
+    fn build_report(&self, peer_cred: Option<(u32, u32)>) -> IpcMessage {
+        use std::fmt::Write as _;
+
+        // --- sysinfo.txt ---
+        let version = env!("CARGO_PKG_VERSION");
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let uname = std::process::Command::new("uname")
+            .arg("-a")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let uptime = self.start.elapsed().as_secs();
+        let active = self.active.load(Ordering::SeqCst);
+        let mut sysinfo = String::new();
+        let _ = writeln!(sysinfo, "rayfish {version}");
+        let _ = writeln!(sysinfo, "os: {os}  arch: {arch}");
+        if !uname.is_empty() {
+            let _ = writeln!(sysinfo, "uname: {uname}");
+        }
+        let _ = writeln!(sysinfo, "endpoint_id: {}", self.endpoint.id());
+        let _ = writeln!(sysinfo, "uptime_secs: {uptime}");
+        let _ = writeln!(sysinfo, "active: {active}");
+        let _ = writeln!(sysinfo, "networks: {}", self.networks.len());
+
+        // --- metrics.txt ---
+        let snap = self.stats.snapshot(self.start);
+        let total_drops: u64 = snap.drops.iter().map(|(_, c)| c).sum();
+        let mut metrics = String::new();
+        let _ = writeln!(metrics, "packets_rx: {}", snap.packets_rx);
+        let _ = writeln!(metrics, "packets_tx: {}", snap.packets_tx);
+        let _ = writeln!(metrics, "bytes_rx:   {}", snap.bytes_rx);
+        let _ = writeln!(metrics, "bytes_tx:   {}", snap.bytes_tx);
+        let _ = writeln!(metrics, "drops_total: {total_drops}");
+        for (reason, count) in &snap.drops {
+            let _ = writeln!(metrics, "  drop[{reason}]: {count}");
+        }
+
+        // --- status.txt (sanitized: StatusResponse carries no secrets) ---
+        let status = format!("{:#?}", self.status());
+
+        // --- collect files for the tarball ---
+        let mut files: Vec<(String, Vec<u8>)> = vec![
+            ("sysinfo.txt".to_string(), sysinfo.into_bytes()),
+            ("metrics.txt".to_string(), metrics.into_bytes()),
+            ("status.txt".to_string(), status.into_bytes()),
+        ];
+        files.extend(collect_recent_logs());
+        let has_panics = files.iter().any(|(name, _)| name == "logs/panic.log");
+
+        // --- write the gzipped tarball ---
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = std::path::PathBuf::from("/tmp").join(format!("rayfish-report-{ts}.tgz"));
+        if let Err(e) = write_bundle(&path, &files) {
+            return IpcMessage::Error {
+                message: format!("failed to write report bundle: {e}"),
+            };
+        }
+
+        // Make it readable by, and owned by, the user who invoked `ray report`.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        if let Some((uid, gid)) = peer_cred {
+            use std::os::unix::ffi::OsStrExt;
+            if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+                unsafe { libc::chown(c.as_ptr(), uid, gid) };
+            }
+        }
+
+        let issue_title = if has_panics {
+            format!("[report] crash diagnostics from {os} (rayfish {version})")
+        } else {
+            format!("[report] diagnostics from {os} (rayfish {version})")
+        };
+        let mut issue_body = String::new();
+        let _ = writeln!(issue_body, "**rayfish {version}** on {os}/{arch}");
+        let _ = writeln!(issue_body);
+        if has_panics {
+            let _ = writeln!(
+                issue_body,
+                "⚠️ One or more panics were recorded — see `logs/panic.log` in the bundle.\n"
+            );
+        }
+        let _ = writeln!(
+            issue_body,
+            "Metrics: rx {} pkts / tx {} pkts, {} drops, uptime {}s",
+            snap.packets_rx, snap.packets_tx, total_drops, uptime
+        );
+        let _ = writeln!(issue_body);
+        let _ = writeln!(
+            issue_body,
+            "Diagnostic bundle: `{}` — **please attach this file to the issue.**",
+            path.display()
+        );
+        let _ = writeln!(issue_body);
+        let _ = writeln!(issue_body, "<!-- Describe what went wrong below. -->");
+
+        IpcMessage::ReportBundle {
+            path: path.display().to_string(),
+            issue_title,
+            issue_body,
         }
     }
 
@@ -3384,6 +3509,63 @@ fn format_size(bytes: u64) -> String {
 /// the active VPN state, then serves IPC until shutdown. The heavy lifting is
 /// delegated to [`build_daemon`] (construction) and [`serve_ipc`] (the request
 /// loop); see the module docs for the infrastructure-vs-active-state split.
+/// Read the most recent rolling log files from [`crate::logdir::log_dir`],
+/// newest first, capped at ~3 MB total so report bundles stay small. Returns
+/// `(archive_name, bytes)` entries placed under `logs/` in the tarball.
+fn collect_recent_logs() -> Vec<(String, Vec<u8>)> {
+    const MAX_TOTAL: u64 = 3 * 1024 * 1024;
+
+    let dir = crate::logdir::log_dir();
+    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("rayfish.log") || n == "panic.log")
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    // Daily rotation appends a date suffix, so lexical order is chronological;
+    // take the newest files first.
+    entries.sort();
+    entries.reverse();
+
+    let mut out = Vec::new();
+    let mut total = 0u64;
+    for path in entries {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        total += bytes.len() as u64;
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            out.push((format!("logs/{name}"), bytes));
+        }
+        if total >= MAX_TOTAL {
+            break;
+        }
+    }
+    out
+}
+
+/// Write `files` as a gzipped tar archive at `path`. Each entry is `(name, bytes)`.
+fn write_bundle(path: &std::path::Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(enc);
+    for (name, data) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        // `append_data` sets the path and recomputes the checksum.
+        builder.append_data(&mut header, name, data.as_slice())?;
+    }
+    builder.into_inner()?.finish()?;
+    Ok(())
+}
+
 pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) -> Result<()> {
     // Bail early on a CGNAT clash (e.g. Tailscale) before touching anything.
     check_cgnat_conflict()?;
@@ -3405,7 +3587,10 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 async fn build_daemon(
     token: CancellationToken,
     stats: Arc<ForwardMetrics>,
-) -> Result<(Arc<DaemonState>, Option<iroh_metrics::service::MetricsServer>)> {
+) -> Result<(
+    Arc<DaemonState>,
+    Option<iroh_metrics::service::MetricsServer>,
+)> {
     // --- Identity (persistent transport key + optional device certificate) ---
     let key = identity::load_or_create()?;
     let public_key = key.public();
@@ -3494,6 +3679,7 @@ async fn build_daemon(
         identity,
         peers,
         stats: stats.clone(),
+        start: Instant::now(),
         tun_tx,
         networks: Arc::new(DashMap::new()),
         shutdown_token: token.clone(),
@@ -4300,13 +4486,17 @@ fn spawn_reconnect_loop(
     device_cert: Option<control::DeviceCert>,
     device_user_map: peers::DeviceUserMap,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let event = tokio::select! {
-                _ = token.cancelled() => return,
-                event = disconnect_rx.recv() => match event {
-                    Some(ev) => ev,
-                    None => return,
+    use tracing::Instrument as _;
+    // Tag all reconnect-loop logs for this network so they correlate in reports.
+    let span = tracing::info_span!("reconnect", net = %network_name);
+    tokio::spawn(
+        async move {
+            loop {
+                let event = tokio::select! {
+                    _ = token.cancelled() => return,
+                    event = disconnect_rx.recv() => match event {
+                        Some(ev) => ev,
+                        None => return,
                 },
             };
             let peer_id = event.endpoint_id;
@@ -4399,7 +4589,9 @@ fn spawn_reconnect_loop(
                 }
             });
         }
-    })
+        }
+        .instrument(span),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -4443,5 +4635,44 @@ async fn broadcast_control_msg(peers: &PeerTable, msg: &ControlMsg) {
         if let Ok((mut send, _)) = conn.open_bi().await {
             let _ = control::send_msg(&mut send, msg).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::{collect_recent_logs, write_bundle};
+
+    #[test]
+    fn test_write_bundle_is_valid_targz() {
+        let dir = std::env::temp_dir().join(format!("rayfish-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bundle.tgz");
+        let files = vec![
+            ("sysinfo.txt".to_string(), b"rayfish 0.1.0\n".to_vec()),
+            (
+                "logs/rayfish.log.2026-06-23".to_string(),
+                b"hello log\n".to_vec(),
+            ),
+        ];
+        write_bundle(&path, &files).unwrap();
+
+        // Re-read it back through the gzip+tar decoders to prove it's well-formed.
+        let f = std::fs::File::open(&path).unwrap();
+        let dec = flate2::read::GzDecoder::new(f);
+        let mut archive = tar::Archive::new(dec);
+        let mut names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["logs/rayfish.log.2026-06-23", "sysinfo.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_collect_recent_logs_missing_dir_is_empty() {
+        // The log dir may not exist in CI / non-root test runs; must not panic.
+        let _ = collect_recent_logs();
     }
 }
