@@ -45,7 +45,7 @@ use dashmap::DashMap;
 
 use anyhow::{Context, Result};
 use iroh::address_lookup::PkarrRelayClient;
-use iroh::endpoint::{Connection, Endpoint};
+use iroh::endpoint::{Connection, Endpoint, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{EndpointId, SecretKey};
 use iroh_blobs::store::fs::FsStore;
@@ -1341,6 +1341,15 @@ impl DaemonState {
             disconnect_rx,
             self.peers.clone(),
             cancel.clone(),
+            Some(CoordinatorCleanup {
+                state: state.clone(),
+                blob_store: self.blob_store.clone(),
+                dht_notify: Some(dht_notify.clone()),
+                hostname_table: self.hostname_table.clone(),
+                reverse_table: self.reverse_table.clone(),
+                device_user_map: self.device_user_map.clone(),
+                network_name: name.clone(),
+            }),
         ));
 
         // Register protocol handler for this network
@@ -2041,6 +2050,15 @@ impl DaemonState {
             disconnect_rx,
             self.peers.clone(),
             cancel.clone(),
+            Some(CoordinatorCleanup {
+                state: state.clone(),
+                blob_store: self.blob_store.clone(),
+                dht_notify: Some(dht_notify.clone()),
+                hostname_table: self.hostname_table.clone(),
+                reverse_table: self.reverse_table.clone(),
+                device_user_map: self.device_user_map.clone(),
+                network_name: name.to_string(),
+            }),
         ));
 
         // Sync the restored ACL into the shared ACL state for enforcement
@@ -2364,6 +2382,14 @@ impl DaemonState {
     }
 
     async fn leave_network(&self, name: &str) -> IpcMessage {
+        // Gracefully close our connections with the leave code BEFORE teardown
+        // drops them, so each peer's reader sees an intentional close and the
+        // coordinator prunes us from the roster (rather than waiting for an
+        // idle timeout that only ever clears the green dot).
+        for (_eid, _ip, conn) in self.peers.peers_for_network_with_conn(name) {
+            conn.close(VarInt::from_u32(forward::LEAVE_CODE), b"leave");
+        }
+
         let was_active = self.teardown_network_runtime(name).await;
 
         // Remove from config even if the network wasn't active
@@ -3818,10 +3844,24 @@ fn spawn_group_poller(
     })
 }
 
+/// Extra context a coordinator needs to prune the canonical member list when a
+/// peer leaves deliberately (`ray leave`). Members pass `None` and only ever
+/// drop the connection from the [`PeerTable`].
+struct CoordinatorCleanup {
+    state: Arc<std::sync::RwLock<NetworkState>>,
+    blob_store: FsStore,
+    dht_notify: Option<Arc<tokio::sync::Notify>>,
+    hostname_table: dns::HostnameTable,
+    reverse_table: dns::ReverseLookupTable,
+    device_user_map: peers::DeviceUserMap,
+    network_name: String,
+}
+
 fn spawn_peer_cleanup(
     mut disconnect_rx: mpsc::Receiver<forward::DisconnectEvent>,
     peers: PeerTable,
     token: CancellationToken,
+    coordinator: Option<CoordinatorCleanup>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -3830,8 +3870,32 @@ fn spawn_peer_cleanup(
                 event = disconnect_rx.recv() => {
                     match event {
                         Some(ev) => {
-                            tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, "removing dead peer");
+                            tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, intentional = ev.intentional, "removing dead peer");
                             peers.remove(&ev.ip, &ev.ipv6);
+
+                            // A deliberate `ray leave` (graceful close with the
+                            // leave code) prunes the member from the roster and
+                            // propagates the change; a transient drop only clears
+                            // the green dot above. Only the coordinator is
+                            // authoritative, so members pass `coordinator = None`.
+                            if ev.intentional && let Some(c) = &coordinator {
+                                let member_id = c.device_user_map.resolve(&ev.endpoint_id);
+                                let new_members: Vec<Member> = {
+                                    let mut s = c.state.write().unwrap();
+                                    s.members.remove(&member_id);
+                                    s.members.all().into_iter().cloned().collect()
+                                };
+                                dns::remove_hostname_by_ip(
+                                    &c.hostname_table,
+                                    &c.reverse_table,
+                                    &c.network_name,
+                                    ev.ip,
+                                )
+                                .await;
+                                update_snapshot_and_publish(&c.state, &c.blob_store, &c.dht_notify).await;
+                                broadcast_member_sync(&peers, &new_members, None).await;
+                                tracing::info!(peer = %member_id.fmt_short(), "pruned member after leave");
+                            }
                         }
                         None => return,
                     }
@@ -4248,8 +4312,16 @@ fn spawn_reconnect_loop(
             let peer_id = event.endpoint_id;
             let peer_ip = event.ip;
             let peer_ipv6 = event.ipv6;
-            tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer disconnected, will reconnect");
             peers.remove(&peer_ip, &peer_ipv6);
+
+            // A deliberate `ray leave` (graceful close with the leave code) means
+            // the peer is gone for good — don't spin a reconnect task against it.
+            // The coordinator's MemberSync will prune it from our roster.
+            if event.intentional {
+                tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer left, not reconnecting");
+                continue;
+            }
+            tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer disconnected, will reconnect");
 
             let ep = ep.clone();
             let alpn = alpn.clone();

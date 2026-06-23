@@ -83,7 +83,6 @@ impl MemberList {
         Ok(())
     }
 
-    #[cfg(test)]
     pub fn remove(&mut self, identity: &EndpointId) -> Option<Member> {
         self.members.remove(identity)
     }

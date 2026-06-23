@@ -12,7 +12,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use dashmap::DashMap;
 use iroh::EndpointId;
-use iroh::endpoint::Connection;
+use iroh::endpoint::{Connection, ConnectionError, VarInt};
 use smol_str::SmolStr;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -95,12 +95,20 @@ impl SharedAcl {
     }
 }
 
+/// Application close code a peer sends when it deliberately leaves a network
+/// (`ray leave`). Distinguishes an intentional departure from a transient drop
+/// (timeout/reset), so only deliberate leaves prune the canonical member list.
+pub const LEAVE_CODE: u32 = 0x1ea5e;
+
 /// Sent by [`spawn_peer_reader`] when a peer connection drops,
 /// consumed by the reconnect loop (joiner) or cleanup task (coordinator).
 pub struct DisconnectEvent {
     pub endpoint_id: EndpointId,
     pub ip: Ipv4Addr,
     pub ipv6: std::net::Ipv6Addr,
+    /// True when the peer closed gracefully with [`LEAVE_CODE`] (it ran
+    /// `ray leave`), as opposed to a timeout/reset.
+    pub intentional: bool,
 }
 
 /// Main TUN read loop. Reads packets from the TUN device, extracts the destination IP,
@@ -208,8 +216,13 @@ pub fn spawn_peer_reader(
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(peer = %peer_id.fmt_short(), ip = %peer_ip, error = %e, "peer connection lost");
-                            let _ = disconnect_tx.send(DisconnectEvent { endpoint_id: peer_id, ip: peer_ip, ipv6: peer_ipv6 }).await;
+                            let intentional = matches!(
+                                &e,
+                                ConnectionError::ApplicationClosed(ac)
+                                    if ac.error_code == VarInt::from_u32(LEAVE_CODE)
+                            );
+                            tracing::warn!(peer = %peer_id.fmt_short(), ip = %peer_ip, error = %e, intentional, "peer connection lost");
+                            let _ = disconnect_tx.send(DisconnectEvent { endpoint_id: peer_id, ip: peer_ip, ipv6: peer_ipv6, intentional }).await;
                             return;
                         }
                     }
