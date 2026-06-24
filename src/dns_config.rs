@@ -283,28 +283,28 @@ async fn set_search_domains_linux(
     let ifindex = linux::get_ifindex(tun_name);
 
     // Try D-Bus first
-    if let Some(idx) = ifindex {
-        if let Ok(conn) = zbus::Connection::system().await {
-            let mut domains: Vec<(String, bool)> = vec![(DNS_DOMAIN.to_string(), true)];
-            // Each network name as a routing domain (~network)
-            for name in network_names {
-                domains.push((name.clone(), true));
-            }
-            for d in rayfish_domains {
-                domains.push((d.clone(), false));
-            }
-            let reply = conn
-                .call_method(
-                    Some("org.freedesktop.resolve1"),
-                    "/org/freedesktop/resolve1",
-                    Some("org.freedesktop.resolve1.Manager"),
-                    "SetLinkDomains",
-                    &(idx as i32, &domains),
-                )
-                .await;
-            if reply.is_ok() {
-                return Ok(());
-            }
+    if let Some(idx) = ifindex
+        && let Ok(conn) = zbus::Connection::system().await
+    {
+        let mut domains: Vec<(String, bool)> = vec![(DNS_DOMAIN.to_string(), true)];
+        // Each network name as a routing domain (~network)
+        for name in network_names {
+            domains.push((name.clone(), true));
+        }
+        for d in rayfish_domains {
+            domains.push((d.clone(), false));
+        }
+        let reply = conn
+            .call_method(
+                Some("org.freedesktop.resolve1"),
+                "/org/freedesktop/resolve1",
+                Some("org.freedesktop.resolve1.Manager"),
+                "SetLinkDomains",
+                &(idx as i32, &domains),
+            )
+            .await;
+        if reply.is_ok() {
+            return Ok(());
         }
     }
 
@@ -470,14 +470,13 @@ async fn try_networkmanager_dbus(tun_name: &str) -> Option<NetworkManagerDns> {
         .await
         .ok()?;
 
-    if let Ok(mode) = dns_reply.body().deserialize::<zbus::zvariant::Value>() {
-        if let Ok(s) = mode.downcast_ref::<String>() {
-            // If NM delegates to systemd-resolved, skip — the resolved D-Bus path handles it.
-            // If NM DNS is "none", it's not managing DNS at all.
-            if s == "systemd-resolved" || s == "none" {
-                return None;
-            }
-        }
+    // If NM delegates to systemd-resolved, skip — the resolved D-Bus path handles it.
+    // If NM DNS is "none", it's not managing DNS at all.
+    if let Ok(mode) = dns_reply.body().deserialize::<zbus::zvariant::Value>()
+        && let Ok(s) = mode.downcast_ref::<String>()
+        && (s == "systemd-resolved" || s == "none")
+    {
+        return None;
     }
 
     // NM is managing DNS directly (dnsmasq, default, or unbound mode).
@@ -536,24 +535,24 @@ impl DnsConfigurator for NetworkManagerDns {
             .deserialize()
             .context("deserialize Ip4Config")?;
 
-        if let Ok(config_path) = <&zbus::zvariant::ObjectPath>::try_from(&*config_val) {
-            if config_path.as_str() != "/" {
-                // Set DNS nameservers via D-Bus Properties — 127.0.0.1 as u32 (network byte order)
-                let dns_servers: Vec<u32> = vec![0x0100007f]; // 127.0.0.1 in NBO
-                let _ = conn
-                    .call_method(
-                        Some("org.freedesktop.NetworkManager"),
-                        config_path.as_str(),
-                        Some("org.freedesktop.DBus.Properties"),
-                        "Set",
-                        &(
-                            "org.freedesktop.NetworkManager.IP4Config",
-                            "Nameservers",
-                            zbus::zvariant::Value::from(dns_servers),
-                        ),
-                    )
-                    .await;
-            }
+        if let Ok(config_path) = <&zbus::zvariant::ObjectPath>::try_from(&*config_val)
+            && config_path.as_str() != "/"
+        {
+            // Set DNS nameservers via D-Bus Properties — 127.0.0.1 as u32 (network byte order)
+            let dns_servers: Vec<u32> = vec![0x0100007f]; // 127.0.0.1 in NBO
+            let _ = conn
+                .call_method(
+                    Some("org.freedesktop.NetworkManager"),
+                    config_path.as_str(),
+                    Some("org.freedesktop.DBus.Properties"),
+                    "Set",
+                    &(
+                        "org.freedesktop.NetworkManager.IP4Config",
+                        "Nameservers",
+                        zbus::zvariant::Value::from(dns_servers),
+                    ),
+                )
+                .await;
         }
 
         // Also set DNS search domain on the device connection settings
