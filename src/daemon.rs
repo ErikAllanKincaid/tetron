@@ -816,6 +816,17 @@ impl ProtocolRouter {
                                                                 tracing::warn!(error = %e, "failed to send pair response body");
                                                                 return;
                                                             }
+                                                            // Flush before the connection drops: finish the stream and wait
+                                                            // (briefly) for the joiner to close. Returning here drops `conn`,
+                                                            // which RSTs the stream — without this the joiner often sees
+                                                            // "connection lost" and never receives the cert even though we
+                                                            // logged success below.
+                                                            let _ = send.finish();
+                                                            let _ = tokio::time::timeout(
+                                                                Duration::from_secs(5),
+                                                                conn.closed(),
+                                                            )
+                                                            .await;
                                                             tracing::info!(device = %device_pubkey.fmt_short(), "device paired successfully");
                                                         }
                                                         Some(_) => {
