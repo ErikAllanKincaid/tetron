@@ -1,11 +1,12 @@
 name: Release
 
-# Release binary builds are disabled for now — run manually via the Actions tab
-# when ready. Re-enable automatic builds by uncommenting the tag trigger below.
+# Continuous releases: pushing a tag like `v0.1.0` cuts a release with
+# Linux + macOS binaries. Can also be run manually from the Actions tab.
+# Windows support: TODO.
 on:
-  # push:
-  #   tags:
-  #     - "v*"
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
