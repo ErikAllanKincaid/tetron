@@ -120,7 +120,7 @@ A single iroh Endpoint and TUN device are shared across all networks. Each netwo
 - Panics are fail-fast in the daemon: `main::install_panic_hook` (set only for `ray daemon`) records the panic via `tracing::error!` and synchronously appends it to `panic.log` in the log dir, then calls `std::process::abort()`. The service unit restarts it (`Restart=on-failure` / launchd `KeepAlive`); `panic.log` is bundled by `ray report` (and flags the issue title/body when present). A live-but-broken daemon would not trip the restart, so we crash cleanly rather than limp.
 - Never share I/O resources (TUN, sockets, streams) behind a Mutex — split into read/write halves. Avoid Mutex generally: prefer channels, atomics, or `RwLock`/`ArcSwap` for fast non-async state.
 - ALPN per network: `rayfish/net/<pubkey-prefix>` (first 16 hex chars). File ALPN `rayfish/files/1`, pairing ALPN `rayfish/pair/1`.
-- TUN MTU 1200. Wire format (control + IPC): 4-byte BE length + msgpack body.
+- TUN MTU 1280 (IPv6 minimum link MTU, RFC 8200 §5; matches WireGuard/Tailscale). Wire format (control + IPC): 4-byte BE length + msgpack body.
 - Room id = per-network public key string (discovery only). On a closed network, joining needs a one-time invite or operator approval; on an open network the room id alone admits. Invite code = `bs58(pubkey || coordinator || secret)`. Local aliases (adjective-noun-noun) are display-only.
 - Config under `~/.config/rayfish/`: `secret_key`, `device_cert`, `networks.toml`, `firewall.toml`, `invites/<network>.toml` (coordinator-only).
 - Always update docs (CLAUDE.md, README.md) after finishing a feature or significant change.
