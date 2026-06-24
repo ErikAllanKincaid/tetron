@@ -526,6 +526,20 @@ pub fn validate_approved(entry: &ApprovedEntry) -> Result<()> {
     ensure_in_cgnat_range(entry.ip)
 }
 
+/// Returns `Err` if any two members share the same IPv4 address.
+///
+/// This enforces the roster invariant that every member has a unique IP.
+/// Call this at any trust boundary where a freshly-decoded roster is applied.
+// consumed by admission/reconverge tiebreak wiring
+#[allow(dead_code)]
+pub fn validate_no_duplicate_ips(members: &[Member]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for m in members {
+        anyhow::ensure!(seen.insert(m.ip), "duplicate IP {} in roster", m.ip);
+    }
+    Ok(())
+}
+
 fn ensure_in_cgnat_range(ip: Ipv4Addr) -> Result<()> {
     let o = ip.octets();
     anyhow::ensure!(
@@ -1514,6 +1528,39 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn validate_member_accepts_declared_index_rejects_mismatch() {
+        let id = test_id(5);
+        let good = Member {
+            identity: id,
+            ip: derive_ip_with_index(&id, 2),
+            is_coordinator: false,
+            hostname: None,
+            user_identity: None,
+            device_cert: None,
+            collision_index: 2,
+        };
+        assert!(validate_member(&good).is_ok());
+        let bad = Member { collision_index: 1, ..good.clone() }; // ip is for index 2, claims 1
+        assert!(validate_member(&bad).is_err());
+    }
+
+    #[test]
+    fn validate_no_duplicate_ips_rejects_clash() {
+        let a = test_id(1);
+        let m = |id, ip| Member {
+            identity: id,
+            ip,
+            is_coordinator: false,
+            hostname: None,
+            user_identity: None,
+            device_cert: None,
+            collision_index: 0,
+        };
+        let dup = derive_ip(&a);
+        assert!(validate_no_duplicate_ips(&[m(a, dup), m(test_id(2), dup)]).is_err());
     }
 
     #[test]
