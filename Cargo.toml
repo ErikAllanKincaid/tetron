@@ -42,7 +42,6 @@ clap = { version = "4", features = ["derive"] }
 ahash = "0.8"
 clap_complete = "4"
 dashmap = "6"
-derive_more = { version = "2", features = ["is_variant", "display"] }
 dirs = "6.0.0"
 futures = "0.3"
 iroh = { version = "1", features = ["metrics", "unstable-custom-transports"] }
@@ -77,11 +76,11 @@ flate2 = "1"
 tun = { version = "0.8.13", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yml = "0.0.12"
+serde_yml = "0.0.13"
 toml = "1.1"
 # Format-agnostic config loading for `ray apply` specs (YAML/TOML/JSON by
 # extension). Read-only; `--dry-run`/`--example` output uses serde_yml.
-config = { version = "0.14", default-features = false, features = ["yaml", "toml"] }
+config = { version = "0.15", default-features = false, features = ["yaml", "toml"] }
 url = "2"
 hex = "0.4.3"
 simple-dns = "0.11"
