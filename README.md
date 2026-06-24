@@ -112,7 +112,7 @@ The **room id** (a network's public key) is a *discovery* key — it's published
   - **Live approval** — the holder of just the room id runs `ray join <room-id>` and lands in a queue. The coordinator runs `ray requests <network>`, then `ray accept <network> <id>` (or `ray deny`).
 - **Open** (`ray create --open`) — anyone with the room id joins directly. Good for public or community networks.
 
-Either gate runs through the coordinator, so it must be online to admit a *new* peer. Once admitted, a member reconnects by cryptographic identity and the coordinator can be offline.
+Either gate runs through a coordinator. The full coordinator set is published in the network's signed record (`Member.is_coordinator`), so a fresh joiner dials the invite minter first, then falls back across the other coordinators — admission survives any one coordinator being offline. Once admitted, a member reconnects by cryptographic identity and no coordinator needs to be online.
 
 ## Permissions
 
