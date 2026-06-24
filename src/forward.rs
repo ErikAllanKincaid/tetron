@@ -291,7 +291,8 @@ mod tests {
 
     fn inbound_fw(default: Action, rules: Vec<firewall::FirewallRule>) -> SharedFirewall {
         SharedFirewall::new(firewall::FirewallConfig {
-            default_action: default,
+            default_inbound: default,
+            default_outbound: Action::Allow,
             rules,
         })
     }
@@ -348,13 +349,61 @@ mod tests {
     }
 
     #[test]
-    fn inbound_clean_tcp_accepted() {
+    fn inbound_clean_tcp_denied_by_secure_default() {
+        // The built-in default denies unsolicited inbound TCP (no service port is
+        // exposed out of the box).
         let peer = iroh::SecretKey::generate().public();
         let fw = SharedFirewall::new(firewall::FirewallConfig::default());
         let pkt = make_tcp_packet(443);
         assert!(matches!(
             evaluate_inbound(&pkt, &fw, &peer, "test-net"),
+            InboundDecision::DropFirewall
+        ));
+    }
+
+    #[test]
+    fn inbound_icmp_accepted_by_default() {
+        // Inbound ICMP is allowed-by-default so ping/reachability works out of the
+        // box even under the deny-inbound default.
+        let peer = iroh::SecretKey::generate().public();
+        let fw = SharedFirewall::new(firewall::FirewallConfig::default());
+        let mut pkt = vec![0u8; 28];
+        pkt[0] = 0x45; // IPv4, IHL=5
+        pkt[9] = 1; // ICMP
+        pkt[16..20].copy_from_slice(&[100, 64, 0, 3]); // dst ip
+        assert!(matches!(
+            evaluate_inbound(&pkt, &fw, &peer, "test-net"),
             InboundDecision::Accept
+        ));
+    }
+
+    #[test]
+    fn inbound_tcp_accepted_when_port_explicitly_opened() {
+        // An explicit allow rule opens a port under the deny-inbound default.
+        let peer = iroh::SecretKey::generate().public();
+        let fw = inbound_fw(
+            Action::Deny,
+            vec![firewall::FirewallRule {
+                direction: Direction::In,
+                action: Action::Allow,
+                protocol: firewall::Protocol::Tcp,
+                port: Some(firewall::PortRange {
+                    start: 8080,
+                    end: 8080,
+                }),
+                peer: firewall::PeerFilter::Any,
+                network: None,
+                origin: firewall::RuleOrigin::Local,
+            }],
+        );
+        assert!(matches!(
+            evaluate_inbound(&make_tcp_packet(8080), &fw, &peer, "test-net"),
+            InboundDecision::Accept
+        ));
+        // A different port stays denied.
+        assert!(matches!(
+            evaluate_inbound(&make_tcp_packet(9090), &fw, &peer, "test-net"),
+            InboundDecision::DropFirewall
         ));
     }
 }

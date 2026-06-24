@@ -245,8 +245,11 @@ pub enum IpcMessage {
     /// CLI renders it with color on the *user's* TTY and serializes it for
     /// `--json`.
     FirewallState {
-        /// Default action when no rule matches.
-        default: Action,
+        /// Default action for inbound traffic that matches no explicit rule.
+        /// (Inbound ICMP is always allowed-by-default regardless of this.)
+        default_inbound: Action,
+        /// Default action for outbound traffic that matches no explicit rule.
+        default_outbound: Action,
         rules: Vec<FirewallRuleView>,
     },
     /// Current suggested firewall rules for a network (reply to

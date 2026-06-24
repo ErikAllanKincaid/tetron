@@ -4564,7 +4564,15 @@ impl DaemonState {
             origin: firewall::RuleOrigin::Local,
         };
         let mut config = (*self.firewall.get_config()).clone();
-        config.rules.push(rule);
+        // A new rule supersedes a contradicting one with the *same selector*
+        // (direction/proto/port/peer/network, ignoring action): drop the old
+        // entry, then insert at the front so it wins under first-match. So
+        // `deny in icmp` after the seeded `allow in icmp` makes deny prevail
+        // (and re-adding `allow` flips it back) without leaving dead rules. A
+        // narrower selector (e.g. `deny in icmp --peer X`) keeps the broader
+        // rule and just layers ahead of it.
+        config.rules.retain(|r| !firewall::same_selector(r, &rule));
+        config.rules.insert(0, rule);
         self.firewall.update(config.clone());
         if let Err(e) = firewall::save_firewall(&config) {
             tracing::warn!(error = %e, "failed to persist firewall config");
@@ -4599,7 +4607,8 @@ impl DaemonState {
         let config = self.firewall.get_config();
         let short_id = |id: &EndpointId| -> String { id.fmt_short().to_string() };
         IpcMessage::FirewallState {
-            default: config.default_action,
+            default_inbound: config.default_inbound,
+            default_outbound: config.default_outbound,
             rules: firewall::rule_views(&config.rules, &short_id),
         }
     }
@@ -4829,15 +4838,19 @@ impl DaemonState {
         }
     }
 
+    /// `ray firewall default allow|deny` flips the **inbound** default (the
+    /// outbound default stays `Allow` — you always initiate freely). `allow`
+    /// restores the old permissive inbound posture; `deny` is the secure default.
+    /// Inbound ICMP-allow is a separate built-in default and is unaffected.
     fn firewall_default(&self, action: firewall::Action) -> IpcMessage {
         let mut config = (*self.firewall.get_config()).clone();
-        config.default_action = action;
+        config.default_inbound = action;
         self.firewall.update(config.clone());
         if let Err(e) = firewall::save_firewall(&config) {
             tracing::warn!(error = %e, "failed to persist firewall config");
         }
         IpcMessage::Ok {
-            message: format!("default set to {action}"),
+            message: format!("inbound default set to {action}"),
         }
     }
 

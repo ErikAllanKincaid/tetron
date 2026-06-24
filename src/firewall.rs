@@ -13,6 +13,33 @@
 //! cannot block rayfish/iroh connections**, regardless of rules. Blocking the VPN
 //! transport itself is deliberately impossible from the firewall policy.
 //!
+//! ## Default posture (no user rules)
+//!
+//! Out of the box, with an empty `firewall.toml`, the defaults are **direction-
+//! aware and secure-by-default for inbound**:
+//!
+//! | Traffic              | Default |
+//! |----------------------|---------|
+//! | Inbound ICMP (v4+v6) | allow (so `ping`/reachability works) |
+//! | Inbound TCP          | deny  (no listening port is exposed) |
+//! | Inbound UDP          | deny  |
+//! | Outbound (any proto) | allow (you initiate freely) |
+//! | Return traffic       | allow (conntrack, see below) |
+//!
+//! So joining a public/open network never exposes a local service port to peers.
+//! `ray firewall default allow` flips inbound TCP/UDP back to permissive (the old
+//! behaviour); `ray firewall default deny` restores the secure inbound default.
+//! The outbound default is always `allow` and is not affected by
+//! `ray firewall default`.
+//!
+//! Inbound ICMP-allow is **not** a hard-coded special case: a fresh config ships
+//! a seeded, ordinary `allow in icmp` rule (`default_icmp_rule`) that the rule
+//! scan matches first. It shows up in `ray firewall show` like any other rule, so
+//! a user who wants to deny ICMP simply removes it (`ray firewall remove <i>`),
+//! after which inbound ICMP falls through to the deny default. (An explicit
+//! `deny in icmp` rule ordered before it also blocks it — explicit rules always
+//! win, first-match.)
+//!
 //! ## Stateful behaviour
 //!
 //! The firewall is **stateful for TCP and UDP**: when this device initiates an
@@ -88,6 +115,19 @@ impl RuleOrigin {
     }
 }
 
+/// Two rules have the same *selector* if they match the same traffic —
+/// direction, protocol, port, peer, and network — regardless of `action` or
+/// `origin`. Used by `ray firewall add` to merge a contradicting/duplicate rule
+/// (drop the old same-selector entry, keep only the new one) so the rule list
+/// stays bounded instead of accumulating shadowed rules on every toggle.
+pub fn same_selector(a: &FirewallRule, b: &FirewallRule) -> bool {
+    a.direction == b.direction
+        && a.protocol == b.protocol
+        && a.port == b.port
+        && a.peer == b.peer
+        && a.network == b.network
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirewallRule {
     pub direction: Direction,
@@ -110,15 +150,55 @@ pub struct FirewallRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirewallConfig {
-    pub default_action: Action,
+    /// Catch-all action for *inbound* traffic that matches no explicit rule.
+    /// Defaults to `Deny` (secure posture: no listening port is exposed to peers
+    /// out of the box). Inbound ICMP is allowed-by-default *before* this falls
+    /// through (so `ping`/reachability works), unless an explicit `deny in icmp`
+    /// rule overrides it. Older `firewall.toml` files that predate the split (and
+    /// carried a single `default_action`) deserialize with this serde default —
+    /// i.e. they too become deny-inbound on upgrade.
+    #[serde(default = "default_inbound_action")]
+    pub default_inbound: Action,
+    /// Catch-all action for *outbound* traffic that matches no explicit rule.
+    /// Defaults to `Allow` (you initiate connections freely; conntrack then lets
+    /// their return traffic back in).
+    #[serde(default = "default_outbound_action")]
+    pub default_outbound: Action,
     pub rules: Vec<FirewallRule>,
+}
+
+fn default_inbound_action() -> Action {
+    Action::Deny
+}
+
+fn default_outbound_action() -> Action {
+    Action::Allow
+}
+
+/// The seeded "allow inbound ICMP from any peer" rule that ships in a fresh
+/// firewall config. It is an ordinary `Local`, first-match rule (not a magic
+/// default), so `ray firewall show` lists it and `ray firewall remove <i>`
+/// deletes it — removing it makes the inbound default deny ICMP too.
+pub fn default_icmp_rule() -> FirewallRule {
+    FirewallRule {
+        direction: Direction::In,
+        action: Action::Allow,
+        protocol: Protocol::Icmp,
+        port: None,
+        peer: PeerFilter::Any,
+        network: None,
+        origin: RuleOrigin::Local,
+    }
 }
 
 impl Default for FirewallConfig {
     fn default() -> Self {
         Self {
-            default_action: Action::Allow,
-            rules: vec![],
+            default_inbound: default_inbound_action(),
+            default_outbound: default_outbound_action(),
+            // Ship inbound TCP/UDP denied but inbound ICMP allowed — as a visible,
+            // removable rule rather than a hard-coded special case.
+            rules: vec![default_icmp_rule()],
         }
     }
 }
@@ -197,8 +277,16 @@ impl SharedFirewall {
         None
     }
 
-    fn default_action(&self) -> Action {
-        self.inner.load().default_action
+    /// The default action for a packet that matched no explicit rule, by
+    /// direction. Inbound ICMP is *not* special-cased here — it is allowed by a
+    /// seeded, removable `allow in icmp` rule (see [`default_icmp_rule`]) that the
+    /// rule scan matches first, so the user can delete it to deny ICMP.
+    fn default_for(&self, direction: Direction) -> Action {
+        let config = self.inner.load();
+        match direction {
+            Direction::Out => config.default_outbound,
+            Direction::In => config.default_inbound,
+        }
     }
 
     /// Stateless rule + default evaluation (no connection tracking).
@@ -213,7 +301,7 @@ impl SharedFirewall {
         peer: &EndpointId,
     ) -> Action {
         self.match_rule(direction, protocol, dst_port, peer, None)
-            .unwrap_or_else(|| self.default_action())
+            .unwrap_or_else(|| self.default_for(direction))
     }
 
     /// Stateful evaluation of a fully-parsed packet. This is what the data plane
@@ -256,7 +344,7 @@ impl SharedFirewall {
 
         match direction {
             Direction::Out => {
-                let default = self.default_action();
+                let default = self.default_for(Direction::Out);
                 if default.is_allow() {
                     self.track_outbound(&flow, info);
                 }
@@ -264,13 +352,13 @@ impl SharedFirewall {
             }
             Direction::In => {
                 // No explicit inbound rule. Allow established return traffic so
-                // `default deny` (or targeted inbound denies) don't sever this
-                // device's own outbound connections.
+                // the inbound default deny (or targeted inbound denies) don't
+                // sever this device's own outbound connections.
                 if self.flow_active(&flow) {
                     self.conntrack.insert(flow, Instant::now());
                     Action::Allow
                 } else {
-                    self.default_action()
+                    self.default_for(Direction::In)
                 }
             }
         }
@@ -752,8 +840,105 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_default_allow() {
+    fn default_config_is_secure_inbound() {
+        // The built-in default: inbound TCP/UDP denied, inbound ICMP allowed,
+        // outbound (any proto) allowed.
         let fw = SharedFirewall::new(FirewallConfig::default());
+        // Inbound TCP and UDP to a service port -> denied.
+        assert_eq!(fw.evaluate(Direction::In, 6, 22, &test_id(1)), Action::Deny);
+        assert_eq!(
+            fw.evaluate(Direction::In, 17, 53, &test_id(1)),
+            Action::Deny
+        );
+        // Inbound ICMPv4 and ICMPv6 -> allowed (reachability out of the box).
+        assert_eq!(fw.evaluate(Direction::In, 1, 0, &test_id(1)), Action::Allow);
+        assert_eq!(
+            fw.evaluate(Direction::In, 58, 0, &test_id(1)),
+            Action::Allow
+        );
+        // Outbound any proto -> allowed.
+        assert_eq!(
+            fw.evaluate(Direction::Out, 6, 443, &test_id(1)),
+            Action::Allow
+        );
+        assert_eq!(
+            fw.evaluate(Direction::Out, 17, 53, &test_id(1)),
+            Action::Allow
+        );
+    }
+
+    #[test]
+    fn default_config_seeds_one_removable_icmp_rule() {
+        // The ICMP-allow is an ordinary visible rule, not a hidden default.
+        let config = FirewallConfig::default();
+        assert_eq!(config.rules.len(), 1);
+        let r = &config.rules[0];
+        assert_eq!(r.direction, Direction::In);
+        assert_eq!(r.action, Action::Allow);
+        assert_eq!(r.protocol, Protocol::Icmp);
+        assert_eq!(r.peer, PeerFilter::Any);
+        assert_eq!(r.origin, RuleOrigin::Local); // hand-removable, survives reconverge
+    }
+
+    #[test]
+    fn removing_seeded_icmp_rule_denies_icmp() {
+        // The whole point of seeding it as a rule: delete it and ICMP falls
+        // through to the deny-inbound default.
+        let mut config = FirewallConfig::default();
+        config.rules.clear();
+        let fw = SharedFirewall::new(config);
+        assert_eq!(fw.evaluate(Direction::In, 1, 0, &test_id(1)), Action::Deny);
+        assert_eq!(fw.evaluate(Direction::In, 58, 0, &test_id(1)), Action::Deny);
+    }
+
+    #[test]
+    fn same_selector_ignores_action_and_origin_but_not_match_fields() {
+        let allow_icmp = default_icmp_rule();
+        let deny_icmp = FirewallRule {
+            action: Action::Deny,
+            ..default_icmp_rule()
+        };
+        // Same direction/proto/port/peer/network, opposite action -> same selector.
+        assert!(same_selector(&allow_icmp, &deny_icmp));
+        // A peer-scoped variant is a *different* selector (narrower), so it layers
+        // rather than replacing the broad rule.
+        let deny_icmp_peer = FirewallRule {
+            action: Action::Deny,
+            peer: PeerFilter::Identity(test_id(7)),
+            ..default_icmp_rule()
+        };
+        assert!(!same_selector(&allow_icmp, &deny_icmp_peer));
+    }
+
+    #[test]
+    fn merge_same_selector_then_prepend_makes_latest_win() {
+        // Mirrors what the `firewall add` IPC handler does: drop the old
+        // same-selector rule and prepend the new one. Adding `deny in icmp` over
+        // the seeded `allow in icmp` must (a) leave exactly one ICMP rule and
+        // (b) make deny prevail.
+        let mut rules = vec![default_icmp_rule()];
+        let deny_icmp = FirewallRule {
+            action: Action::Deny,
+            ..default_icmp_rule()
+        };
+        rules.retain(|r| !same_selector(r, &deny_icmp));
+        rules.insert(0, deny_icmp);
+        assert_eq!(rules.len(), 1, "merged, not accumulated");
+        let fw = SharedFirewall::new(FirewallConfig {
+            rules,
+            ..FirewallConfig::default()
+        });
+        assert_eq!(fw.evaluate(Direction::In, 1, 0, &test_id(1)), Action::Deny);
+    }
+
+    #[test]
+    fn default_allow_override_permits_inbound_tcp() {
+        // `ray firewall default allow` flips the inbound default back to
+        // permissive.
+        let fw = SharedFirewall::new(FirewallConfig {
+            default_inbound: Action::Allow,
+            ..FirewallConfig::default()
+        });
         assert_eq!(
             fw.evaluate(Direction::In, 6, 22, &test_id(1)),
             Action::Allow
@@ -761,9 +946,76 @@ mod tests {
     }
 
     #[test]
+    fn explicit_deny_in_icmp_ordered_before_seed_wins() {
+        // A user-added `deny in icmp` placed ahead of the seeded allow rule blocks
+        // ICMP — first-match wins. (Equivalently, removing the seed rule denies it
+        // too; see `removing_seeded_icmp_rule_denies_icmp`.)
+        let deny_icmp = FirewallRule {
+            direction: Direction::In,
+            action: Action::Deny,
+            protocol: Protocol::Icmp,
+            port: None,
+            peer: PeerFilter::Any,
+            network: None,
+            origin: RuleOrigin::Local,
+        };
+        let fw = SharedFirewall::new(FirewallConfig {
+            // deny first, then the seeded allow — the deny must win.
+            rules: vec![deny_icmp, default_icmp_rule()],
+            ..FirewallConfig::default()
+        });
+        assert_eq!(fw.evaluate(Direction::In, 1, 0, &test_id(1)), Action::Deny);
+        assert_eq!(fw.evaluate(Direction::In, 58, 0, &test_id(1)), Action::Deny);
+    }
+
+    #[test]
+    fn default_config_denies_unsolicited_inbound_but_allows_return() {
+        // End-to-end of the secure default through the stateful path: an
+        // unsolicited inbound TCP SYN is denied, but return traffic for an
+        // outbound flow we initiated is allowed.
+        let fw = SharedFirewall::new(FirewallConfig::default());
+        let me = Ipv4Addr::new(100, 64, 0, 2);
+        let peer = Ipv4Addr::new(100, 64, 0, 3);
+        let peer_id = test_id(1);
+
+        // Unsolicited inbound -> denied.
+        let unsolicited = tcp_pkt(peer, 51000, me, 8080, SYN);
+        assert_eq!(
+            fw.evaluate_packet(Direction::In, &unsolicited, &peer_id, None),
+            Action::Deny
+        );
+
+        // We initiate outbound -> allowed (default_outbound), and tracked.
+        let out = tcp_pkt(me, 50000, peer, 443, SYN);
+        assert_eq!(
+            fw.evaluate_packet(Direction::Out, &out, &peer_id, None),
+            Action::Allow
+        );
+        // Its return traffic -> allowed via conntrack despite deny-inbound.
+        let ret = tcp_pkt(peer, 443, me, 50000, SYN | ACK);
+        assert_eq!(
+            fw.evaluate_packet(Direction::In, &ret, &peer_id, None),
+            Action::Allow
+        );
+
+        // Inbound ICMP under the default config -> allowed.
+        let mut icmp = vec![0u8; 28];
+        icmp[0] = 0x45;
+        icmp[9] = 1; // ICMP
+        icmp[12..16].copy_from_slice(&peer.octets());
+        icmp[16..20].copy_from_slice(&me.octets());
+        let icmp = parse_packet_info(&icmp).unwrap();
+        assert_eq!(
+            fw.evaluate_packet(Direction::In, &icmp, &peer_id, None),
+            Action::Allow
+        );
+    }
+
+    #[test]
     fn evaluate_default_deny() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![],
         });
         assert_eq!(fw.evaluate(Direction::In, 6, 22, &test_id(1)), Action::Deny);
@@ -772,7 +1024,8 @@ mod tests {
     #[test]
     fn evaluate_deny_specific_port() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Allow,
+            default_inbound: Action::Allow,
+            default_outbound: Action::Allow,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Deny,
@@ -800,7 +1053,8 @@ mod tests {
         // "db" — letting a multi-homed host (in `db` and `dev`) restrict a peer
         // on one network while leaving the other untouched.
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Allow,
+            default_inbound: Action::Allow,
+            default_outbound: Action::Allow,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Deny,
@@ -840,7 +1094,8 @@ mod tests {
     #[test]
     fn evaluate_port_range() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Allow,
@@ -868,7 +1123,8 @@ mod tests {
     #[test]
     fn evaluate_peer_filter() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Allow,
@@ -889,7 +1145,8 @@ mod tests {
     #[test]
     fn evaluate_first_match_wins() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![
                 FirewallRule {
                     direction: Direction::In,
@@ -949,7 +1206,8 @@ mod tests {
     #[test]
     fn config_serialization_roundtrip() {
         let config = FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Allow,
@@ -965,7 +1223,8 @@ mod tests {
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let decoded: FirewallConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(decoded.default_action, Action::Deny);
+        assert_eq!(decoded.default_inbound, Action::Deny);
+        assert_eq!(decoded.default_outbound, Action::Deny);
         assert_eq!(decoded.rules.len(), 1);
         assert_eq!(decoded.rules[0].port.as_ref().unwrap().start, 443);
     }
@@ -1016,7 +1275,8 @@ mod tests {
     fn default_allow_plus_deny_in_22_blocks_ssh_but_allows_return() {
         // Recommended pattern: allow basic traffic, block specific ports.
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Allow,
+            default_inbound: Action::Allow,
+            default_outbound: Action::Allow,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Deny,
@@ -1058,7 +1318,8 @@ mod tests {
     fn default_deny_allows_return_traffic_for_initiated_connections() {
         // Strict policy: default deny everywhere, allow outbound HTTPS only.
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::Out,
                 action: Action::Allow,
@@ -1115,7 +1376,8 @@ mod tests {
     #[test]
     fn tcp_fin_evicts_flow_so_return_traffic_stops() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::Out,
                 action: Action::Allow,
@@ -1163,7 +1425,8 @@ mod tests {
     #[test]
     fn udp_return_traffic_tracked_within_flow() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::Out,
                 action: Action::Allow,
@@ -1205,7 +1468,8 @@ mod tests {
         // If a peer is explicitly denied inbound, established-bypass must NOT
         // override it (explicit rules always win).
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Allow,
+            default_inbound: Action::Allow,
+            default_outbound: Action::Allow,
             rules: vec![FirewallRule {
                 direction: Direction::In,
                 action: Action::Deny,
@@ -1245,7 +1509,8 @@ mod tests {
     #[test]
     fn tcp_rst_evicts_flow() {
         let fw = SharedFirewall::new(FirewallConfig {
-            default_action: Action::Deny,
+            default_inbound: Action::Deny,
+            default_outbound: Action::Deny,
             rules: vec![FirewallRule {
                 direction: Direction::Out,
                 action: Action::Allow,
@@ -1602,7 +1867,8 @@ mod tests {
             origin: RuleOrigin::Network("dev".to_string()),
         };
         let config = FirewallConfig {
-            default_action: Action::Allow,
+            default_inbound: Action::Allow,
+            default_outbound: Action::Allow,
             rules: vec![local_rule.clone(), stale_net, other_net.clone()],
         };
         let fw = SharedFirewall::new(config);

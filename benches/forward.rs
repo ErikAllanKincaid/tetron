@@ -112,18 +112,25 @@ fn bench_firewall(c: &mut Criterion) {
     let peer = iroh::SecretKey::generate().public();
     let net = "bench-net";
 
-    // Default-allow with no rules: the cheapest path (parse + default action +
-    // conntrack insert on the outbound).
+    // Default config, no rules: the cheapest path (parse + default action +
+    // conntrack insert on the outbound). Outbound defaults to allow, so the
+    // outbound benchmark below still exercises the track-and-allow path.
     let allow_all = SharedFirewall::new(FirewallConfig::default());
 
     // A small whitelist ending in a catch-all deny — the shape `materialize_
     // suggestions` produces. Forces the rule scan to walk several entries.
     let whitelist = SharedFirewall::new(FirewallConfig {
-        default_action: Action::Allow,
+        default_inbound: Action::Allow,
+        default_outbound: Action::Allow,
         rules: vec![
             rule(Direction::In, Action::Allow, Protocol::Tcp, Some((22, 22))),
             rule(Direction::In, Action::Allow, Protocol::Tcp, Some((80, 80))),
-            rule(Direction::In, Action::Allow, Protocol::Tcp, Some((443, 443))),
+            rule(
+                Direction::In,
+                Action::Allow,
+                Protocol::Tcp,
+                Some((443, 443)),
+            ),
             rule(Direction::In, Action::Deny, Protocol::Any, None),
         ],
     });

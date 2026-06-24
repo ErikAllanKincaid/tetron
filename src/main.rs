@@ -342,7 +342,11 @@ enum ContactAction {
 
 #[derive(Subcommand)]
 enum FirewallAction {
-    /// Add a firewall rule
+    /// Add a firewall rule. A new rule is inserted at the front, so it
+    /// supersedes any contradicting rule under first-match — e.g. `deny in icmp`
+    /// overrides the seeded `allow in icmp` (and re-adding `allow` flips it back).
+    /// A rule with the same selector (direction/proto/port/peer/network) replaces
+    /// the old one rather than stacking, so toggling never accumulates dead rules.
     Add {
         /// Direction: in or out
         direction: String,
@@ -368,9 +372,13 @@ enum FirewallAction {
     },
     /// Show current firewall rules
     Show,
-    /// Set default policy (allow or deny)
+    /// Set the inbound default policy (allow or deny). `deny` (the secure
+    /// built-in default) blocks unsolicited inbound TCP/UDP; `allow` restores the
+    /// old permissive behaviour. Inbound ICMP is always allowed by default (use an
+    /// explicit `deny in icmp` rule to block it); the outbound default is always
+    /// allow and is unaffected.
     Default {
-        /// Default action: allow or deny
+        /// Default inbound action: allow or deny
         action: String,
     },
     /// Coordinator-only: suggest firewall rules for a subject host on a network.
@@ -1801,11 +1809,22 @@ async fn ipc_firewall(action: FirewallAction) -> Result<()> {
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::FirewallState { default, rules } => {
+        ipc::IpcMessage::FirewallState {
+            default_inbound,
+            default_outbound,
+            rules,
+        } => {
             if json_enabled() {
-                print_json(&serde_json::json!({ "default": default, "rules": rules }));
+                print_json(&serde_json::json!({
+                    "default_inbound": default_inbound,
+                    "default_outbound": default_outbound,
+                    "rules": rules,
+                }));
             } else {
-                print!("{}", render_firewall_rules(Some(default), &rules));
+                print!(
+                    "{}",
+                    render_firewall_rules(Some((default_inbound, default_outbound)), &rules)
+                );
             }
         }
         ipc::IpcMessage::Error { message } => print_error("firewall", &message, None),
@@ -1822,18 +1841,29 @@ fn print_json(value: &serde_json::Value) {
 /// Render a firewall rule table as aligned columns. `default` is the catch-all
 /// action shown as a header (omitted for the pending-suggestions list).
 fn render_firewall_rules(
-    default: Option<firewall::Action>,
+    default: Option<(firewall::Action, firewall::Action)>,
     rules: &[ipc::FirewallRuleView],
 ) -> String {
     let mut out = String::from("\n");
-    if let Some(d) = default {
-        let s = d.to_string();
-        let styled = if d.is_deny() {
-            style::red(&s)
-        } else {
-            style::green(&s)
+    if let Some((inbound, outbound)) = default {
+        let styled = |a: firewall::Action| {
+            let s = a.to_string();
+            if a.is_deny() {
+                style::red(&s)
+            } else {
+                style::green(&s)
+            }
         };
-        out.push_str(&format!("  {}  {}\n\n", style::label("default"), styled));
+        out.push_str(&format!(
+            "  {}  {}\n",
+            style::label("default in "),
+            styled(inbound)
+        ));
+        out.push_str(&format!(
+            "  {}  {}\n\n",
+            style::label("default out"),
+            styled(outbound)
+        ));
     }
     if rules.is_empty() {
         out.push_str(&format!("  {}\n", style::faint("(no rules)")));
@@ -2848,7 +2878,10 @@ fn normalize_version(tag: &str) -> &str {
 /// plain string inequality if either side fails to parse, so an unusual tag
 /// still triggers an update rather than being silently ignored.
 fn version_is_newer(latest: &str, current: &str) -> bool {
-    match (semver::Version::parse(latest), semver::Version::parse(current)) {
+    match (
+        semver::Version::parse(latest),
+        semver::Version::parse(current),
+    ) {
         (Ok(l), Ok(c)) => l > c,
         _ => latest != current,
     }
@@ -2927,11 +2960,8 @@ async fn cmd_update(force: bool, check: bool) -> Result<()> {
     // before downloading.
     let service_installed = service_unit_exists();
     let exe = std::env::current_exe().context("failed to determine current executable path")?;
-    let needs_root = service_installed
-        || exe
-            .parent()
-            .map(|dir| !dir_writable(dir))
-            .unwrap_or(true);
+    let needs_root =
+        service_installed || exe.parent().map(|dir| !dir_writable(dir)).unwrap_or(true);
     if needs_root {
         require_root()?;
     }
@@ -2969,7 +2999,11 @@ async fn cmd_update(force: bool, check: bool) -> Result<()> {
     let (bytes, sha_text) = result.context("download failed")?;
 
     // Verify the SHA-256 against the published `.sha256` (first whitespace field).
-    let expected = sha_text.split_whitespace().next().unwrap_or("").to_lowercase();
+    let expected = sha_text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
     if expected.is_empty() {
         anyhow::bail!("no checksum published for {asset}; aborting for safety");
     }
@@ -3114,10 +3148,22 @@ mod tests {
 
     #[test]
     fn release_asset_name_maps_supported_platforms() {
-        assert_eq!(release_asset_name("linux", "x86_64").unwrap(), "ray-linux-x86_64");
-        assert_eq!(release_asset_name("linux", "aarch64").unwrap(), "ray-linux-aarch64");
-        assert_eq!(release_asset_name("macos", "x86_64").unwrap(), "ray-macos-x86_64");
-        assert_eq!(release_asset_name("macos", "aarch64").unwrap(), "ray-macos-aarch64");
+        assert_eq!(
+            release_asset_name("linux", "x86_64").unwrap(),
+            "ray-linux-x86_64"
+        );
+        assert_eq!(
+            release_asset_name("linux", "aarch64").unwrap(),
+            "ray-linux-aarch64"
+        );
+        assert_eq!(
+            release_asset_name("macos", "x86_64").unwrap(),
+            "ray-macos-x86_64"
+        );
+        assert_eq!(
+            release_asset_name("macos", "aarch64").unwrap(),
+            "ray-macos-aarch64"
+        );
     }
 
     #[test]
@@ -3180,8 +3226,12 @@ mod tests {
                 Some("homelab"),
             ),
         ];
-        let out = render_firewall_rules(Some(firewall::Action::Allow), &rules);
-        assert!(out.contains("default  allow"));
+        let out = render_firewall_rules(
+            Some((firewall::Action::Allow, firewall::Action::Allow)),
+            &rules,
+        );
+        assert!(out.contains("default in   allow"));
+        assert!(out.contains("default out  allow"));
         // Header present, columns aligned: the "action" column header and the
         // two action values start at the same offset on their lines.
         let lines: Vec<&str> = out
@@ -3197,8 +3247,10 @@ mod tests {
     #[test]
     fn empty_firewall_says_no_rules() {
         style::set_plain(true);
-        let out = render_firewall_rules(Some(firewall::Action::Deny), &[]);
-        assert!(out.contains("default  deny"));
+        let out =
+            render_firewall_rules(Some((firewall::Action::Deny, firewall::Action::Allow)), &[]);
+        assert!(out.contains("default in   deny"));
+        assert!(out.contains("default out  allow"));
         assert!(out.contains("(no rules)"));
     }
 }

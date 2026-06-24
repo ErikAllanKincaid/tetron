@@ -36,7 +36,7 @@ Each machine runs a small daemon (think Tailscale's `tailscaled`) that creates a
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones)
 - 🤝 **Direct 2-peer connections** — `ray connect <contact-id>` links you to one person with no room id or invite, approved like a friend request
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename
-- 🧱 **Per-device firewall** — directional, per-port, per-network rules with stateful return traffic
+- 🧱 **Per-device firewall** — directional, per-port, per-network rules with stateful return traffic. **Secure by default:** out of the box, unsolicited inbound TCP/UDP is denied (no local service port is exposed when you join a public network), while inbound ICMP (ping) and all outbound traffic are allowed. `ray firewall add in allow -p tcp --port N` opens a port; `ray firewall default allow` restores the old permissive inbound behavior
 - 🤝 **Coordinator firewall suggestions** — on any network the coordinator can *suggest* firewall rules that ride the signed network record (`*` targets all hosts); each node reviews them or opts into auto-install with `--auto-accept-firewall`
 - 📜 **Declarative provisioning** — `ray apply deploy.yaml` (YAML) to stand up networks and firewall rules from a spec
 - 👥 **Multi-device identity** — pair your laptop and phone under one identity; encrypted key backup (optionally to 1Password)

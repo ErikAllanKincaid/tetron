@@ -135,21 +135,46 @@ echo "   peer-of-a=$PEER_OF_A  peer-of-b=$PEER_OF_B"
 [[ -n "$PEER_OF_B" ]] && send_recv "$B" "$A" "$PEER_OF_B" "ray send srv-b -> srv-a (reverse)" || fail "could not resolve srv-a hostname"
 
 # ---------------------------------------------------------------------------
-step "8. firewall — network-scoped rule on the direct connection is enforced"
-# A direct connection is a real network, so the per-device firewall applies and
-# can be scoped to it with --network. Deny inbound ICMP on srv-b for this net,
-# confirm srv-a -> srv-b ping breaks, then remove it and confirm it recovers.
-NET="$(echo "$SB" | grep -oE '[a-z0-9-]+\.[a-z0-9-]+\.ray' | head -1 | sed -E 's/^[a-z0-9-]+\.([a-z0-9-]+)\.ray/\1/')"
-echo "   direct net: $NET"
-if [[ -n "$NET" && -n "$A_IP" && -n "$B_IP" ]]; then
-  on "$B" "ray firewall add in deny -p icmp --network $NET" 2>&1 | strip | sed 's/^/   b| /'
-  BLOCKED="$(ping_loss "$A" "$B_IP")"
-  if [[ "${BLOCKED:-0}" == "100" ]]; then pass "network-scoped deny blocks ICMP on the direct net (100% loss)"; else fail "firewall rule did not block ICMP (loss=${BLOCKED:-?}%)"; fi
+step "8. firewall — removing the seeded allow-icmp rule denies inbound ICMP"
+# Inbound ICMP is allowed out of the box by a single seeded `allow in icmp` rule
+# (index 0), not a hard-coded default — so the way to deny ping is to remove that
+# rule, after which the deny-inbound default covers ICMP. Remove it on srv-b,
+# confirm srv-a -> srv-b ping breaks, then re-add it and confirm it recovers.
+if [[ -n "$A_IP" && -n "$B_IP" ]]; then
   on "$B" 'ray firewall remove 0' 2>&1 | strip | sed 's/^/   b| /'
+  BLOCKED="$(ping_loss "$A" "$B_IP")"
+  if [[ "${BLOCKED:-0}" == "100" ]]; then pass "removing the seeded allow-icmp rule blocks ICMP (100% loss)"; else fail "ICMP not blocked after removing seed rule (loss=${BLOCKED:-?}%)"; fi
+  on "$B" 'ray firewall add in allow -p icmp' 2>&1 | strip | sed 's/^/   b| /'
   RECOVERED="$(ping_loss "$A" "$B_IP")"
-  if [[ "${RECOVERED:-100}" == "0" ]]; then pass "removing the rule restores ICMP (0% loss)"; else fail "ICMP did not recover after removing rule (loss=${RECOVERED:-?}%)"; fi
+  if [[ "${RECOVERED:-100}" == "0" ]]; then pass "re-adding allow-icmp restores ICMP (0% loss)"; else fail "ICMP did not recover after re-adding allow rule (loss=${RECOVERED:-?}%)"; fi
 else
-  fail "could not determine direct net / IPs for firewall test"
+  fail "could not determine IPs for firewall test"
+fi
+
+# ---------------------------------------------------------------------------
+step "8b. firewall — unsolicited inbound TCP is denied by the secure default"
+# Out of the box (no user rules) the firewall denies unsolicited inbound TCP, so
+# a listening service on srv-b is NOT reachable from srv-a until a port is opened
+# explicitly. ICMP stays allowed by default (verified in step 6). This is a fresh
+# inbound connection with no prior outbound from srv-b, so conntrack never masks
+# the result.
+FWPORT=18080
+if [[ -n "$A_IP" && -n "$B_IP" ]]; then
+  # Listener on srv-b (binds 0.0.0.0, including the TUN IP). setsid + </dev/null
+  # detaches it from the ssh session so it survives.
+  on "$B" "setsid python3 -m http.server $FWPORT >/tmp/fwtest.log 2>&1 </dev/null & sleep 1" >/dev/null 2>&1 || true
+  # Pure TCP connect probe from srv-a (no payload, so conntrack on srv-a's side
+  # isn't a factor): opening the fd performs the SYN handshake.
+  BEFORE="$(on "$A" "timeout 5 bash -c 'exec 3<>/dev/tcp/$B_IP/$FWPORT' && echo OPEN || echo CLOSED" 2>/dev/null | strip)"
+  if [[ "$BEFORE" == "CLOSED" ]]; then pass "unsolicited inbound TCP:$FWPORT denied by default"; else fail "expected default-deny to block TCP:$FWPORT (got '$BEFORE')"; fi
+  # Open the port explicitly on srv-b, then the same probe must succeed.
+  on "$B" "ray firewall add in allow -p tcp --port $FWPORT" 2>&1 | strip | sed 's/^/   b| /'
+  AFTER="$(on "$A" "timeout 5 bash -c 'exec 3<>/dev/tcp/$B_IP/$FWPORT' && echo OPEN || echo CLOSED" 2>/dev/null | strip)"
+  if [[ "$AFTER" == "OPEN" ]]; then pass "explicit allow rule opens TCP:$FWPORT"; else fail "expected allow rule to open TCP:$FWPORT (got '$AFTER')"; fi
+  on "$B" 'ray firewall remove 0' 2>&1 | strip | sed 's/^/   b| /'
+  on "$B" "pkill -f 'http.server $FWPORT'" >/dev/null 2>&1 || true
+else
+  fail "could not determine IPs for unsolicited-inbound firewall test"
 fi
 
 # ---------------------------------------------------------------------------
