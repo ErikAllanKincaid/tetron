@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
@@ -311,8 +311,7 @@ impl InviteStore {
             if inv.secret_hash == secret_hash {
                 if matches!(inv.status, InviteStatus::Pending) {
                     inv.status = InviteStatus::Redeemed {
-                        by: EndpointId::from_bytes(&[0u8; 32])
-                            .expect("zero bytes are a valid key"),
+                        by: EndpointId::from_bytes(&[0u8; 32]).expect("zero bytes are a valid key"),
                         at: now_secs(),
                     };
                     changed = true;

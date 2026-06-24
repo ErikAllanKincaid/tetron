@@ -65,6 +65,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "getrandom 0.3.4",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -476,6 +477,12 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "bytesize"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49e78e506b9d7633710dab98996f22f95f3d0f488e8f1aa162830556ed9fc14d"
 
 [[package]]
 name = "cc"
@@ -3920,6 +3927,7 @@ dependencies = [
 name = "rayfish"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "anyhow",
  "arc-swap",
  "argon2",
@@ -3927,6 +3935,7 @@ dependencies = [
  "blake3",
  "bs58",
  "bytes",
+ "bytesize",
  "chacha20poly1305",
  "clap",
  "clap_complete",

@@ -200,6 +200,26 @@ enum Command {
         /// Short id of the pending peer (from `ray requests`)
         id: String,
     },
+    /// Request a direct 2-peer connection to someone by their contact id. They
+    /// approve it with `ray connections approve`, forming a private 2-peer
+    /// network — no room id or invite code needed.
+    Connect {
+        /// The peer's contact id (from their `ray contact id` / `ray status`)
+        contact_id: String,
+        /// Your hostname on the resulting network (defaults to your set name)
+        #[arg(long)]
+        hostname: Option<String>,
+    },
+    /// Review and approve incoming direct-connection requests (`ray connect`)
+    Connections {
+        #[command(subcommand)]
+        action: Option<ConnectionsAction>,
+    },
+    /// Show or rotate your contact id (shared so others can `ray connect` you)
+    Contact {
+        #[command(subcommand)]
+        action: Option<ContactAction>,
+    },
     /// Grant the network key to a member (coordinator only). The grantee becomes
     /// a co-coordinator: it can publish the signed blob and suggest firewall
     /// rules. Trusted-network multi-admin.
@@ -346,6 +366,25 @@ enum AdminAction {
     },
     /// List this network's key-holders (the local node + granted members)
     List,
+}
+
+#[derive(Subcommand)]
+enum ConnectionsAction {
+    /// List pending incoming connection requests (default)
+    List,
+    /// Approve a pending request, forming the direct 2-peer network
+    Approve {
+        /// Short id of the requester (from `ray connections`)
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContactAction {
+    /// Print your contact id (default)
+    Id,
+    /// Rotate your contact key (invalidates the old contact id)
+    Rotate,
 }
 
 #[derive(Subcommand)]
@@ -710,6 +749,12 @@ async fn main() -> Result<()> {
         Command::Requests { network } => ipc_requests(&network).await,
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,
+        Command::Connect {
+            contact_id,
+            hostname,
+        } => ipc_connect(&contact_id, hostname).await,
+        Command::Connections { action } => ipc_connections(action).await,
+        Command::Contact { action } => ipc_contact(action).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
         Command::Firewall { action } => ipc_firewall(action).await,
         Command::Apply {
@@ -963,17 +1008,9 @@ async fn ipc_leave(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Human-readable byte size (GB/MB/KB/B) for traffic and transfer counters.
+/// Human-readable byte size (GiB/MiB/KiB/B) for traffic and transfer counters.
 fn format_bytes(b: u64) -> String {
-    if b >= 1_073_741_824 {
-        format!("{:.1} GB", b as f64 / 1_073_741_824.0)
-    } else if b >= 1_048_576 {
-        format!("{:.1} MB", b as f64 / 1_048_576.0)
-    } else if b >= 1024 {
-        format!("{:.1} KB", b as f64 / 1024.0)
-    } else {
-        format!("{b} B")
-    }
+    bytesize::ByteSize(b).to_string()
 }
 
 /// Render a styled error block to stderr:
@@ -1090,6 +1127,7 @@ async fn ipc_status() -> Result<()> {
             endpoint_id,
             mdns_enabled,
             active,
+            contact_id,
             networks,
             packets_rx,
             packets_tx,
@@ -1101,6 +1139,7 @@ async fn ipc_status() -> Result<()> {
                     "endpoint": endpoint_id.to_string(),
                     "mdns": mdns_enabled,
                     "active": active,
+                    "contact_id": contact_id,
                     "networks": networks,
                     "traffic": {
                         "packets_rx": packets_rx, "packets_tx": packets_tx,
@@ -1133,22 +1172,22 @@ async fn ipc_status() -> Result<()> {
             if !active {
                 println!("  {}", style::faint("run `ray up` to activate"));
             }
+            if let Some(ref cid) = contact_id {
+                println!("  {} {}", style::label("contact"), style::rose(cid),);
+            }
 
             if networks.is_empty() {
                 println!();
                 println!("  {}", style::faint("no active networks"));
             } else {
                 for net in &networks {
-                    let role = match &net.role {
-                        ipc::NetworkRole::Coordinator => "coordinator",
-                        ipc::NetworkRole::Member => "member",
-                    };
+                    let role = net.role.to_string();
                     let dns_name = net
                         .my_hostname
                         .as_ref()
                         .map(|h| format!("{}.{}.{}", h, net.name, DNS_DOMAIN));
                     println!();
-                    print!("  {}  {}", style::bold(&net.name), style::marker(role));
+                    print!("  {}  {}", style::bold(&net.name), style::marker(&role));
                     if let Some(ref dns) = dns_name {
                         print!("   {}", style::value(dns));
                     }
@@ -1216,9 +1255,13 @@ async fn ipc_status() -> Result<()> {
                         print!("{}", indent(&layout::columns(&rows, 3), 4));
                     }
 
-                    // join code + members (self excluded from the count)
+                    // join code + members (self excluded from the count). Direct
+                    // (`ray connect`) networks have no shareable room id, so the
+                    // join code is suppressed for them.
                     print!("    ");
-                    if let Some(ref key) = net.network_key {
+                    if let Some(ref key) = net.network_key
+                        && !net.role.is_direct()
+                    {
                         print!("{} {}    ", style::label("join"), style::rose(key));
                     }
                     println!(
@@ -1413,7 +1456,12 @@ async fn ipc_invite(network: &str, action: Option<InviteAction>) -> Result<()> {
             expires_secs,
         } => {
             println!();
-            println!("  {} {} {}", style::check(), style::value("invite"), style::faint(&id));
+            println!(
+                "  {} {} {}",
+                style::check(),
+                style::value("invite"),
+                style::faint(&id)
+            );
             println!();
             println!("  {}", style::bold(&code));
             println!();
@@ -1446,21 +1494,27 @@ async fn ipc_invite(network: &str, action: Option<InviteAction>) -> Result<()> {
         }
         ipc::IpcMessage::InviteListResponse { invites } => {
             if json_enabled() {
-                print_json(&serde_json::json!(invites
-                    .iter()
-                    .map(|i| serde_json::json!({
-                        "id": i.id, "status": i.status, "redeemer": i.redeemer,
-                        "hostname": i.hostname, "reusable": i.reusable,
-                        "created": i.created, "expires": i.expires,
-                    }))
-                    .collect::<Vec<_>>()));
+                print_json(&serde_json::json!(
+                    invites
+                        .iter()
+                        .map(|i| serde_json::json!({
+                            "id": i.id, "status": i.status, "redeemer": i.redeemer,
+                            "hostname": i.hostname, "reusable": i.reusable,
+                            "created": i.created, "expires": i.expires,
+                        }))
+                        .collect::<Vec<_>>()
+                ));
             } else if invites.is_empty() {
                 println!("\n  {}\n", style::faint("no invites"));
             } else {
                 let rows = invites
                     .iter()
                     .map(|inv| {
-                        let kind = if inv.reusable { "reusable" } else { "single-use" };
+                        let kind = if inv.reusable {
+                            "reusable"
+                        } else {
+                            "single-use"
+                        };
                         let host = inv.hostname.clone().unwrap_or_else(|| "—".to_string());
                         let who = inv.redeemer.clone().unwrap_or_else(|| "—".to_string());
                         vec![
@@ -1473,7 +1527,10 @@ async fn ipc_invite(network: &str, action: Option<InviteAction>) -> Result<()> {
                     })
                     .collect();
                 println!();
-                print!("{}", table(&["id", "status", "kind", "host", "redeemer"], rows, 2));
+                print!(
+                    "{}",
+                    table(&["id", "status", "kind", "host", "redeemer"], rows, 2)
+                );
                 println!();
             }
         }
@@ -1567,6 +1624,124 @@ async fn ipc_deny_request(network: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
+async fn ipc_connect(contact_id: &str, hostname: Option<String>) -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    ipc::send(
+        &mut stream,
+        ipc::IpcMessage::Connect {
+            contact_id: contact_id.to_string(),
+            hostname,
+        },
+    )
+    .await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::Ok { message } => println!("{}", message),
+        ipc::IpcMessage::Joined { name, my_ip, .. } => {
+            println!(
+                "  {} connected — direct network {} ({})",
+                style::green("✓"),
+                style::value(&name),
+                style::faint(&my_ip.to_string()),
+            );
+        }
+        ipc::IpcMessage::Error { message } => print_error("connect failed", &message, None),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
+async fn ipc_connections(action: Option<ConnectionsAction>) -> Result<()> {
+    match action.unwrap_or(ConnectionsAction::List) {
+        ConnectionsAction::List => ipc_connections_list().await,
+        ConnectionsAction::Approve { id } => ipc_connections_approve(&id).await,
+    }
+}
+
+async fn ipc_connections_list() -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Connections).await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::PendingRequests { requests } => {
+            if json_enabled() {
+                print_json(&serde_json::json!(requests
+                    .iter()
+                    .map(|r| serde_json::json!({
+                        "id": r.short_id, "hostname": r.hostname, "waiting_secs": r.waiting_secs,
+                    }))
+                    .collect::<Vec<_>>()));
+            } else if requests.is_empty() {
+                println!("\n  {}\n", style::faint("no pending connection requests"));
+            } else {
+                let rows = requests
+                    .iter()
+                    .map(|r| {
+                        let host = r.hostname.clone().unwrap_or_else(|| "—".to_string());
+                        let wait = format!("{}s", r.waiting_secs);
+                        vec![
+                            layout::Cell::new(r.short_id.clone(), style::rose(&r.short_id)),
+                            layout::Cell::new(host.clone(), style::value(&host)),
+                            layout::Cell::right(wait.clone(), style::faint(&wait)),
+                        ]
+                    })
+                    .collect();
+                println!();
+                print!("{}", table(&["id", "host", "waiting"], rows, 2));
+                println!(
+                    "\n  {}",
+                    style::faint("approve with: ray connections approve <id>")
+                );
+            }
+        }
+        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
+async fn ipc_connections_approve(id: &str) -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    ipc::send(
+        &mut stream,
+        ipc::IpcMessage::ApproveConnection { id: id.to_string() },
+    )
+    .await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::Ok { message } => println!("{}", message),
+        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
+async fn ipc_contact(action: Option<ContactAction>) -> Result<()> {
+    let req = match action.unwrap_or(ContactAction::Id) {
+        ContactAction::Id => ipc::IpcMessage::ContactId,
+        ContactAction::Rotate => ipc::IpcMessage::RotateContact,
+    };
+    let rotating = matches!(req, ipc::IpcMessage::RotateContact);
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, req).await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::ContactIdResponse { contact_id } => {
+            if json_enabled() {
+                print_json(&serde_json::json!({ "contact_id": contact_id }));
+            } else {
+                if rotating {
+                    println!("  {} contact id rotated", style::green("✓"));
+                }
+                println!("{}", contact_id);
+                println!(
+                    "  {}",
+                    style::faint("share this so others can: ray connect <contact-id>")
+                );
+            }
+        }
+        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}
+
 async fn ipc_admin(network: &str, action: AdminAction) -> Result<()> {
     let req = match action {
         AdminAction::Add { identity } => ipc::IpcMessage::AdminAdd {
@@ -1583,10 +1758,12 @@ async fn ipc_admin(network: &str, action: AdminAction) -> Result<()> {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
         ipc::IpcMessage::AdminListResponse { admins } => {
             if json_enabled() {
-                print_json(&serde_json::json!(admins
-                    .iter()
-                    .map(|a| serde_json::json!({ "id": a.short_id, "self": a.self_node }))
-                    .collect::<Vec<_>>()));
+                print_json(&serde_json::json!(
+                    admins
+                        .iter()
+                        .map(|a| serde_json::json!({ "id": a.short_id, "self": a.self_node }))
+                        .collect::<Vec<_>>()
+                ));
             } else if admins.is_empty() {
                 println!("\n  {}\n", style::faint("no admins recorded"));
             } else {
@@ -1637,16 +1814,18 @@ async fn ipc_firewall(action: FirewallAction) -> Result<()> {
             peer,
             network,
         } => ipc::IpcMessage::FirewallAdd {
-            direction,
-            action,
-            protocol: proto,
+            direction: direction.parse().map_err(anyhow::Error::msg)?,
+            action: action.parse().map_err(anyhow::Error::msg)?,
+            protocol: proto.parse().map_err(anyhow::Error::msg)?,
             port,
             peer,
             network,
         },
         FirewallAction::Remove { index } => ipc::IpcMessage::FirewallRemove { index },
         FirewallAction::Show => ipc::IpcMessage::FirewallShow,
-        FirewallAction::Default { action } => ipc::IpcMessage::FirewallDefault { action },
+        FirewallAction::Default { action } => ipc::IpcMessage::FirewallDefault {
+            action: action.parse().map_err(anyhow::Error::msg)?,
+        },
         FirewallAction::Accept { network } => ipc::IpcMessage::FirewallAccept { network },
         FirewallAction::Deny { network } => ipc::IpcMessage::FirewallDeny { network },
         FirewallAction::AutoAccept { network, state } => {
@@ -1668,7 +1847,7 @@ async fn ipc_firewall(action: FirewallAction) -> Result<()> {
             if json_enabled() {
                 print_json(&serde_json::json!({ "default": default, "rules": rules }));
             } else {
-                print!("{}", render_firewall_rules(Some(&default), &rules));
+                print!("{}", render_firewall_rules(Some(default), &rules));
             }
         }
         ipc::IpcMessage::Error { message } => print_error("firewall", &message, None),
@@ -1684,13 +1863,17 @@ fn print_json(value: &serde_json::Value) {
 
 /// Render a firewall rule table as aligned columns. `default` is the catch-all
 /// action shown as a header (omitted for the pending-suggestions list).
-fn render_firewall_rules(default: Option<&str>, rules: &[ipc::FirewallRuleView]) -> String {
+fn render_firewall_rules(
+    default: Option<firewall::Action>,
+    rules: &[ipc::FirewallRuleView],
+) -> String {
     let mut out = String::from("\n");
     if let Some(d) = default {
-        let styled = if d == "deny" {
-            style::red(d)
+        let s = d.to_string();
+        let styled = if d.is_deny() {
+            style::red(&s)
         } else {
-            style::green(d)
+            style::green(&s)
         };
         out.push_str(&format!("  {}  {}\n\n", style::label("default"), styled));
     }
@@ -1702,10 +1885,13 @@ fn render_firewall_rules(default: Option<&str>, rules: &[ipc::FirewallRuleView])
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let action = if r.action == "deny" {
-                style::red(&r.action)
+            let direction = r.direction.to_string();
+            let protocol = r.protocol.to_string();
+            let action_s = r.action.to_string();
+            let action = if r.action.is_deny() {
+                style::red(&action_s)
             } else {
-                style::green(&r.action)
+                style::green(&action_s)
             };
             let sugg = r
                 .suggested_by
@@ -1719,9 +1905,9 @@ fn render_firewall_rules(default: Option<&str>, rules: &[ipc::FirewallRuleView])
                 .unwrap_or_default();
             vec![
                 layout::Cell::new(i.to_string(), style::faint(&i.to_string())),
-                layout::Cell::new(r.direction.clone(), style::value(&r.direction)),
-                layout::Cell::new(r.action.clone(), action),
-                layout::Cell::new(r.protocol.clone(), style::value(&r.protocol)),
+                layout::Cell::new(direction.clone(), style::value(&direction)),
+                layout::Cell::new(action_s.clone(), action),
+                layout::Cell::new(protocol.clone(), style::value(&protocol)),
                 layout::Cell::right(r.port.clone(), style::value(&r.port)),
                 layout::Cell::new(r.peer.clone(), style::value(&r.peer)),
                 layout::Cell::new(r.network.clone(), style::faint(&r.network)),
@@ -2157,13 +2343,19 @@ async fn ipc_files(action: Option<FilesAction>) -> Result<()> {
                             .map(|f| {
                                 let accept = format!("ray files accept {}", f.id);
                                 vec![
-                                    layout::Cell::new(f.id.to_string(), style::rose(&f.id.to_string())),
+                                    layout::Cell::new(
+                                        f.id.to_string(),
+                                        style::rose(&f.id.to_string()),
+                                    ),
                                     layout::Cell::new(f.from.clone(), style::value(&f.from)),
                                     layout::Cell::right(
                                         format_size(f.size),
                                         style::faint(&format_size(f.size)),
                                     ),
-                                    layout::Cell::new(f.filename.clone(), style::value(&f.filename)),
+                                    layout::Cell::new(
+                                        f.filename.clone(),
+                                        style::value(&f.filename),
+                                    ),
                                     layout::Cell::new(accept.clone(), style::faint(&accept)),
                                 ]
                             })
@@ -2754,11 +2946,19 @@ mod tests {
     use super::*;
     use ipc::FirewallRuleView;
 
-    fn view(dir: &str, action: &str, proto: &str, port: &str, peer: &str, net: &str, sugg: Option<&str>) -> FirewallRuleView {
+    fn view(
+        dir: &str,
+        action: &str,
+        proto: &str,
+        port: &str,
+        peer: &str,
+        net: &str,
+        sugg: Option<&str>,
+    ) -> FirewallRuleView {
         FirewallRuleView {
-            direction: dir.into(),
-            action: action.into(),
-            protocol: proto.into(),
+            direction: dir.parse().unwrap(),
+            action: action.parse().unwrap(),
+            protocol: proto.parse().unwrap(),
             port: port.into(),
             peer: peer.into(),
             network: net.into(),
@@ -2771,13 +2971,24 @@ mod tests {
         style::set_plain(true);
         let rules = vec![
             view("in", "allow", "tcp", "443", "any", "any", None),
-            view("out", "deny", "udp", "53", "abc1", "homelab", Some("homelab")),
+            view(
+                "out",
+                "deny",
+                "udp",
+                "53",
+                "abc1",
+                "homelab",
+                Some("homelab"),
+            ),
         ];
-        let out = render_firewall_rules(Some("allow"), &rules);
+        let out = render_firewall_rules(Some(firewall::Action::Allow), &rules);
         assert!(out.contains("default  allow"));
         // Header present, columns aligned: the "action" column header and the
         // two action values start at the same offset on their lines.
-        let lines: Vec<&str> = out.lines().filter(|l| l.contains("allow") || l.contains("deny")).collect();
+        let lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("allow") || l.contains("deny"))
+            .collect();
         assert!(out.contains("·suggested by homelab·"));
         // No ANSI escapes in plain mode.
         assert!(!out.contains('\u{1b}'));
@@ -2787,7 +2998,7 @@ mod tests {
     #[test]
     fn empty_firewall_says_no_rules() {
         style::set_plain(true);
-        let out = render_firewall_rules(Some("deny"), &[]);
+        let out = render_firewall_rules(Some(firewall::Action::Deny), &[]);
         assert!(out.contains("default  deny"));
         assert!(out.contains("(no rules)"));
     }

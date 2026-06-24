@@ -16,7 +16,7 @@ repository = "https://github.com/rayfish/rayfish"
 [dependencies]
 anyhow = "1"
 bytes = "1"
-derive_more = { version = "2", features = ["is_variant"] }
+derive_more = { version = "2", features = ["is_variant", "display"] }
 futures = "0.3"
 iroh = { version = "1" }
 rmp-serde = "1"

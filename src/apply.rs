@@ -374,6 +374,9 @@ networks: {}
         assert!(g.get("carol").unwrap().allows.is_empty());
         // The minecraft network demonstrates the wildcard.
         let mc = spec.networks.get("minecraft").unwrap();
-        assert_eq!(mc.get("*").unwrap().allows.get("*").map(|s| s.as_str()), Some("tcp:6969"));
+        assert_eq!(
+            mc.get("*").unwrap().allows.get("*").map(|s| s.as_str()),
+            Some("tcp:6969")
+        );
     }
 }

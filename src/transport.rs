@@ -12,6 +12,11 @@ use std::sync::Arc;
 
 pub const FILES_ALPN: &[u8] = b"rayfish/files/1";
 
+/// Identity-level ALPN for the `ray connect` friend-request handshake. Unlike
+/// `network_alpn`, this is not per-network — it accepts connection requests
+/// addressed to this node's contact key.
+pub const CONNECT_ALPN: &[u8] = b"rayfish/connect/1";
+
 pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
     let full = network_pubkey.to_string();
     let prefix = &full[..full.len().min(16)];

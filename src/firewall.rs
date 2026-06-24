@@ -36,47 +36,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::peers::FastDashMap;
 use anyhow::{Context, Result, bail};
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use iroh::EndpointId;
 use ray_proto::SuggestedFirewall;
 use ray_proto::ipc::FirewallRuleView;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
-#[serde(rename_all = "lowercase")]
-pub enum Direction {
-    #[display("in")]
-    In,
-    #[display("out")]
-    Out,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
-#[serde(rename_all = "lowercase")]
-pub enum Protocol {
-    #[display("tcp")]
-    Tcp,
-    #[display("udp")]
-    Udp,
-    #[display("icmp")]
-    Icmp,
-    #[display("any")]
-    Any,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::IsVariant, derive_more::Display,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Action {
-    #[display("allow")]
-    Allow,
-    #[display("deny")]
-    Deny,
-}
+// Direction / Protocol / Action live in `ray-proto` so the IPC layer carries them
+// typed (not stringified); re-exported here so the daemon keeps its original
+// `firewall::Action` paths.
+pub use ray_proto::{Action, Direction, Protocol};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -174,14 +146,14 @@ pub struct SharedFirewall {
     inner: Arc<ArcSwap<FirewallConfig>>,
     /// Stateful connection tracker: outbound-initiated flows whose return
     /// traffic is allowed in even under a deny default.
-    conntrack: Arc<DashMap<Flow, Instant>>,
+    conntrack: Arc<FastDashMap<Flow, Instant>>,
 }
 
 impl SharedFirewall {
     pub fn new(config: FirewallConfig) -> Self {
         Self {
             inner: Arc::new(ArcSwap::from_pointee(config)),
-            conntrack: Arc::new(DashMap::new()),
+            conntrack: Arc::new(FastDashMap::default()),
         }
     }
 
@@ -507,40 +479,14 @@ pub fn save_firewall(config: &FirewallConfig) -> Result<()> {
     std::fs::write(&path, content).with_context(|| format!("write {}", path.display()))
 }
 
-pub fn parse_direction(s: &str) -> Result<Direction> {
-    match s {
-        "in" => Ok(Direction::In),
-        "out" => Ok(Direction::Out),
-        _ => bail!("invalid direction '{}' (expected 'in' or 'out')", s),
-    }
-}
-
-pub fn parse_action(s: &str) -> Result<Action> {
-    match s {
-        "allow" => Ok(Action::Allow),
-        "deny" => Ok(Action::Deny),
-        _ => bail!("invalid action '{}' (expected 'allow' or 'deny')", s),
-    }
-}
-
-pub fn parse_protocol(s: &str) -> Result<Protocol> {
-    match s {
-        "tcp" => Ok(Protocol::Tcp),
-        "udp" => Ok(Protocol::Udp),
-        "icmp" => Ok(Protocol::Icmp),
-        "any" => Ok(Protocol::Any),
-        _ => bail!(
-            "invalid protocol '{}' (expected 'tcp', 'udp', 'icmp', or 'any')",
-            s
-        ),
-    }
-}
-
 pub fn parse_port_range(s: &str) -> Result<PortRange> {
     // `*` = wildcard = all ports. Accepted anywhere a port spec is expected
     // (local `ray firewall add --port '*'` and suggested-firewall tokens).
     if s.trim() == "*" {
-        return Ok(PortRange { start: 0, end: u16::MAX });
+        return Ok(PortRange {
+            start: 0,
+            end: u16::MAX,
+        });
     }
     if let Some((start, end)) = s.split_once('-') {
         let start: u16 = start.parse().context("invalid start port")?;
@@ -573,7 +519,7 @@ pub fn parse_spec_token(tok: &str) -> Result<(Protocol, Option<PortRange>)> {
     let tok = tok.trim();
     match tok.split_once(':') {
         Some((proto_str, port_str)) => {
-            let proto = parse_protocol(proto_str)?;
+            let proto = proto_str.parse::<Protocol>().map_err(anyhow::Error::msg)?;
             match proto {
                 // Port-less protocols: a port spec is meaningless, ignore it
                 // so `icmp:*` reads the same as `icmp`.
@@ -588,17 +534,19 @@ pub fn parse_spec_token(tok: &str) -> Result<(Protocol, Option<PortRange>)> {
             // Bare token: must be a protocol keyword. A bare number is a
             // missing-protocol error, not an implicit TCP default.
             if tok.parse::<u16>().is_ok() {
-                bail!(
-                    "missing protocol prefix for '{tok}'; use e.g. 'tcp:{tok}' or 'icmp'"
-                );
+                bail!("missing protocol prefix for '{tok}'; use e.g. 'tcp:{tok}' or 'icmp'");
             }
-            let proto = parse_protocol(tok)?;
+            let proto = tok.parse::<Protocol>().map_err(anyhow::Error::msg)?;
             match proto {
                 Protocol::Icmp | Protocol::Any => Ok((proto, None)),
                 // Bare `tcp`/`udp` = all ports of that protocol.
-                Protocol::Tcp | Protocol::Udp => {
-                    Ok((proto, Some(PortRange { start: 0, end: u16::MAX })))
-                }
+                Protocol::Tcp | Protocol::Udp => Ok((
+                    proto,
+                    Some(PortRange {
+                        start: 0,
+                        end: u16::MAX,
+                    }),
+                )),
             }
         }
     }
@@ -686,7 +634,10 @@ pub fn materialize_suggestions(
 /// Build a display-oriented [`FirewallRuleView`] for one rule, resolving the
 /// peer identity to a short id via `short_id`. Used for IPC (the CLI renders /
 /// serializes the view) and for value-matching queued suggestions.
-pub fn rule_view(rule: &FirewallRule, short_id: &dyn Fn(&EndpointId) -> String) -> FirewallRuleView {
+pub fn rule_view(
+    rule: &FirewallRule,
+    short_id: &dyn Fn(&EndpointId) -> String,
+) -> FirewallRuleView {
     let peer = match &rule.peer {
         PeerFilter::Any => "any".to_string(),
         PeerFilter::Identity(id) => short_id(id),
@@ -702,9 +653,9 @@ pub fn rule_view(rule: &FirewallRule, short_id: &dyn Fn(&EndpointId) -> String) 
         RuleOrigin::Network(n) => Some(n.clone()),
     };
     FirewallRuleView {
-        direction: rule.direction.to_string(),
-        action: rule.action.to_string(),
-        protocol: rule.protocol.to_string(),
+        direction: rule.direction,
+        action: rule.action,
+        protocol: rule.protocol,
         port,
         peer,
         network,
@@ -986,7 +937,13 @@ mod tests {
         assert!(parse_port_range("443-80").is_err());
         assert!(parse_port_range("abc").is_err());
         // wildcard = all ports
-        assert_eq!(parse_port_range("*").unwrap(), PortRange { start: 0, end: u16::MAX });
+        assert_eq!(
+            parse_port_range("*").unwrap(),
+            PortRange {
+                start: 0,
+                end: u16::MAX
+            }
+        );
     }
 
     #[test]
@@ -1340,7 +1297,9 @@ mod tests {
     fn suggest(subject: &str, allows: &[(&str, &str)]) -> SuggestedFirewall {
         let mut entry = HostSuggestions::default();
         for (peer, ports) in allows {
-            entry.allows.insert((*peer).to_string(), (*ports).to_string());
+            entry
+                .allows
+                .insert((*peer).to_string(), (*ports).to_string());
         }
         let mut map = SuggestedFirewall::new();
         map.insert(subject.to_string(), entry);
@@ -1359,10 +1318,7 @@ mod tests {
         let suggestions = suggest("me", &[("peer", "tcp:9000,tcp:8123")]);
         let rules = materialize_suggestions("prod", "me", &suggestions, &resolve);
         // Two allow rules (one per port), all inbound, network-scoped, origin prod.
-        let allows: Vec<_> = rules
-            .iter()
-            .filter(|r| r.action == Action::Allow)
-            .collect();
+        let allows: Vec<_> = rules.iter().filter(|r| r.action == Action::Allow).collect();
         assert_eq!(allows.len(), 2);
         for r in &allows {
             assert_eq!(r.direction, Direction::In);
@@ -1397,7 +1353,10 @@ mod tests {
                 && r.port.is_none()
                 && r.network.as_deref() == Some("prod")
         });
-        assert!(deny_any.is_some(), "expected a network-scoped catch-all deny");
+        assert!(
+            deny_any.is_some(),
+            "expected a network-scoped catch-all deny"
+        );
     }
 
     #[test]
@@ -1479,7 +1438,10 @@ mod tests {
         let allows: Vec<_> = rules.iter().filter(|r| r.action == Action::Allow).collect();
         // icmp + tcp:* + udp:53 + any = 4 rules.
         assert_eq!(allows.len(), 4);
-        let icmp = allows.iter().find(|r| r.protocol == Protocol::Icmp).unwrap();
+        let icmp = allows
+            .iter()
+            .find(|r| r.protocol == Protocol::Icmp)
+            .unwrap();
         assert!(icmp.port.is_none(), "icmp rule must be port-less");
         let tcp_any = allows.iter().find(|r| r.protocol == Protocol::Tcp).unwrap();
         assert_eq!(tcp_any.port.as_ref().unwrap().end, u16::MAX);
@@ -1513,7 +1475,11 @@ mod tests {
         assert_eq!(allow.port.as_ref().unwrap().start, 6969);
         assert_eq!(allow.network.as_deref(), Some("prod"));
         // Allow-list present ⇒ a catch-all deny is appended.
-        assert!(rules.iter().any(|r| r.action == Action::Deny && r.peer == PeerFilter::Any));
+        assert!(
+            rules
+                .iter()
+                .any(|r| r.action == Action::Deny && r.peer == PeerFilter::Any)
+        );
     }
 
     #[test]
@@ -1548,10 +1514,17 @@ mod tests {
         let rules = materialize_suggestions("prod", "me", &suggestions, &resolve);
         let allows: Vec<_> = rules.iter().filter(|r| r.action == Action::Allow).collect();
         assert_eq!(allows.len(), 2, "own subject + wildcard subject");
-        assert!(allows.iter().any(|r| r.peer == PeerFilter::Identity(peer)
-            && r.port.as_ref().unwrap().start == 22));
-        assert!(allows.iter().any(|r| r.peer == PeerFilter::Any
-            && r.port.as_ref().unwrap().start == 6969));
+        assert!(
+            allows
+                .iter()
+                .any(|r| r.peer == PeerFilter::Identity(peer)
+                    && r.port.as_ref().unwrap().start == 22)
+        );
+        assert!(
+            allows
+                .iter()
+                .any(|r| r.peer == PeerFilter::Any && r.port.as_ref().unwrap().start == 6969)
+        );
     }
 
     #[test]
@@ -1607,7 +1580,10 @@ mod tests {
             direction: Direction::In,
             action: Action::Allow,
             protocol: Protocol::Tcp,
-            port: Some(PortRange { start: 9000, end: 9000 }),
+            port: Some(PortRange {
+                start: 9000,
+                end: 9000,
+            }),
             peer: PeerFilter::Identity(test_id(9)),
             network: Some("prod".to_string()),
             origin: RuleOrigin::Network("prod".to_string()),
@@ -1617,7 +1593,10 @@ mod tests {
             direction: Direction::In,
             action: Action::Allow,
             protocol: Protocol::Tcp,
-            port: Some(PortRange { start: 8080, end: 8080 }),
+            port: Some(PortRange {
+                start: 8080,
+                end: 8080,
+            }),
             peer: PeerFilter::Any,
             network: Some("dev".to_string()),
             origin: RuleOrigin::Network("dev".to_string()),
@@ -1641,10 +1620,12 @@ mod tests {
 
         // Local + other-network rules preserved; prod set fully replaced.
         assert!(updated.rules.iter().any(|r| r.origin == RuleOrigin::Local));
-        assert!(updated
-            .rules
-            .iter()
-            .any(|r| matches!(&r.origin, RuleOrigin::Network(n) if n == "dev")));
+        assert!(
+            updated
+                .rules
+                .iter()
+                .any(|r| matches!(&r.origin, RuleOrigin::Network(n) if n == "dev"))
+        );
         let prod: Vec<_> = updated
             .rules
             .iter()

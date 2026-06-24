@@ -36,14 +36,14 @@
 //!   `activate` mints *fresh* child tokens, so `up → down → up` cycles work.
 
 use bytes::Bytes;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use anyhow::{Context, Result};
 use iroh::address_lookup::PkarrRelayClient;
@@ -57,10 +57,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::audit;
 use crate::config;
 use crate::control::{self, ControlMsg};
 use crate::dht;
-use crate::audit;
 use crate::dns;
 use crate::dns_config;
 use crate::firewall::{self, SharedFirewall};
@@ -71,12 +71,12 @@ use crate::membership::{
     ApprovedEntry, ApprovedList, GroupMode, IdentityProvider, IrohIdentityProvider, Member,
     MemberList, canonical_group_bytes, derive_ipv6, group_blob_hash, verify_group_blob,
 };
-use ray_proto::SuggestedFirewall;
 use crate::network_name;
 use crate::peers::{self, PeerTable};
 use crate::stats::ForwardMetrics;
 use crate::transport;
 use crate::tun::{self, check_cgnat_conflict};
+use ray_proto::SuggestedFirewall;
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -218,8 +218,17 @@ impl CoordinatorAcceptState {
         let is_approved = self.state.read().unwrap().approved.is_approved(&remote_id);
         if is_approved {
             // Live-approved name is joiner-chosen, not authoritative.
-            self.admit_peer(conn, send, remote_id, peer_ip, hostname, device_cert, true, false)
-                .await;
+            self.admit_peer(
+                conn,
+                send,
+                remote_id,
+                peer_ip,
+                hostname,
+                device_cert,
+                true,
+                false,
+            )
+            .await;
             return;
         }
 
@@ -256,7 +265,8 @@ impl CoordinatorAcceptState {
                     // the secret was burned; un-burn so the holder can retry.
                     if !admitted {
                         let _guard = self.invite_lock.lock().await;
-                        if let Ok(mut store) = crate::invite::InviteStore::load(&self.network_name) {
+                        if let Ok(mut store) = crate::invite::InviteStore::load(&self.network_name)
+                        {
                             let _ = store.restore(&secret);
                         }
                     } else {
@@ -306,7 +316,14 @@ impl CoordinatorAcceptState {
                         // Reusable joins are non-authoritative: joiner-chosen name,
                         // collision → suffix.
                         self.admit_peer(
-                            conn, send, remote_id, peer_ip, hostname, device_cert, false, false,
+                            conn,
+                            send,
+                            remote_id,
+                            peer_ip,
+                            hostname,
+                            device_cert,
+                            false,
+                            false,
                         )
                         .await;
                     } else {
@@ -325,8 +342,17 @@ impl CoordinatorAcceptState {
         match mode {
             GroupMode::Open => {
                 // Open-mode name is joiner-chosen, not authoritative.
-                self.admit_peer(conn, send, remote_id, peer_ip, hostname, device_cert, false, false)
-                    .await;
+                self.admit_peer(
+                    conn,
+                    send,
+                    remote_id,
+                    peer_ip,
+                    hostname,
+                    device_cert,
+                    false,
+                    false,
+                )
+                .await;
             }
             GroupMode::Restricted => {
                 {
@@ -430,8 +456,12 @@ impl CoordinatorAcceptState {
             }
         };
         if collision {
-            self.deny(&conn, send, format!("IP collision: {peer_ip} already assigned"))
-                .await;
+            self.deny(
+                &conn,
+                send,
+                format!("IP collision: {peer_ip} already assigned"),
+            )
+            .await;
             return false;
         }
 
@@ -775,6 +805,17 @@ struct PendingFile {
     blob_hash: blake3::Hash,
 }
 
+/// A pending incoming `ray connect` request, awaiting `ray connections approve`.
+/// Keyed by the requester's transport endpoint id (not contact id) so it
+/// survives the requester rotating their contact key.
+#[derive(Clone)]
+struct PendingConnect {
+    from_contact_id: EndpointId,
+    from_endpoint: EndpointId,
+    hostname: Option<String>,
+    requested_at: Instant,
+}
+
 struct ProtocolRouter {
     blobs: BlobsProtocol,
     handlers: DashMap<Vec<u8>, Arc<MeshProtocol>>,
@@ -782,6 +823,17 @@ struct ProtocolRouter {
     file_id_counter: Arc<AtomicU64>,
     pairing_secret: Arc<std::sync::Mutex<Option<[u8; 32]>>>,
     secret_key: SecretKey,
+    /// `ray connect` requests received on `CONNECT_ALPN`, awaiting approval.
+    /// Keyed by the requester's transport endpoint id.
+    pending_connects: Arc<DashMap<EndpointId, PendingConnect>>,
+    /// Approved connect requests: requester endpoint id → (room id, coordinator).
+    /// The `CONNECT_ALPN` handler replies `Approved` from here when the requester
+    /// re-dials after `ray connections approve`.
+    approved_connects: Arc<DashMap<EndpointId, (EndpointId, EndpointId)>>,
+    /// Peer endpoints we have sent an outgoing `ray connect` request to. Used by
+    /// the concurrency tie-break: if both peers requested *and* approved each
+    /// other, only the higher endpoint id mints, avoiding a duplicate network.
+    outgoing_connects: Arc<DashSet<EndpointId>>,
 }
 
 impl ProtocolRouter {
@@ -797,6 +849,9 @@ impl ProtocolRouter {
             file_id_counter: Arc::new(AtomicU64::new(1)),
             pairing_secret,
             secret_key,
+            pending_connects: Arc::new(DashMap::new()),
+            approved_connects: Arc::new(DashMap::new()),
+            outgoing_connects: Arc::new(DashSet::new()),
         }
     }
 
@@ -814,6 +869,7 @@ impl ProtocolRouter {
         alpns.push(iroh_blobs::protocol::ALPN.to_vec());
         alpns.push(transport::FILES_ALPN.to_vec());
         alpns.push(PAIR_ALPN.to_vec());
+        alpns.push(transport::CONNECT_ALPN.to_vec());
         alpns
     }
 
@@ -953,6 +1009,56 @@ impl ProtocolRouter {
                                         }
                                     }
                                 }
+                                a if a == transport::CONNECT_ALPN => {
+                                    let pending = router.pending_connects.clone();
+                                    let approved = router.approved_connects.clone();
+                                    let remote_id = conn.remote_id();
+                                    match conn.accept_bi().await {
+                                        Ok((mut send, mut recv)) => {
+                                            let request: control::ConnectMsg = match control::recv_framed(&mut recv).await {
+                                                Ok(r) => r,
+                                                Err(e) => {
+                                                    tracing::warn!(error = %e, peer = %remote_id.fmt_short(), "failed to read connect request");
+                                                    return;
+                                                }
+                                            };
+                                            if let control::ConnectMsg::Request { from_contact_id, from_endpoint, hostname } = request {
+                                                // Bind the request to the dialing identity: the
+                                                // endpoint we pre-approve must be the one that dialed.
+                                                if from_endpoint != remote_id {
+                                                    tracing::warn!(claimed = %from_endpoint.fmt_short(), actual = %remote_id.fmt_short(), "connect request endpoint mismatch");
+                                                    let _ = control::send_framed(&mut send, &control::ConnectMsg::Denied { reason: "endpoint mismatch".to_string() }).await;
+                                                    return;
+                                                }
+                                                // Already approved? Reply with the minted room id so
+                                                // a re-dialing requester joins it (idempotent).
+                                                let already = approved.get(&from_endpoint).map(|r| *r.value());
+                                                let reply = if let Some((room_id, coordinator)) = already {
+                                                    control::ConnectMsg::Approved { room_id, coordinator }
+                                                } else {
+                                                    pending.insert(from_endpoint, PendingConnect {
+                                                        from_contact_id,
+                                                        from_endpoint,
+                                                        hostname,
+                                                        requested_at: Instant::now(),
+                                                    });
+                                                    tracing::info!(from = %from_contact_id.fmt_short(), endpoint = %from_endpoint.fmt_short(), "connect request received");
+                                                    control::ConnectMsg::Pending
+                                                };
+                                                if let Err(e) = control::send_framed(&mut send, &reply).await {
+                                                    tracing::warn!(error = %e, peer = %remote_id.fmt_short(), "failed to send connect reply");
+                                                    return;
+                                                }
+                                                let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+                                            } else {
+                                                tracing::warn!(peer = %remote_id.fmt_short(), "unexpected connect message type");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, peer = %remote_id.fmt_short(), "failed to accept bi stream for connect");
+                                        }
+                                    }
+                                }
                                 _ => {
                                     if let Some(handler) = router.handlers.get(&alpn).map(|r| r.clone()) {
                                         let _ = handler.accept(conn).await;
@@ -1087,6 +1193,11 @@ pub struct DaemonState {
     pairing_secret: Arc<std::sync::Mutex<Option<[u8; 32]>>>,
     device_cert: Option<control::DeviceCert>,
     device_user_map: peers::DeviceUserMap,
+    /// This node's contact id (`ray connect`): the public half of the rotatable
+    /// contact key. The secret lives in config (read fresh by the publisher and
+    /// `rotate_contact` so rotation needs no restart); only the public id is
+    /// surfaced here for `ray status` / `ray contact id`.
+    contact_public: EndpointId,
     /// Whether the VPN is currently active (TUN up, networks connected) or on
     /// standby. Toggled by the `Up`/`Down` IPC commands.
     active: Arc<AtomicBool>,
@@ -1245,6 +1356,8 @@ impl DaemonState {
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
                 | IpcMessage::ListFiles
+                | IpcMessage::Connections
+                | IpcMessage::ContactId
         ) {
             return None;
         }
@@ -1354,16 +1467,16 @@ impl DaemonState {
                 peer,
                 network,
             } => self.firewall_add(
-                &direction,
-                &action,
-                &protocol,
+                direction,
+                action,
+                protocol,
                 port.as_deref(),
                 peer.as_deref(),
                 network.as_deref(),
             ),
             IpcMessage::FirewallRemove { index } => self.firewall_remove(index),
             IpcMessage::FirewallShow => self.firewall_show(),
-            IpcMessage::FirewallDefault { action } => self.firewall_default(&action),
+            IpcMessage::FirewallDefault { action } => self.firewall_default(action),
             IpcMessage::FirewallSuggest {
                 network,
                 suggestions,
@@ -1406,10 +1519,18 @@ impl DaemonState {
             IpcMessage::Requests { network } => self.list_requests(&network),
             IpcMessage::AcceptRequest { network, id } => self.accept_request(&network, &id).await,
             IpcMessage::DenyRequest { network, id } => self.deny_request(&network, &id),
-            IpcMessage::AdminAdd { network, identity } => {
-                self.admin_add(&network, &identity).await
-            }
+            IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
+            IpcMessage::Connect {
+                contact_id,
+                hostname,
+            } => self.connect(&contact_id, hostname).await,
+            IpcMessage::Connections => self.list_connections(),
+            IpcMessage::ApproveConnection { id } => self.approve_connection(&id).await,
+            IpcMessage::ContactId => IpcMessage::ContactIdResponse {
+                contact_id: self.contact_public.to_string(),
+            },
+            IpcMessage::RotateContact => self.rotate_contact().await,
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },
@@ -1423,7 +1544,10 @@ impl DaemonState {
         name: Option<String>,
         hostname: Option<String>,
     ) -> IpcMessage {
-        match self.create_network_inner(mode, name, hostname).await {
+        match self
+            .create_network_inner(mode, name, hostname, false, None)
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => IpcMessage::Error {
                 message: format!("{e:#}"),
@@ -1431,11 +1555,19 @@ impl DaemonState {
         }
     }
 
+    /// Create a network and register it as coordinator.
+    ///
+    /// `direct` marks an auto-minted 2-peer `ray connect` network (persisted so
+    /// `ray status` can tag it). `pre_approve` adds a peer to the `ApprovedList`
+    /// before the blob is signed/published, so the named peer can be welcomed
+    /// without a separate `ray accept` round-trip — used by `approve_connection`.
     async fn create_network_inner(
         &self,
         mode: GroupMode,
         custom_name: Option<String>,
         hostname: Option<String>,
+        direct: bool,
+        pre_approve: Option<(EndpointId, Option<String>)>,
     ) -> Result<IpcMessage> {
         let name = match custom_name {
             Some(n) => {
@@ -1498,9 +1630,30 @@ impl DaemonState {
         )
         .await;
 
+        let mut approved = ApprovedList::new();
+        // Pre-approve the requesting peer (ray connect), so the published blob
+        // already carries the approval and the peer is welcomed on its join
+        // without a separate `ray accept`.
+        if let Some((peer_id, peer_hostname)) = pre_approve {
+            let peer_ip = self.identity.derive_ip(&peer_id);
+            approved
+                .approve(
+                    ApprovedEntry {
+                        identity: peer_id,
+                        ip: peer_ip,
+                        hostname: peer_hostname,
+                        user_identity: None,
+                        device_cert: None,
+                        collision_index: 0,
+                    },
+                    &member_list,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to pre-approve peer: {e:?}"))?;
+        }
+
         let mut net_state = NetworkState {
             members: member_list,
-            approved: ApprovedList::new(),
+            approved,
             snapshot: None,
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: net_public_key,
@@ -1573,6 +1726,7 @@ impl DaemonState {
                 transport: None,
                 auto_accept_firewall: false,
                 admins: vec![],
+                direct,
             },
         );
         config::save(&app_config)?;
@@ -1858,12 +2012,20 @@ impl DaemonState {
                 )];
 
                 tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
-                let conn = match transport::connect_to_peer_with_alpn(&self.endpoint, *coordinator_id, &alpn).await {
+                let conn = match transport::connect_to_peer_with_alpn(
+                    &self.endpoint,
+                    *coordinator_id,
+                    &alpn,
+                )
+                .await
+                {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator unreachable, trying next");
                         cancel.cancel();
-                        for t in tasks { t.abort(); }
+                        for t in tasks {
+                            t.abort();
+                        }
                         last_err = anyhow::anyhow!("coordinator offline: {e}");
                         continue;
                     }
@@ -1906,13 +2068,17 @@ impl DaemonState {
                         // This coordinator queued the request — don't try the
                         // next; let the caller retry with backoff until accepted.
                         cancel.cancel();
-                        for t in tasks { t.abort(); }
+                        for t in tasks {
+                            t.abort();
+                        }
                         return Ok(TryJoin::Pending);
                     }
                     Err(e) => {
                         tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator denied or unreachable, trying next");
                         cancel.cancel();
-                        for t in tasks { t.abort(); }
+                        for t in tasks {
+                            t.abort();
+                        }
                         last_err = e;
                         continue;
                     }
@@ -2025,7 +2191,9 @@ impl DaemonState {
                     cancel.clone(),
                 );
             }
-            NetworkRole::Member => {
+            // `Direct` is a display-only role (set in `status`), never produced by
+            // `role_for_key_holder`; a non-key-holder runs as a plain member.
+            NetworkRole::Member | NetworkRole::Direct => {
                 self.protocol_router.register(
                     alpn.clone(),
                     AcceptHandler::Member(Arc::new(MemberAcceptState {
@@ -2313,8 +2481,6 @@ impl DaemonState {
             )
             .await;
 
-
-
             let mut ns = NetworkState {
                 members: MemberList::from_members(data.members),
                 approved: ApprovedList::from_entries(data.approved),
@@ -2393,10 +2559,7 @@ impl DaemonState {
                         )
                         .await;
                     }
-                    crate::spawn_path_logger(
-                        peer_conn.clone(),
-                        m.identity.fmt_short().to_string(),
-                    );
+                    crate::spawn_path_logger(peer_conn.clone(), m.identity.fmt_short().to_string());
                     self.peers.add(
                         m.ip,
                         derive_ipv6(&m.identity),
@@ -2615,6 +2778,7 @@ impl DaemonState {
                     .map(|nc| nc.auto_accept_firewall)
                     .unwrap_or(false),
                 admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
+                direct: net_config.map(|nc| nc.direct).unwrap_or(false),
             },
         );
         config::save(&app_config)?;
@@ -2699,8 +2863,14 @@ impl DaemonState {
         // offline until one is manually disturbed. Done before the handle
         // takes ownership of `state`/`cancel`/`disconnect_tx`; the accept
         // handler is already registered so return traffic is handled.
-        let members_to_dial: Vec<Member> =
-            state.read().unwrap().members.all().into_iter().cloned().collect();
+        let members_to_dial: Vec<Member> = state
+            .read()
+            .unwrap()
+            .members
+            .all()
+            .into_iter()
+            .cloned()
+            .collect();
         let alpn = transport::network_alpn(&net_public_key);
         self.dial_all_members(
             &members_to_dial,
@@ -2938,6 +3108,20 @@ impl DaemonState {
             }
         }
 
+        // Publish the contact record immediately so `ray connect` works right
+        // away, rather than waiting up to one publisher interval (the active-gated
+        // `spawn_contact_publisher` only re-checks every TTL/2).
+        if let Some(secret) = app_config.contact_secret_key.clone()
+            && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
+        {
+            let endpoint_id = self.endpoint.id();
+            tokio::spawn(async move {
+                if let Err(e) = dht::publish_contact(&client, &secret, endpoint_id).await {
+                    tracing::warn!(error = %e, "failed to publish contact record on activate");
+                }
+            });
+        }
+
         tracing::info!(networks = count, "VPN activated");
         if warnings.is_empty() {
             IpcMessage::Ok {
@@ -3046,6 +3230,17 @@ impl DaemonState {
     fn status(&self) -> IpcMessage {
         let hostname_snapshot = self.hostname_table.try_read().ok();
         let my_id = self.endpoint.id();
+        // Direct-connection networks are flagged in config; collect their names
+        // so each NetworkStatus can be tagged `[direct]` in the CLI.
+        let direct_names: std::collections::HashSet<String> = config::load()
+            .map(|c| {
+                c.networks
+                    .iter()
+                    .filter(|n| n.direct)
+                    .map(|n| n.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let statuses: Vec<NetworkStatus> = self
             .networks
             .iter()
@@ -3060,7 +3255,11 @@ impl DaemonState {
                         Err(_) => {
                             return NetworkStatus {
                                 name: h.name.clone(),
-                                role: h.role.clone(),
+                                role: if direct_names.contains(&h.name) {
+                                    NetworkRole::Direct
+                                } else {
+                                    h.role.clone()
+                                },
                                 my_ip: h.my_ip,
                                 my_ipv6: Some(derive_ipv6(&my_id)),
                                 my_hostname: None,
@@ -3098,7 +3297,11 @@ impl DaemonState {
                         });
                         let connection = connected.get(&m.identity).map(Self::gather_conn_info);
                         let user_id = self.device_user_map.resolve(&m.identity);
-                        let user_identity = if user_id != m.identity { Some(user_id) } else { None };
+                        let user_identity = if user_id != m.identity {
+                            Some(user_id)
+                        } else {
+                            None
+                        };
                         PeerStatus {
                             endpoint_id: m.identity,
                             ip: m.ip,
@@ -3119,7 +3322,11 @@ impl DaemonState {
                 });
                 NetworkStatus {
                     name: h.name.clone(),
-                    role: h.role.clone(),
+                    role: if direct_names.contains(&h.name) {
+                        NetworkRole::Direct
+                    } else {
+                        h.role.clone()
+                    },
                     my_ip: h.my_ip,
                     my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
                     my_hostname,
@@ -3134,6 +3341,7 @@ impl DaemonState {
             endpoint_id: self.endpoint.id(),
             mdns_enabled: self.mdns_enabled,
             active: self.active.load(Ordering::SeqCst),
+            contact_id: Some(self.contact_public.to_string()),
             networks: statuses,
             packets_rx: self.stats.packets_rx.get(),
             packets_tx: self.stats.packets_tx.get(),
@@ -3396,7 +3604,6 @@ impl DaemonState {
         }
     }
 
-
     fn resolve_short_id_any_network(&self, short: &str) -> Option<EndpointId> {
         if short == "self" {
             return Some(self.endpoint.id());
@@ -3414,7 +3621,6 @@ impl DaemonState {
         }
         None
     }
-
 
     // -----------------------------------------------------------------------
     // Invite + join-request handlers (coordinator only)
@@ -3530,7 +3736,12 @@ impl DaemonState {
         let (state, dht_notify, net_pubkey, has_key) = match self.networks.get(network) {
             Some(h) => {
                 let has_key = h.state.read().unwrap().network_secret_key.is_some();
-                (h.state.clone(), h.dht_notify.clone(), h.network_key, has_key)
+                (
+                    h.state.clone(),
+                    h.dht_notify.clone(),
+                    h.network_key,
+                    has_key,
+                )
             }
             None => {
                 return IpcMessage::Error {
@@ -3545,7 +3756,8 @@ impl DaemonState {
             };
         }
         let secret = crate::invite::generate_secret();
-        let (hash, key) = crate::membership::ReusableKey::from_secret(&secret, now_secs(), expires_secs);
+        let (hash, key) =
+            crate::membership::ReusableKey::from_secret(&secret, now_secs(), expires_secs);
         let id = key.id.clone();
         {
             let mut s = state.write().unwrap();
@@ -3823,7 +4035,8 @@ impl DaemonState {
                 };
                 if key.is_none() {
                     return IpcMessage::Error {
-                        message: "only a coordinator (network key holder) can grant admin".to_string(),
+                        message: "only a coordinator (network key holder) can grant admin"
+                            .to_string(),
                     };
                 }
                 (h.network_key, key)
@@ -3851,12 +4064,10 @@ impl DaemonState {
             .into_iter()
             .find(|(id, _, _)| *id == identity)
             .map(|(_, _, c)| c)
-            .ok_or_else(|| {
-                IpcMessage::Error {
-                    message: format!(
-                        "could not find an active connection to {identity} on '{network}'"
-                    ),
-                }
+            .ok_or_else(|| IpcMessage::Error {
+                message: format!(
+                    "could not find an active connection to {identity} on '{network}'"
+                ),
             });
         let conn = match conn {
             Ok(c) => c,
@@ -3946,6 +4157,325 @@ impl DaemonState {
         IpcMessage::AdminListResponse { admins }
     }
 
+    // -----------------------------------------------------------------------
+    // Direct connections (ray connect)
+    // -----------------------------------------------------------------------
+
+    /// Name of a live direct (`ray connect`) network whose roster includes
+    /// `peer`, if any — used to short-circuit duplicate connects.
+    fn existing_direct_network_with(&self, peer: &EndpointId) -> Option<String> {
+        let direct: HashSet<String> = config::load()
+            .map(|c| {
+                c.networks
+                    .iter()
+                    .filter(|n| n.direct)
+                    .map(|n| n.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.networks.iter().find_map(|h| {
+            if !direct.contains(h.key()) {
+                return None;
+            }
+            let s = h.state.read().ok()?;
+            let has = s.members.all().iter().any(|m| &m.identity == peer)
+                || s.approved.all().iter().any(|a| &a.identity == peer);
+            has.then(|| h.key().clone())
+        })
+    }
+
+    /// Send a single connect request to `peer` over `CONNECT_ALPN` and return the
+    /// reply.
+    async fn send_connect_request(
+        &self,
+        peer: EndpointId,
+        hostname: Option<String>,
+    ) -> Result<control::ConnectMsg> {
+        let conn =
+            transport::connect_to_peer_with_alpn(&self.endpoint, peer, transport::CONNECT_ALPN)
+                .await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        control::send_framed(
+            &mut send,
+            &control::ConnectMsg::Request {
+                from_contact_id: self.contact_public,
+                from_endpoint: self.endpoint.id(),
+                hostname,
+            },
+        )
+        .await?;
+        control::recv_framed::<control::ConnectMsg>(&mut recv).await
+    }
+
+    /// Join an approved direct network and flag it `direct` in config so it shows
+    /// as `[direct]` in `ray status`.
+    async fn join_direct(
+        self: &Arc<Self>,
+        room_id: EndpointId,
+        coordinator: EndpointId,
+        hostname: Option<String>,
+    ) -> IpcMessage {
+        let resp = self
+            .join_network(
+                &room_id.to_string(),
+                None,
+                hostname,
+                None,
+                Some(coordinator),
+                false,
+            )
+            .await;
+        if let IpcMessage::Joined { name, .. } = &resp
+            && let Ok(mut cfg) = config::load()
+            && let Some(n) = cfg.networks.iter_mut().find(|n| &n.name == name)
+        {
+            n.direct = true;
+            let _ = config::save(&cfg);
+        }
+        resp
+    }
+
+    /// Background retry loop for a connect request still `Pending`: re-dials the
+    /// peer with backoff until it is `Approved` (then joins) or `Denied`.
+    fn spawn_connect_retry(self: &Arc<Self>, peer: EndpointId, hostname: Option<String>) {
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut backoff = BACKOFF_INITIAL;
+            loop {
+                tokio::select! {
+                    _ = me.shutdown_token.cancelled() => return,
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                match me.send_connect_request(peer, hostname.clone()).await {
+                    Ok(control::ConnectMsg::Approved {
+                        room_id,
+                        coordinator,
+                    }) => {
+                        let _ = me.join_direct(room_id, coordinator, hostname.clone()).await;
+                        me.protocol_router.outgoing_connects.remove(&peer);
+                        return;
+                    }
+                    Ok(control::ConnectMsg::Denied { reason }) => {
+                        tracing::warn!(reason, peer = %peer.fmt_short(), "connect request denied");
+                        me.protocol_router.outgoing_connects.remove(&peer);
+                        return;
+                    }
+                    _ => {} // Pending or transient error — keep retrying.
+                }
+            }
+        });
+    }
+
+    /// `ray connect <contact-id>`: request a direct connection by contact id.
+    async fn connect(self: &Arc<Self>, contact_id: &str, hostname: Option<String>) -> IpcMessage {
+        let contact_pubkey = match contact_id.parse::<EndpointId>() {
+            Ok(id) => id,
+            Err(e) => {
+                return IpcMessage::Error {
+                    message: format!("invalid contact id: {e}"),
+                };
+            }
+        };
+        if contact_pubkey == self.contact_public {
+            return IpcMessage::Error {
+                message: "cannot connect to your own contact id".to_string(),
+            };
+        }
+        let pkarr = match dht::create_pkarr_client(&self.endpoint) {
+            Ok(c) => c,
+            Err(e) => {
+                return IpcMessage::Error {
+                    message: format!("failed to create pkarr client: {e}"),
+                };
+            }
+        };
+        let peer = match dht::resolve_contact(&pkarr, contact_pubkey).await {
+            Ok(id) => id,
+            Err(_) => {
+                return IpcMessage::Error {
+                    message: "contact offline or unknown (could not resolve contact id)"
+                        .to_string(),
+                };
+            }
+        };
+        if let Some(name) = self.existing_direct_network_with(&peer) {
+            return IpcMessage::Ok {
+                message: format!("already connected to this peer on '{name}'"),
+            };
+        }
+        self.protocol_router.outgoing_connects.insert(peer);
+        match self.send_connect_request(peer, hostname.clone()).await {
+            Ok(control::ConnectMsg::Approved {
+                room_id,
+                coordinator,
+            }) => {
+                self.protocol_router.outgoing_connects.remove(&peer);
+                self.join_direct(room_id, coordinator, hostname).await
+            }
+            Ok(control::ConnectMsg::Pending) => {
+                self.spawn_connect_retry(peer, hostname);
+                IpcMessage::Ok {
+                    message: "connect request sent — waiting for approval".to_string(),
+                }
+            }
+            Ok(control::ConnectMsg::Denied { reason }) => {
+                self.protocol_router.outgoing_connects.remove(&peer);
+                IpcMessage::Error {
+                    message: format!("connection denied: {reason}"),
+                }
+            }
+            Ok(_) => IpcMessage::Error {
+                message: "unexpected response from contact".to_string(),
+            },
+            Err(e) => {
+                self.protocol_router.outgoing_connects.remove(&peer);
+                IpcMessage::Error {
+                    message: format!("failed to reach contact: {e}"),
+                }
+            }
+        }
+    }
+
+    /// `ray connections`: list pending incoming connect requests.
+    fn list_connections(&self) -> IpcMessage {
+        let now = Instant::now();
+        let requests = self
+            .protocol_router
+            .pending_connects
+            .iter()
+            .map(|p| ipc::PendingRequestInfo {
+                short_id: p.from_contact_id.fmt_short().to_string(),
+                hostname: p.hostname.clone(),
+                waiting_secs: now.saturating_duration_since(p.requested_at).as_secs(),
+            })
+            .collect();
+        IpcMessage::PendingRequests { requests }
+    }
+
+    /// Build a unique, valid network name for a direct connection from the two
+    /// hostnames (e.g. `bob-alice`), resolving collisions against live networks.
+    /// `my_host` is the minter's own hostname on the network, so the name and the
+    /// minter's member hostname stay consistent.
+    fn direct_network_name(&self, my_host: &str, peer_hostname: Option<&str>) -> String {
+        let peer = peer_hostname.unwrap_or("peer");
+        let mut base = format!("{my_host}-{peer}");
+        if base.len() > 63 {
+            base.truncate(63);
+            base = base.trim_end_matches('-').to_string();
+        }
+        if !crate::hostname::is_valid_hostname(&base) {
+            base = crate::network_name::generate_name();
+        }
+        let taken: Vec<String> = self.networks.iter().map(|h| h.key().clone()).collect();
+        let taken_refs: Vec<&str> = taken.iter().map(|s| s.as_str()).collect();
+        crate::hostname::resolve_collision(&base, &taken_refs)
+    }
+
+    /// `ray connections approve <id>`: approve a pending connect request, minting
+    /// a 2-peer network with the requester pre-approved.
+    async fn approve_connection(self: &Arc<Self>, id_prefix: &str) -> IpcMessage {
+        let found = self
+            .protocol_router
+            .pending_connects
+            .iter()
+            .find(|p| {
+                p.from_contact_id
+                    .fmt_short()
+                    .to_string()
+                    .starts_with(id_prefix)
+                    || p.from_contact_id.to_string().starts_with(id_prefix)
+            })
+            .map(|p| p.value().clone());
+        let Some(req) = found else {
+            return IpcMessage::Error {
+                message: format!("no pending connection request matching '{id_prefix}'"),
+            };
+        };
+        let peer = req.from_endpoint;
+
+        // Idempotency: already linked on a direct network → reuse it.
+        if let Some(name) = self.existing_direct_network_with(&peer) {
+            self.protocol_router.pending_connects.remove(&peer);
+            return IpcMessage::Ok {
+                message: format!("already connected to this peer on '{name}'"),
+            };
+        }
+
+        // Concurrency tie-break: if we also initiated a connect to this peer and
+        // our endpoint id is the lower one, let the higher-id peer mint the
+        // network; our own connect retry loop will join it.
+        let we_initiated = self.protocol_router.outgoing_connects.contains(&peer);
+        if we_initiated && self.endpoint.id().to_string() < peer.to_string() {
+            self.protocol_router.pending_connects.remove(&peer);
+            return IpcMessage::Ok {
+                message: "connection will be established by the other peer".to_string(),
+            };
+        }
+
+        // Decide our own hostname once so the network name (`<me>-<peer>`) and our
+        // member hostname on it agree, instead of generating two different names.
+        let my_host = config::load()
+            .ok()
+            .and_then(|c| c.default_hostname)
+            .unwrap_or_else(crate::hostname::generate_hostname);
+        let name = self.direct_network_name(&my_host, req.hostname.as_deref());
+        match self
+            .create_network_inner(
+                GroupMode::Restricted,
+                Some(name),
+                Some(my_host),
+                true,
+                Some((peer, req.hostname.clone())),
+            )
+            .await
+        {
+            Ok(IpcMessage::Created {
+                name, network_key, ..
+            }) => {
+                self.protocol_router.pending_connects.remove(&peer);
+                self.protocol_router
+                    .approved_connects
+                    .insert(peer, (network_key, self.endpoint.id()));
+                IpcMessage::Ok {
+                    message: format!("approved — direct connection '{name}' created"),
+                }
+            }
+            Ok(other) => other,
+            Err(e) => IpcMessage::Error {
+                message: format!("failed to create direct network: {e:#}"),
+            },
+        }
+    }
+
+    /// `ray contact rotate`: replace this node's contact key. The old contact id
+    /// stops resolving once its pkarr record expires (~5 min).
+    async fn rotate_contact(&self) -> IpcMessage {
+        let mut cfg = match config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                return IpcMessage::Error {
+                    message: format!("failed to load config: {e}"),
+                };
+            }
+        };
+        let secret = config::rotate_contact_secret(&mut cfg);
+        if let Err(e) = config::save(&cfg) {
+            return IpcMessage::Error {
+                message: format!("failed to save config: {e}"),
+            };
+        }
+        // Publish the new record immediately if active.
+        if self.active.load(Ordering::SeqCst)
+            && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
+        {
+            let _ = dht::publish_contact(&client, &secret, self.endpoint.id()).await;
+        }
+        IpcMessage::ContactIdResponse {
+            contact_id: secret.public().to_string(),
+        }
+    }
+
     /// Store the current group snapshot as a blob and re-publish the pkarr record
     /// so members reconcile the new membership (used after `ray accept`).
     async fn store_and_publish_group(&self, network: &str) {
@@ -3987,37 +4517,13 @@ impl DaemonState {
 
     fn firewall_add(
         &self,
-        direction: &str,
-        action: &str,
-        protocol: &str,
+        direction: firewall::Direction,
+        action: firewall::Action,
+        protocol: firewall::Protocol,
         port: Option<&str>,
         peer: Option<&str>,
         network: Option<&str>,
     ) -> IpcMessage {
-        let direction = match firewall::parse_direction(direction) {
-            Ok(d) => d,
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: e.to_string(),
-                };
-            }
-        };
-        let action = match firewall::parse_action(action) {
-            Ok(a) => a,
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: e.to_string(),
-                };
-            }
-        };
-        let protocol = match firewall::parse_protocol(protocol) {
-            Ok(p) => p,
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: e.to_string(),
-                };
-            }
-        };
         let port = match port {
             Some(s) => match firewall::parse_port_range(s) {
                 Ok(r) => Some(r),
@@ -4093,7 +4599,7 @@ impl DaemonState {
         let config = self.firewall.get_config();
         let short_id = |id: &EndpointId| -> String { id.fmt_short().to_string() };
         IpcMessage::FirewallState {
-            default: config.default_action.to_string(),
+            default: config.default_action,
             rules: firewall::rule_views(&config.rules, &short_id),
         }
     }
@@ -4102,11 +4608,7 @@ impl DaemonState {
     /// republish the signed blob. Authority comes from holding the per-network
     /// secret key (so any admin granted the key can suggest). Suggestions are
     /// advisory on every network; each node queues or auto-accepts them.
-    async fn firewall_suggest(
-        &self,
-        network: &str,
-        suggestions: SuggestedFirewall,
-    ) -> IpcMessage {
+    async fn firewall_suggest(&self, network: &str, suggestions: SuggestedFirewall) -> IpcMessage {
         let (state, dht_notify, has_key) = match self.networks.get(network) {
             Some(h) => {
                 let has_key = h.state.read().unwrap().network_secret_key.is_some();
@@ -4231,7 +4733,9 @@ impl DaemonState {
             }
         }
         IpcMessage::Ok {
-            message: format!("accepted {n_accept}, denied {n_deny} suggested rules for '{network}'"),
+            message: format!(
+                "accepted {n_accept}, denied {n_deny} suggested rules for '{network}'"
+            ),
         }
     }
 
@@ -4325,15 +4829,7 @@ impl DaemonState {
         }
     }
 
-    fn firewall_default(&self, action: &str) -> IpcMessage {
-        let action = match firewall::parse_action(action) {
-            Ok(a) => a,
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: e.to_string(),
-                };
-            }
-        };
+    fn firewall_default(&self, action: firewall::Action) -> IpcMessage {
         let mut config = (*self.firewall.get_config()).clone();
         config.default_action = action;
         self.firewall.update(config.clone());
@@ -4341,14 +4837,7 @@ impl DaemonState {
             tracing::warn!(error = %e, "failed to persist firewall config");
         }
         IpcMessage::Ok {
-            message: format!(
-                "default set to {}",
-                if action == firewall::Action::Allow {
-                    "allow"
-                } else {
-                    "deny"
-                }
-            ),
+            message: format!("default set to {action}"),
         }
     }
 
@@ -4782,7 +5271,13 @@ async fn build_daemon(
     let my_ip = identity.local_ip();
 
     // --- iroh endpoint (one ALPN per saved network + the blobs ALPN) ---
-    let app_config = config::load()?;
+    let mut app_config = config::load()?;
+    // Lazily generate + persist this node's contact key (`ray connect`). The
+    // secret stays in config; only its public id is held in `DaemonState`.
+    let contact_public = config::contact_secret(&mut app_config).public();
+    if let Err(e) = config::save(&app_config) {
+        tracing::warn!(error = %e, "failed to persist contact key");
+    }
     let mut alpns: Vec<Vec<u8>> = app_config
         .networks
         .iter()
@@ -4797,6 +5292,7 @@ async fn build_daemon(
     // `ProtocolRouter::alpns()`.
     alpns.push(transport::FILES_ALPN.to_vec());
     alpns.push(PAIR_ALPN.to_vec());
+    alpns.push(transport::CONNECT_ALPN.to_vec());
     let use_tor = app_config
         .networks
         .iter()
@@ -4887,6 +5383,7 @@ async fn build_daemon(
         pairing_secret,
         device_cert,
         device_user_map,
+        contact_public,
         active: Arc::new(AtomicBool::new(false)),
         dns_configurator: Arc::new(std::sync::Mutex::new(None)),
         promote_tx,
@@ -4894,6 +5391,16 @@ async fn build_daemon(
 
     // --- Accept loop (ALPN dispatch) + Prometheus metrics ---
     protocol_router.spawn_accept_loop(daemon.endpoint.clone(), token.clone());
+
+    // --- Contact record publisher (ray connect), active-gated ---
+    if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
+        spawn_contact_publisher(
+            pkarr_client,
+            daemon.endpoint.id(),
+            daemon.active.clone(),
+            token.clone(),
+        );
+    }
     let metrics_server =
         spawn_metrics_server(stats, daemon.peers.clone(), &daemon.endpoint, token).await;
 
@@ -5119,6 +5626,39 @@ fn spawn_network_publisher(
     })
 }
 
+/// Publish this node's contact record (`ray connect`) while the VPN is active.
+/// Republishes on a TTL/2 interval (record TTL is 300s) so `contact_key ->
+/// current endpoint` stays fresh; skips publishing while on standby so an
+/// inactive node is unreachable for connect requests (the requester sees it
+/// offline). Reads `contact_secret` fresh from config each cycle so a
+/// `RotateContact` takes effect without a restart.
+fn spawn_contact_publisher(
+    client: PkarrRelayClient,
+    endpoint_id: EndpointId,
+    active: Arc<AtomicBool>,
+    token: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if active.load(Ordering::SeqCst) {
+                let secret = config::load().ok().and_then(|c| c.contact_secret_key);
+                if let Some(secret) = secret {
+                    match dht::publish_contact(&client, &secret, endpoint_id).await {
+                        Ok(()) => {
+                            tracing::debug!(contact = %secret.public().fmt_short(), "published contact record")
+                        }
+                        Err(e) => tracing::warn!(error = %e, "failed to publish contact record"),
+                    }
+                }
+            }
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs(150)) => {},
+            }
+        }
+    })
+}
+
 /// A polling publisher for a *granted* co-coordinator (a member that received
 /// the network key via `AdminGrant`). Unlike [`spawn_network_publisher`] (which
 /// is notify-driven and spawned at create/restore time), this is spawned at
@@ -5215,7 +5755,8 @@ fn apply_suggested_firewall(
         .filter_map(|m| m.hostname.as_deref().map(|h| (h, m.identity)))
         .collect();
     let resolve = |h: &str| map.get(h).copied();
-    let rules = firewall::materialize_suggestions(network_name, &my_hostname, &suggestions, &resolve);
+    let rules =
+        firewall::materialize_suggestions(network_name, &my_hostname, &suggestions, &resolve);
 
     // Auto-install only if this node opted into `--auto-accept-firewall` for the
     // network; otherwise queue the materialized rules for `ray firewall accept`.
@@ -5234,11 +5775,18 @@ fn apply_suggested_firewall(
             tracing::warn!(error = %e, network = network_name, "failed to persist firewall config");
         }
         state.write().unwrap().pending_suggestions.clear();
-        tracing::info!(network = network_name, "auto-accepted suggested firewall rules");
+        tracing::info!(
+            network = network_name,
+            "auto-accepted suggested firewall rules"
+        );
     } else {
         let count = rules.len();
         state.write().unwrap().pending_suggestions = rules;
-        tracing::info!(network = network_name, count, "queued suggested firewall rules for review");
+        tracing::info!(
+            network = network_name,
+            count,
+            "queued suggested firewall rules for review"
+        );
     }
 }
 
@@ -5335,9 +5883,20 @@ async fn reconverge_and_apply(
         s.approved = ApprovedList::from_entries(data.approved.clone());
         s.suggested_firewall = data.suggested_firewall.clone();
         s.refresh_snapshot();
-        s.members.all().into_iter().cloned().collect::<Vec<Member>>()
+        s.members
+            .all()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<Member>>()
     };
-    apply_roster_to_dns(&roster, network_name, my_identity, hostname_table, reverse_table).await;
+    apply_roster_to_dns(
+        &roster,
+        network_name,
+        my_identity,
+        hostname_table,
+        reverse_table,
+    )
+    .await;
     apply_suggested_firewall(firewall, my_identity, network_name, state);
     tracing::info!(network = %network_name, "reconverged from signed record");
 }
@@ -5352,11 +5911,7 @@ fn coordinator_dial_order(
     me: EndpointId,
 ) -> Vec<EndpointId> {
     let mut order = Vec::new();
-    let is_coord = |id: EndpointId| {
-        members
-            .iter()
-            .any(|m| m.identity == id && m.is_coordinator)
-    };
+    let is_coord = |id: EndpointId| members.iter().any(|m| m.identity == id && m.is_coordinator);
     if minter != me && is_coord(minter) {
         order.push(minter);
     }
@@ -5383,10 +5938,7 @@ fn gossip_targets(members: &[Member], me: EndpointId) -> Vec<EndpointId> {
 /// Whether `peer` is a coordinator in our verified roster. Invite-gossip arms
 /// (`InviteShare`/`InviteUsed`) act only on messages from a coordinator peer, so
 /// a non-coordinator member can't inject or burn invite state.
-fn sender_is_coordinator(
-    state: &Arc<std::sync::RwLock<NetworkState>>,
-    peer: EndpointId,
-) -> bool {
+fn sender_is_coordinator(state: &Arc<std::sync::RwLock<NetworkState>>, peer: EndpointId) -> bool {
     state
         .read()
         .unwrap()
@@ -5694,7 +6246,11 @@ fn spawn_coordinator_control_reader(
             // or redeemed an invite tells us so our ledger stays in sync. Honor it
             // only from a coordinator peer in our verified roster.
             match msg {
-                ControlMsg::InviteShare { id, secret_hash, expires } => {
+                ControlMsg::InviteShare {
+                    id,
+                    secret_hash,
+                    expires,
+                } => {
                     if !sender_is_coordinator(&state, remote_id) {
                         tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteShare from non-coordinator");
                         continue;
@@ -5996,7 +6552,16 @@ async fn join_mesh_shared(
                 tracing::info!(network = %network_name, "reconnected via peer; reconverging from signed record");
                 match resolve_signed(ep, net_pubkey).await {
                     Some((signed, seeds)) => {
-                        match fetch_verified_blob(ep, &blob_store, &peers, signed, network_name, &seeds).await {
+                        match fetch_verified_blob(
+                            ep,
+                            &blob_store,
+                            &peers,
+                            signed,
+                            network_name,
+                            &seeds,
+                        )
+                        .await
+                        {
                             Some(data) => (data.members, data.approved),
                             None => (persisted_roster(network_name), vec![]),
                         }
@@ -6037,6 +6602,15 @@ async fn join_mesh_shared(
         .and_then(|m| m.hostname.clone())
         .or(my_hostname.clone());
     let mut app_config = config::load()?;
+    // Preserve the direct-connection flag across reconnects (a member joining a
+    // 2-peer `ray connect` network). On the first join the flag is set by the
+    // `connect` handler after this returns.
+    let direct = app_config
+        .networks
+        .iter()
+        .find(|n| n.name == network_name)
+        .map(|n| n.direct)
+        .unwrap_or(false);
     config::upsert_network(
         &mut app_config,
         config::NetworkConfig {
@@ -6051,6 +6625,7 @@ async fn join_mesh_shared(
             transport: None,
             auto_accept_firewall,
             admins: vec![],
+            direct,
         },
     );
     config::save(&app_config)?;
@@ -6627,7 +7202,7 @@ mod accept_handler_tests {
 #[cfg(test)]
 mod coordinator_dial_order_tests {
     use super::*;
-    use crate::membership::{derive_ip, Member};
+    use crate::membership::{Member, derive_ip};
 
     fn test_id(seed: u8) -> EndpointId {
         let mut key_bytes = [0u8; 32];
@@ -6676,10 +7251,7 @@ mod coordinator_dial_order_tests {
             b[0] = 7;
             b
         });
-        assert!(!super::admin_grant_key_valid(
-            forged.to_bytes(),
-            net_pubkey
-        ));
+        assert!(!super::admin_grant_key_valid(forged.to_bytes(), net_pubkey));
     }
 
     #[test]
@@ -6708,7 +7280,11 @@ mod dial_fallback_tests {
     #[test]
     fn dial_fallback_stops_on_first_welcome() {
         // outcomes simulate dialing in order: first errors, second welcomes, third never tried.
-        let outcomes = vec![DialOutcome::Unreachable, DialOutcome::Welcomed, DialOutcome::Denied];
+        let outcomes = vec![
+            DialOutcome::Unreachable,
+            DialOutcome::Welcomed,
+            DialOutcome::Denied,
+        ];
         let (idx, welcomed) = pick_first_welcome(&outcomes);
         assert_eq!((idx, welcomed), (1, true));
     }

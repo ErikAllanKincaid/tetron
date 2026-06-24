@@ -34,6 +34,7 @@ Each machine runs a small daemon (think Tailscale's `tailscaled`) that creates a
 ## Features
 
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones)
+- 🤝 **Direct 2-peer connections** — `ray connect <contact-id>` links you to one person with no room id or invite, approved like a friend request
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename
 - 🧱 **Per-device firewall** — directional, per-port, per-network rules with stateful return traffic
 - 🤝 **Coordinator firewall suggestions** — on any network the coordinator can *suggest* firewall rules that ride the signed network record (`*` targets all hosts); each node reviews them or opts into auto-install with `--auto-accept-firewall`
@@ -113,6 +114,18 @@ The **room id** (a network's public key) is a *discovery* key — it's published
 - **Open** (`ray create --open`) — anyone with the room id joins directly. Good for public or community networks.
 
 Either gate runs through a coordinator. The full coordinator set is published in the network's signed record (`Member.is_coordinator`), so a fresh joiner dials the invite minter first, then falls back across the other coordinators — admission survives any one coordinator being offline. Once admitted, a member reconnects by cryptographic identity and no coordinator needs to be online.
+
+### Direct 2-peer connections
+
+For the common "I just want to link up with one person" case, skip room ids and invite codes entirely. Everyone has a standing **contact id** (`ray contact id`, also shown at the top of `ray status`) — a rotatable handle, separate from your network identity, that you can share like a phone number.
+
+```bash
+ray connect <their-contact-id>     # ask to connect; you wait, pending
+ray connections                    # they see the request…
+ray connections approve <id>       # …and approve it
+```
+
+Approval spins up a private **2-peer network** automatically (shown as `[direct]` in `ray status`) — a real network, so firewall rules, Magic DNS, and the mesh all work the same. Approval is recipient-only: the requester consents by asking, the recipient consents by approving. Rotate your contact id anytime with `ray contact rotate` to stop new requests (existing links keep working). Want someone unable to reach you? Don't share the id.
 
 ## Permissions
 

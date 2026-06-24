@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::net::UnixStream;
 use tokio_util::codec::{Decoder, Encoder, Framed, LengthDelimitedCodec};
 
-use crate::{GroupMode, SuggestedFirewall, TransportMode};
+use crate::{Action, Direction, GroupMode, Protocol, SuggestedFirewall, TransportMode};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcMessage {
@@ -63,9 +63,9 @@ pub enum IpcMessage {
     /// running so it can be reactivated with `Up`.
     Down,
     FirewallAdd {
-        direction: String,
-        action: String,
-        protocol: String,
+        direction: Direction,
+        action: Action,
+        protocol: Protocol,
         port: Option<String>,
         peer: Option<String>,
         #[serde(default)]
@@ -76,7 +76,7 @@ pub enum IpcMessage {
     },
     FirewallShow,
     FirewallDefault {
-        action: String,
+        action: Action,
     },
     /// Coordinator-only: replace the network's suggested firewall rules and
     /// republish the signed blob. Authority comes from holding the network's
@@ -188,6 +188,25 @@ pub enum IpcMessage {
     AdminList {
         network: String,
     },
+    /// `ray connect <contact-id>`: request a direct 2-peer connection by the
+    /// recipient's contact id. Resolves the contact id to an endpoint, dials the
+    /// connect ALPN, and waits (recipient-only approval).
+    Connect {
+        contact_id: String,
+        hostname: Option<String>,
+    },
+    /// `ray connections`: list pending incoming connect requests. Open read.
+    Connections,
+    /// `ray connections approve <id>`: approve a pending connect request by short
+    /// id, minting a 2-peer network with the requester pre-approved.
+    ApproveConnection {
+        id: String,
+    },
+    /// `ray contact id`: print this node's contact id. Open read.
+    ContactId,
+    /// `ray contact rotate`: rotate this node's contact key (old id stops
+    /// resolving once its pkarr record expires).
+    RotateContact,
 
     // Responses
     Ok {
@@ -212,6 +231,10 @@ pub enum IpcMessage {
         mdns_enabled: bool,
         /// Whether the VPN is active (TUN up, networks connected) or on standby.
         active: bool,
+        /// This node's contact id (`ray connect`), shown at the top of status.
+        /// `None` if the daemon has not generated one yet.
+        #[serde(default)]
+        contact_id: Option<String>,
         networks: Vec<NetworkStatus>,
         packets_rx: u64,
         packets_tx: u64,
@@ -222,8 +245,8 @@ pub enum IpcMessage {
     /// CLI renders it with color on the *user's* TTY and serializes it for
     /// `--json`.
     FirewallState {
-        /// Default action when no rule matches: `"allow"` or `"deny"`.
-        default: String,
+        /// Default action when no rule matches.
+        default: Action,
         rules: Vec<FirewallRuleView>,
     },
     /// Current suggested firewall rules for a network (reply to
@@ -274,6 +297,10 @@ pub enum IpcMessage {
     AdminListResponse {
         admins: Vec<AdminInfo>,
     },
+    /// This node's contact id (reply to `ContactId`/`RotateContact`).
+    ContactIdResponse {
+        contact_id: String,
+    },
 }
 
 /// A display-oriented view of one firewall rule, sent over IPC so the CLI can
@@ -282,12 +309,9 @@ pub enum IpcMessage {
 /// `PartialEq`/`Eq`/`Hash` let the daemon value-match views back to queued rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FirewallRuleView {
-    /// `"in"` / `"out"`.
-    pub direction: String,
-    /// `"allow"` / `"deny"`.
-    pub action: String,
-    /// `"tcp"` / `"udp"` / `"icmp"` / `"any"`.
-    pub protocol: String,
+    pub direction: Direction,
+    pub action: Action,
+    pub protocol: Protocol,
     /// Port or range: `"443"`, `"8000-9000"`, or `"*"`.
     pub port: String,
     /// `"any"` or a peer's short id.
@@ -351,10 +375,19 @@ pub struct NetworkStatus {
     pub peers: Vec<PeerStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::IsVariant)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::IsVariant, derive_more::Display,
+)]
 pub enum NetworkRole {
+    #[display("coordinator")]
     Coordinator,
+    #[display("member")]
     Member,
+    /// An auto-minted 2-peer direct connection (`ray connect`). Display-only: the
+    /// node is structurally still the coordinator or a member, but `ray status`
+    /// surfaces these as `direct` and hides the (non-shareable) room id.
+    #[display("direct")]
+    Direct,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -545,7 +578,10 @@ mod tests {
 
         let decoded = codec.decode(&mut buf).unwrap().expect("frame not complete");
         match decoded {
-            IpcMessage::FirewallSuggest { network, suggestions } => {
+            IpcMessage::FirewallSuggest {
+                network,
+                suggestions,
+            } => {
                 assert_eq!(network, "net1");
                 assert_eq!(suggestions.len(), 2);
                 let gamma = suggestions.get("gamma").unwrap();
@@ -677,6 +713,39 @@ mod tests {
     }
 
     #[test]
+    fn test_connect_roundtrip() {
+        let req = IpcMessage::Connect {
+            contact_id: "contactabc".to_string(),
+            hostname: Some("dario".to_string()),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::Connect {
+                contact_id,
+                hostname,
+            } => {
+                assert_eq!(contact_id, "contactabc");
+                assert_eq!(hostname.as_deref(), Some("dario"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_contact_id_response_roundtrip() {
+        let resp = IpcMessage::ContactIdResponse {
+            contact_id: "abc123".to_string(),
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::ContactIdResponse { contact_id } => assert_eq!(contact_id, "abc123"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_status_response_roundtrip() {
         let ep_id = iroh::SecretKey::generate().public();
         let peer_id = iroh::SecretKey::generate().public();
@@ -684,6 +753,7 @@ mod tests {
             endpoint_id: ep_id,
             mdns_enabled: true,
             active: true,
+            contact_id: Some("contact123".to_string()),
             networks: vec![NetworkStatus {
                 name: "gaming".to_string(),
                 role: NetworkRole::Coordinator,

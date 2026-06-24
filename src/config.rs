@@ -124,6 +124,11 @@ pub struct NetworkConfig {
     /// verifiable roster. Never published in the GroupBlob.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<EndpointId>,
+    /// This is an auto-minted 2-peer "direct connection" network (`ray connect`),
+    /// not a user-created mesh. Tagged so `ray status` can label it `[direct]`
+    /// and suppress its (non-shareable) room id.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
 }
 
 fn default_true() -> bool {
@@ -144,6 +149,12 @@ pub struct AppConfig {
     /// back to a random generated name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_hostname: Option<String>,
+    /// Per-user "contact key" used by `ray connect`: a standing, rotatable
+    /// identity (distinct from the transport key and per-network keys) published
+    /// to pkarr so others can request a direct connection without a room id or
+    /// invite code. Lazily generated on first use via [`contact_secret`].
+    #[serde(default, with = "option_secret_key_hex")]
+    pub contact_secret_key: Option<SecretKey>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }
@@ -154,9 +165,31 @@ impl Default for AppConfig {
             mdns_enabled: true,
             operator_uid: None,
             default_hostname: None,
+            contact_secret_key: None,
             networks: Vec::new(),
         }
     }
+}
+
+/// Return this node's contact key, generating and persisting it on first use.
+/// The caller is responsible for `save`-ing the config afterwards (the returned
+/// secret is also written into `config.contact_secret_key`).
+pub fn contact_secret(config: &mut AppConfig) -> SecretKey {
+    if let Some(k) = &config.contact_secret_key {
+        return k.clone();
+    }
+    let secret = SecretKey::generate();
+    config.contact_secret_key = Some(secret.clone());
+    secret
+}
+
+/// Rotate this node's contact key, replacing it with a fresh one. The old
+/// contact id stops resolving once its pkarr record TTLs out. The caller must
+/// `save` the config afterwards.
+pub fn rotate_contact_secret(config: &mut AppConfig) -> SecretKey {
+    let secret = SecretKey::generate();
+    config.contact_secret_key = Some(secret.clone());
+    secret
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -242,6 +275,7 @@ mod tests {
                     transport: None,
                     auto_accept_firewall: false,
                     admins: vec![],
+                    direct: false,
                 },
                 NetworkConfig {
                     name: "work".to_string(),
@@ -255,6 +289,7 @@ mod tests {
                     transport: None,
                     auto_accept_firewall: false,
                     admins: vec![],
+                    direct: false,
                 },
             ],
             ..Default::default()
@@ -289,6 +324,7 @@ mod tests {
             transport: None,
             auto_accept_firewall: false,
             admins: vec![],
+            direct: false,
         };
         upsert_network(&mut config, net);
         assert_eq!(config.networks.len(), 1);
@@ -311,6 +347,7 @@ mod tests {
                 transport: None,
                 auto_accept_firewall: false,
                 admins: vec![],
+                direct: false,
             }],
             ..Default::default()
         };
@@ -326,6 +363,7 @@ mod tests {
             transport: None,
             auto_accept_firewall: false,
             admins: vec![],
+            direct: false,
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
@@ -352,6 +390,7 @@ mod tests {
                     transport: None,
                     auto_accept_firewall: false,
                     admins: vec![],
+                    direct: false,
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
@@ -365,6 +404,7 @@ mod tests {
                     transport: None,
                     auto_accept_firewall: false,
                     admins: vec![],
+                    direct: false,
                 },
             ],
             ..Default::default()
@@ -406,6 +446,7 @@ mod tests {
                 transport: None,
                 auto_accept_firewall: false,
                 admins: vec![],
+                direct: false,
             }],
             ..Default::default()
         };
@@ -432,6 +473,7 @@ mod tests {
                 transport: None,
                 auto_accept_firewall: false,
                 admins: vec![],
+                direct: false,
             }],
             ..Default::default()
         };
@@ -439,6 +481,36 @@ mod tests {
         let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.networks[0].network_public_key, Some(public));
         assert!(parsed.networks[0].network_secret_key.is_some());
+    }
+
+    #[test]
+    fn test_contact_secret_generate_and_persist() {
+        let mut config = AppConfig::default();
+        assert!(config.contact_secret_key.is_none());
+        let first = contact_secret(&mut config);
+        // Stable across calls once generated.
+        let second = contact_secret(&mut config);
+        assert_eq!(first.public(), second.public());
+        // Survives a serialize roundtrip.
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            parsed.contact_secret_key.map(|k| k.public()),
+            Some(first.public())
+        );
+        // Rotation yields a different key.
+        let rotated = rotate_contact_secret(&mut config);
+        assert_ne!(rotated.public(), first.public());
+    }
+
+    #[test]
+    fn test_direct_flag_default_false() {
+        let toml_str = r#"
+[[networks]]
+name = "dario-alice"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.networks[0].direct);
     }
 
     #[test]

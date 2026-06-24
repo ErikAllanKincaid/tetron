@@ -52,7 +52,11 @@ pub fn run(network: &str, rules: &[FirewallRuleView]) -> Result<Option<Resolutio
         loop {
             let frame = render(network, rules, &decisions, idx);
             if prev_lines > 0 {
-                queue!(out, cursor::MoveToColumn(0), cursor::MoveUp(prev_lines as u16))?;
+                queue!(
+                    out,
+                    cursor::MoveToColumn(0),
+                    cursor::MoveUp(prev_lines as u16)
+                )?;
             }
             queue!(
                 out,
@@ -78,7 +82,9 @@ pub fn run(network: &str, rules: &[FirewallRuleView]) -> Result<Option<Resolutio
                         decisions[idx] = Decision::Deny;
                         idx = (idx + 1).min(last);
                     }
-                    (KeyCode::Char('a'), _) => decisions.iter_mut().for_each(|d| *d = Decision::Accept),
+                    (KeyCode::Char('a'), _) => {
+                        decisions.iter_mut().for_each(|d| *d = Decision::Accept)
+                    }
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
                     _ => {}
                 }
@@ -90,7 +96,11 @@ pub fn run(network: &str, rules: &[FirewallRuleView]) -> Result<Option<Resolutio
     // Erase the interactive frame so the caller's result line prints on a clean
     // slate, then restore the terminal regardless of how we exited.
     if prev_lines > 0 {
-        let _ = queue!(out, cursor::MoveToColumn(0), cursor::MoveUp(prev_lines as u16));
+        let _ = queue!(
+            out,
+            cursor::MoveToColumn(0),
+            cursor::MoveUp(prev_lines as u16)
+        );
     }
     let _ = queue!(out, terminal::Clear(terminal::ClearType::FromCursorDown));
     let _ = out.flush();
@@ -117,7 +127,12 @@ pub fn run(network: &str, rules: &[FirewallRuleView]) -> Result<Option<Resolutio
     }
 }
 
-fn render(network: &str, rules: &[FirewallRuleView], decisions: &[Decision], cursor: usize) -> String {
+fn render(
+    network: &str,
+    rules: &[FirewallRuleView],
+    decisions: &[Decision],
+    cursor: usize,
+) -> String {
     let n_accept = decisions.iter().filter(|d| **d == Decision::Accept).count();
     let n_deny = decisions.iter().filter(|d| **d == Decision::Deny).count();
 
@@ -138,9 +153,15 @@ fn render(network: &str, rules: &[FirewallRuleView], decisions: &[Decision], cur
         rows.push(vec![
             layout::Cell::new(pointer, style::rose(pointer)),
             layout::Cell::new(mark_plain, mark_styled),
-            layout::Cell::new(r.direction.clone(), style::faint(&r.direction)),
-            layout::Cell::new(r.action.clone(), action_styled(&r.action)),
-            layout::Cell::new(r.protocol.clone(), style::value(&r.protocol)),
+            layout::Cell::new(
+                r.direction.to_string(),
+                style::faint(&r.direction.to_string()),
+            ),
+            layout::Cell::new(r.action.to_string(), action_styled(&r.action.to_string())),
+            layout::Cell::new(
+                r.protocol.to_string(),
+                style::value(&r.protocol.to_string()),
+            ),
             layout::Cell::right(port, style::value(port)),
             layout::Cell::new(r.peer.clone(), style::value(&r.peer)),
             layout::Cell::new(r.network.clone(), style::faint(&r.network)),

@@ -2,12 +2,17 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use iroh::EndpointId;
 use iroh::endpoint::Connection;
 use smol_str::SmolStr;
 
 use crate::audit::AuditLog;
+
+/// A `DashMap` using ahash instead of the default SipHash. Used for the
+/// per-packet hot maps (routing table, conntrack, device→user resolution):
+/// ahash is markedly faster for small keys while keeping a randomized seed, so
+/// remote-controlled keys (peer IPs, flow tuples) can't be crafted to collide.
+pub type FastDashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
 /// The data-plane routing table: virtual IP → peer, shared by every network.
 ///
@@ -23,16 +28,16 @@ use crate::audit::AuditLog;
 /// multi-homed peer therefore has one entry (one IP) with several connections,
 /// not several entries.
 ///
-/// Backed by [`DashMap`] for lock-free concurrent reads from the forwarding hot
+/// Backed by [`FastDashMap`] for lock-free concurrent reads from the forwarding hot
 /// path while accept/reconnect tasks mutate it; cloning the table is cheap
 /// (shared `Arc`s), so it is handed to every per-network task by value.
 #[derive(Clone)]
 pub struct PeerTable {
     /// IPv4 virtual address → peer.
-    v4: Arc<DashMap<Ipv4Addr, PeerEntry>>,
+    v4: Arc<FastDashMap<Ipv4Addr, PeerEntry>>,
     /// IPv6 virtual address → peer (same peers as `v4`, keyed by their `200::/7`
     /// address so v6 packets resolve without a v4↔v6 translation step).
-    v6: Arc<DashMap<Ipv6Addr, PeerEntry>>,
+    v6: Arc<FastDashMap<Ipv6Addr, PeerEntry>>,
     /// Optional append-only audit log. When present, registering a peer's first
     /// connection in a network logs a `connect` event and dropping its last
     /// connection in a network logs a `disconnect` event. `None` in tests.
@@ -78,8 +83,8 @@ impl PeerTable {
     /// Creates an empty table with no audit logging (used in tests).
     pub fn new() -> Self {
         Self {
-            v4: Arc::new(DashMap::new()),
-            v6: Arc::new(DashMap::new()),
+            v4: Arc::new(FastDashMap::default()),
+            v6: Arc::new(FastDashMap::default()),
             audit: None,
         }
     }
@@ -89,8 +94,8 @@ impl PeerTable {
     /// to every per-network task (clones share the same audit handle).
     pub fn with_audit(audit: Arc<AuditLog>) -> Self {
         Self {
-            v4: Arc::new(DashMap::new()),
-            v6: Arc::new(DashMap::new()),
+            v4: Arc::new(FastDashMap::default()),
+            v6: Arc::new(FastDashMap::default()),
             audit: Some(audit),
         }
     }
@@ -235,13 +240,13 @@ impl PeerTable {
 /// Used by the forwarding path to resolve ACL identities.
 #[derive(Clone)]
 pub struct DeviceUserMap {
-    inner: Arc<DashMap<EndpointId, EndpointId>>,
+    inner: Arc<FastDashMap<EndpointId, EndpointId>>,
 }
 
 impl DeviceUserMap {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(DashMap::new()),
+            inner: Arc::new(FastDashMap::default()),
         }
     }
 
