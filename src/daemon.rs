@@ -1904,48 +1904,19 @@ impl DaemonState {
                 self.device_user_map.clone(),
             )];
 
-            for m in &data.members {
-                if m.identity == my_identity {
-                    continue;
-                }
-                if let Ok(peer_conn) =
-                    transport::connect_to_peer_with_alpn(&self.endpoint, m.identity, alpn).await
-                {
-                    if let Ok((mut s, _)) = peer_conn.open_bi().await {
-                        let _ = control::send_msg(
-                            &mut s,
-                            &ControlMsg::MeshHello {
-                                identity: my_identity,
-                                ip: my_ip,
-                                hostname: my_hostname.clone(),
-                                device_cert: self.device_cert.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                    crate::spawn_path_logger(peer_conn.clone(), m.identity.fmt_short().to_string());
-                    self.peers.add(
-                        m.ip,
-                        derive_ipv6(&m.identity),
-                        peer_conn.clone(),
-                        m.identity,
-                        network_name,
-                    );
-                    forward::spawn_peer_reader(
-                        peer_conn,
-                        m.identity,
-                        m.ip,
-                        derive_ipv6(&m.identity),
-                        network_name.to_string(),
-                        self.firewall.clone(),
-                        self.tun_tx.clone(),
-                        disconnect_tx.clone(),
-                        cancel.clone(),
-                        self.stats.clone(),
-                        self.device_user_map.clone(),
-                    );
-                }
-            }
+            self.dial_all_members(
+                &data.members,
+                alpn,
+                network_name,
+                my_identity,
+                my_ip,
+                my_hostname.clone(),
+                disconnect_tx.clone(),
+                cancel.clone(),
+            )
+            .await;
+
+
 
             let mut ns = NetworkState {
                 members: MemberList::from_members(data.members),
@@ -1985,6 +1956,85 @@ impl DaemonState {
         }
 
         anyhow::bail!("no peers reachable for DHT fallback")
+    }
+
+    /// Dial every known member of a network: open a QUIC connection on the
+    /// network ALPN, send `MeshHello`, register the peer in the PeerTable, and
+    /// spawn a peer reader for each. Shared by the join path and coordinator
+    /// restore so a restarting coordinator/co-coordinator proactively
+    /// reconnects to **all** known members (full mesh), not just the peers
+    /// that happen to dial in. Failures per-peer are logged at debug and
+    /// skipped (the reconnect loop + group poller are the backstop).
+    #[allow(clippy::too_many_arguments)]
+    async fn dial_all_members(
+        &self,
+        members: &[Member],
+        alpn: &[u8],
+        network_name: &str,
+        my_identity: EndpointId,
+        my_ip: Ipv4Addr,
+        my_hostname: Option<String>,
+        disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
+        cancel: CancellationToken,
+    ) {
+        for m in members {
+            if m.identity == my_identity {
+                continue;
+            }
+            match transport::connect_to_peer_with_alpn(&self.endpoint, m.identity, alpn).await {
+                Ok(peer_conn) => {
+                    if let Ok((mut s, _)) = peer_conn.open_bi().await {
+                        let _ = control::send_msg(
+                            &mut s,
+                            &ControlMsg::MeshHello {
+                                identity: my_identity,
+                                ip: my_ip,
+                                hostname: my_hostname.clone(),
+                                device_cert: self.device_cert.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                    crate::spawn_path_logger(
+                        peer_conn.clone(),
+                        m.identity.fmt_short().to_string(),
+                    );
+                    self.peers.add(
+                        m.ip,
+                        derive_ipv6(&m.identity),
+                        peer_conn.clone(),
+                        m.identity,
+                        network_name,
+                    );
+                    forward::spawn_peer_reader(
+                        peer_conn,
+                        m.identity,
+                        m.ip,
+                        derive_ipv6(&m.identity),
+                        network_name.to_string(),
+                        self.firewall.clone(),
+                        self.tun_tx.clone(),
+                        disconnect_tx.clone(),
+                        cancel.clone(),
+                        self.stats.clone(),
+                        self.device_user_map.clone(),
+                    );
+                    tracing::info!(
+                        network = %network_name,
+                        peer = %m.identity.fmt_short(),
+                        "dialed known member on restore/join (full mesh)"
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        network = %network_name,
+                        peer = %m.identity.fmt_short(),
+                        error = %e,
+                        "could not dial member yet; reconnect loop will retry"
+                    );
+                }
+            }
+        }
     }
 
     /// Restores a coordinator network from saved config (uses the existing name).
@@ -2209,7 +2259,7 @@ impl DaemonState {
                 state: state.clone(),
                 peers: self.peers.clone(),
                 tun_tx: self.tun_tx.clone(),
-                disconnect_tx,
+                disconnect_tx: disconnect_tx.clone(),
                 token: cancel.clone(),
                 stats: self.stats.clone(),
                 dht_notify: Some(dht_notify.clone()),
@@ -2248,6 +2298,29 @@ impl DaemonState {
                 .await;
             }
         }
+
+        // Full mesh: proactively dial every known member so a restarting
+        // coordinator/co-coordinator reconnects to peers that haven't (yet)
+        // dialed in. Without this, a co-coordinator that comes back up only
+        // learns about peers that connect *to it*; it never dials out, so two
+        // co-coordinators restarting together can each show the other as
+        // offline until one is manually disturbed. Done before the handle
+        // takes ownership of `state`/`cancel`/`disconnect_tx`; the accept
+        // handler is already registered so return traffic is handled.
+        let members_to_dial: Vec<Member> =
+            state.read().unwrap().members.all().into_iter().cloned().collect();
+        let alpn = transport::network_alpn(&net_public_key);
+        self.dial_all_members(
+            &members_to_dial,
+            &alpn,
+            name,
+            self.identity.local_identity(),
+            my_ip,
+            persisted_hostname.clone(),
+            disconnect_tx.clone(),
+            cancel.clone(),
+        )
+        .await;
 
         let handle = NetworkHandle {
             name: name.to_string(),
