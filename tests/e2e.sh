@@ -8,6 +8,7 @@
 #   connect       2-peer `ray connect` direct test     (tests/e2e/connect)
 #   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
+#   dns           2-peer Magic DNS resolution + resolv.conf takeover (tests/e2e/dns)
 #   bench         throughput / latency benchmark        (tests/bench)
 #
 # Actions:
@@ -41,6 +42,9 @@ scenario_meta(){
     closed-net)  DIR="$ROOT/tests/e2e/closed-net"
                  NAMES=(rayfish-closednet-a rayfish-closednet-b rayfish-closednet-c)
                  LABELS=(srv-a srv-b srv-c) ;;
+    dns)         DIR="$ROOT/tests/e2e/dns"
+                 NAMES=(rayfish-dns-a rayfish-dns-b)
+                 LABELS=(srv-a srv-b) ;;
     bench)       DIR="$ROOT/tests/bench"
                  NAMES=(rayfish-bench-a rayfish-bench-b)
                  LABELS=(srv-a srv-b) ;;
