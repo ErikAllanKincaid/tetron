@@ -804,7 +804,7 @@ fn cmd_mdns(state: &str) -> Result<()> {
     };
     let mut app_config = config::load()?;
     app_config.mdns_enabled = enabled;
-    config::save(&app_config)?;
+    config::save_settings(&app_config)?;
     println!(
         "mDNS discovery {}. Restart the daemon for changes to take effect.",
         if enabled { "enabled" } else { "disabled" }
@@ -2701,12 +2701,10 @@ fn cmd_pair_restore(
         return Ok(());
     }
 
-    // Write the restored key
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?
-        .join("rayfish");
-    std::fs::create_dir_all(&config_dir)?;
-    std::fs::write(config_dir.join("secret_key"), key.to_bytes())?;
+    // Write the restored key into the shared config tree (Linux: /etc/rayfish,
+    // root-owned — this command may need sudo there).
+    let key_path = config::config_dir()?.join("secret_key");
+    config::write_file(&key_path, &key.to_bytes(), true)?;
 
     println!("Restored user identity: {}", key.public());
     println!("Restart the daemon for changes to take effect.");
@@ -2716,6 +2714,25 @@ fn cmd_pair_restore(
 // ---------------------------------------------------------------------------
 // Service install/uninstall
 // ---------------------------------------------------------------------------
+
+/// Create the `rayfish` system group if it doesn't already exist (Linux).
+/// Best-effort: the daemon's config writer falls back to `root:root` ownership
+/// when the group is missing, so a failure here only loosens the group-read
+/// posture, never breaks startup.
+#[cfg(target_os = "linux")]
+fn ensure_rayfish_group() {
+    // `getent group rayfish` exits 0 if the group exists.
+    let exists = std::process::Command::new("getent")
+        .args(["group", "rayfish"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !exists {
+        let _ = std::process::Command::new("groupadd")
+            .args(["--system", "rayfish"])
+            .status();
+    }
+}
 
 /// Write the system service unit/plist, substituting the path of the binary
 /// currently running so the service execs the same `ray` the user invoked
@@ -2730,6 +2747,11 @@ fn ensure_service_installed() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
+        // Ensure the `rayfish` system group exists before the daemon writes its
+        // config tree under /etc/rayfish (owned root:rayfish). Idempotent;
+        // best-effort — the daemon falls back to root:root if the group is
+        // absent (see config::set_owner).
+        ensure_rayfish_group();
         let path = std::path::Path::new("/etc/systemd/system/rayfish.service");
         let service =
             include_str!("../contrib/rayfish.service").replace("/usr/local/bin/ray", &exe);

@@ -16,6 +16,8 @@ impl AuditLog {
             .append(true)
             .open(&path)
             .context("failed to open audit log")?;
+        // Not secret-bearing, but keep it off world-readable on Linux /etc.
+        crate::config::restrict_perms(&path, false);
         tracing::info!(path = %path.display(), "audit log opened");
         Ok(Self {
             file: Mutex::new(file),
@@ -44,11 +46,7 @@ impl AuditLog {
 }
 
 fn log_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("could not determine config directory")?
-        .join("rayfish");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("audit.log"))
+    Ok(crate::config::config_dir()?.join("audit.log"))
 }
 
 #[cfg(test)]

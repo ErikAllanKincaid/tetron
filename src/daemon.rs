@@ -1411,7 +1411,7 @@ impl DaemonState {
             }
         };
         app_config.operator_uid = Some(uid);
-        if let Err(e) = config::save(&app_config) {
+        if let Err(e) = config::save_settings(&app_config) {
             return IpcMessage::Error {
                 message: format!("failed to save config: {e}"),
             };
@@ -1719,25 +1719,20 @@ impl DaemonState {
                 hostname: a.hostname.clone(),
             })
             .collect();
-        let mut app_config = config::load()?;
-        config::upsert_network(
-            &mut app_config,
-            config::NetworkConfig {
-                name: name.clone(),
-                group_mode: mode,
-                my_ip: Some(my_ip),
-                my_hostname: Some(my_hostname.clone()),
-                members: member_entries,
-                approved: approved_entries,
-                network_secret_key: Some(net_secret_key.clone()),
-                network_public_key: Some(net_public_key),
-                transport: None,
-                auto_accept_firewall: false,
-                admins: vec![],
-                direct,
-            },
-        );
-        config::save(&app_config)?;
+        config::save_network(&config::NetworkConfig {
+            name: name.clone(),
+            group_mode: mode,
+            my_ip: Some(my_ip),
+            my_hostname: Some(my_hostname.clone()),
+            members: member_entries,
+            approved: approved_entries,
+            network_secret_key: Some(net_secret_key.clone()),
+            network_public_key: Some(net_public_key),
+            transport: None,
+            auto_accept_firewall: false,
+            admins: vec![],
+            direct,
+        })?;
 
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(std::sync::RwLock::new(net_state));
@@ -2257,15 +2252,9 @@ impl DaemonState {
         }
 
         // Save config with network public key (use display_name for config)
-        if let Ok(mut app_config) = config::load() {
-            if let Some(net) = app_config
-                .networks
-                .iter_mut()
-                .find(|n| n.name == display_name)
-            {
-                net.network_public_key = Some(net_pubkey);
-            }
-            let _ = config::save(&app_config);
+        if let Ok(Some(mut net)) = config::load_network(display_name) {
+            net.network_public_key = Some(net_pubkey);
+            let _ = config::save_network(&net);
         }
 
         // Membership poller
@@ -2784,30 +2773,25 @@ impl DaemonState {
                 hostname: a.hostname.clone(),
             })
             .collect();
-        let mut app_config = config::load()?;
-        config::upsert_network(
-            &mut app_config,
-            config::NetworkConfig {
-                name: name.to_string(),
-                group_mode: mode,
-                my_ip: Some(my_ip),
-                my_hostname: persisted_hostname.clone(),
-                members: member_entries,
-                approved: approved_entries,
-                network_secret_key: Some(net_secret_key.clone()),
-                network_public_key: Some(net_public_key),
-                transport: None,
-                // Preserve the persisted consent flag + admin roster across a
-                // restart; only the roster (members/approved) is authoritative
-                // from the blob.
-                auto_accept_firewall: net_config
-                    .map(|nc| nc.auto_accept_firewall)
-                    .unwrap_or(false),
-                admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
-                direct: net_config.map(|nc| nc.direct).unwrap_or(false),
-            },
-        );
-        config::save(&app_config)?;
+        config::save_network(&config::NetworkConfig {
+            name: name.to_string(),
+            group_mode: mode,
+            my_ip: Some(my_ip),
+            my_hostname: persisted_hostname.clone(),
+            members: member_entries,
+            approved: approved_entries,
+            network_secret_key: Some(net_secret_key.clone()),
+            network_public_key: Some(net_public_key),
+            transport: None,
+            // Preserve the persisted consent flag + admin roster across a
+            // restart; only the roster (members/approved) is authoritative
+            // from the blob.
+            auto_accept_firewall: net_config
+                .map(|nc| nc.auto_accept_firewall)
+                .unwrap_or(false),
+            admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
+            direct: net_config.map(|nc| nc.direct).unwrap_or(false),
+        })?;
 
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(std::sync::RwLock::new(net_state));
@@ -3015,7 +2999,7 @@ impl DaemonState {
             match config::load() {
                 Ok(mut app_config) => {
                     app_config.default_hostname = Some(h);
-                    if let Err(e) = config::save(&app_config) {
+                    if let Err(e) = config::save_settings(&app_config) {
                         tracing::warn!(error = %e, "failed to persist default hostname");
                     }
                 }
@@ -3266,14 +3250,7 @@ impl DaemonState {
         let was_active = self.teardown_network_runtime(name).await;
 
         // Remove from config even if the network wasn't active
-        let removed_from_config = if let Ok(mut app_config) = config::load()
-            && config::remove_network(&mut app_config, name)
-        {
-            let _ = config::save(&app_config);
-            true
-        } else {
-            false
-        };
+        let removed_from_config = config::delete_network(name).unwrap_or(false);
 
         if was_active || removed_from_config {
             tracing::info!(network = %name, "left network");
@@ -3629,11 +3606,9 @@ impl DaemonState {
         .await;
 
         // Persist to config.
-        if let Ok(mut app_config) = config::load() {
-            if let Some(net) = app_config.networks.iter_mut().find(|n| n.name == network) {
-                net.my_hostname = Some(new_hostname.clone());
-            }
-            let _ = config::save(&app_config);
+        if let Ok(Some(mut net)) = config::load_network(network) {
+            net.my_hostname = Some(new_hostname.clone());
+            let _ = config::save_network(&net);
         }
 
         if is_coord {
@@ -4173,12 +4148,11 @@ impl DaemonState {
         self.store_and_publish_group(network).await;
 
         // Record the grant locally (coordinator's record; not verifiable).
-        if let Ok(mut cfg) = config::load()
-            && let Some(net) = cfg.networks.iter_mut().find(|n| n.name == network)
+        if let Ok(Some(mut net)) = config::load_network(network)
             && !net.admins.contains(&identity)
         {
             net.admins.push(identity);
-            let _ = config::save(&cfg);
+            let _ = config::save_network(&net);
         }
         IpcMessage::Ok {
             message: format!("granted network key to {}", identity.fmt_short()),
@@ -4287,11 +4261,10 @@ impl DaemonState {
             )
             .await;
         if let IpcMessage::Joined { name, .. } = &resp
-            && let Ok(mut cfg) = config::load()
-            && let Some(n) = cfg.networks.iter_mut().find(|n| &n.name == name)
+            && let Ok(Some(mut n)) = config::load_network(name)
         {
             n.direct = true;
-            let _ = config::save(&cfg);
+            let _ = config::save_network(&n);
         }
         resp
     }
@@ -4521,7 +4494,7 @@ impl DaemonState {
             }
         };
         let secret = config::rotate_contact_secret(&mut cfg);
-        if let Err(e) = config::save(&cfg) {
+        if let Err(e) = config::save_settings(&cfg) {
             return IpcMessage::Error {
                 message: format!("failed to save config: {e}"),
             };
@@ -4875,19 +4848,19 @@ impl DaemonState {
             };
         }
         // Persist the per-network flag.
-        match config::load() {
-            Ok(mut app_config) => {
-                let Some(nc) = app_config.networks.iter_mut().find(|n| n.name == network) else {
-                    return IpcMessage::Error {
-                        message: format!("network '{network}' not found in config"),
-                    };
-                };
+        match config::load_network(network) {
+            Ok(Some(mut nc)) => {
                 nc.auto_accept_firewall = enabled;
-                if let Err(e) = config::save(&app_config) {
+                if let Err(e) = config::save_network(&nc) {
                     return IpcMessage::Error {
                         message: format!("failed to persist auto-accept setting: {e}"),
                     };
                 }
+            }
+            Ok(None) => {
+                return IpcMessage::Error {
+                    message: format!("network '{network}' not found in config"),
+                };
             }
             Err(e) => {
                 return IpcMessage::Error {
@@ -5353,6 +5326,10 @@ async fn build_daemon(
     Option<iroh_metrics::service::MetricsServer>,
     mpsc::Receiver<String>,
 )> {
+    // Relocate a pre-/etc config tree into /etc/rayfish (Linux upgrade path)
+    // before anything reads identity or config. No-op on macOS / once migrated.
+    config::migrate_location();
+
     // --- Identity (persistent transport key + optional device certificate) ---
     let key = identity::load_or_create()?;
     let public_key = key.public();
@@ -5369,7 +5346,7 @@ async fn build_daemon(
     // Lazily generate + persist this node's contact key (`ray connect`). The
     // secret stays in config; only its public id is held in `DaemonState`.
     let contact_public = config::contact_secret(&mut app_config).public();
-    if let Err(e) = config::save(&app_config) {
+    if let Err(e) = config::save_settings(&app_config) {
         tracing::warn!(error = %e, "failed to persist contact key");
     }
     let mut alpns: Vec<Vec<u8>> = app_config
@@ -5394,10 +5371,7 @@ async fn build_daemon(
     let ep = transport::create_endpoint_with_alpns(key.clone(), alpns, use_tor).await?;
 
     // --- Content-addressed blob store (membership/file transfer) ---
-    let blobs_dir = dirs::config_dir()
-        .context("no config directory")?
-        .join("rayfish")
-        .join("blobs");
+    let blobs_dir = config::config_dir()?.join("blobs");
     std::fs::create_dir_all(&blobs_dir)?;
     let blob_store = FsStore::load(&blobs_dir)
         .await
@@ -6474,12 +6448,11 @@ async fn apply_roster_to_dns(
         .iter()
         .find(|m| m.identity == my_identity)
         .and_then(|m| m.hostname.clone())
-        && let Ok(mut cfg) = config::load()
-        && let Some(net) = cfg.networks.iter_mut().find(|n| n.name == network_name)
+        && let Ok(Some(mut net)) = config::load_network(network_name)
         && net.my_hostname.as_deref() != Some(mine.as_str())
     {
         net.my_hostname = Some(mine);
-        let _ = config::save(&cfg);
+        let _ = config::save_network(&net);
     }
 }
 
@@ -6687,34 +6660,26 @@ async fn join_mesh_shared(
         .find(|m| m.identity == my_identity)
         .and_then(|m| m.hostname.clone())
         .or(my_hostname.clone());
-    let mut app_config = config::load()?;
     // Preserve the direct-connection flag across reconnects (a member joining a
     // 2-peer `ray connect` network). On the first join the flag is set by the
     // `connect` handler after this returns.
-    let direct = app_config
-        .networks
-        .iter()
-        .find(|n| n.name == network_name)
+    let direct = config::load_network(network_name)?
         .map(|n| n.direct)
         .unwrap_or(false);
-    config::upsert_network(
-        &mut app_config,
-        config::NetworkConfig {
-            name: network_name.to_string(),
-            group_mode: GroupMode::Restricted,
-            my_ip: Some(my_ip),
-            my_hostname: persisted_hostname,
-            members: member_entries,
-            approved: approved_config,
-            network_secret_key: None,
-            network_public_key: Some(net_pubkey),
-            transport: None,
-            auto_accept_firewall,
-            admins: vec![],
-            direct,
-        },
-    );
-    config::save(&app_config)?;
+    config::save_network(&config::NetworkConfig {
+        name: network_name.to_string(),
+        group_mode: GroupMode::Restricted,
+        my_ip: Some(my_ip),
+        my_hostname: persisted_hostname,
+        members: member_entries,
+        approved: approved_config,
+        network_secret_key: None,
+        network_public_key: Some(net_pubkey),
+        transport: None,
+        auto_accept_firewall,
+        admins: vec![],
+        direct,
+    })?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
     // so send a MeshHello. A fresh join already conveyed it in the JoinRequest.
@@ -6907,11 +6872,9 @@ async fn join_mesh_shared(
                                         }
                                         let key = SecretKey::from(secret_key);
                                         // Persist + take local publish capability.
-                                        if let Ok(mut cfg) = config::load()
-                                            && let Some(net) = cfg.networks.iter_mut().find(|n| n.name == network_name)
-                                        {
+                                        if let Ok(Some(mut net)) = config::load_network(&network_name) {
                                             net.network_secret_key = Some(key.clone());
-                                            let _ = config::save(&cfg);
+                                            let _ = config::save_network(&net);
                                         }
                                         let endpoint_id = endpoint_c.id();
                                         {

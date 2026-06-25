@@ -1,5 +1,6 @@
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use iroh::{EndpointId, SecretKey};
@@ -135,7 +136,10 @@ fn default_true() -> bool {
     true
 }
 
-/// Top-level config stored at `~/.config/rayfish/networks.toml`.
+/// In-memory aggregate of the on-disk config. Reads assemble this from
+/// `settings.toml` (globals) + one `networks/<name>.toml` per network; writes
+/// are targeted (`save_settings` / `save_network` / `delete_network`) so a write
+/// to one network can never clobber another. See the storage section below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_true")]
@@ -192,30 +196,361 @@ pub fn rotate_contact_secret(config: &mut AppConfig) -> SecretKey {
     secret
 }
 
-fn config_path() -> Result<PathBuf> {
+// ---- Storage layout -------------------------------------------------------
+//
+// Config is sharded so a write to one network can never clobber another:
+//
+//   <config_dir>/settings.toml          globals (mdns, operator, default
+//                                        hostname, contact key) — secret-bearing
+//   <config_dir>/networks/<name>.toml   one NetworkConfig each — secret-bearing
+//
+// All writes go through `write_atomic` (temp file in the same dir + rename), so
+// a concurrent reader never observes a torn file. This replaces the old single
+// `networks.toml` whose non-atomic full-file rewrites raced under concurrent
+// load-modify-save and silently dropped networks.
+//
+// Linux stores the tree under /etc/rayfish owned root:rayfish (see
+// `config_dir`); secret-bearing files are 0600 root:root, dirs 0750
+// root:rayfish.
+
+const LEGACY_FILE: &str = "networks.toml";
+const SETTINGS_FILE: &str = "settings.toml";
+const NETWORKS_SUBDIR: &str = "networks";
+
+/// Globals persisted to `settings.toml` (everything in [`AppConfig`] except the
+/// per-network entries, which live in their own files).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Settings {
+    #[serde(default = "default_true")]
+    mdns_enabled: bool,
+    #[serde(default)]
+    operator_uid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_hostname: Option<String>,
+    #[serde(default, with = "option_secret_key_hex")]
+    contact_secret_key: Option<SecretKey>,
+}
+
+/// Look up the `rayfish` group's gid (Linux), if the group exists.
+#[cfg(target_os = "linux")]
+fn rayfish_gid() -> Option<u32> {
+    use std::ffi::CString;
+    let name = CString::new("rayfish").ok()?;
+    // SAFETY: getgrnam returns a pointer to a static struct; we copy gr_gid out
+    // immediately before any further libc call could overwrite it.
+    let grp = unsafe { libc::getgrnam(name.as_ptr()) };
+    if grp.is_null() {
+        None
+    } else {
+        Some(unsafe { (*grp).gr_gid })
+    }
+}
+
+/// Best-effort `chown` to root, with group `rayfish` for non-secret paths (or
+/// root for secret ones). No-op off Linux. Silent on failure so the daemon
+/// still starts if the group is missing.
+#[cfg(target_os = "linux")]
+fn set_owner(path: &Path, secret: bool) {
+    let gid = if secret {
+        Some(0)
+    } else {
+        rayfish_gid().or(Some(0))
+    };
+    if let Err(e) = std::os::unix::fs::chown(path, Some(0), gid) {
+        tracing::debug!(path = %path.display(), error = %e, "chown failed (non-fatal)");
+    }
+}
+
+/// Create `dir` (and parents) with restrictive perms: 0750 root:rayfish on
+/// Linux. Idempotent.
+fn ensure_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750));
+        set_owner(dir, false);
+    }
+    Ok(())
+}
+
+/// Base directory for all rayfish config + state. Created if missing.
+///
+/// Linux: `/etc/rayfish` (system service location, root:rayfish). macOS: the
+/// daemon's `~/.config/rayfish` (root-only under `/var/root`).
+pub fn config_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let dir = PathBuf::from("/etc/rayfish");
+    #[cfg(not(target_os = "linux"))]
     let dir = dirs::config_dir()
         .context("could not determine config directory")?
         .join("rayfish");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("networks.toml"))
+    ensure_dir(&dir)?;
+    Ok(dir)
 }
 
-/// Load the config file, returning a default empty config if it doesn't exist.
-pub fn load() -> Result<AppConfig> {
-    let path = config_path()?;
-    if !path.exists() {
-        return Ok(AppConfig::default());
+/// Reject a network name that can't be a safe single path component (defence in
+/// depth — names are already validated as hostnames elsewhere).
+fn validate_net_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        anyhow::bail!("invalid network name for config file: {name:?}");
     }
-    let contents = std::fs::read_to_string(&path).context("reading networks.toml")?;
-    toml::from_str(&contents).context("parsing networks.toml")
+    Ok(())
 }
 
-/// Save the config file.
-pub fn save(config: &AppConfig) -> Result<()> {
-    let path = config_path()?;
-    let contents = toml::to_string_pretty(config).context("serializing config")?;
-    std::fs::write(&path, contents).context("writing networks.toml")?;
+/// Atomically write `bytes` to `path`: write a sibling temp file, set its
+/// perms/owner, then rename over the target. The rename is atomic on POSIX, so
+/// a concurrent reader sees either the old file or the new one — never a torn
+/// one. `secret` selects 0600 root:root vs 0640 root:rayfish.
+///
+/// Public so every rayfish config writer (identity key, invite ledger, etc.)
+/// shares the same atomic + restrictive-perms guarantees under the config tree.
+pub fn write_file(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
+    let dir = path.parent().context("config path has no parent")?;
+    ensure_dir(dir)?;
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config");
+    let tmp = dir.join(format!(".{fname}.tmp.{}", std::process::id()));
+    {
+        use std::io::Write;
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(bytes)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.sync_all().ok();
+    }
+    let mode = if secret { 0o600 } else { 0o640 };
+    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
+    #[cfg(target_os = "linux")]
+    set_owner(&tmp, secret);
+    let renamed = std::fs::rename(&tmp, path);
+    if renamed.is_err() {
+        // Clean up the temp file on a failed rename so we don't litter.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed.with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
+}
+
+fn write_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
+    write_file(path, contents.as_bytes(), secret)
+}
+
+/// Apply restrictive perms/owner to an existing file under the config tree.
+/// For append-mode files (e.g. the audit log) that aren't rewritten via
+/// [`write_file`]. Best-effort.
+pub fn restrict_perms(path: &Path, secret: bool) {
+    let mode = if secret { 0o600 } else { 0o640 };
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    #[cfg(target_os = "linux")]
+    set_owner(path, secret);
+}
+
+/// Linux-only: relocate a pre-`/etc` config tree into `/etc/rayfish` on first
+/// start after the upgrade that moved the location. Earlier Linux builds stored
+/// everything under the daemon's `~/.config/rayfish` (i.e. `/root/.config`); this
+/// moves `secret_key`, `networks.toml`, `firewall.toml`, `invites/`, etc. over so
+/// the node keeps its identity and networks. No-op on macOS (location unchanged)
+/// and once `/etc/rayfish` is populated. Must run before any config/identity read
+/// (called at the top of `build_daemon`).
+pub fn migrate_location() {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(new) = config_dir() else { return };
+        // Already populated → nothing to relocate.
+        if new.join("secret_key").exists()
+            || new.join(SETTINGS_FILE).exists()
+            || new.join(LEGACY_FILE).exists()
+            || new.join(NETWORKS_SUBDIR).is_dir()
+        {
+            return;
+        }
+        let Some(old) = dirs::config_dir().map(|d| d.join("rayfish")) else {
+            return;
+        };
+        if old == new || !old.is_dir() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&old) else {
+            return;
+        };
+        let mut moved = 0;
+        for e in entries.flatten() {
+            let dest = new.join(e.file_name());
+            // Same-filesystem rename is atomic; if it fails (e.g. EXDEV across
+            // mounts) the entry is left in place and the daemon starts fresh —
+            // logged so the operator can move it by hand.
+            match std::fs::rename(e.path(), &dest) {
+                Ok(()) => moved += 1,
+                Err(err) => {
+                    tracing::warn!(entry = ?e.path(), error = %err, "could not relocate config entry into /etc/rayfish")
+                }
+            }
+        }
+        if moved > 0 {
+            // Lock the relocated tree down: secrets keep old, possibly-loose perms
+            // (older builds wrote the key without restricting it). Be conservative
+            // — 0600 everything; later targeted writes relax non-secret files.
+            if let Ok(entries) = std::fs::read_dir(&new) {
+                for e in entries.flatten() {
+                    if e.path().is_file() {
+                        restrict_perms(&e.path(), true);
+                    }
+                }
+            }
+            tracing::info!(from = %old.display(), to = %new.display(), entries = moved, "relocated config tree to /etc/rayfish");
+        }
+    }
+}
+
+/// One-time migration: split a legacy single `networks.toml` into the sharded
+/// layout, keeping the original as `networks.toml.bak` (never deleted).
+fn migrate_legacy(dir: &Path) -> Result<()> {
+    let legacy = dir.join(LEGACY_FILE);
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(&legacy).context("reading legacy networks.toml")?;
+    let old: AppConfig = toml::from_str(&contents).context("parsing legacy networks.toml")?;
+
+    save_settings_in(dir, &old)?;
+    for net in &old.networks {
+        save_network_in(dir, net)?;
+    }
+
+    let bak = dir.join("networks.toml.bak");
+    std::fs::rename(&legacy, &bak)
+        .with_context(|| format!("renaming legacy config to {}", bak.display()))?;
+    tracing::info!(backup = %bak.display(), networks = old.networks.len(), "migrated legacy config to per-network files");
+    Ok(())
+}
+
+/// Load the full config, assembling it from `settings.toml` + `networks/*.toml`.
+/// Returns a default config if nothing is stored yet. Runs the legacy migration
+/// on first call after an upgrade.
+pub fn load() -> Result<AppConfig> {
+    let dir = config_dir()?;
+    migrate_legacy(&dir)?;
+    load_in(&dir)
+}
+
+fn load_in(dir: &Path) -> Result<AppConfig> {
+    let settings_path = dir.join(SETTINGS_FILE);
+    let settings: Settings = if settings_path.exists() {
+        let s = std::fs::read_to_string(&settings_path).context("reading settings.toml")?;
+        toml::from_str(&s).context("parsing settings.toml")?
+    } else {
+        Settings {
+            mdns_enabled: true,
+            operator_uid: None,
+            default_hostname: None,
+            contact_secret_key: None,
+        }
+    };
+
+    let mut networks = Vec::new();
+    let ndir = dir.join(NETWORKS_SUBDIR);
+    if ndir.is_dir() {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&ndir)
+            .with_context(|| format!("reading {}", ndir.display()))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "toml").unwrap_or(false))
+            .collect();
+        paths.sort();
+        for p in paths {
+            let s =
+                std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+            // Atomic writes make a torn file unreachable, but be defensive: skip
+            // an unparseable network rather than failing the whole load.
+            match toml::from_str::<NetworkConfig>(&s) {
+                Ok(nc) => networks.push(nc),
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), error = %e, "skipping unreadable network config")
+                }
+            }
+        }
+    }
+
+    Ok(AppConfig {
+        mdns_enabled: settings.mdns_enabled,
+        operator_uid: settings.operator_uid,
+        default_hostname: settings.default_hostname,
+        contact_secret_key: settings.contact_secret_key,
+        networks,
+    })
+}
+
+/// Persist the global settings (`settings.toml`) only. Does not touch networks.
+pub fn save_settings(config: &AppConfig) -> Result<()> {
+    save_settings_in(&config_dir()?, config)
+}
+
+fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
+    let settings = Settings {
+        mdns_enabled: config.mdns_enabled,
+        operator_uid: config.operator_uid,
+        default_hostname: config.default_hostname.clone(),
+        contact_secret_key: config.contact_secret_key.clone(),
+    };
+    let path = dir.join(SETTINGS_FILE);
+    let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
+    // Secret-bearing: holds the contact key.
+    write_atomic(&path, &contents, true)
+}
+
+/// Persist a single network to `networks/<name>.toml`. Touches only that file,
+/// so concurrent saves of distinct networks can never clobber one another.
+pub fn save_network(net: &NetworkConfig) -> Result<()> {
+    save_network_in(&config_dir()?, net)
+}
+
+fn save_network_in(dir: &Path, net: &NetworkConfig) -> Result<()> {
+    validate_net_name(&net.name)?;
+    let ndir = dir.join(NETWORKS_SUBDIR);
+    let path = ndir.join(format!("{}.toml", net.name));
+    let contents = toml::to_string_pretty(net).context("serializing network config")?;
+    // Secret-bearing: holds the per-network coordinator secret key.
+    write_atomic(&path, &contents, true)
+}
+
+/// Load a single network's config, if present.
+pub fn load_network(name: &str) -> Result<Option<NetworkConfig>> {
+    load_network_in(&config_dir()?, name)
+}
+
+fn load_network_in(dir: &Path, name: &str) -> Result<Option<NetworkConfig>> {
+    validate_net_name(name)?;
+    let path = dir.join(NETWORKS_SUBDIR).join(format!("{name}.toml"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let s =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some(toml::from_str(&s).with_context(|| {
+        format!("parsing {}", path.display())
+    })?))
+}
+
+/// Delete a single network's config file. Returns true if it existed.
+pub fn delete_network(name: &str) -> Result<bool> {
+    delete_network_in(&config_dir()?, name)
+}
+
+fn delete_network_in(dir: &Path, name: &str) -> Result<bool> {
+    validate_net_name(name)?;
+    let path = dir.join(NETWORKS_SUBDIR).join(format!("{name}.toml"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 /// Add or update a network in the config. If a network with the same name
@@ -527,5 +862,117 @@ name = "test"
         assert!(config.networks[0].approved.is_empty());
         assert!(config.networks[0].network_secret_key.is_none());
         assert!(config.networks[0].network_public_key.is_none());
+    }
+
+    fn net(name: &str) -> NetworkConfig {
+        NetworkConfig {
+            name: name.to_string(),
+            group_mode: GroupMode::Restricted,
+            my_ip: None,
+            my_hostname: None,
+            members: vec![],
+            approved: vec![],
+            network_secret_key: Some(iroh::SecretKey::generate()),
+            network_public_key: None,
+            transport: None,
+            auto_accept_firewall: false,
+            admins: vec![],
+            direct: false,
+        }
+    }
+
+    #[test]
+    fn per_network_roundtrip_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        save_network_in(dir, &net("homelab")).unwrap();
+        save_network_in(dir, &net("genesis")).unwrap();
+        save_settings_in(
+            dir,
+            &AppConfig {
+                default_hostname: Some("dario".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let loaded = load_in(dir).unwrap();
+        assert_eq!(loaded.networks.len(), 2);
+        assert_eq!(loaded.default_hostname.as_deref(), Some("dario"));
+
+        // Single-network load.
+        assert!(load_network_in(dir, "homelab").unwrap().is_some());
+        assert!(load_network_in(dir, "absent").unwrap().is_none());
+
+        // Deleting one leaves the other untouched.
+        assert!(delete_network_in(dir, "homelab").unwrap());
+        assert!(!delete_network_in(dir, "homelab").unwrap());
+        let after = load_in(dir).unwrap();
+        assert_eq!(after.networks.len(), 1);
+        assert_eq!(after.networks[0].name, "genesis");
+    }
+
+    // Regression for the bug that prompted this change: concurrent saves of
+    // distinct networks used to clobber one another through a single
+    // non-atomic `networks.toml`. With one file per network they cannot.
+    #[test]
+    fn concurrent_saves_do_not_clobber() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        const N: usize = 24;
+
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let dir = dir.clone();
+                s.spawn(move || {
+                    save_network_in(&dir, &net(&format!("net-{i}"))).unwrap();
+                });
+            }
+        });
+
+        let loaded = load_in(&dir).unwrap();
+        assert_eq!(loaded.networks.len(), N, "all concurrent saves must survive");
+    }
+
+    #[test]
+    fn migrate_legacy_splits_and_backs_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // Write a legacy single-file config (the pre-shard format).
+        let legacy = AppConfig {
+            default_hostname: Some("dario".into()),
+            networks: vec![net("homelab"), net("genesis")],
+            ..Default::default()
+        };
+        std::fs::write(
+            dir.join(LEGACY_FILE),
+            toml::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        migrate_legacy(dir).unwrap();
+
+        // Legacy file preserved as a backup, original gone.
+        assert!(!dir.join(LEGACY_FILE).exists());
+        assert!(dir.join("networks.toml.bak").exists());
+
+        // Both networks + globals are now in the sharded layout.
+        let loaded = load_in(dir).unwrap();
+        assert_eq!(loaded.networks.len(), 2);
+        assert_eq!(loaded.default_hostname.as_deref(), Some("dario"));
+
+        // Idempotent: a second migrate (no legacy file) is a no-op.
+        migrate_legacy(dir).unwrap();
+        assert_eq!(load_in(dir).unwrap().networks.len(), 2);
+    }
+
+    #[test]
+    fn rejects_unsafe_network_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        assert!(save_network_in(dir, &net("../escape")).is_err());
+        assert!(load_network_in(dir, "a/b").is_err());
     }
 }

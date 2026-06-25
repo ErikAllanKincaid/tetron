@@ -620,11 +620,7 @@ fn extract_icmp(protocol: u8, packet: &[u8], header_len: usize) -> (u8, u16) {
 }
 
 pub fn firewall_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("could not determine config directory")?
-        .join("rayfish");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("firewall.toml"))
+    Ok(crate::config::config_dir()?.join("firewall.toml"))
 }
 
 pub fn load_firewall() -> Result<FirewallConfig> {
@@ -640,7 +636,8 @@ pub fn load_firewall() -> Result<FirewallConfig> {
 pub fn save_firewall(config: &FirewallConfig) -> Result<()> {
     let path = firewall_path()?;
     let content = toml::to_string_pretty(config).context("serialize firewall config")?;
-    std::fs::write(&path, content).with_context(|| format!("write {}", path.display()))
+    // Not secret-bearing → 0640 root:rayfish, written atomically.
+    crate::config::write_file(&path, content.as_bytes(), false)
 }
 
 pub fn parse_port_range(s: &str) -> Result<PortRange> {

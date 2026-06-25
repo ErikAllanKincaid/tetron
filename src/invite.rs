@@ -98,12 +98,9 @@ pub fn generate_secret() -> [u8; SECRET_LEN] {
     rand::random()
 }
 
-/// Path to a network's invite ledger: `~/.config/rayfish/invites/<network>.toml`.
+/// Path to a network's invite ledger: `<config_dir>/invites/<network>.toml`.
 pub fn invite_path(network: &str) -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("could not determine config directory")?
-        .join("rayfish")
-        .join("invites");
+    let dir = crate::config::config_dir()?.join("invites");
     Ok(dir.join(format!("{network}.toml")))
 }
 
@@ -172,24 +169,14 @@ impl InviteStore {
     }
 
     fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
         let file = InviteFile {
             invites: self.invites.clone(),
         };
         let contents = toml::to_string_pretty(&file).context("serializing invites")?;
-        std::fs::write(&self.path, contents)
-            .with_context(|| format!("writing {}", self.path.display()))?;
         // The ledger holds only hashes, never raw secrets, but it does expose
-        // invite metadata (expiry, redeemers, bound hostnames); keep it owner-only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        // invite metadata (expiry, redeemers, bound hostnames); treat it as
+        // secret-bearing (owner-only 0600), written atomically.
+        crate::config::write_file(&self.path, contents.as_bytes(), true)
     }
 
     /// Mint a new invite valid for `ttl`, persist it, and return `(secret, id)`.

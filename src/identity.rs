@@ -10,13 +10,7 @@ use iroh::SecretKey;
 
 use crate::control::DeviceCert;
 
-fn config_dir() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("could not determine config directory")?
-        .join("rayfish");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
+use crate::config::config_dir;
 
 fn key_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("secret_key"))
@@ -34,7 +28,7 @@ pub fn load_or_create() -> Result<SecretKey> {
         Ok(key)
     } else {
         let key = SecretKey::generate();
-        std::fs::write(&path, key.to_bytes())?;
+        crate::config::write_file(&path, &key.to_bytes(), true)?;
         tracing::info!(id = %key.public().fmt_short(), "generated new identity");
         Ok(key)
     }
@@ -61,7 +55,7 @@ fn device_cert_path() -> Result<PathBuf> {
 pub fn store_device_cert(cert: &DeviceCert) -> Result<()> {
     let path = device_cert_path()?;
     let bytes = rmp_serde::to_vec_named(cert).context("serialize device cert")?;
-    std::fs::write(&path, bytes).context("write device cert")?;
+    crate::config::write_file(&path, &bytes, false).context("write device cert")?;
     tracing::info!(user = %cert.user_identity.fmt_short(), "stored device certificate");
     Ok(())
 }

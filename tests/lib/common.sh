@@ -73,14 +73,16 @@ seed_known_hosts(){
   for h in "$@"; do ssh-keyscan -T 10 "$h" >> ~/.ssh/known_hosts 2>/dev/null || true; done
 }
 
-# reset_state <ip...> : clean-slate the daemon (stop + wipe ~/.config/rayfish) so
+# reset_state <ip...> : clean-slate the daemon (stop + wipe the config tree) so
 # runs are reproducible on already-used servers. Set KEEP_STATE=1 to skip.
+# Linux config lives in /etc/rayfish; /root/.config/rayfish is the pre-migration
+# location (wiped too so an upgraded VM doesn't migrate stale state back in).
 reset_state(){
   [[ "${KEEP_STATE:-0}" == "1" ]] && return 0
   step "reset rayfish state on all hosts (KEEP_STATE=1 to skip)"
   local h
   for h in "$@"; do
-    on "$h" 'systemctl stop rayfish 2>/dev/null; rm -rf /root/.config/rayfish' && echo "   reset $h"
+    on "$h" 'systemctl stop rayfish 2>/dev/null; rm -rf /etc/rayfish /root/.config/rayfish' && echo "   reset $h"
   done
 }
 
