@@ -3206,6 +3206,10 @@ impl DaemonState {
             self.teardown_network_runtime(name).await;
         }
 
+        if let Some(rt) = self.dns_reassert_token.lock().unwrap().take() {
+            rt.cancel();
+        }
+
         // Revert system DNS (extract the configurator before reverting so the
         // mutex guard isn't held across the call).
         let configurator = self.dns_configurator.lock().unwrap().take();
@@ -3215,9 +3219,6 @@ impl DaemonState {
             tracing::warn!(error = %e, "failed to revert DNS configuration");
         }
         dns_config::clear_search_domains(&self.tun_name).await;
-        if let Some(rt) = self.dns_reassert_token.lock().unwrap().take() {
-            rt.cancel();
-        }
 
         if let Err(e) = tun::set_link_down(&self.tun_name) {
             tracing::warn!(error = %e, "failed to bring TUN interface down");

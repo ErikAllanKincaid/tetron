@@ -132,7 +132,12 @@ pub async fn run_mesh(
             continue;
         };
         if is_magic_dns(&info) {
-            resolver.handle_tun_query(&pkt, &info, &tun_tx).await;
+            let resolver = resolver.clone();
+            let tun_tx = tun_tx.clone();
+            let pkt = pkt.clone();
+            tokio::spawn(async move {
+                resolver.handle_tun_query(&pkt, &info, &tun_tx).await;
+            });
             continue; // do not fall through to peer routing
         }
         let lookup = match info.dst_ip {

@@ -465,6 +465,7 @@ fn protocol_matches(filter: Protocol, ip_proto: u8) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct PacketInfo {
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,

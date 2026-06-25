@@ -88,7 +88,8 @@ impl Resolver {
 
 async fn forward_once(query: &[u8], up: SocketAddr) -> std::io::Result<Vec<u8>> {
     let sock = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await?;
-    sock.send_to(query, up).await?;
+    sock.connect(up).await?;
+    sock.send(query).await?;
     let mut buf = vec![0u8; 4096];
     let n = tokio::time::timeout(Duration::from_secs(3), sock.recv(&mut buf))
         .await
