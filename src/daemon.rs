@@ -3224,8 +3224,8 @@ impl DaemonState {
 
     /// Tear down a network's runtime state (connections, ALPN, DNS entries,
     /// background tasks) without touching its persisted config. Returns whether
-    /// the network was active. Shared by `leave_network` (which also forgets the
-    /// config) and `deactivate` (which keeps it for later reactivation).
+    /// the network was active. Used by `leave_network` (which also forgets the
+    /// config); standby (`deactivate`) no longer tears connections down.
     async fn teardown_network_runtime(&self, name: &str) -> bool {
         let Some(handle) = self.networks.remove(name).map(|(_, v)| v) else {
             return false;
