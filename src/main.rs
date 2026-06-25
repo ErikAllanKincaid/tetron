@@ -3124,12 +3124,24 @@ fn ensure_rayfish_group() {
 /// currently running so the service execs the same `ray` the user invoked
 /// (rather than a hardcoded /usr/local/bin/ray). Idempotent — safe to call on
 /// every `ray up`, keeping the exec path fresh if the binary moves.
+/// Strip the `" (deleted)"` marker Linux appends to `/proc/self/exe` once the
+/// running binary's inode has been unlinked. `ray update` calls `self_replace`,
+/// which unlinks the running binary, and *then* rewrites the service unit from
+/// the running exe path. Without this strip the unit would get
+/// `ExecStart=/usr/local/bin/ray (deleted) daemon` and the service would
+/// crash-loop with `unrecognized subcommand '(deleted)'`, bricking remote
+/// self-update.
+fn strip_deleted_suffix(path: &str) -> &str {
+    path.strip_suffix(" (deleted)").unwrap_or(path)
+}
+
 #[allow(unused_variables)]
 fn ensure_service_installed() -> Result<()> {
     let exe = std::env::current_exe()
         .context("failed to determine current executable path")?
         .to_string_lossy()
         .into_owned();
+    let exe = strip_deleted_suffix(&exe).to_owned();
 
     #[cfg(target_os = "linux")]
     {
@@ -4009,6 +4021,27 @@ fn cmd_uninstall_service() -> Result<()> {
 mod tests {
     use super::*;
     use ipc::FirewallRuleView;
+
+    #[test]
+    fn strip_deleted_suffix_sanitizes_replaced_binary_path() {
+        // After `self_replace` unlinks the running binary, Linux reports
+        // `/proc/self/exe` with a trailing " (deleted)". The service unit must
+        // not inherit it, or the daemon crash-loops on `ray (deleted) daemon`.
+        assert_eq!(
+            strip_deleted_suffix("/usr/local/bin/ray (deleted)"),
+            "/usr/local/bin/ray"
+        );
+        // A normal path is untouched.
+        assert_eq!(
+            strip_deleted_suffix("/usr/local/bin/ray"),
+            "/usr/local/bin/ray"
+        );
+        // Only an exact trailing marker is stripped, not the substring mid-path.
+        assert_eq!(
+            strip_deleted_suffix("/opt/ray (deleted)/ray"),
+            "/opt/ray (deleted)/ray"
+        );
+    }
 
     #[test]
     fn parse_suggest_token_defaults_peer_to_any_for_bare_proto() {

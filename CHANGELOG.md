@@ -55,6 +55,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`ray update` no longer bricks the system service.** After swapping its own
+  binary, `ray update` rewrote the service unit using the path of the running
+  executable, which Linux reports with a trailing `" (deleted)"` once the old
+  binary is unlinked. The unit ended up as `ExecStart=/usr/local/bin/ray (deleted)
+  daemon`, so the daemon crash-looped with `unrecognized subcommand '(deleted)'`
+  and the node went offline until a manual reinstall. The path is now sanitized,
+  making remote self-update safe.
 - **`ray hostname` rename now reliably propagates.** A member's rename is kept as
   a durable pending intent and re-delivered to a coordinator on every reconnect
   and reconverge until the signed roster confirms it, so the new name reaches the
