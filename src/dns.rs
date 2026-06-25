@@ -1,17 +1,17 @@
-//! Minimal DNS responder for Magic DNS (.ray TLD).
+//! Magic DNS responder for the `.ray` TLD.
 //!
-//! Binds to 127.0.0.1:53 (UDP + TCP) and answers A, AAAA, PTR, and SOA
-//! queries for `*.ray` names. All other queries receive REFUSED.
+//! Answers A, AAAA, PTR, and SOA queries for `*.ray` names. The resolver is
+//! reached via a magic IP (`MAGIC_DNS_V4` = 100.100.100.53) routed through the
+//! TUN — no host-level port 53 bind is made. `handle_query` is called directly
+//! by `forward::run_mesh` when it intercepts a UDP DNS packet destined for the
+//! magic IP.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::RwLock;
-use tokio_util::sync::CancellationToken;
 
 use simple_dns::{
     CLASS, Name, Packet, PacketFlag, QTYPE, RCODE, ResourceRecord, rdata::A, rdata::AAAA,
@@ -139,105 +139,6 @@ pub async fn remove_network(table: &HostnameTable, reverse: &ReverseLookupTable,
         for (_, (ipv4, ipv6)) in hosts {
             reverse.remove(&IpAddr::V4(ipv4));
             reverse.remove(&IpAddr::V6(ipv6));
-        }
-    }
-}
-
-pub async fn spawn_dns_server(
-    table: HostnameTable,
-    reverse: ReverseLookupTable,
-    cancel: CancellationToken,
-) -> anyhow::Result<()> {
-    let addr: SocketAddr = "127.0.0.1:53".parse().unwrap();
-
-    let udp = Arc::new(UdpSocket::bind(addr).await?);
-    tracing::info!("DNS resolver listening on {addr} (UDP)");
-
-    let tcp = TcpListener::bind(addr).await?;
-    tracing::info!("DNS resolver listening on {addr} (TCP)");
-
-    let tcp_table = table.clone();
-    let tcp_reverse = reverse.clone();
-    let tcp_cancel = cancel.clone();
-    tokio::spawn(async move {
-        run_tcp_listener(tcp, tcp_table, tcp_reverse, tcp_cancel).await;
-    });
-
-    let mut buf = vec![0u8; 1232];
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            result = udp.recv_from(&mut buf) => {
-                let (len, src) = match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::debug!(error = %e, "DNS recv error");
-                        continue;
-                    }
-                };
-                let data = buf[..len].to_vec();
-                let sock = udp.clone();
-                let t = table.clone();
-                let r = reverse.clone();
-                tokio::spawn(async move {
-                    if let Some(resp) = handle_query(&data, &t, &r).await {
-                        let _ = sock.send_to(&resp, src).await;
-                    }
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_tcp_listener(
-    listener: TcpListener,
-    table: HostnameTable,
-    reverse: ReverseLookupTable,
-    cancel: CancellationToken,
-) {
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            result = listener.accept() => {
-                let (stream, _) = match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::debug!(error = %e, "DNS TCP accept error");
-                        continue;
-                    }
-                };
-                let t = table.clone();
-                let r = reverse.clone();
-                tokio::spawn(async move {
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        handle_tcp_connection(stream, &t, &r),
-                    ).await;
-                });
-            }
-        }
-    }
-}
-
-async fn handle_tcp_connection(
-    mut stream: tokio::net::TcpStream,
-    table: &HostnameTable,
-    reverse: &ReverseLookupTable,
-) -> anyhow::Result<()> {
-    loop {
-        let len = match stream.read_u16().await {
-            Ok(l) => l as usize,
-            Err(_) => return Ok(()),
-        };
-        if len == 0 || len > 65535 {
-            return Ok(());
-        }
-        let mut buf = vec![0u8; len];
-        stream.read_exact(&mut buf).await?;
-        if let Some(resp) = handle_query(&buf, table, reverse).await {
-            stream.write_u16(resp.len() as u16).await?;
-            stream.write_all(&resp).await?;
         }
     }
 }

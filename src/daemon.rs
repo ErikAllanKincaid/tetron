@@ -1207,6 +1207,10 @@ pub struct DaemonState {
     active: Arc<AtomicBool>,
     /// The system-DNS configurator owned while active, so `Down` can revert it.
     dns_configurator: Arc<std::sync::Mutex<Option<Box<dyn dns_config::DnsConfigurator>>>>,
+    /// In-daemon Magic DNS resolver (answers `.ray` queries intercepted via TUN).
+    resolver: std::sync::Arc<crate::dns_resolver::Resolver>,
+    /// Cancellation token for the `run_resolv_reassert` task (Linux direct mode).
+    dns_reassert_token: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     /// Promotion signal: a co-coordinator's per-peer control reader sends the
     /// network name here after persisting an `AdminGrant` key, and the main
     /// daemon loop ([`serve_ipc`]) drains it into
@@ -3060,12 +3064,25 @@ impl DaemonState {
             warnings.push(format!("failed to install loopback self-route: {e}"));
         }
 
-        // Configure system DNS to route .ray queries to our local resolver.
+        // Configure system DNS to route .ray queries to our in-daemon resolver.
         dns_config::restore_stale_backups();
         match dns_config::detect_and_configure(&self.tun_name).await {
             Ok(c) => {
-                tracing::info!(backend = c.name(), "system DNS configured for .ray");
+                let upstreams = c.captured_upstreams();
+                let is_direct = c.name() == "direct-resolv.conf";
+                tracing::info!(backend = c.name(), resolver_ip = %crate::dns::MAGIC_DNS_V4, upstreams = ?upstreams, "Magic DNS active");
+                self.resolver.set_upstreams(upstreams);
                 *self.dns_configurator.lock().unwrap() = Some(c);
+                // In direct mode, periodically re-assert /etc/resolv.conf against
+                // programs that overwrite it (NetworkManager, dhclient).
+                #[cfg(target_os = "linux")]
+                if is_direct {
+                    let rt = tokio_util::sync::CancellationToken::new();
+                    *self.dns_reassert_token.lock().unwrap() = Some(rt.clone());
+                    tokio::spawn(dns_config::run_resolv_reassert(Vec::new(), rt));
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = is_direct;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to configure system DNS (Magic DNS requires manual setup)");
@@ -3198,6 +3215,9 @@ impl DaemonState {
             tracing::warn!(error = %e, "failed to revert DNS configuration");
         }
         dns_config::clear_search_domains(&self.tun_name).await;
+        if let Some(rt) = self.dns_reassert_token.lock().unwrap().take() {
+            rt.cancel();
+        }
 
         if let Err(e) = tun::set_link_down(&self.tun_name) {
             tracing::warn!(error = %e, "failed to bring TUN interface down");
@@ -5421,8 +5441,6 @@ async fn build_daemon(
         dns_resolver.clone(),
         tun_tx.clone(),
     ));
-    spawn_dns_resolver(hostname_table.clone(), reverse_table.clone(), token.clone());
-
     let mdns_enabled = app_config.mdns_enabled;
     if mdns_enabled {
         spawn_mdns_discovery(&ep, token.clone());
@@ -5463,6 +5481,8 @@ async fn build_daemon(
         contact_public,
         active: Arc::new(AtomicBool::new(false)),
         dns_configurator: Arc::new(std::sync::Mutex::new(None)),
+        resolver: dns_resolver.clone(),
+        dns_reassert_token: std::sync::Mutex::new(None),
         promote_tx,
     });
 
@@ -5483,20 +5503,6 @@ async fn build_daemon(
 
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
     Ok((daemon, metrics_server, promote_rx))
-}
-
-/// Spawn the Magic DNS resolver on `127.0.0.1:53`. Non-fatal: if the socket
-/// can't be bound, Magic DNS is simply disabled and the daemon runs on.
-fn spawn_dns_resolver(
-    table: dns::HostnameTable,
-    reverse: dns::ReverseLookupTable,
-    token: CancellationToken,
-) {
-    tokio::spawn(async move {
-        if let Err(e) = dns::spawn_dns_server(table, reverse, token).await {
-            tracing::warn!(error = %e, "DNS server failed to start (Magic DNS disabled)");
-        }
-    });
 }
 
 /// Advertise this endpoint over mDNS (`_rayfish._udp.local`) and log LAN peer
