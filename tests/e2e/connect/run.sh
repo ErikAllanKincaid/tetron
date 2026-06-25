@@ -160,19 +160,15 @@ step "8b. firewall — unsolicited inbound TCP is denied by the secure default"
 # the result.
 FWPORT=18080
 if [[ -n "$A_IP" && -n "$B_IP" ]]; then
-  # Listener on srv-b (binds 0.0.0.0, including the TUN IP). setsid + </dev/null
-  # detaches it from the ssh session so it survives.
-  on "$B" "setsid python3 -m http.server $FWPORT >/tmp/fwtest.log 2>&1 </dev/null & sleep 1" >/dev/null 2>&1 || true
-  # Pure TCP connect probe from srv-a (no payload, so conntrack on srv-a's side
-  # isn't a factor): opening the fd performs the SYN handshake.
-  BEFORE="$(on "$A" "timeout 5 bash -c 'exec 3<>/dev/tcp/$B_IP/$FWPORT' && echo OPEN || echo CLOSED" 2>/dev/null | strip)"
-  if [[ "$BEFORE" == "CLOSED" ]]; then pass "unsolicited inbound TCP:$FWPORT denied by default"; else fail "expected default-deny to block TCP:$FWPORT (got '$BEFORE')"; fi
+  # Listener on srv-b (binds 0.0.0.0, including the TUN IP); helpers in common.sh.
+  start_tcp_listener "$B" "$FWPORT"
+  # No prior outbound from srv-b, so conntrack never masks the default-deny.
+  fw_denies "$A" "$B_IP" "$FWPORT" "unsolicited inbound is denied by default"
   # Open the port explicitly on srv-b, then the same probe must succeed.
   on "$B" "ray firewall add in allow -p tcp --port $FWPORT" 2>&1 | strip | sed 's/^/   b| /'
-  AFTER="$(on "$A" "timeout 5 bash -c 'exec 3<>/dev/tcp/$B_IP/$FWPORT' && echo OPEN || echo CLOSED" 2>/dev/null | strip)"
-  if [[ "$AFTER" == "OPEN" ]]; then pass "explicit allow rule opens TCP:$FWPORT"; else fail "expected allow rule to open TCP:$FWPORT (got '$AFTER')"; fi
+  fw_allows "$A" "$B_IP" "$FWPORT" "explicit allow rule opens the port"
   on "$B" 'ray firewall remove 0' 2>&1 | strip | sed 's/^/   b| /'
-  on "$B" "pkill -f 'http.server $FWPORT'" >/dev/null 2>&1 || true
+  stop_tcp_listener "$B" "$FWPORT"
 else
   fail "could not determine IPs for unsolicited-inbound firewall test"
 fi

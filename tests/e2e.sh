@@ -6,6 +6,8 @@
 # Scenarios:
 #   device-cert   3-peer device-cert / pairing test   (tests/e2e/device-cert)
 #   connect       2-peer `ray connect` direct test     (tests/e2e/connect)
+#   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
+#   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
 #   bench         throughput / latency benchmark        (tests/bench)
 #
 # Actions:
@@ -22,7 +24,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage(){ sed -n '2,20p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
+usage(){ sed -n '2,22p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
 
 # scenario_meta <scenario> : set DIR / NAMES / LABELS for a scenario, or return 1.
 scenario_meta(){
@@ -33,6 +35,12 @@ scenario_meta(){
     connect)     DIR="$ROOT/tests/e2e/connect"
                  NAMES=(rayfish-connect-a rayfish-connect-b)
                  LABELS=(srv-a srv-b) ;;
+    firewall)    DIR="$ROOT/tests/e2e/firewall"
+                 NAMES=(rayfish-fw-a rayfish-fw-b rayfish-fw-c)
+                 LABELS=(srv-a srv-b srv-c) ;;
+    closed-net)  DIR="$ROOT/tests/e2e/closed-net"
+                 NAMES=(rayfish-closednet-a rayfish-closednet-b rayfish-closednet-c)
+                 LABELS=(srv-a srv-b srv-c) ;;
     bench)       DIR="$ROOT/tests/bench"
                  NAMES=(rayfish-bench-a rayfish-bench-b)
                  LABELS=(srv-a srv-b) ;;

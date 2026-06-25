@@ -104,6 +104,188 @@ wait_daemons(){
   done
 }
 
+# ---------------------------------------------------------------------------
+# JSON-backed status helpers. Every `ray` subcommand takes a global `--json`
+# flag (color/spinners off, machine-readable). We run it on the remote host and
+# parse the JSON *locally* with jq, so assertions don't scrape coloured tables.
+# jq is already a provisioning prerequisite (see tests/e2e/README.md).
+# ---------------------------------------------------------------------------
+
+# status_json <ip> : echo `ray status --json` from a host (raw JSON).
+status_json(){ on "$1" 'ray status --json' 2>/dev/null; }
+
+# my_ip4 <ip> [net] : this node's own VPN IPv4 — for the named network, or the
+# first network if omitted. Empty if none.
+my_ip4(){
+  status_json "$1" | jq -r --arg n "${2:-}" '
+    (.networks // [])
+    | (if $n == "" then .[0] else (map(select(.name == $n)) | .[0]) end)
+    | .my_ip // empty'
+}
+
+# peer_ip4 <ip> <peer-hostname> [net] : a specific peer's VPN IPv4 as seen by
+# <ip>. Searches the named network, or all networks if net omitted. Empty if the
+# peer isn't present.
+peer_ip4(){
+  status_json "$1" | jq -r --arg h "$2" --arg n "${3:-}" '
+    (.networks // [])
+    | (if $n == "" then . else map(select(.name == $n)) end)
+    | [ .[].peers[] | select((.hostname // "") == $h) ] | .[0].ip // empty'
+}
+
+# peer_online <ip> <peer-hostname> [net] : echo 1 if that peer has a live
+# connection (.connection != null), else 0.
+peer_online(){
+  local r
+  r="$(status_json "$1" | jq -r --arg h "$2" --arg n "${3:-}" '
+    (.networks // [])
+    | (if $n == "" then . else map(select(.name == $n)) end)
+    | [ .[].peers[] | select((.hostname // "") == $h) ] | .[0]
+    | if . != null and .connection != null then "1" else "0" end')"
+  echo "${r:-0}"
+}
+
+# net_role <ip> <net> : the node's role on a network (lowercased:
+# coordinator/member/direct). Empty if the node isn't on that network.
+net_role(){
+  status_json "$1" | jq -r --arg n "$2" '
+    (.networks // []) | map(select(.name == $n)) | .[0].role // empty' \
+    | tr 'A-Z' 'a-z'
+}
+
+# has_net <ip> <net> : exit 0 if the node has a network by that name.
+has_net(){
+  [[ -n "$(status_json "$1" | jq -r --arg n "$2" \
+    '(.networks // []) | map(select(.name == $n)) | .[0].name // empty')" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Polling / convergence
+# ---------------------------------------------------------------------------
+
+# retry_until <secs> <shell-cond...> : eval the condition every 3s until it
+# succeeds or <secs> elapse. Returns the condition's last exit status.
+retry_until(){
+  local secs="$1"; shift
+  local end=$((SECONDS + secs))
+  while (( SECONDS < end )); do
+    if eval "$*"; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
+
+# _roster_has <ip> <host...> : exit 0 iff every named host is online from <ip>.
+_roster_has(){
+  local ip="$1"; shift
+  local h
+  for h in "$@"; do [[ "$(peer_online "$ip" "$h")" == "1" ]] || return 1; done
+}
+
+# wait_roster <ip> <host...> : block (≤120s) until all named peers are online
+# from <ip>'s view, then PASS/FAIL.
+wait_roster(){
+  local ip="$1"; shift
+  if retry_until 120 "_roster_has '$ip' $*"; then
+    pass "roster converged on $ip (sees: $*)"
+  else
+    fail "roster did not converge on $ip (want: $*)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Firewall reachability probes (data-plane, over the TUN)
+# ---------------------------------------------------------------------------
+
+# tcp_probe <from-ip> <dst-vpn-ip> <port> : echo OPEN if a TCP SYN handshake
+# completes, CLOSED otherwise. A pure connect (no payload), so conntrack on the
+# sender isn't a factor.
+tcp_probe(){
+  on "$1" "timeout 5 bash -c 'exec 3<>/dev/tcp/$2/$3' && echo OPEN || echo CLOSED" \
+    2>/dev/null | strip | tr -d '[:space:]'
+}
+
+# start_tcp_listener <ip> <port> / stop_tcp_listener <ip> <port> : a detached
+# HTTP server bound to 0.0.0.0 (incl. the TUN ip) on the host, and its teardown.
+start_tcp_listener(){
+  on "$1" "setsid python3 -m http.server $2 --bind 0.0.0.0 >/tmp/lst_$2.log 2>&1 </dev/null & sleep 1" \
+    >/dev/null 2>&1 || true
+}
+stop_tcp_listener(){ on "$1" "pkill -f 'http.server $2'" >/dev/null 2>&1 || true; }
+
+# udp_probe <from-ip> <dst-ip> <port> : echo OPEN if a UDP datagram from <from>
+# reaches a listener on <dst>, CLOSED otherwise. Starts a one-shot python
+# receiver on <dst> that drops a marker file on first packet.
+udp_probe(){
+  local from="$1" dst="$2" port="$3"
+  on "$dst" "rm -f /tmp/udp_got_$port; setsid python3 -c 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(8); s.bind((\"0.0.0.0\",$port));
+try:
+ s.recvfrom(64); open(\"/tmp/udp_got_$port\",\"w\").write(\"1\")
+except Exception: pass' >/dev/null 2>&1 </dev/null & sleep 1" >/dev/null 2>&1 || true
+  on "$from" "python3 -c 'import socket; socket.socket(socket.AF_INET,socket.SOCK_DGRAM).sendto(b\"x\",(\"$dst\",$port))'" >/dev/null 2>&1 || true
+  sleep 2
+  on "$dst" "[ -f /tmp/udp_got_$port ] && echo OPEN || echo CLOSED" 2>/dev/null | strip | tr -d '[:space:]'
+}
+
+# fw_allows / fw_denies <from-ip> <dst-ip> <port> <label> [proto] : PASS/FAIL on
+# the expected TCP (default) or UDP reachability. proto = tcp|udp.
+fw_allows(){
+  local proto="${5:-tcp}" r
+  if [[ "$proto" == udp ]]; then r="$(udp_probe "$1" "$2" "$3")"; else r="$(tcp_probe "$1" "$2" "$3")"; fi
+  [[ "$r" == OPEN ]] && pass "$4 ($proto:$3 open)" || fail "$4 (expected OPEN on $proto:$3, got '$r')"
+}
+fw_denies(){
+  local proto="${5:-tcp}" r
+  if [[ "$proto" == udp ]]; then r="$(udp_probe "$1" "$2" "$3")"; else r="$(tcp_probe "$1" "$2" "$3")"; fi
+  [[ "$r" == CLOSED ]] && pass "$4 ($proto:$3 denied)" || fail "$4 (expected CLOSED on $proto:$3, got '$r')"
+}
+
+# fw_pending_count <ip> <net> : number of suggested rules queued for review on a
+# node (from `ray firewall pending <net> --json`).
+fw_pending_count(){
+  on "$1" "ray firewall pending $2 --json" 2>/dev/null | jq -r '(.rules // []) | length'
+}
+
+# fw_suggested_count <ip> [net] : number of *installed* rules tagged as suggested
+# (optionally by a specific network), from `ray firewall show --json`.
+fw_suggested_count(){
+  on "$1" 'ray firewall show --json' 2>/dev/null | jq -r --arg n "${2:-}" \
+    '[ (.rules // [])[] | select(.suggested_by != null) | select($n == "" or .suggested_by == $n) ] | length'
+}
+
+# ---------------------------------------------------------------------------
+# Invite minting (coordinator side)
+# ---------------------------------------------------------------------------
+
+# mint_invite <coord-ip> <net> <hostname> : mint a single-use, hostname-bound
+# invite and echo its join code.
+mint_invite(){
+  on "$1" "ray invite $2 create --hostname $3" | strip \
+    | sed -n 's/.*ray join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
+}
+
+# mint_reusable <coord-ip> <net> : mint a reusable (multi-use) key, echo the code.
+mint_reusable(){
+  on "$1" "ray invite $2 create --reusable" | strip \
+    | sed -n 's/.*ray join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
+}
+
+# request_id <coord-ip> <net> <hostname> : the short id of a queued join request
+# matching <hostname> (from `ray requests <net> --json`). Empty if none.
+request_id(){
+  on "$1" "ray requests $2 --json" 2>/dev/null \
+    | jq -r --arg h "$3" 'map(select((.hostname // "") == $h)) | .[0].id // empty'
+}
+
+# peer_endpoint <ip> <peer-hostname> [net] : a peer's full endpoint id as seen by
+# <ip> (for `ray admin add`, which prefix-matches). Empty if absent.
+peer_endpoint(){
+  status_json "$1" | jq -r --arg h "$2" --arg n "${3:-}" '
+    (.networks // [])
+    | (if $n == "" then . else map(select(.name == $n)) end)
+    | [ .[].peers[] | select((.hostname // "") == $h) ] | .[0].endpoint_id // empty'
+}
+
 # send_recv <from-ip> <to-ip> <to-peer-hostname> <label> : ray send a 1MiB random
 # file and verify the sha256 round-trips after `ray files accept`. SR_PREFIX sets
 # the temp-file path prefix (default /tmp/ray_e2e).

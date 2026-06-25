@@ -88,13 +88,9 @@ if [[ -n "$ROOM" ]]; then pass "network '$NET' created (room ${ROOM:0:12}…)"; 
   on "$A" "ray status" | strip | grep -q "$NET" && { pass "network '$NET' already exists"; } || fail "network create failed"
 fi
 
-mint_invite(){ # mint_invite <hostname>  -> echoes invite code
-  # `--hostname` belongs to the (default) `create` subcommand, so name it explicitly.
-  on "$A" "ray invite $NET create --hostname $1" | strip \
-    | sed -n 's/.*ray join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
-}
-INV_B="$(mint_invite srv-b)"
-INV_C="$(mint_invite srv-c)"
+# mint_invite (coord-ip, net, hostname) comes from common.sh.
+INV_B="$(mint_invite "$A" "$NET" srv-b)"
+INV_C="$(mint_invite "$A" "$NET" srv-c)"
 [[ -n "$INV_B" ]] && pass "invite for srv-b (${INV_B:0:12}…)" || fail "no invite for srv-b"
 [[ -n "$INV_C" ]] && pass "invite for srv-c (${INV_C:0:12}…)" || fail "no invite for srv-c"
 
@@ -114,18 +110,13 @@ echo "$REQ" | grep -qiE '[0-9a-f]{6,}' && { echo "   pending requests found, acc
 
 # ---------------------------------------------------------------------------
 step "5. wait for roster convergence (A, B, C all visible)"
-converged=0
-for _ in $(seq 1 18); do  # up to ~90s
-  SA="$(on "$A" 'ray status' | strip)"
-  # coordinator should list both srv-b and srv-c as online peers.
-  if echo "$SA" | grep -q 'srv-b\.' && echo "$SA" | grep -q 'srv-c\.'; then converged=1; break; fi
-  sleep 5
-done
+# wait_roster (common.sh) blocks until the coordinator sees both members online
+# (parsed from `ray status --json`, not table-grep) and PASS/FAILs.
+wait_roster "$A" srv-b srv-c
 SA="$(on "$A" 'ray status' | strip)"; SB="$(on "$B" 'ray status' | strip)"; SC="$(on "$C" 'ray status' | strip)"
 echo "---- srv-a status ----"; echo "$SA" | sed 's/^/   a| /'
 echo "---- srv-b status ----"; echo "$SB" | sed 's/^/   b| /'
 echo "---- srv-c status ----"; echo "$SC" | sed 's/^/   c| /'
-[[ "$converged" == 1 ]] && pass "roster converged (coordinator sees B+C online)" || fail "roster did not converge within timeout"
 
 # Extract each node's own VPN IPv4 (own_ip from common.sh; CGNAT 100.64.0.0/10).
 A_IP="$(own_ip "$SA")"; B_IP="$(own_ip "$SB")"; C_IP="$(own_ip "$SC")"
