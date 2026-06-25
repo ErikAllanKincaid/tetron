@@ -1122,6 +1122,17 @@ fn indent(block: &str, indent: usize) -> String {
         .join("\n")
 }
 
+/// Naively pluralize `noun` for a count (append `s` unless `n == 1`). The count
+/// itself is shown separately, so this returns just the noun. Good enough for
+/// the status pending summary's nouns.
+fn pluralize(n: usize, noun: &str) -> String {
+    if n == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
 async fn ipc_status() -> Result<()> {
     let Ok(mut stream) = ipc::connect().await else {
         // Daemon not running — show saved config
@@ -1164,6 +1175,8 @@ async fn ipc_status() -> Result<()> {
             packets_tx,
             bytes_rx,
             bytes_tx,
+            pending_files,
+            pending_connects,
         } => {
             if json_enabled() {
                 print_json(&serde_json::json!({
@@ -1176,6 +1189,10 @@ async fn ipc_status() -> Result<()> {
                     "traffic": {
                         "packets_rx": packets_rx, "packets_tx": packets_tx,
                         "bytes_rx": bytes_rx, "bytes_tx": bytes_tx,
+                    },
+                    "pending": {
+                        "files": pending_files,
+                        "connects": pending_connects,
                     },
                 }));
                 return Ok(());
@@ -1320,6 +1337,57 @@ async fn ipc_status() -> Result<()> {
                         style::marker("inactive")
                     );
                 }
+            }
+
+            // Pending summary: things waiting on the user, each with the command
+            // that clears it. Per-network items (firewall suggestions, join
+            // requests) name their network; file/connect offers are global.
+            let mut pending: Vec<(usize, String, String)> = Vec::new();
+            for net in &networks {
+                if net.pending_suggestions > 0 {
+                    pending.push((
+                        net.pending_suggestions,
+                        pluralize(net.pending_suggestions, "firewall suggestion"),
+                        format!("ray firewall pending {}", net.name),
+                    ));
+                }
+                if net.pending_requests > 0 {
+                    pending.push((
+                        net.pending_requests,
+                        pluralize(net.pending_requests, "join request"),
+                        format!("ray requests {}", net.name),
+                    ));
+                }
+            }
+            if pending_files > 0 {
+                pending.push((
+                    pending_files,
+                    pluralize(pending_files, "file offer"),
+                    "ray files".to_string(),
+                ));
+            }
+            if pending_connects > 0 {
+                pending.push((
+                    pending_connects,
+                    pluralize(pending_connects, "connection request"),
+                    "ray connections".to_string(),
+                ));
+            }
+            if !pending.is_empty() {
+                println!();
+                println!("  {}", style::label("pending"));
+                let rows: Vec<Vec<layout::Cell>> = pending
+                    .iter()
+                    .map(|(n, what, cmd)| {
+                        let count = format!("({n})");
+                        vec![
+                            layout::Cell::new(count.clone(), style::rose(&count)),
+                            layout::Cell::new(what.clone(), style::value(what)),
+                            layout::Cell::new(cmd.clone(), style::faint(cmd)),
+                        ]
+                    })
+                    .collect();
+                print!("{}", indent(&layout::columns(&rows, 3), 4));
             }
 
             // Daemon/CLI version skew: after a self-update the CLI binary is new
@@ -2076,8 +2144,8 @@ async fn ipc_firewall_pending(network: &str) -> Result<()> {
 /// the value begins with a protocol keyword (`tcp`/`udp`/`icmp`/`any`) the peer
 /// defaults to `*` (any peer). So `tcp:22` is read as "tcp/22 from any peer" —
 /// the intuitive form — instead of "any port from a peer named `tcp`", which
-/// would silently drop on the joiner (unresolvable hostname) and leave only the
-/// whitelist catch-all deny, inverting the intent into a lockdown.
+/// would silently drop on the joiner (unresolvable hostname) and materialize no
+/// rule at all, inverting the intent.
 fn parse_suggest_token(spec: &str, flag: &str) -> Result<(String, String)> {
     let spec = spec.trim();
     anyhow::ensure!(

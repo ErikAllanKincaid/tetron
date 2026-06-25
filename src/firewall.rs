@@ -739,9 +739,10 @@ pub fn parse_spec_token(tok: &str) -> Result<(Protocol, Option<PortRange>)> {
 /// `resolve` (the blob's member list); unresolved peers are skipped — their rules
 /// materialize once they join. The `*` peer key means *any peer* and bypasses
 /// resolution. Every rule is inbound, network-scoped to `net`, and tagged
-/// `origin: Network(net)`. When any applicable subject has an allow-list, a
-/// trailing network-scoped catch-all deny is appended so only the listed peers
-/// pass, without touching the global default action. Each port spec token is
+/// `origin: Network(net)`. Suggestions are purely additive: each token yields
+/// exactly one rule (allow or deny) and nothing is synthesized — the node's own
+/// `default_inbound` (Deny by default) already covers anything an allow-list
+/// leaves out, so no catch-all deny is appended. Each port spec token is
 /// `proto:ports` or a bare proto keyword (`icmp`, `any`, `tcp`); a comma-separated
 /// value yields one rule per token.
 pub fn materialize_suggestions(
@@ -793,21 +794,12 @@ pub fn materialize_suggestions(
             }
         }
     }
-    // Whitelist mode: an allow-list is present on any applicable subject ⇒ only
-    // listed peers pass, append a network-scoped catch-all deny. A subject with
-    // only `denies` (blacklist) or neither list stays open (global default).
-    let want_default_deny = applicable.iter().any(|h| !h.allows.is_empty());
-    if want_default_deny {
-        rules.push(FirewallRule {
-            direction: Direction::In,
-            action: Action::Deny,
-            protocol: Protocol::Any,
-            port: None,
-            peer: PeerFilter::Any,
-            network: Some(net.to_string()),
-            origin: RuleOrigin::Network(net.to_string()),
-        });
-    }
+    // Suggestions are purely additive: each token becomes one rule, allow or
+    // deny, and nothing else is synthesized. A node's own `default_inbound`
+    // (Deny by default) already drops everything an allow-list doesn't cover,
+    // so we don't append a network-scoped catch-all deny — it would only be
+    // redundant under the deny default and would surprise operators reviewing
+    // `ray firewall pending` with a rule they never suggested.
     rules
 }
 
@@ -1901,7 +1893,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_appends_catch_all_deny_with_allow_list() {
+    fn materialize_allow_list_is_additive_no_catch_all() {
         let me = test_id(1);
         let peer = test_id(2);
         let resolve = |h: &str| match h {
@@ -1909,18 +1901,16 @@ mod tests {
             "peer" => Some(peer),
             _ => None,
         };
-        // An allow-list with no explicit default ⇒ default-deny within network.
+        // An allow-list yields exactly its allow rules — no synthesized catch-all
+        // deny. The node's own `default_inbound` already drops the rest.
         let suggestions = suggest("me", &[("peer", "tcp:9000")]);
         let rules = materialize_suggestions("prod", "me", &suggestions, &resolve);
-        let deny_any = rules.iter().find(|r| {
-            r.action == Action::Deny
-                && r.peer == PeerFilter::Any
-                && r.port.is_none()
-                && r.network.as_deref() == Some("prod")
-        });
+        assert_eq!(rules.len(), 1, "only the suggested allow rule");
+        assert_eq!(rules[0].action, Action::Allow);
+        assert_eq!(rules[0].peer, PeerFilter::Identity(peer));
         assert!(
-            deny_any.is_some(),
-            "expected a network-scoped catch-all deny"
+            rules.iter().all(|r| r.action != Action::Deny),
+            "no catch-all deny should be appended"
         );
     }
 
@@ -1969,10 +1959,9 @@ mod tests {
         let resolve = |_: &str| None;
         let suggestions = suggest("me", &[("ghost", "tcp:9000")]);
         let rules = materialize_suggestions("prod", "me", &suggestions, &resolve);
-        // The allow rule is dropped (peer not joined), but an allow-list is still
-        // present, so the catch-all deny remains.
-        assert!(rules.iter().all(|r| r.action == Action::Deny));
-        assert!(rules.iter().all(|r| r.peer == PeerFilter::Any));
+        // The allow rule is dropped (peer not joined) and nothing is synthesized,
+        // so no rules materialize at all.
+        assert!(rules.is_empty());
     }
 
     #[test]
@@ -2039,12 +2028,8 @@ mod tests {
         assert_eq!(allow.protocol, Protocol::Tcp);
         assert_eq!(allow.port.as_ref().unwrap().start, 6969);
         assert_eq!(allow.network.as_deref(), Some("prod"));
-        // Allow-list present ⇒ a catch-all deny is appended.
-        assert!(
-            rules
-                .iter()
-                .any(|r| r.action == Action::Deny && r.peer == PeerFilter::Any)
-        );
+        // Additive: only the suggested allow, no synthesized catch-all deny.
+        assert!(rules.iter().all(|r| r.action != Action::Deny));
     }
 
     #[test]

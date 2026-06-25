@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostSuggestions {
     /// peer hostname -> proto:ports spec (e.g. `"tcp:22"`, `"icmp"`, `"tcp:*"`):
-    /// the subject accepts inbound from that peer. When non-empty, the node
-    /// installs a trailing network-scoped catch-all deny so only the listed
-    /// peers pass (whitelist mode). When empty (and `denies` is non-empty), the
-    /// subject is in blacklist mode (rest allowed).
+    /// the subject accepts inbound from that peer. Suggestions are additive —
+    /// each entry materializes one allow rule and nothing else; the node's own
+    /// inbound default (Deny by default) already drops anything not listed, so
+    /// no catch-all deny is synthesized.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub allows: BTreeMap<String, String>,
     /// peer hostname -> ports the subject explicitly denies inbound from. Use

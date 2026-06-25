@@ -11,8 +11,8 @@
 #     sees it in `firewall pending`, `firewall accept` installs it, and it shows
 #     up tagged `(suggested by fw)` and actually changes data-plane reachability;
 #   - `--auto-accept-firewall` installs without review; `auto-accept off` queues;
-#   - whitelist (allow-list ⇒ catch-all deny) vs blacklist (denies-only) semantics
-#     observed by real TCP probes;
+#   - whitelist (allow-list + the node's own default-deny) vs blacklist
+#     (denies-only) semantics observed by real TCP probes;
 #   - the rule matrix: UDP, a TCP port range, same-selector replace (allow↔deny),
 #     and per-network rule scoping (`--network`) at the data plane;
 #   - `ray send` reaches a deny-all host: file transfer rides FILES_ALPN (a
@@ -91,8 +91,9 @@ on "$B" 'ray firewall default deny' 2>&1 | strip | sed 's/^/   b| /'
 # ---------------------------------------------------------------------------
 step "3. auto-accept + whitelist semantics (subject srv-c)"
 # srv-c joined with --auto-accept-firewall: an allow-list suggestion installs
-# without review and appends a network-scoped catch-all deny (whitelist).
-on "$C" 'ray firewall default allow' 2>&1 | strip | sed 's/^/   c| /'   # so the catch-all deny is what blocks
+# without review. Suggestions are additive (no synthesized catch-all) — the
+# whitelist is the allow rule punching through srv-c's own inbound default-deny.
+on "$C" 'ray firewall default deny' 2>&1 | strip | sed 's/^/   c| /'   # the default-deny is what blocks the rest
 start_tcp_listener "$C" 2030
 start_tcp_listener "$C" 2031
 on "$A" "ray firewall suggest $NET --subject srv-c --allow srv-b:tcp:2030" 2>&1 | strip | sed 's/^/   a| /'
@@ -103,9 +104,9 @@ else
 fi
 [[ "$(fw_pending_count "$C" "$NET")" == "0" ]] && pass "auto-accept leaves nothing in pending" \
   || fail "auto-accept node unexpectedly queued the suggestion"
-fw_allows "$B" "$C_IP" 2030 "whitelist: admits the listed peer:port (srv-b -> 2030)"
-fw_denies "$B" "$C_IP" 2031 "whitelist: catch-all denies an unlisted port (2031)"
-fw_denies "$A" "$C_IP" 2030 "whitelist: catch-all denies an unlisted peer (srv-a)"
+fw_allows "$B" "$C_IP" 2030 "whitelist: allow rule admits the listed peer:port (srv-b -> 2030)"
+fw_denies "$B" "$C_IP" 2031 "whitelist: default-deny blocks an unlisted port (2031)"
+fw_denies "$A" "$C_IP" 2030 "whitelist: allow is peer-scoped, default-deny blocks srv-a"
 
 # Toggle auto-accept OFF: a further suggestion must now QUEUE instead of install.
 on "$C" "ray firewall auto-accept $NET off" 2>&1 | strip | sed 's/^/   c| /'

@@ -13,10 +13,10 @@
 //! means any peer — so "everyone opens 6969 to anyone" is one line. Specs are
 //! **YAML only** (most readable); output (`--dry-run`, `--example`) is YAML too.
 //!
-//! Firewall model: if a subject has an `allows` list, only those peers pass
-//! (a network-scoped catch-all deny is appended); a subject with only `denies`
-//! is a blacklist (rest allowed); an empty subject is fully open. There is no
-//! `default` field — the mode is inferred from which list is non-empty.
+//! Firewall model: suggestions are additive. An `allows` list opens exactly the
+//! listed peers/ports (the node's own inbound default, Deny by default, drops
+//! the rest — no catch-all is synthesized); a `denies` list blocks exactly those
+//! peers; an empty subject suggests nothing. There is no `default` field.
 
 use std::collections::BTreeMap;
 use std::path::Path;

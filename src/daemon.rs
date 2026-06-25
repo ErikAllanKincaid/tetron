@@ -3291,7 +3291,7 @@ impl DaemonState {
                 // not just the live connections — so `ray status` shows offline
                 // peers too (Tailscale-style). A peer with no active connection
                 // gets `connection: None`; the CLI renders it with an offline dot.
-                let (members, member_count) = {
+                let (members, member_count, pending_suggestions, pending_requests) = {
                     let s = match h.state.read() {
                         Ok(s) => s,
                         Err(_) => {
@@ -3308,12 +3308,14 @@ impl DaemonState {
                                 network_key: Some(h.network_key.to_string()),
                                 member_count: 0,
                                 peers: vec![],
+                                pending_suggestions: 0,
+                                pending_requests: 0,
                             };
                         }
                     };
                     let count = s.members.all().len();
                     let all = s.members.all().into_iter().cloned().collect::<Vec<_>>();
-                    (all, count)
+                    (all, count, s.pending_suggestions.len(), s.pending.len())
                 };
                 // Index live connections by endpoint id for a fast lookup.
                 let connected: HashMap<EndpointId, Connection> = self
@@ -3375,6 +3377,8 @@ impl DaemonState {
                     network_key,
                     member_count,
                     peers,
+                    pending_suggestions,
+                    pending_requests,
                 }
             })
             .collect();
@@ -3390,6 +3394,8 @@ impl DaemonState {
             packets_tx: self.stats.packets_tx.get(),
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
+            pending_files: self.protocol_router.pending_files.lock().unwrap().len(),
+            pending_connects: self.protocol_router.pending_connects.len(),
         }
     }
 

@@ -246,6 +246,14 @@ pub enum IpcMessage {
         packets_tx: u64,
         bytes_rx: u64,
         bytes_tx: u64,
+        /// Incoming file offers awaiting `ray files accept` (global, not
+        /// per-network). Shown in the status "pending" summary.
+        #[serde(default)]
+        pending_files: usize,
+        /// Incoming `ray connect` requests awaiting `ray connections approve`
+        /// (global). Shown in the status "pending" summary.
+        #[serde(default)]
+        pending_connects: usize,
     },
     /// The device's local firewall (reply to `FirewallShow`). Structured so the
     /// CLI renders it with color on the *user's* TTY and serializes it for
@@ -382,6 +390,14 @@ pub struct NetworkStatus {
     pub network_key: Option<String>,
     pub member_count: usize,
     pub peers: Vec<PeerStatus>,
+    /// Suggested firewall rules queued for review on this node for this network
+    /// (`ray firewall pending <net>`). Surfaced in the status summary.
+    #[serde(default)]
+    pub pending_suggestions: usize,
+    /// Peers awaiting live approval on this network — coordinator-only
+    /// (`ray requests <net>` / `ray accept`). Surfaced in the status summary.
+    #[serde(default)]
+    pub pending_requests: usize,
 }
 
 #[derive(
@@ -780,11 +796,15 @@ mod tests {
                     user_identity: None,
                     connection: None,
                 }],
+                pending_suggestions: 0,
+                pending_requests: 0,
             }],
             packets_rx: 0,
             packets_tx: 0,
             bytes_rx: 0,
             bytes_tx: 0,
+            pending_files: 0,
+            pending_connects: 0,
         };
         let bytes = rmp_serde::to_vec(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
