@@ -2,8 +2,8 @@
 //!
 //! Virtual IPs are deterministically derived from [`EndpointId`] via FNV-1a hashing
 //! into the network's configured overlay subnet (the `GroupBlob.subnet` field),
-//! defaulting to the 100.64.0.0/10 CGNAT range when none is set. The host-bit
-//! width follows the subnet's prefix length.
+//! defaulting to 10.88.0.0/16 when none is set (an uncommon 10.x slice that
+//! avoids Tailscale's 100.64.0.0/10). The host-bit width follows the prefix.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -319,11 +319,13 @@ pub trait IdentityProvider: Send + Sync {
 /// [`GroupBlob`] / config means "use [`default_subnet`]".
 pub type Subnet = (Ipv4Addr, u8);
 
-/// The default overlay subnet when none is configured: 100.64.0.0/10 (the
-/// original hardcoded CGNAT range). Written in comma form so it does not read as
-/// a dotted literal.
+/// The default overlay subnet when none is configured: 10.88.0.0/16, an
+/// uncommon 10.x slice chosen so a no-flag `torpedo create` does NOT collide
+/// with Tailscale's 100.64.0.0/10 out of the box (SUBNET-011). Override with
+/// `--subnet` / `torpedo config set subnet`. Written in comma form so it does
+/// not read as a dotted literal.
 pub fn default_subnet() -> Subnet {
-    (Ipv4Addr::new(100, 64, 0, 0), 10)
+    (Ipv4Addr::new(10, 88, 0, 0), 16)
 }
 
 /// Resolve an optional configured subnet to a concrete one, falling back to
@@ -841,12 +843,10 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_ip_in_cgnat_range() {
+    fn test_derive_ip_in_default_subnet() {
         let id = test_id(1);
         let ip = derive_ip(&id, default_subnet());
-        let octets = ip.octets();
-        assert_eq!(octets[0], 100);
-        assert!(octets[1] >= 64 && octets[1] <= 127);
+        assert!(ip_in_subnet(ip, default_subnet()));
     }
 
     #[test]
@@ -914,9 +914,7 @@ mod tests {
         let provider = IrohIdentityProvider::new(endpoint_id, 0, default_subnet());
 
         let ip = provider.local_ip();
-        let octets = ip.octets();
-        assert_eq!(octets[0], 100);
-        assert!(octets[1] >= 64 && octets[1] <= 127);
+        assert!(ip_in_subnet(ip, default_subnet()));
 
         let id = provider.local_identity();
         assert_eq!(provider.derive_ip(&id), ip);
@@ -2096,7 +2094,9 @@ mod tests {
 
     // --- configurable subnet (SUBNET-003/004/005/007) ------------------------
 
-    const CUSTOM: Subnet = (Ipv4Addr::new(10, 88, 0, 0), 16);
+    // A custom subnet distinct from BOTH the default (10.88.0.0/16) and the
+    // legacy CGNAT range, so "custom != default" assertions stay meaningful.
+    const CUSTOM: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 16);
 
     #[test]
     fn derive_ip_lands_in_custom_subnet_and_avoids_reserved() {
@@ -2126,36 +2126,37 @@ mod tests {
         assert_eq!(subnet_netmask(10), Ipv4Addr::new(255, 192, 0, 0));
         assert_eq!(subnet_netmask(16), Ipv4Addr::new(255, 255, 0, 0));
         assert_eq!(subnet_netmask(24), Ipv4Addr::new(255, 255, 255, 0));
-        assert_eq!(subnet_gateway(CUSTOM), Ipv4Addr::new(10, 88, 0, 1));
-        assert_eq!(subnet_gateway(default_subnet()), Ipv4Addr::new(100, 64, 0, 1));
+        assert_eq!(subnet_gateway(CUSTOM), Ipv4Addr::new(10, 99, 0, 1));
+        assert_eq!(subnet_gateway(default_subnet()), Ipv4Addr::new(10, 88, 0, 1));
     }
 
     #[test]
     fn ensure_in_range_respects_custom_subnet() {
         // In-subnet host is accepted.
-        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 88, 5, 9), CUSTOM).is_ok());
+        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 99, 5, 9), CUSTOM).is_ok());
         // Network + gateway are rejected.
-        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 88, 0, 0), CUSTOM).is_err());
-        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 88, 0, 1), CUSTOM).is_err());
-        // A default-range address is outside the custom subnet.
+        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 99, 0, 0), CUSTOM).is_err());
+        assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 99, 0, 1), CUSTOM).is_err());
+        // A 100.64.0.0/10 (Tailscale/legacy) address is outside the custom subnet.
         assert!(ensure_in_cgnat_range(Ipv4Addr::new(100, 64, 0, 5), CUSTOM).is_err());
     }
 
     #[test]
     fn magic_dns_is_subnet_relative_and_back_compatible() {
-        // Reproduces the historical resolver address for the default subnet.
+        // For 100.64.0.0/10 the offset reproduces the historical 100.100.100.53
+        // resolver address — a property of that range, not of the default.
         assert_eq!(
-            crate::dns::magic_dns_v4(default_subnet()),
+            crate::dns::magic_dns_v4((Ipv4Addr::new(100, 64, 0, 0), 10)),
             Ipv4Addr::new(100, 100, 100, 53)
         );
-        // For a custom subnet it stays inside the range.
+        // For any subnet it stays inside the range.
         assert!(ip_in_subnet(crate::dns::magic_dns_v4(CUSTOM), CUSTOM));
     }
 
     #[test]
     fn parse_cidr_roundtrips_and_rejects_garbage() {
-        assert_eq!(parse_cidr("10.88.0.0/16").unwrap(), CUSTOM);
-        assert!(parse_cidr("10.88.0.0").is_err());
+        assert_eq!(parse_cidr("10.99.0.0/16").unwrap(), CUSTOM);
+        assert!(parse_cidr("10.99.0.0").is_err());
         assert!(parse_cidr("not-an-ip/16").is_err());
         assert!(parse_cidr("10.0.0.0/33").is_err());
     }

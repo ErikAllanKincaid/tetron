@@ -33,10 +33,12 @@ def check_tests() -> dict:
     return {"pass": r.returncode == 0}
 
 
-def check_hardcoded_cgnat(allowed_default_line_substrings=("100.64.0.0/10",)) -> dict:
-    """Grep the touched files for leftover 100.64/100.100 literals. The CLI
-    default fallback value is expected to still mention 100.64.0.0/10 once
-    (as the documented default), anything beyond that is unexpected."""
+def check_hardcoded_cgnat(
+    allowed_default_line_substrings=("100.64.0.0/10", "10.88.0.0/16"),
+) -> dict:
+    """Grep the touched files for leftover 100.64/100.100 literals. Comment lines
+    documenting the default subnet (now 10.88.0.0/16) or the legacy/Tailscale
+    100.64.0.0/10 range are allowed; anything beyond that is unexpected."""
     touched = ["src/membership.rs", "src/tun.rs", "src/dns.rs"]
     unexpected = 0
     for f in touched:
