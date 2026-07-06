@@ -1,7 +1,53 @@
 # torpedo — TODO
 
-Tracking for deferred work on the fork. See `DESIGN.md` for decisions and
-`spec/design_spec.py` for the requirement set.
+Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
+`AGENTS.md` for agent guidance, and `spec/design_spec.py` for the requirement set.
+
+## Upcoming (active agenda)
+
+- [x] Documentation: `README.md` (torpedo-focused fork intro + background/further
+      reading + image) and `AGENTS.md` (canonical agent guide; `CLAUDE.md` symlink).
+- [ ] Testing: build a distributable binary for the other test machines
+      (`cargo build --release` → `target/release/torpedo`, or `just cross` for a
+      portable build). Decide static (musl) vs dynamic (glibc >= 2.39 on target).
+- [ ] Push `master` to `origin` (github.com/ErikAllanKincaid/torpedo) when ready.
+- [ ] Manual Phase-7 live test: `torpedo up` + `create --subnet` / `config set
+      subnet` on two machines, confirm mesh + Tailscale coexistence.
+- [ ] Optional guardrail: add `RENAME-010` (build-tooling identity) + a
+      `reconcile.py` check that greps `justfile`/`contrib/` for stale
+      `ray`/`rayfish` tokens, so the justfile fix can not silently regress.
+      (The justfile is not Rust, so CON-007 does not cover it.)
+
+## Platform rewrites (macOS, Android) — adapt to torpedo
+
+Decision: adapt both to torpedo rather than rip out. Ripping out stays the
+alternative only if torpedo becomes permanently Linux-only.
+
+### macOS rewrite
+- [ ] Make `route_peer_range` **subnet-agnostic** (`src/tun.rs:286`, `#[cfg(macos)]`):
+      it hardcodes `route add -inet 100.64.0.0/10` (+ `-inet6 200::/7`). The Linux
+      path already reads the network's configured subnet; the macOS path does not,
+      so on macOS the fork routes the wrong /10 and ignores `--subnet`.
+- [ ] Audit `route_self_loopback` and any other `#[cfg(target_os = "macos")]`
+      block in `src/tun.rs` for hardcoded `100.64` / stale identity.
+- [ ] Identity: launchd label already `com.torpedo.vpn` (RENAME-008); confirm no
+      other `rayfish` host artifacts remain on macOS-only paths.
+- [ ] **Must build + test on a real Mac** — cfg(macos) code is not compiled or
+      type-checked on this Linux host, so all the above is compiler-unverified.
+
+### Android torpedo rewrite
+- [ ] **Deep-link scheme mismatch (broken):** `AndroidManifest.xml` registers
+      `android:scheme="rayfish"` but the Rust side is now `torpedo://` (RENAME-007).
+      Android deep links do not work until the manifest is updated to `torpedo`.
+- [ ] Kotlin identity rename `rayfish` -> `torpedo`: package `xyz.rayfish.android`,
+      `RayfishApp` / `RayfishTheme` / `RayfishVpnService.kt`, thread `rayfish-node-stop`,
+      and the JVM package dir `android/app/src/main/java/xyz/rayfish/...`.
+- [ ] `ray-mobile` crate (`lib.rs`, `android_tun.rs`, `diag.rs`): make the
+      `VpnService` TUN setup **subnet-agnostic** (drop `100.64` assumptions). Decide
+      whether to rename the crate/artifact (`ray-mobile` / `libray_mobile`) or keep
+      it as an internal name like the `rayfish` library crate.
+- [ ] Build prerequisites: `cargo-ndk`, the Android rust targets, JDK 17
+      (`just apk`). Verify `just build`/`just apk` after the fixes.
 
 ## Deferred (decision made: not now)
 
@@ -18,30 +64,10 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions and
 - Priority: after the fork is proven via the manual Phase-7 two-machine test;
   worthwhile for automated multi-node regression coverage of a P2P VPN.
 
-### macOS / Android branches
-- Still assume `100.64.0.0/10` and carry the old identity on paths the Linux
-  fork never executes: macOS `route_peer_range` (`src/tun.rs`), Android
-  `VpnService` (`android/`).
-- Decision for later: (a) adapt them if we want multi-platform, or (b) rip them
-  out for a clean Linux-only fork.
-- Leaning (a)/keep-as-is for now: keeping them is a small, rebase-friendly diff
-  (same logic as neutralize-not-delete for self-update). Rip out only if torpedo
-  becomes permanently Linux-only.
-
-## Upcoming (active agenda)
-
-- [ ] Documentation: write `README.md` (torpedo-focused; "fork of rayfish,
-      MPL-2.0, changes the overlay subnet") + a TLDR getting-started section.
-      Resolves the pending `README.md` delete.
-- [ ] Testing: build a distributable binary for the other test machines
-      (`cargo build --release`, or `just cross` for a portable build). Decide
-      static vs dynamic.
-- [ ] Push `master` to `origin` (github.com/ErikAllanKincaid/torpedo) when ready.
-- [ ] Manual Phase-7 live test: `torpedo up` + `create --subnet`/`config set
-      subnet` on two machines, confirm mesh + Tailscale coexistence.
-
 ## Notes
 - Relay / discovery-DNS `rayfish` presets are **kept on purpose** (upstream
   infra, default is n0; honest for a fork). Do not rename — protected by CON-001.
 - Self-update is neutralized (`SELF_UPDATE_ENABLED = false`); do NOT enable it —
   `REPO_SLUG` still points at upstream rayfish. Guarded by CON-006.
+- Internal Cargo library crate name `rayfish` (`use rayfish::…`, `info,rayfish=debug`)
+  is kept on purpose — renaming it is churn with no user-visible benefit.
