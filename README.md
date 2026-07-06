@@ -1,5 +1,7 @@
 # Torpedo
 
+<img src="images/torpedo2.png" alt="Electric ray (Torpedo)" width="320">
+
 **A P2P mesh VPN that coexists with Tailscale.** Torpedo is a small, focused fork of [rayfish](https://github.com/rayfish/rayfish) that makes the overlay IPv4 subnet configurable, so it can run on the same machine as an active Tailscale client. Connect your machines by cryptographic identity — no servers to run, no ports to forward, no static IPs to manage.
 
 ```bash
@@ -20,7 +22,7 @@ ping bob.<network>.ray          # reach each other by name
 
 ## Why this fork
 
-Upstream rayfish hardcodes its overlay IPv4 range to `100.64.0.0/10` (the CGNAT range) and refuses to start if another interface already holds an address there. That is exactly the range **Tailscale** uses — so stock rayfish and Tailscale cannot run on the same host. Torpedo makes the overlay subnet configurable and defaults it to a range that coexists with Tailscale, so both meshes run side by side. While at it, the fork takes on a distinct identity (binary, service, paths, and wire protocol) so its traffic can never be confused with — or bind the same ports as — genuine rayfish on the same host.
+Upstream rayfish hardcodes its overlay IPv4 range to `100.64.0.0/10` (the CGNAT range) and refuses to start if another interface already holds an address there. That is exactly the range **Tailscale** uses — so stock rayfish and Tailscale cannot run on the same host. Torpedo makes the overlay subnet configurable and defaults it to a range that coexists with Tailscale, so both meshes run side by side. While at it, the fork takes on a distinct identity (binary, service, paths, and wire protocol) so its traffic can never be confused with — or bind the same ports as — genuine rayfish on the same host. The "torpedo" name refers to the Electric ray *Torpedo californica*.
 
 ## TL;DR quickstart
 
@@ -151,6 +153,26 @@ just deploy <ip>                # cross-build release + install + start on a rem
 ```
 
 Torpedo currently targets **Linux**. (The macOS and Android paths inherited from rayfish still assume the old range and identity; see `TODO.md`.)
+
+## Background and further reading
+
+Torpedo (via rayfish) is one of a family of "identity-based" mesh VPNs — the same category as [Tailscale](https://tailscale.com) and [ZeroTier](https://www.zerotier.com). What they share is the idea that a machine is addressed by a long-lived cryptographic key rather than by whatever IP address its network happens to hand it, and that the software then does the hard work of finding a path between two keys across NATs and firewalls. What differs between them is the transport underneath. This section is background on the pieces torpedo stands on, and on WireGuard, the protocol its Tailscale neighbor uses.
+
+### iroh and n0
+
+Torpedo does not implement its own peer-to-peer networking. It is built on [iroh](https://www.iroh.computer), a Rust library for direct connections between nodes identified by a public key ([source](https://github.com/n0-computer/iroh), [docs](https://www.iroh.computer/docs)). iroh handles the parts that are genuinely hard: discovering where a peer currently is on the internet, punching through NATs so two home machines can talk directly, and falling back to an encrypted relay when a direct path cannot be established. Torpedo uses iroh's QUIC datagrams as the tunnel and layers the mesh, addressing, and firewall on top.
+
+**n0** (the team, also written "number 0", at [n0.computer](https://n0.computer)) is the group that builds iroh and operates the default public infrastructure it uses: the relay servers that bounce traffic when a direct connection fails, and the discovery service (pkarr over `dns.iroh.link`) that maps a public key to a node's current address. These are the "n0 defaults" referred to elsewhere in this README. They are a convenience, not a dependency on a central authority: no n0 server can read your traffic (it is end-to-end encrypted), the relay only ever sees ciphertext, and you can point torpedo at your own relay and discovery servers with `torpedo config set`. For how discovery and hole-punching actually work, the iroh blog is the best source ([iroh blog](https://www.iroh.computer/blog)); the general problem of NAT traversal is explained very well in Tailscale's writeup, which applies equally here ([How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)).
+
+### QUIC, the transport
+
+The actual bytes between peers ride on [QUIC](https://quicwg.org), a modern transport protocol that runs over UDP and was standardized as [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000). QUIC folds in TLS 1.3 encryption, multiplexed streams, and connection migration, which is why it suits a mesh where a peer's address can change mid-session. iroh uses QUIC (via the [Quinn](https://github.com/quinn-rs/quinn) implementation) for both the connection setup and the datagram tunnel, so every torpedo packet is encrypted in transit whether it travels directly or through a relay.
+
+### WireGuard, for comparison
+
+Torpedo does **not** use WireGuard — but Tailscale, the software torpedo is designed to coexist with, does, so it is worth understanding. [WireGuard](https://www.wireguard.com) is a VPN protocol by Jason Donenfeld, notable for being small, fast, and living in the Linux kernel. Where an older VPN like OpenVPN is large and configurable, WireGuard is deliberately minimal: a peer is a public key plus a set of allowed IPs, and the cryptography is fixed rather than negotiated. It is built on the [Noise Protocol Framework](https://noiseprotocol.org) and uses a fixed modern suite — Curve25519 for key exchange, ChaCha20-Poly1305 for encryption, BLAKE2s for hashing. The original design is described in a short, readable paper ([WireGuard whitepaper, PDF](https://www.wireguard.com/papers/wireguard.pdf)).
+
+The key contrast: plain WireGuard gives you the encrypted tunnel but leaves you to manage keys, addresses, and reachability by hand. Tailscale wraps WireGuard with a coordination and NAT-traversal layer to make that automatic ([How Tailscale works](https://tailscale.com/blog/how-tailscale-works)). iroh occupies the same "coordination and traversal" role for torpedo, but with QUIC as the transport instead of WireGuard. So torpedo and Tailscale solve the same problem with a similar shape and different cryptographic plumbing, which is precisely why running them side by side only requires that their overlay IP ranges not collide.
 
 ## Relationship to upstream & license
 
