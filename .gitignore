@@ -30,3 +30,7 @@ secrets/
 # Android Studio / IntelliJ project settings
 android/.idea/
 *.iml
+
+# Python bytecode (libspec specs)
+__pycache__/
+*.pyc
