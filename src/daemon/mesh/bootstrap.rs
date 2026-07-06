@@ -124,7 +124,7 @@ async fn build_daemon(
     token: CancellationToken,
     stats: Arc<ForwardMetrics>,
 ) -> Result<Arc<MeshManager>> {
-    // Relocate a pre-/etc config tree into /etc/rayfish (Linux upgrade path)
+    // Relocate a pre-/etc config tree into /etc/torpedo (Linux upgrade path)
     // before anything reads identity or config. No-op on macOS / once migrated.
     config::migrate_location();
 
@@ -189,7 +189,7 @@ async fn build_daemon(
     // creates the real device and calls `attach_tun`; on embedders (mobile) the
     // `VpnService` fd is attached the same way. `tun_name` starts as a placeholder
     // and is overwritten when a real interface is attached.
-    let tun_name = String::from("rayfish");
+    let tun_name = String::from("torpedo");
     // Append-only audit log of peer connect/disconnect events. If it can't be
     // opened (e.g. unwritable config dir) the daemon still runs without auditing.
     let peers = match audit::AuditLog::open() {
@@ -321,12 +321,12 @@ async fn build_daemon(
     Ok(daemon)
 }
 
-/// Advertise this endpoint over mDNS (`_rayfish._udp.local`) and log LAN peer
+/// Advertise this endpoint over mDNS (`_torpedo._udp.local`) and log LAN peer
 /// discovery events until cancellation. Non-fatal: a failure just means no
 /// local discovery.
 fn spawn_mdns_discovery(ep: &Endpoint, token: CancellationToken) {
     let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("rayfish")
+        .service_name("torpedo")
         .advertise(true)
         .build(ep.id())
     {
@@ -340,7 +340,7 @@ fn spawn_mdns_discovery(ep: &Endpoint, token: CancellationToken) {
         return;
     };
     lookups.add(mdns.clone());
-    tracing::info!("mDNS discovery enabled (advertising _rayfish._udp.local)");
+    tracing::info!("mDNS discovery enabled (advertising _torpedo._udp.local)");
 
     tokio::spawn(async move {
         use futures::StreamExt;

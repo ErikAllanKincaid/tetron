@@ -193,7 +193,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
             println!();
             println!(
                 "  {}  {}      {}{}      {} {}",
-                style::bold("rayfish"),
+                style::bold("torpedo"),
                 state,
                 mdns,
                 auto,

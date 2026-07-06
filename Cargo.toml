@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["vpn", "p2p", "mesh", "networking", "iroh"]
 categories = ["network-programming", "command-line-utilities"]
 
-# The repo root is both the `rayfish` package (binary `ray`) and the workspace
+# The repo root is both the `rayfish` package (binary `torpedo`) and the workspace
 # root. `ray-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
 members = ["ray-proto", "ray-mobile"]
@@ -25,7 +25,7 @@ members = ["ray-proto", "ray-mobile"]
 strip = "symbols"
 
 [[bin]]
-name = "ray"
+name = "torpedo"
 path = "src/main.rs"
 # The `ray` CLI/daemon binary is desktop-only: it drives the TUN device, the
 # embedded SSH server, 1Password backup, and self-replace update, none of which

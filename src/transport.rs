@@ -1,6 +1,6 @@
 //! iroh endpoint setup and peer connection management.
 //!
-//! Each network gets its own ALPN (`rayfish/net/<version>/<prefix>`) for isolation
+//! Each network gets its own ALPN (`torpedo/net/<version>/<prefix>`) for isolation
 //! and mesh-protocol version gating (see `MESH_PROTOCOL_VERSION`).
 //! A single shared iroh [`Endpoint`] handles all networks, filtering by ALPN on accept.
 
@@ -22,14 +22,14 @@ use std::sync::Arc;
 /// protocol** (`FileOffer`/blob handshake). iroh negotiates the ALPN at the QUIC
 /// handshake, so a peer on a different version shares no common ALPN and the
 /// transfer simply can't connect — the version gate needs no in-band check.
-pub const FILES_ALPN: &[u8] = b"rayfish/files/1";
+pub const FILES_ALPN: &[u8] = b"torpedo/files/1";
 
 /// Identity-level ALPN for the `ray connect` friend-request handshake. Unlike
 /// `network_alpn`, this is not per-network — it accepts connection requests
 /// addressed to this node's contact key. The trailing `/1` is its protocol
 /// version — **bump it on any breaking change to the `ConnectMsg` handshake**;
 /// peers on different versions can't negotiate a connection (transport-enforced).
-pub const CONNECT_ALPN: &[u8] = b"rayfish/connect/1";
+pub const CONNECT_ALPN: &[u8] = b"torpedo/connect/1";
 
 /// Fixed UDP port the endpoint binds so users can port-forward a stable, known
 /// port for guaranteed direct reachability (Tailscale-style). Unlike an ephemeral
@@ -51,7 +51,7 @@ pub const MESH_PROTOCOL_VERSION: u32 = 1;
 pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
     let full = network_pubkey.to_string();
     let prefix = &full[..full.len().min(16)];
-    format!("rayfish/net/{MESH_PROTOCOL_VERSION}/{prefix}").into_bytes()
+    format!("torpedo/net/{MESH_PROTOCOL_VERSION}/{prefix}").into_bytes()
 }
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
@@ -241,7 +241,7 @@ pub async fn connect_to_peer_with_alpn(
         Err(e) if is_alpn_mismatch(&e.to_string()) => {
             return Err(e).context(
                 "no shared protocol with peer — it may be running an incompatible \
-                 rayfish version (run `ray update`)",
+                 torpedo version (run `torpedo update`)",
             );
         }
         Err(e) => return Err(e).context("failed to connect to peer"),
@@ -273,7 +273,7 @@ mod tests {
         let key = SecretKey::generate().public();
         let alpn = network_alpn(&key);
         let key_str = key.to_string();
-        let expected = format!("rayfish/net/{MESH_PROTOCOL_VERSION}/{}", &key_str[..16]);
+        let expected = format!("torpedo/net/{MESH_PROTOCOL_VERSION}/{}", &key_str[..16]);
         assert_eq!(alpn, expected.as_bytes());
     }
 

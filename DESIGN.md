@@ -102,5 +102,54 @@ allowed `100.64.0.0/10` substring. CON-002 stays green.
 
 ## Rename (RENAME-001..004)
 
-Per §4.1, leaving §4.2 (relay preset, cosmetic metric/trace labels) untouched.
-Details tracked in the RENAME-* requirements and verified against the diff.
+Renamed (this fork's own identity):
+
+- **Binary** `ray` -> `torpedo`: `Cargo.toml` `[[bin]]`, the clap `name = "ray"`
+  (what `--help` shows), and the systemd `ExecStart` path (RENAME-001).
+- **systemd service** `rayfish.service` -> `torpedo.service` (file renamed) and
+  every `systemctl`/`journalctl` unit reference, in `cli/service.rs`,
+  `cli/update.rs`, `update.rs` (RENAME-002).
+- **Paths / group** `/etc/rayfish` -> `/etc/torpedo`, `/var/log/rayfish` ->
+  `/var/log/torpedo`, socket `/var/run/rayfish/rayfish.sock` ->
+  `/var/run/torpedo/torpedo.sock`, log-file prefix `rayfish.log` ->
+  `torpedo.log` (and the log-collector predicate that matches it), unix group
+  `rayfish` -> `torpedo`, TUN device name, and the pre-`/etc` migration
+  **repointed** to the fork's own `~/.config/torpedo` (so it never relocates a
+  real rayfish install's config tree) (RENAME-003).
+
+### Extension — RENAME-004 covers ALL wire identifiers, not just the net ALPN
+
+The requirement's stated goal is that "this fork's wire traffic can never be
+confused with genuine rayfish traffic." The proposal table listed only the
+per-network ALPN, but that goal is only met if every wire-level identifier
+changes. So `rayfish` -> `torpedo` was applied to: the mesh ALPN
+(`torpedo/net/...`), the files/connect/pair ALPNs, the pkarr **DHT record
+names** (`_rayfish*` -> `_torpedo*`), and the **mDNS** service name
+(`_rayfish._udp.local` -> `_torpedo._udp.local`). The `transport.rs` ALPN test
+was updated to match.
+
+### Deliberately NOT renamed (would break a feature or is out of scope)
+
+- **Cargo package/lib name `rayfish`** — the crate is still named `rayfish`;
+  `main.rs`/`cli` reach the lib via `use rayfish::...` and the tracing filter
+  keys on the `rayfish` crate name. Renaming the package is invasive and
+  invisible to users. (Only the *binary* is `torpedo`.)
+- **Relay/discovery preset `"rayfish"`** and its URLs (`relay.iroh.rayfish.xyz`,
+  `config.rs`) — upstream's own hosted infrastructure (CON-001, §4.2).
+- **`update::REPO_SLUG = "rayfish/rayfish"`** and the "rayfish release" messages
+  — the auto-updater fetches from upstream's GitHub releases. Renaming would
+  break it (external infra, same class as the relay preset). CAVEAT: do NOT
+  enable auto-update on this fork — it would fetch and install an upstream
+  rayfish binary over `torpedo`.
+- **`rayfish://` deep-link scheme** (`deeplink.rs`) — only *parsed* (input),
+  never generated/displayed; renaming touches the parser, many tests, and OS
+  URI registration for no wire/functional benefit.
+- **`dns_config.rs` resolv.conf markers** (`# Added by rayfish`, `tun-rayfish`,
+  `rayfish-dns.conf`, `.before-rayfish`) — the tool's own Linux DNS-management
+  markers; internally consistent (write and check both say `rayfish`) and out of
+  the proposal's listed scope. Not wire traffic; left as-is.
+- **OpenTelemetry service name / metrics labels** (`stats.rs`, `main.rs`) —
+  §4.2 optional, cosmetic, no functional effect.
+- **macOS** service/plist/SCDynamicStore identifiers (`com.rayfish.vpn`, etc.) —
+  out of scope (Linux-only fork).
+- Descriptive doc-comments that mention rayfish as the upstream project.

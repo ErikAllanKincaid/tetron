@@ -4,15 +4,15 @@ use crate::*;
 
 pub(crate) async fn cmd_pair(action: Option<PairAction>, ticket: Option<String>) -> Result<()> {
     match (action, ticket) {
-        // `rayfish pair <ticket>` shorthand
+        // `torpedo pair <ticket>` shorthand
         (None, Some(ticket)) | (Some(PairAction::Accept { ticket }), _) => {
             ipc_pair_accept(&ticket).await
         }
-        // `rayfish pair list`
+        // `torpedo pair list`
         (Some(PairAction::List), _) => ipc_pair_list().await,
-        // `rayfish pair` — start pairing on primary device
+        // `torpedo pair` — start pairing on primary device
         (None, None) => ipc_pair_start().await,
-        // `rayfish pair backup`
+        // `torpedo pair backup`
         (
             Some(PairAction::Backup {
                 onepassword,
@@ -21,7 +21,7 @@ pub(crate) async fn cmd_pair(action: Option<PairAction>, ticket: Option<String>)
             }),
             _,
         ) => cmd_pair_backup(onepassword, vault.as_deref(), &item),
-        // `rayfish pair restore <backup>`
+        // `torpedo pair restore <backup>`
         (
             Some(PairAction::Restore {
                 backup,
@@ -45,7 +45,7 @@ pub(crate) async fn ipc_pair_start() -> Result<()> {
             qr2term::print_qr(&ticket).ok();
             println!();
             println!("On the other device, run:");
-            println!("  rayfish pair {}", ticket);
+            println!("  torpedo pair {}", ticket);
             println!();
             println!("Waiting for device to connect...");
             // The daemon handles the pairing asynchronously via the accept loop.
@@ -207,14 +207,14 @@ pub(crate) fn cmd_pair_backup(onepassword: bool, vault: Option<&str>, item: &str
         println!("Stored encrypted backup in 1Password item \"{}\".", item);
         println!();
         println!("To restore on a new device:");
-        println!("  rayfish pair restore --1password");
+        println!("  torpedo pair restore --1password");
         return Ok(());
     }
 
     println!("Backup code: {}", backup);
     println!();
     println!("Store this safely. To restore on a new device:");
-    println!("  rayfish pair restore {}", backup);
+    println!("  torpedo pair restore {}", backup);
     Ok(())
 }
 
@@ -276,7 +276,7 @@ pub(crate) fn cmd_pair_restore(
         return Ok(());
     }
 
-    // Write the restored key into the shared config tree (Linux: /etc/rayfish,
+    // Write the restored key into the shared config tree (Linux: /etc/torpedo,
     // root-owned — this command may need sudo there).
     let key_path = config::config_dir()?.join("secret_key");
     config::write_file(&key_path, &key.to_bytes(), true)?;

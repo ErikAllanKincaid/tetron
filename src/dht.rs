@@ -11,7 +11,7 @@ use iroh::{
 use iroh_dns::pkarr::SignedPacket;
 use url::Url;
 
-const RECORD_NAME: &str = "_rayfish";
+const RECORD_NAME: &str = "_torpedo";
 const RECORD_VERSION: &str = "v1";
 const RECORD_TTL: u32 = 300;
 const PKARR_RELAY_URL: &str = "https://dns.iroh.link/pkarr";
@@ -43,7 +43,7 @@ pub fn effective_pkarr_url() -> String {
 /// pkarr record name for a user's contact key (`ray connect`). Published under
 /// the contact key, it maps the contact id to the user's current transport
 /// EndpointId so a peer can dial them without knowing the transport id.
-const CONTACT_RECORD_NAME: &str = "_rayfish_contact";
+const CONTACT_RECORD_NAME: &str = "_torpedo_contact";
 
 /// pkarr record name for a user's device-cert **generation floor** (`ray unpair`
 /// / rotation). Published under the user's own key (the identity that signs
@@ -51,7 +51,7 @@ const CONTACT_RECORD_NAME: &str = "_rayfish_contact";
 /// `DeviceCert` resolves this record for `cert.user_identity` and rejects the
 /// cert if `cert.generation` is below the floor. Because the pkarr address *is*
 /// the user public key, the record is self-authenticating and cannot be forged.
-const CERT_FLOOR_RECORD_NAME: &str = "_rayfish_certgen";
+const CERT_FLOOR_RECORD_NAME: &str = "_torpedo_certgen";
 
 // ---------------------------------------------------------------------------
 // Pkarr client
@@ -366,7 +366,7 @@ mod tests {
         let key = SecretKey::generate();
         let hash = blake3::hash(b"test");
         let packet = encode_network_record(&key, &hash, &[]).unwrap();
-        let records = packet.txt_records("_rayfish");
+        let records = packet.txt_records("_torpedo");
         assert_eq!(records[0], "v1");
     }
 
@@ -374,7 +374,7 @@ mod tests {
     fn decode_rejects_unknown_version() {
         let key = SecretKey::generate();
         let values = vec!["v99".to_string()];
-        let packet = SignedPacket::from_txt_strings(&key, "_rayfish", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_torpedo", values, 300).unwrap();
         let result = decode_network_record(&packet);
         assert!(result.is_err());
         assert!(
@@ -480,7 +480,7 @@ mod tests {
         let key = SecretKey::generate();
         let peer = SecretKey::generate().public();
         let values = vec!["v1".to_string(), format!("p,{peer}")];
-        let packet = SignedPacket::from_txt_strings(&key, "_rayfish", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_torpedo", values, 300).unwrap();
         let result = decode_network_record(&packet);
         assert!(result.is_err());
         assert!(

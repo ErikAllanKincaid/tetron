@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
-/// Directory where the daemon writes rolling daily log files (`rayfish.log.*`).
+/// Directory where the daemon writes rolling daily log files (`torpedo.log.*`).
 ///
-/// Linux uses the conventional `/var/log/rayfish`; macOS uses `/Library/Logs/rayfish`
+/// Linux uses the conventional `/var/log/torpedo`; macOS uses `/Library/Logs/torpedo`
 /// (visible in Console.app). Other platforms fall back to the user config dir.
 ///
 /// The appender retains the 7 most recent daily files (see `main::init_tracing`),
@@ -15,17 +15,17 @@ use std::path::PathBuf;
 pub fn log_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
-        PathBuf::from("/var/log/rayfish")
+        PathBuf::from("/var/log/torpedo")
     }
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from("/Library/Logs/rayfish")
+        PathBuf::from("/Library/Logs/torpedo")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("rayfish")
+            .join("torpedo")
             .join("logs")
     }
 }

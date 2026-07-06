@@ -397,7 +397,7 @@ pub(crate) async fn wait_for_daemon(timeout: Duration) -> Option<ipc::IpcFramed>
 pub(crate) fn print_daemon_log_tail() {
     #[cfg(target_os = "macos")]
     {
-        let path = "/var/log/rayfish.log";
+        let path = "/var/log/torpedo.log";
         match std::fs::read_to_string(path) {
             Ok(contents) => {
                 let tail: Vec<&str> = contents.lines().rev().take(15).collect();
@@ -416,8 +416,8 @@ pub(crate) fn print_daemon_log_tail() {
 
     #[cfg(target_os = "linux")]
     {
-        eprintln!("\nRecent daemon log (journalctl -u rayfish):");
-        run_cmd("journalctl", &["-u", "rayfish", "-n", "15", "--no-pager"]);
+        eprintln!("\nRecent daemon log (journalctl -u torpedo):");
+        run_cmd("journalctl", &["-u", "torpedo", "-n", "15", "--no-pager"]);
     }
 }
 
@@ -443,9 +443,9 @@ pub(crate) fn run_cmd_quiet(program: &str, args: &[&str]) {
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let path = Path::new("/etc/systemd/system/rayfish.service");
+        let path = Path::new("/etc/systemd/system/torpedo.service");
         if path.exists() {
-            run_cmd("systemctl", &["disable", "--now", "rayfish"]);
+            run_cmd("systemctl", &["disable", "--now", "torpedo"]);
             std::fs::remove_file(path)?;
             run_cmd("systemctl", &["daemon-reload"]);
             println!("Removed systemd service.");

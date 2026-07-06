@@ -1,4 +1,4 @@
-//! Persistent Ed25519 identity stored at `~/.config/rayfish/secret_key`.
+//! Persistent Ed25519 identity stored at `~/.config/torpedo/secret_key`.
 //!
 //! The same keypair is used across restarts, giving each node a stable
 //! [`EndpointId`](iroh::EndpointId) and deterministic virtual IP.

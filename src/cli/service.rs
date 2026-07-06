@@ -5,34 +5,34 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
-/// Create the `rayfish` system group if it doesn't already exist (Linux).
+/// Create the `torpedo` system group if it doesn't already exist (Linux).
 /// Best-effort: the daemon's config writer falls back to `root:root` ownership
 /// when the group is missing, so a failure here only loosens the group-read
 /// posture, never breaks startup.
 #[cfg(target_os = "linux")]
-pub(crate) fn ensure_rayfish_group() {
-    // `getent group rayfish` exits 0 if the group exists.
+pub(crate) fn ensure_torpedo_group() {
+    // `getent group torpedo` exits 0 if the group exists.
     let exists = Command::new("getent")
-        .args(["group", "rayfish"])
+        .args(["group", "torpedo"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !exists {
         let _ = Command::new("groupadd")
-            .args(["--system", "rayfish"])
+            .args(["--system", "torpedo"])
             .status();
     }
 }
 
 /// Write the system service unit/plist, substituting the path of the binary
 /// currently running so the service execs the same `ray` the user invoked
-/// (rather than a hardcoded /usr/local/bin/ray). Idempotent — safe to call on
-/// every `ray up`, keeping the exec path fresh if the binary moves.
+/// (rather than a hardcoded /usr/local/bin/torpedo). Idempotent — safe to call on
+/// every `torpedo up`, keeping the exec path fresh if the binary moves.
 /// Strip the `" (deleted)"` marker Linux appends to `/proc/self/exe` once the
-/// running binary's inode has been unlinked. `ray update` calls `self_replace`,
+/// running binary's inode has been unlinked. `torpedo update` calls `self_replace`,
 /// which unlinks the running binary, and *then* rewrites the service unit from
 /// the running exe path. Without this strip the unit would get
-/// `ExecStart=/usr/local/bin/ray (deleted) daemon` and the service would
+/// `ExecStart=/usr/local/bin/torpedo (deleted) daemon` and the service would
 /// crash-loop with `unrecognized subcommand '(deleted)'`, bricking remote
 /// self-update.
 pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
@@ -49,14 +49,14 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        // Ensure the `rayfish` system group exists before the daemon writes its
-        // config tree under /etc/rayfish (owned root:rayfish). Idempotent;
+        // Ensure the `torpedo` system group exists before the daemon writes its
+        // config tree under /etc/torpedo (owned root:torpedo). Idempotent;
         // best-effort — the daemon falls back to root:root if the group is
         // absent (see config::set_owner).
-        ensure_rayfish_group();
-        let path = Path::new("/etc/systemd/system/rayfish.service");
+        ensure_torpedo_group();
+        let path = Path::new("/etc/systemd/system/torpedo.service");
         let service =
-            include_str!("../../contrib/rayfish.service").replace("/usr/local/bin/ray", &exe);
+            include_str!("../../contrib/torpedo.service").replace("/usr/local/bin/torpedo", &exe);
         std::fs::write(path, service)
             .with_context(|| format!("failed to write {}", path.display()))?;
         run_cmd("systemctl", &["daemon-reload"]);
@@ -79,7 +79,7 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
     }
 }
 
-/// `ray up`: activate the VPN.
+/// `torpedo up`: activate the VPN.
 ///
 /// If the daemon is already running (the common case — the system service
 /// starts it at boot), this is just an unprivileged IPC call asking the daemon
@@ -100,7 +100,7 @@ pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
     // No daemon reachable — install and start the system service (needs root).
     if unsafe { libc::geteuid() } != 0 {
         eprintln!(
-            "rayfish service is not running. Start it with: sudo ray up\n\
+            "torpedo service is not running. Start it with: sudo torpedo up\n\
              (the daemon needs root to install the system service and create the TUN device)"
         );
         std::process::exit(1);
@@ -114,14 +114,14 @@ pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
 /// the daemon to actually accept an IPC connection before declaring success. If
 /// it never comes up (e.g. it crashed on a port/route conflict with another
 /// VPN), we surface the tail of its log so the user knows what went wrong
-/// instead of seeing a cheerful "started" followed by a dead `ray status`.
+/// instead of seeing a cheerful "started" followed by a dead `torpedo status`.
 pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Result<()> {
     ensure_service_installed()?;
 
     #[cfg(target_os = "linux")]
     {
-        run_cmd("systemctl", &["enable", "rayfish"]);
-        run_cmd("systemctl", &["restart", "rayfish"]);
+        run_cmd("systemctl", &["enable", "torpedo"]);
+        run_cmd("systemctl", &["restart", "torpedo"]);
     }
 
     #[cfg(target_os = "macos")]
@@ -146,7 +146,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         Some(mut stream) => {
             ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
             match ipc::recv(&mut stream).await? {
-                ipc::IpcMessage::Ok { message } => println!("rayfish service started. {message}"),
+                ipc::IpcMessage::Ok { message } => println!("torpedo service started. {message}"),
                 ipc::IpcMessage::Error { message } => print_error("error", &message, None),
                 other => eprintln!("Unexpected response: {other:?}"),
             }
@@ -158,7 +158,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         }
         None => {
             eprintln!(
-                "rayfish service was started but the daemon never became reachable.\n\
+                "torpedo service was started but the daemon never became reachable.\n\
                  It likely crashed on startup — a common cause is another VPN (e.g. Tailscale)\n\
                  already using the 100.64.0.0/10 range, DNS port 53, or a conflicting route."
             );
@@ -184,7 +184,7 @@ pub(crate) async fn grant_operator_to_invoking_user() {
     if let Ok(mut stream) = ipc::connect().await {
         let _ = ipc::send(&mut stream, ipc::IpcMessage::SetOperator { uid }).await;
         if let Ok(ipc::IpcMessage::Ok { .. }) = ipc::recv(&mut stream).await {
-            println!("granted operator access to '{user}' — run ray without sudo");
+            println!("granted operator access to '{user}' — run torpedo without sudo");
         }
     }
 }
@@ -202,7 +202,7 @@ pub(crate) fn require_root() -> Result<()> {
     Ok(())
 }
 
-/// `ray install`: install the system service if needed (or refresh an existing
+/// `torpedo install`: install the system service if needed (or refresh an existing
 /// install), then start it and verify the daemon comes up. Requires root.
 ///
 /// `--auto-update` opts this node into automatic stable updates: it is persisted
@@ -225,7 +225,7 @@ pub(crate) async fn cmd_install(auto_update: bool) -> Result<()> {
 pub(crate) fn service_unit_exists() -> bool {
     #[cfg(target_os = "linux")]
     {
-        return Path::new("/etc/systemd/system/rayfish.service").exists();
+        return Path::new("/etc/systemd/system/torpedo.service").exists();
     }
     #[cfg(target_os = "macos")]
     {
@@ -237,11 +237,11 @@ pub(crate) fn service_unit_exists() -> bool {
 
 /// Restart the installed service via the OS service manager (without rewriting
 /// the unit file) and wait for the daemon to accept IPC again. Shared by
-/// `ray restart` and `ray update`; mirrors the `up`/`install` diagnostics.
+/// `torpedo restart` and `torpedo update`; mirrors the `up`/`install` diagnostics.
 #[allow(unreachable_code)]
 pub(crate) async fn restart_service_and_wait() -> Result<()> {
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["restart", "rayfish"]);
+    run_cmd("systemctl", &["restart", "torpedo"]);
 
     #[cfg(target_os = "macos")]
     run_cmd("launchctl", &["kickstart", "-k", "system/com.rayfish.vpn"]);
@@ -251,42 +251,42 @@ pub(crate) async fn restart_service_and_wait() -> Result<()> {
 
     match wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await {
         Some(_) => {
-            println!("rayfish service restarted.");
+            println!("torpedo service restarted.");
             Ok(())
         }
         None => {
-            eprintln!("rayfish service was restarted but the daemon never became reachable.");
+            eprintln!("torpedo service was restarted but the daemon never became reachable.");
             print_daemon_log_tail();
             std::process::exit(1);
         }
     }
 }
 
-/// `ray restart`: restart the already-installed system service via the OS
+/// `torpedo restart`: restart the already-installed system service via the OS
 /// service manager (does not rewrite the unit file). Requires root. The daemon
 /// comes back up active.
 pub(crate) async fn cmd_restart() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("rayfish service is not installed. Run: sudo ray up");
+        eprintln!("torpedo service is not installed. Run: sudo torpedo up");
         std::process::exit(1);
     }
     restart_service_and_wait().await
 }
 
-/// `ray stop`: stop the installed system service so the daemon exits and all
-/// peer connections close cleanly (a clean offline, distinct from `ray down`
+/// `torpedo stop`: stop the installed system service so the daemon exits and all
+/// peer connections close cleanly (a clean offline, distinct from `torpedo down`
 /// standby). Does not disable or uninstall the unit. Requires root.
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_stop() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("rayfish service is not installed. Nothing to stop.");
+        eprintln!("torpedo service is not installed. Nothing to stop.");
         std::process::exit(1);
     }
 
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["stop", "rayfish"]);
+    run_cmd("systemctl", &["stop", "torpedo"]);
 
     #[cfg(target_os = "macos")]
     run_cmd(
@@ -297,23 +297,23 @@ pub(crate) async fn cmd_stop() -> Result<()> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("system service not supported on this platform");
 
-    println!("rayfish service stopped.");
+    println!("torpedo service stopped.");
     Ok(())
 }
 
-/// `ray start`: start the already-installed system service via the OS service
+/// `torpedo start`: start the already-installed system service via the OS service
 /// manager and wait for the daemon to accept IPC. The daemon comes back up with
 /// the control and data planes on. Requires root.
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_start() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("rayfish service is not installed. Run: sudo ray up");
+        eprintln!("torpedo service is not installed. Run: sudo torpedo up");
         std::process::exit(1);
     }
 
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["start", "rayfish"]);
+    run_cmd("systemctl", &["start", "torpedo"]);
 
     #[cfg(target_os = "macos")]
     run_cmd(
@@ -326,11 +326,11 @@ pub(crate) async fn cmd_start() -> Result<()> {
 
     match wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await {
         Some(_) => {
-            println!("rayfish service started.");
+            println!("torpedo service started.");
             Ok(())
         }
         None => {
-            eprintln!("rayfish service was started but the daemon never became reachable.");
+            eprintln!("torpedo service was started but the daemon never became reachable.");
             print_daemon_log_tail();
             std::process::exit(1);
         }

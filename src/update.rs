@@ -228,12 +228,12 @@ pub fn should_attempt_target(
     }
 }
 
-/// Trigger a restart of the installed rayfish service from *inside* the daemon,
+/// Trigger a restart of the installed torpedo service from *inside* the daemon,
 /// without waiting (the daemon is the process being restarted, so it can't wait
 /// for itself). Fire-and-forget and detached.
 ///
 /// On Linux the restart runs in a transient `systemd-run --scope` unit so it is
-/// **outside** `rayfish.service`'s cgroup: the service teardown
+/// **outside** `torpedo.service`'s cgroup: the service teardown
 /// (`KillMode=control-group`) can't kill this client before it enqueues the
 /// restart job with PID 1. On macOS `launchctl kickstart -k` asks launchd to do
 /// the kill+relaunch, so the client only submits the request and no in-cgroup
@@ -242,7 +242,7 @@ pub fn trigger_detached_restart() {
     #[cfg(target_os = "linux")]
     let mut cmd = {
         let mut c = Command::new("systemd-run");
-        c.args(["--scope", "systemctl", "restart", "rayfish"]);
+        c.args(["--scope", "systemctl", "restart", "torpedo"]);
         c
     };
     #[cfg(target_os = "macos")]

@@ -75,7 +75,7 @@ pub struct PairNetwork {
     pub network_key: String,
 }
 
-/// Messages for the device pairing protocol (ALPN `rayfish/pair/1`).
+/// Messages for the device pairing protocol (ALPN `torpedo/pair/1`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PairMsg {
     Request {
@@ -90,7 +90,7 @@ pub enum PairMsg {
 }
 
 /// Messages for the `ray connect` friend-request handshake (ALPN
-/// `rayfish/connect/1`). The initiator (A) dials the recipient's (B) contact
+/// `torpedo/connect/1`). The initiator (A) dials the recipient's (B) contact
 /// key, sends `Request`, and polls until `Approved`. Approval is recipient-only:
 /// only B acts, A just waits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

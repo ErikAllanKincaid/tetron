@@ -1,4 +1,4 @@
-//! CLI handler for `ray open <uri>`: dispatches a `rayfish://` deep link to
+//! CLI handler for `torpedo open <uri>`: dispatches a `rayfish://` deep link to
 //! the same join/pair paths the plain `ray join`/`ray pair` subcommands use.
 
 use crate::*;

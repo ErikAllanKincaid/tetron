@@ -1,11 +1,11 @@
 [Unit]
-Description=rayfish P2P mesh VPN
+Description=torpedo P2P mesh VPN
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ray daemon
+ExecStart=/usr/local/bin/torpedo daemon
 Restart=on-failure
 RestartSec=5
 

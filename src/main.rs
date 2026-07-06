@@ -22,12 +22,12 @@ use cli::*;
 
 /// Full version string: the crate version plus the git short SHA stamped in by
 /// `build.rs` (e.g. `0.1.0 (abc12345)`). The SHA distinguishes nightly builds
-/// that share a crate version, and is what a tester quotes in a `ray report`.
+/// that share a crate version, and is what a tester quotes in a `torpedo report`.
 const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GIT_SHA"), ")");
 
 #[derive(Parser)]
 #[command(
-    name = "ray",
+    name = "torpedo",
     about = "P2P mesh VPN powered by iroh",
     version = FULL_VERSION
 )]
@@ -90,11 +90,11 @@ pub(crate) enum Command {
         tor: bool,
         /// Auto-install coordinator-suggested firewall rules on this network
         /// without a manual review queue (managed node, e.g. a server). Without
-        /// it, suggestions queue for `ray firewall accept`.
+        /// it, suggestions queue for `torpedo firewall accept`.
         #[arg(long)]
         auto_accept_firewall: bool,
         /// Auto-accept incoming file transfers from your own paired devices on
-        /// this network (no manual `ray files accept`). Only offers whose sender
+        /// this network (no manual `torpedo files accept`). Only offers whose sender
         /// is one of your own devices are accepted.
         #[arg(long)]
         auto_accept_files: bool,
@@ -182,32 +182,32 @@ pub(crate) enum Command {
     Accept {
         /// Network name
         network: String,
-        /// Short id of the pending peer (from `ray requests`)
+        /// Short id of the pending peer (from `torpedo requests`)
         id: String,
     },
     /// Reject a peer waiting for approval (coordinator only)
     Deny {
         /// Network name
         network: String,
-        /// Short id of the pending peer (from `ray requests`)
+        /// Short id of the pending peer (from `torpedo requests`)
         id: String,
     },
     /// Request a direct 2-peer connection to someone by their contact id. They
-    /// approve it with `ray connections approve`, forming a private 2-peer
+    /// approve it with `torpedo connections approve`, forming a private 2-peer
     /// network — no room id or invite code needed.
     Connect {
-        /// The peer's contact id (from their `ray contact id` / `ray status`)
+        /// The peer's contact id (from their `torpedo contact id` / `torpedo status`)
         contact_id: String,
         /// Your hostname on the resulting network (defaults to your set name)
         #[arg(long)]
         hostname: Option<String>,
     },
-    /// Review and approve incoming direct-connection requests (`ray connect`)
+    /// Review and approve incoming direct-connection requests (`torpedo connect`)
     Connections {
         #[command(subcommand)]
         action: Option<ConnectionsAction>,
     },
-    /// Show or rotate your contact id (shared so others can `ray connect` you)
+    /// Show or rotate your contact id (shared so others can `torpedo connect` you)
     Contact {
         #[command(subcommand)]
         action: Option<ContactAction>,
@@ -238,8 +238,8 @@ pub(crate) enum Command {
         action: AdminAction,
     },
     /// Manage local, per-network aliases (a friendly name for a user identity).
-    /// Node-local and display-only: shown inline in `ray status` and used to seed
-    /// a `ray apply` spec's `aliases:` map. Never published to the network.
+    /// Node-local and display-only: shown inline in `torpedo status` and used to seed
+    /// a `torpedo apply` spec's `aliases:` map. Never published to the network.
     Alias {
         /// Network name
         network: String,
@@ -255,7 +255,7 @@ pub(crate) enum Command {
     /// missing trusted networks, publishes idempotent firewall suggestions, and
     /// reports the membership gap (expected vs joined hosts). Never joins.
     Apply {
-        /// Path to a TOML spec file (see `ray apply --example`).
+        /// Path to a TOML spec file (see `torpedo apply --example`).
         spec: Option<String>,
         /// Drop suggested-firewall subjects that are no longer in the spec.
         #[arg(long)]
@@ -279,7 +279,7 @@ pub(crate) enum Command {
         /// New hostname (e.g. "alice" → alice.network.ray)
         name: String,
     },
-    /// Print a host's identity string (the value to paste into a `ray apply`
+    /// Print a host's identity string (the value to paste into a `torpedo apply`
     /// spec's `aliases:` map). Resolves to the user identity if the device is
     /// paired, else the device's transport identity.
     #[command(visible_alias = "whois")]
@@ -326,13 +326,13 @@ pub(crate) enum Command {
     Pair {
         #[command(subcommand)]
         action: Option<PairAction>,
-        /// Pairing ticket from the primary device (shorthand for `rayfish pair accept <ticket>`)
+        /// Pairing ticket from the primary device (shorthand for `torpedo pair accept <ticket>`)
         ticket: Option<String>,
     },
     /// Revoke a paired device: invalidate its certificate mesh-wide (primary only)
     Unpair {
         /// Device to revoke: hostname, mesh IP, short id, or full endpoint id
-        /// (see `ray pair list`)
+        /// (see `torpedo pair list`)
         device: String,
     },
     /// Handle a rayfish:// deep link (join or pair)
@@ -340,10 +340,10 @@ pub(crate) enum Command {
         /// The rayfish:// URI, e.g. rayfish://join/<code> or rayfish://pair/<ticket>
         uri: String,
     },
-    /// Print the rayfish version
+    /// Print the torpedo version
     #[command(visible_alias = "ver")]
     Version,
-    /// Update rayfish to the latest GitHub release
+    /// Update torpedo to the latest GitHub release
     #[command(visible_alias = "upgrade")]
     Update {
         /// Reinstall even if already on the latest version
@@ -379,9 +379,9 @@ pub(crate) enum InviteAction {
         #[arg(long, conflicts_with = "reusable")]
         hostname: Option<String>,
         /// Mint a reusable (multi-use, expiring) key that rides the signed blob,
-        /// so any network-key holder can admit. Ideal for `ray join <key>
+        /// so any network-key holder can admit. Ideal for `torpedo join <key>
         /// --hostname <h> --auto-accept-firewall` in deploy scripts. Revoke with
-        /// `ray invite <net> revoke <id>`.
+        /// `torpedo invite <net> revoke <id>`.
         #[arg(long)]
         reusable: bool,
         /// Also render the invite as a scannable QR code (off by default — it
@@ -395,7 +395,7 @@ pub(crate) enum InviteAction {
     /// Revoke an unused invite by id
     #[command(visible_alias = "rm")]
     Revoke {
-        /// Invite id (from `ray invite <network> list`)
+        /// Invite id (from `torpedo invite <network> list`)
         id: String,
     },
 }
@@ -442,7 +442,7 @@ pub(crate) enum PairAction {
 pub(crate) enum AdminAction {
     /// Grant the network key to a member (coordinator only)
     Add {
-        /// Short id of the member to promote (from `ray status`)
+        /// Short id of the member to promote (from `torpedo status`)
         identity: String,
     },
     /// List this network's key-holders (the local node + granted members)
@@ -479,7 +479,7 @@ pub(crate) enum ConnectionsAction {
     /// Approve a pending request, forming the direct 2-peer network
     #[command(visible_alias = "ok")]
     Approve {
-        /// Short id of the requester (from `ray connections`)
+        /// Short id of the requester (from `torpedo connections`)
         id: String,
     },
 }
@@ -573,14 +573,14 @@ pub(crate) enum FirewallAction {
         state: String,
     },
     /// Turn the firewall back on (resume enforcing rules and defaults). Undoes
-    /// `ray firewall off`.
+    /// `torpedo firewall off`.
     #[command(visible_alias = "enable")]
     On,
     /// Disable the firewall entirely on this device: every packet is allowed,
     /// bypassing all rules and defaults (mesh membership still gates who can reach
     /// you; the anti-spoof check still runs). For simple setups that don't want a
     /// second firewall on top of the host/kernel one. Re-enable with
-    /// `ray firewall on`.
+    /// `torpedo firewall on`.
     #[command(visible_alias = "disable")]
     Off,
     /// Coordinator-only: suggest firewall rules for a subject host on a network.
@@ -677,7 +677,7 @@ pub(crate) enum SshAction {
 pub(crate) enum FilesAction {
     /// Accept a pending file transfer
     Accept {
-        /// Transfer ID (from 'rayfish files')
+        /// Transfer ID (from 'torpedo files')
         id: u64,
         /// Output directory (default: ~/Downloads)
         #[arg(long, short)]
@@ -714,7 +714,7 @@ pub(crate) enum FilesAction {
 
 fn check_root() {
     if unsafe { libc::geteuid() } != 0 {
-        eprintln!("rayfish requires root privileges to create TUN devices. Run with sudo.");
+        eprintln!("torpedo requires root privileges to create TUN devices. Run with sudo.");
         std::process::exit(1);
     }
 }
@@ -740,7 +740,7 @@ impl Drop for LogGuard {
 
 /// Build the tracing subscriber. The console layer (stdout) is always present;
 /// the daemon additionally gets a rolling daily file layer under [`logdir::log_dir`]
-/// so that `ray report` has on-disk logs to bundle. With the `otel` feature and an
+/// so that `torpedo report` has on-disk logs to bundle. With the `otel` feature and an
 /// OTLP endpoint configured, spans are also exported to an OpenTelemetry collector.
 /// The returned [`LogGuard`] must be kept alive for the lifetime of the process.
 fn init_tracing(to_file: bool) -> LogGuard {
@@ -768,7 +768,7 @@ fn init_tracing(to_file: bool) -> LogGuard {
                 // than ~a week are pruned automatically (bounds disk usage).
                 match tracing_appender::rolling::Builder::new()
                     .rotation(tracing_appender::rolling::Rotation::DAILY)
-                    .filename_prefix("rayfish.log")
+                    .filename_prefix("torpedo.log")
                     .max_log_files(7)
                     .build(logdir::log_dir())
                 {
@@ -877,7 +877,7 @@ fn build_otel_layer(_guard: &mut LogGuard) -> Option<tracing_subscriber::layer::
 /// a dead subsystem (e.g. a stalled forwarding loop) is worse than a clean restart —
 /// and a live-but-broken process won't trip the service manager's restart. Aborting
 /// lets systemd/launchd restart from known-good state; peers then reconnect. The
-/// crash is captured (durably in `panic.log`) and bundled by `ray report`.
+/// crash is captured (durably in `panic.log`) and bundled by `torpedo report`.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1080,7 +1080,7 @@ fn cmd_mdns(state: &str) -> Result<()> {
         "on" => true,
         "off" => false,
         _ => {
-            eprintln!("Usage: rayfish mdns <on|off>");
+            eprintln!("Usage: torpedo mdns <on|off>");
             std::process::exit(1);
         }
     };
@@ -1094,7 +1094,7 @@ fn cmd_mdns(state: &str) -> Result<()> {
     Ok(())
 }
 
-/// `ray auto-update on|off`: toggle opt-in automatic stable updates. Writes
+/// `torpedo auto-update on|off`: toggle opt-in automatic stable updates. Writes
 /// `settings.toml` directly (like `cmd_mdns`); the daemon reads it at startup, so
 /// the change takes effect on the next daemon restart.
 fn cmd_auto_update(state: &str) -> Result<()> {
@@ -1116,7 +1116,7 @@ fn cmd_auto_update(state: &str) -> Result<()> {
     Ok(())
 }
 
-/// `ray config get/set/unset`: view or change global daemon settings. Writes
+/// `torpedo config get/set/unset`: view or change global daemon settings. Writes
 /// `settings.toml` directly (like `cmd_mdns`); relay/discovery/dns-upstreams all
 /// take effect on the next daemon restart. On Linux the config tree is root-
 /// owned, so a write naturally requires sudo.
@@ -1168,7 +1168,7 @@ pub(crate) fn uid_for_user(user: &str) -> Option<u32> {
     user.parse::<u32>().ok()
 }
 
-/// `ray set-operator <user>`: authorize a local user to run mutating ray
+/// `torpedo set-operator <user>`: authorize a local user to run mutating ray
 /// commands without sudo (Tailscale's `--operator` model). The daemon enforces
 /// that this call itself comes from root.
 async fn cmd_set_operator(user: &str) -> Result<()> {
@@ -1176,7 +1176,7 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("unknown user '{user}' (pass a valid username or UID)"))?;
     let mut stream = ipc::connect()
         .await
-        .context("rayfish daemon is not running; start it with: sudo ray up")?;
+        .context("torpedo daemon is not running; start it with: sudo torpedo up")?;
     ipc::send(&mut stream, ipc::IpcMessage::SetOperator { uid }).await?;
     match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { message } => println!("{message}"),
@@ -1203,7 +1203,7 @@ mod tests {
     fn strip_deleted_suffix_sanitizes_replaced_binary_path() {
         // After `self_replace` unlinks the running binary, Linux reports
         // `/proc/self/exe` with a trailing " (deleted)". The service unit must
-        // not inherit it, or the daemon crash-loops on `ray (deleted) daemon`.
+        // not inherit it, or the daemon crash-loops on `torpedo (deleted) daemon`.
         assert_eq!(
             strip_deleted_suffix("/usr/local/bin/ray (deleted)"),
             "/usr/local/bin/ray"

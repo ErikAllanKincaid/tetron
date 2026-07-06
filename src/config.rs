@@ -531,9 +531,9 @@ pub fn rotate_contact_secret(config: &mut AppConfig) -> SecretKey {
 // `networks.toml` whose non-atomic full-file rewrites raced under concurrent
 // load-modify-save and silently dropped networks.
 //
-// Linux stores the tree under /etc/rayfish owned root:rayfish (see
+// Linux stores the tree under /etc/torpedo owned root:torpedo (see
 // `config_dir`); secret-bearing files are 0600 root:root, dirs 0750
-// root:rayfish.
+// root:torpedo.
 
 const LEGACY_FILE: &str = "networks.toml";
 const SETTINGS_FILE: &str = "settings.toml";
@@ -583,11 +583,11 @@ struct Settings {
     revoked_devices: Vec<String>,
 }
 
-/// Look up the `rayfish` group's gid (Linux), if the group exists.
+/// Look up the `torpedo` group's gid (Linux), if the group exists.
 #[cfg(target_os = "linux")]
-fn rayfish_gid() -> Option<u32> {
+fn torpedo_gid() -> Option<u32> {
     use std::ffi::CString;
-    let name = CString::new("rayfish").ok()?;
+    let name = CString::new("torpedo").ok()?;
     // SAFETY: getgrnam returns a pointer to a static struct; we copy gr_gid out
     // immediately before any further libc call could overwrite it.
     let grp = unsafe { libc::getgrnam(name.as_ptr()) };
@@ -598,7 +598,7 @@ fn rayfish_gid() -> Option<u32> {
     }
 }
 
-/// Best-effort `chown` to root, with group `rayfish` for non-secret paths (or
+/// Best-effort `chown` to root, with group `torpedo` for non-secret paths (or
 /// root for secret ones). No-op off Linux. Silent on failure so the daemon
 /// still starts if the group is missing.
 #[cfg(target_os = "linux")]
@@ -606,14 +606,14 @@ fn set_owner(path: &Path, secret: bool) {
     let gid = if secret {
         Some(0)
     } else {
-        rayfish_gid().or(Some(0))
+        torpedo_gid().or(Some(0))
     };
     if let Err(e) = std::os::unix::fs::chown(path, Some(0), gid) {
         tracing::debug!(path = %path.display(), error = %e, "chown failed (non-fatal)");
     }
 }
 
-/// Create `dir` (and parents) with restrictive perms: 0750 root:rayfish on
+/// Create `dir` (and parents) with restrictive perms: 0750 root:torpedo on
 /// Linux. Idempotent.
 fn ensure_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -625,10 +625,10 @@ fn ensure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Base directory for all rayfish config + state. Created if missing.
+/// Base directory for all torpedo config + state. Created if missing.
 ///
-/// Linux: `/etc/rayfish` (system service location, root:rayfish). macOS: the
-/// daemon's `~/.config/rayfish` (root-only under `/var/root`).
+/// Linux: `/etc/torpedo` (system service location, root:torpedo). macOS: the
+/// daemon's `~/.config/torpedo` (root-only under `/var/root`).
 pub fn config_dir() -> Result<PathBuf> {
     // An explicit `RAYFISH_CONFIG_DIR` override is honored only on Android
     // (`ray-mobile`'s `Node::new` points it at the app's `Context.getFilesDir()`)
@@ -642,15 +642,15 @@ pub fn config_dir() -> Result<PathBuf> {
         return Ok(dir);
     }
     #[cfg(target_os = "linux")]
-    let dir = PathBuf::from("/etc/rayfish");
+    let dir = PathBuf::from("/etc/torpedo");
     // Android without the override falls back to a fixed app-private path so the
     // library still compiles/runs standalone.
     #[cfg(target_os = "android")]
-    let dir = PathBuf::from("/data/local/tmp/rayfish");
+    let dir = PathBuf::from("/data/local/tmp/torpedo");
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let dir = dirs::config_dir()
         .context("could not determine config directory")?
-        .join("rayfish");
+        .join("torpedo");
     ensure_dir(&dir)?;
     Ok(dir)
 }
@@ -672,9 +672,9 @@ fn validate_net_name(name: &str) -> Result<()> {
 /// Atomically write `bytes` to `path`: write a sibling temp file, set its
 /// perms/owner, then rename over the target. The rename is atomic on POSIX, so
 /// a concurrent reader sees either the old file or the new one — never a torn
-/// one. `secret` selects 0600 root:root vs 0640 root:rayfish.
+/// one. `secret` selects 0600 root:root vs 0640 root:torpedo.
 ///
-/// Public so every rayfish config writer (identity key, invite ledger, etc.)
+/// Public so every torpedo config writer (identity key, invite ledger, etc.)
 /// shares the same atomic + restrictive-perms guarantees under the config tree.
 pub fn write_file(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
     let dir = path.parent().context("config path has no parent")?;
@@ -719,12 +719,12 @@ pub fn restrict_perms(path: &Path, secret: bool) {
     set_owner(path, secret);
 }
 
-/// Linux-only: relocate a pre-`/etc` config tree into `/etc/rayfish` on first
+/// Linux-only: relocate a pre-`/etc` config tree into `/etc/torpedo` on first
 /// start after the upgrade that moved the location. Earlier Linux builds stored
-/// everything under the daemon's `~/.config/rayfish` (i.e. `/root/.config`); this
+/// everything under the daemon's `~/.config/torpedo` (i.e. `/root/.config`); this
 /// moves `secret_key`, `networks.toml`, `firewall.toml`, `invites/`, etc. over so
 /// the node keeps its identity and networks. No-op on macOS (location unchanged)
-/// and once `/etc/rayfish` is populated. Must run before any config/identity read
+/// and once `/etc/torpedo` is populated. Must run before any config/identity read
 /// (called at the top of `build_daemon`).
 pub fn migrate_location() {
     #[cfg(target_os = "linux")]
@@ -738,7 +738,7 @@ pub fn migrate_location() {
         {
             return;
         }
-        let Some(old) = dirs::config_dir().map(|d| d.join("rayfish")) else {
+        let Some(old) = dirs::config_dir().map(|d| d.join("torpedo")) else {
             return;
         };
         if old == new || !old.is_dir() {
@@ -756,7 +756,7 @@ pub fn migrate_location() {
             match std::fs::rename(e.path(), &dest) {
                 Ok(()) => moved += 1,
                 Err(err) => {
-                    tracing::warn!(entry = ?e.path(), error = %err, "could not relocate config entry into /etc/rayfish")
+                    tracing::warn!(entry = ?e.path(), error = %err, "could not relocate config entry into /etc/torpedo")
                 }
             }
         }
@@ -771,7 +771,7 @@ pub fn migrate_location() {
                     }
                 }
             }
-            tracing::info!(from = %old.display(), to = %new.display(), entries = moved, "relocated config tree to /etc/rayfish");
+            tracing::info!(from = %old.display(), to = %new.display(), entries = moved, "relocated config tree to /etc/torpedo");
         }
     }
 }

@@ -122,7 +122,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// ALPN for the device-pairing protocol. The trailing `/1` is its protocol
 /// version — **bump it on any breaking change to the `PairMsg` handshake**;
 /// peers on different versions can't negotiate a connection (transport-enforced).
-const PAIR_ALPN: &[u8] = b"rayfish/pair/1";
+const PAIR_ALPN: &[u8] = b"torpedo/pair/1";
 
 /// Node-wide shared handles, cloned into every per-network accept handler and
 /// background task. Every field is a cheap `Clone` — an `Arc`-backed handle, a
@@ -753,7 +753,7 @@ impl MeshManager {
         }
 
         Some(IpcMessage::Error {
-            message: "permission denied: this user is not authorized to control rayfish.\n\
+            message: "permission denied: this user is not authorized to control torpedo.\n\
                       Grant access with: sudo ray set-operator <user>"
                 .to_string(),
         })
@@ -1167,7 +1167,7 @@ fn collect_recent_logs() -> Vec<(String, Vec<u8>)> {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("rayfish.log") || n == "panic.log")
+                    .is_some_and(|n| n.starts_with("torpedo.log") || n == "panic.log")
             })
             .collect(),
         Err(_) => return Vec::new(),
@@ -1265,7 +1265,7 @@ mod report_tests {
         let files = vec![
             ("sysinfo.txt".to_string(), b"rayfish 0.1.0\n".to_vec()),
             (
-                "logs/rayfish.log.2026-06-23".to_string(),
+                "logs/torpedo.log.2026-06-23".to_string(),
                 b"hello log\n".to_vec(),
             ),
         ];
@@ -1281,7 +1281,7 @@ mod report_tests {
             .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["logs/rayfish.log.2026-06-23", "sysinfo.txt"]);
+        assert_eq!(names, vec!["logs/torpedo.log.2026-06-23", "sysinfo.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
