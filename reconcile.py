@@ -58,6 +58,16 @@ def check_relay_preset() -> dict:
     return {"value": "rayfish" if '"rayfish" => Ok(preset.to_string())' in text else "MISSING"}
 
 
+def check_self_update() -> dict:
+    """CON-006: the self-update kill switch must stay off. `enabled` is False only
+    while the exact `SELF_UPDATE_ENABLED: bool = false;` const is present; flipping
+    it to true or removing it makes this True and fails the constraint."""
+    p = Path("src/update.rs")
+    text = p.read_text() if p.exists() else ""
+    disabled = "pub const SELF_UPDATE_ENABLED: bool = false;" in text
+    return {"enabled": not disabled}
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -65,6 +75,7 @@ if __name__ == "__main__":
         "test": check_tests(),
         "grep_hardcoded_cgnat": check_hardcoded_cgnat(),
         "relay_preset_untouched": check_relay_preset(),
+        "self_update": check_self_update(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -73,5 +84,6 @@ if __name__ == "__main__":
         and ctx["test"]["pass"]
         and ctx["grep_hardcoded_cgnat"]["unexpected_count"] == 0
         and ctx["relay_preset_untouched"]["value"] == "rayfish"
+        and ctx["self_update"]["enabled"] is False
     )
     sys.exit(0 if ok else 1)

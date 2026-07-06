@@ -211,12 +211,19 @@ pub(crate) fn require_root() -> Result<()> {
 pub(crate) async fn cmd_install(auto_update: bool) -> Result<()> {
     require_root()?;
     if auto_update {
-        let mut cfg = config::load()?;
-        if !cfg.auto_update {
-            cfg.auto_update = true;
-            config::save_settings(&cfg)?;
+        // Neutralized on this fork (UPGRADE-001): the flag has no effect, so warn
+        // and do not persist it rather than silently enabling a dead setting.
+        if rayfish::update::SELF_UPDATE_ENABLED {
+            let mut cfg = config::load()?;
+            if !cfg.auto_update {
+                cfg.auto_update = true;
+                config::save_settings(&cfg)?;
+            }
+            println!("automatic stable updates enabled for this node");
+        } else {
+            println!("{}", rayfish::update::SELF_UPDATE_DISABLED_MSG);
+            println!("(--auto-update has no effect on this fork; installing without it)");
         }
-        println!("automatic stable updates enabled for this node");
     }
     install_and_start_service(None).await
 }

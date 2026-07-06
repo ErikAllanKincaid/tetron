@@ -123,6 +123,12 @@ pub(crate) async fn cmd_update(
     list: bool,
     version: Option<String>,
 ) -> Result<()> {
+    // Neutralized on this fork (UPGRADE-001): refuse before any network I/O so we
+    // never reach the (upstream) release repo.
+    if !rayfish::update::SELF_UPDATE_ENABLED {
+        println!("{}", rayfish::update::SELF_UPDATE_DISABLED_MSG);
+        return Ok(());
+    }
     let current = env!("CARGO_PKG_VERSION");
     // Fail fast on unsupported platforms before any network I/O.
     let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;

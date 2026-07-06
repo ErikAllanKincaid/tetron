@@ -14,6 +14,22 @@ use semver::Version;
 /// `install.sh` pulls from).
 pub const REPO_SLUG: &str = "rayfish/rayfish";
 
+/// Master switch for the self-update subsystem (UPGRADE-001). This fork
+/// distributes binaries manually and `REPO_SLUG` still points at UPSTREAM
+/// rayfish, so self/auto-update is **neutralized**: leaving it on would risk
+/// overwriting the torpedo binary with an upstream rayfish build. Kept as a
+/// single switch (not deleted) so the diff stays small and it is reversible.
+/// The daemon never spawns its auto-update task and the `update` /
+/// `auto-update on` / `install --auto-update` commands refuse while this is
+/// false. Enforced by reconcile.py (CON-006).
+pub const SELF_UPDATE_ENABLED: bool = false;
+
+/// User-facing message shown when a self-update command is invoked while
+/// [`SELF_UPDATE_ENABLED`] is false.
+pub const SELF_UPDATE_DISABLED_MSG: &str =
+    "self-update is disabled on this torpedo fork. Upgrade by replacing the \
+     binary (e.g. /usr/local/bin/torpedo) and running `sudo torpedo restart`.";
+
 /// Map the host OS/arch to the release asset name CI publishes
 /// (`ray-{os}-{arch}`, e.g. `ray-linux-x86_64`). Errors on platforms we don't
 /// build binaries for, so the user falls back to building from source.

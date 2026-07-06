@@ -58,9 +58,11 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     // Opt-in automatic updates: a single daemon-wide task that periodically
     // checks for a newer stable release and swaps + restarts onto it. Desktop-only
-    // (the self-replacing updater is not built into the Android lib).
+    // (the self-replacing updater is not built into the Android lib). Neutralized
+    // on this fork via SELF_UPDATE_ENABLED (UPGRADE-001), so the task is never
+    // spawned even if a stale config still has auto_update set.
     #[cfg(feature = "desktop")]
-    if daemon.auto_update {
+    if daemon.auto_update && crate::update::SELF_UPDATE_ENABLED {
         spawn_auto_update(daemon.shutdown_token.clone());
     }
 

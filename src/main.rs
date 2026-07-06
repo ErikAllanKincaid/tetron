@@ -1102,10 +1102,16 @@ fn cmd_auto_update(state: &str) -> Result<()> {
         "on" => true,
         "off" => false,
         _ => {
-            eprintln!("Usage: ray auto-update <on|off>");
+            eprintln!("Usage: torpedo auto-update <on|off>");
             std::process::exit(1);
         }
     };
+    // Neutralized on this fork (UPGRADE-001): allow turning it off, refuse to
+    // turn it on.
+    if enabled && !rayfish::update::SELF_UPDATE_ENABLED {
+        println!("{}", rayfish::update::SELF_UPDATE_DISABLED_MSG);
+        return Ok(());
+    }
     let mut app_config = config::load()?;
     app_config.auto_update = enabled;
     config::save_settings(&app_config)?;
