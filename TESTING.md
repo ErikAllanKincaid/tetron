@@ -296,6 +296,49 @@ sudo torpedo status                         # confirm it came back
       (`restore_stale_backups` on start; the panic path also runs
       `emergency_restore_resolv_conf`). Note any window where DNS was down.
 
+### 13d — Dedicated tier-5 reproduction (single machine, no mesh)
+
+The field-report scenario and the direct **DNS-001** verification. Needs only
+**one** host that lands on tier 5 (no systemd-resolved, no split-capable
+NetworkManager, no resolvconf), for example a minimal Debian trixie VM (netinst,
+no desktop task selected). No second peer and no network are required: `torpedo
+up` triggers the takeover on its own.
+
+**First, confirm the host takes tier 5** (before installing torpedo). The chain
+is systemd-resolved -> NetworkManager(`dnsmasq`|`systemd-resolved` mode) ->
+resolvectl -> resolvconf -> direct `/etc/resolv.conf` takeover; first hit wins,
+so all four absent means tier 5.
+
+```bash
+systemctl is-active systemd-resolved                     # must NOT be "active"
+NetworkManager --print-config 2>/dev/null | grep -A3 '\[main\]' | grep -i '^dns='  # absent, or a non dnsmasq/systemd-resolved mode ⇒ NM skipped
+ls /sbin/resolvconf /usr/sbin/resolvconf 2>/dev/null     # must be absent
+ls -l /etc/resolv.conf                                   # a plain DHCP-managed file, not a resolved/NM symlink
+```
+
+- [ ] All four split-DNS backends are absent (host will take tier 5).
+
+**Then reproduce and verify:**
+
+```bash
+cp /etc/resolv.conf /tmp/resolv.conf.orig      # independent copy to diff against
+sudo torpedo up                                # EXPECT the DNS-001 takeover warning
+ls -l /etc/resolv.conf.before-torpedo          # backup created
+cat /etc/resolv.conf                           # "# Added by torpedo", nameserver 100.100.100.53
+ping github.com                                # captured upstreams still forward normal DNS
+sudo torpedo uninstall
+diff /etc/resolv.conf /tmp/resolv.conf.orig    # empty ⇒ restored to the pre-torpedo original
+ping github.com                                # resolves after restore
+```
+
+- [ ] `torpedo up` prints the DNS-001 warning naming `/etc/resolv.conf.before-torpedo`
+      and the restore command.
+- [ ] Backup exists while up; the live file carries the `# Added by torpedo` marker
+      and points at `100.100.100.53`.
+- [ ] Non-`.ray` DNS resolves while up (upstream passthrough).
+- [ ] After uninstall, `diff` is empty (original restored) and the backup file is gone.
+- [ ] This ran with no peers, confirming DNS-001 is validated in isolation from the mesh.
+
 ---
 
 ## Priority
