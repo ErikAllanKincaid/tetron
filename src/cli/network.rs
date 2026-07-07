@@ -38,6 +38,7 @@ pub(crate) async fn ipc_create(
             network_key,
             my_ip,
             my_ipv6,
+            warning,
         } => {
             let key_str = network_key.to_string();
             let short = if key_str.len() > 12 {
@@ -65,6 +66,9 @@ pub(crate) async fn ipc_create(
                 (&join, "share this to invite peers"),
                 ("ray up", "activate the VPN"),
             ]);
+            if let Some(w) = &warning {
+                println!("  ⚠ {w}");
+            }
             println!();
         }
         ipc::IpcMessage::Error { message } => print_error("create failed", &message, None),
@@ -121,6 +125,7 @@ pub(crate) async fn ipc_join(
             name,
             my_ip,
             my_ipv6,
+            warning,
         } => {
             let _ = my_ipv6;
             let dns = format!("{name}.{DNS_DOMAIN}");
@@ -142,6 +147,9 @@ pub(crate) async fn ipc_join(
                 ("ray status", "see who's online"),
                 ("ray up", "activate the VPN"),
             ]);
+            if let Some(w) = &warning {
+                println!("  ⚠ {w}");
+            }
             println!();
         }
         ipc::IpcMessage::Error { message } => print_error("join failed", &message, None),

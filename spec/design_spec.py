@@ -526,3 +526,30 @@ class SurfaceDnsTakeoverWarning(Requirement):
     a split-DNS configurator returns None.
     """
     req_id = "DNS-001"
+
+
+class SubnetChangeObservableAndAnnounced(Requirement):
+    """REQUIREMENT-ID: SUBNET-014
+
+    Two subnet-UX fixes found in Phase-7 live testing.
+
+    (1) `create --subnet X` / `join` onto a network whose subnet differs from this
+    node's live TUN persist the subnet but only apply it to the TUN at the next
+    (re)start. Previously silent, so the node kept its old subnet while the roster
+    advertised the new one and NO IP forwarding worked until a manual restart. The
+    `Created`/`Joined` IPC responses now carry an optional `warning`; the CLI
+    prints it when the chosen subnet != the live TUN subnet ("subnet B/P takes
+    effect after `sudo torpedo restart`"). The pure helper is
+    `membership::subnet_change_warning`.
+
+    (2) `config get` as a non-root user cannot read the 0600 root:root
+    settings.toml (it holds contact_secret_key, so its perms must NOT be relaxed),
+    so config::load() silently returned defaults and misreported e.g. `subnet` as
+    <default> while the node ran on 10.99. `config get` now detects the unreadable
+    file and errors with a "re-run with sudo" hint instead of a wrong value;
+    `sudo torpedo config get` shows the real value. Full read-via-daemon IPC is a
+    deferred follow-up.
+
+    ENFORCEMENT: unit test on subnet_change_warning (reconcile's `test` check).
+    """
+    req_id = "SUBNET-014"

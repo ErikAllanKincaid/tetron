@@ -1130,6 +1130,18 @@ fn cmd_auto_update(state: &str) -> Result<()> {
 fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
     match action.unwrap_or(ConfigAction::Get { key: None }) {
         ConfigAction::Get { key } => {
+            // SUBNET-014: settings.toml is 0600 root:root (it holds
+            // contact_secret_key), so a non-root caller cannot read it and
+            // config::load() would silently return defaults — misreporting e.g.
+            // `subnet` as <default>. Detect the unreadable file and hint to use
+            // sudo instead of printing a wrong value.
+            let settings = config::config_dir()?.join("settings.toml");
+            if settings.exists() && std::fs::File::open(&settings).is_err() {
+                anyhow::bail!(
+                    "config is root-only; re-run with sudo: sudo torpedo config get{}",
+                    key.as_deref().map(|k| format!(" {k}")).unwrap_or_default()
+                );
+            }
             let cfg = config::load()?;
             let rows = config::config_get(&cfg, key.as_deref())?;
             if json {

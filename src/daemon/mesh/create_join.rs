@@ -398,6 +398,7 @@ impl MeshManager {
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            warning: crate::membership::subnet_change_warning(subnet, self.identity.subnet()),
         })
     }
 
@@ -1040,6 +1041,10 @@ impl MeshManager {
             name: display_name.to_string(),
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            warning: crate::membership::subnet_change_warning(
+                crate::config::node_subnet(),
+                self.identity.subnet(),
+            ),
         }))
     }
 
@@ -1255,6 +1260,10 @@ impl MeshManager {
                 name: network_name.to_string(),
                 my_ip,
                 my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+                warning: crate::membership::subnet_change_warning(
+                    joined_subnet,
+                    self.identity.subnet(),
+                ),
             });
         }
 

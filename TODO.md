@@ -17,6 +17,49 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
       `reconcile.py` check that greps `justfile`/`contrib/` for stale
       `ray`/`rayfish` tokens, so the justfile fix can not silently regress.
       (The justfile is not Rust, so CON-007 does not cover it.)
+- [ ] **RENAME-011 — user-facing CLI hint strings still say `ray`** (found in
+      Phase-7 testing: `torpedo create` prints `ray join …` / `ray up`). ~27 sites
+      across `src/apply.rs` and `src/cli/{network,invite,firewall,status}.rs` print
+      "next steps" / help hints invoking `ray <subcommand>`, but the binary is
+      `torpedo` — there is no `ray` command, so the guidance is wrong. Also the
+      product name `Rayfish` in user-facing text: `EXAMPLE_SPEC` header (apply.rs),
+      the 1Password item description (onepassword.rs). Sweep
+      `ray <subcommand>` -> `torpedo <subcommand>`. EXCLUDE: the `.ray` Magic-DNS
+      TLD, the internal `rayfish` crate name, and be careful with the 1Password
+      item **title** default (`Rayfish Identity`) — renaming it breaks `pair
+      restore` for anyone who already stored a backup under the old title (keep the
+      title, or add a back-compat lookup). Candidate for a `reconcile.py` grep
+      guard (a `ray <subcommand>` pattern) so it can not regress.
+- [ ] **DNS-001-fix — warning not delivered in the real flow** (found in Phase-7 on
+      tier-5 xps): the daemon auto-activates at startup, so the DNS takeover + warning
+      happen there (log only) and the interactive `sudo torpedo up` short-circuits with
+      `already up`, never populating the warnings channel. Fix: persist the active DNS
+      mode + warning on the daemon (set in `DnsManager::configure`); return it from `up`
+      even on the already-active path. Pairs with DNS-002.
+- [ ] **DNS-002 — surface active DNS mode in `torpedo status`** (now necessary, not
+      optional): the daemon exposes its DNS backend / takeover state; `status` (and
+      `--json`) show it, covering the non-interactive (reboot / auto-activate) path where
+      `up` prints nothing. Add `dns_mode` to `StatusResponse`; CLI renders it.
+- [ ] **Doc fix — resolver IP is subnet-derived** (`10.88.100.53` on the default subnet,
+      not `100.100.100.53`): correct AGENTS.md, TESTING.md, and any prose that hardcodes
+      `100.100.100.53`.
+- [ ] **Investigate — resolv.conf re-assert storm** (3x within ~1s at startup on xps):
+      confirm it always settles; if some hosts sustain the trample fight, damp the
+      re-assert loop or widen the quiet-window guard.
+- [ ] **CRITICAL — `create --subnet` corrupts the data plane** (Phase-7): it sets the
+      network roster/blob to the requested subnet but leaves the node's TUN/config
+      subnet at default, so roster (`10.99.x`) and TUN (`10.88.x`) diverge and NO IP
+      forwarding works between nodes (raw `ping` fails both ways; only `torpedo ping`,
+      which is identity-based, works). The `--subnet` flag does only the roster half of
+      what `config set subnet` + restart does. Fix: make `create --subnet` set the node
+      subnet (rebuild the TUN live, or require/trigger a restart), or reject `--subnet`
+      when it differs from the node's current subnet with a clear "run `config set
+      subnet <cidr>` + restart first" message. See `create_join.rs` create path +
+      `set_node_subnet` + `blob_subnet`.
+- [ ] **Doc — audit AGENTS.md invite/CLI against the real binary**: `torpedo invite`
+      has no `--hostname`/`--expires`/`--qr`/`--reusable`/`list`/`revoke` (usage is just
+      `invite <NETWORK>`), yet AGENTS.md (inherited from upstream) documents them. Sweep
+      AGENTS.md for other commands/flags the fork's binary does not actually implement.
 
 ## Platform rewrites (macOS, Android) — adapt to torpedo
 

@@ -335,11 +335,17 @@ pub enum IpcMessage {
         network_key: EndpointId,
         my_ip: Ipv4Addr,
         my_ipv6: Option<Ipv6Addr>,
+        /// SUBNET-014: set when the network's subnet only applies after a restart.
+        #[serde(default)]
+        warning: Option<String>,
     },
     Joined {
         name: String,
         my_ip: Ipv4Addr,
         my_ipv6: Option<Ipv6Addr>,
+        /// SUBNET-014: set when the joined network's subnet only applies after a restart.
+        #[serde(default)]
+        warning: Option<String>,
     },
     StatusResponse {
         endpoint_id: EndpointId,
@@ -835,6 +841,7 @@ mod tests {
             network_key: key,
             my_ip: Ipv4Addr::new(100, 64, 10, 5),
             my_ipv6: None,
+            warning: None,
         };
         let bytes = rmp_serde::to_vec_named(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();

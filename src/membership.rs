@@ -334,6 +334,20 @@ pub fn resolve_subnet(subnet: Option<Subnet>) -> Subnet {
     subnet.unwrap_or_else(default_subnet)
 }
 
+/// SUBNET-014: the node runs a single TUN whose subnet is fixed at daemon
+/// startup, so a `create --subnet` / `join` that selects a different subnet only
+/// takes effect after a restart. Returns a user-facing warning to that effect
+/// when `chosen` differs from the node's `live` TUN subnet; `None` when they
+/// match (nothing to announce).
+pub fn subnet_change_warning(chosen: Subnet, live: Subnet) -> Option<String> {
+    (chosen != live).then(|| {
+        let (b, p) = chosen;
+        format!(
+            "subnet {b}/{p} takes effect after `sudo torpedo restart` (this node's live overlay is still on the previous subnet)"
+        )
+    })
+}
+
 /// Host-bit mask for a prefix length: the low `32 - prefix` bits set.
 pub fn subnet_host_mask(prefix: u8) -> u32 {
     if prefix >= 32 {
@@ -836,6 +850,16 @@ pub fn trusted_reconverge_hash(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn subnet_change_warning_fires_only_on_mismatch() {
+        use super::{default_subnet, subnet_change_warning};
+        let live = default_subnet();
+        let other = ("10.99.0.0".parse::<std::net::Ipv4Addr>().unwrap(), 16u8);
+        assert!(subnet_change_warning(live, live).is_none());
+        let w = subnet_change_warning(other, live).expect("mismatch must warn");
+        assert!(w.contains("sudo torpedo restart"), "{w}");
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

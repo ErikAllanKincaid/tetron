@@ -9,10 +9,10 @@ Command reference: `AGENTS.md`. Requirement set: `spec/design_spec.py`.
 
 ## Prerequisites
 
-| Machine | Role | Default hostname in this plan |
-|---|---|---|
-| **AORUS** (590I-AORUS-ULTRA) | Control node (coordinator) | `aorus` |
-| **xps-17-9720** | Member (joins by invite) | `xps` |
+| Machine                      | Role                       | Default hostname in this plan |
+| ---------------------------- | -------------------------- | ----------------------------- |
+| **AORUS** (590I-AORUS-ULTRA) | Control node (coordinator) | `aorus`                       |
+| **xps-17-9720**              | Member (joins by invite)   | `xps`                         |
 
 Roles are swappable; the plan assumes AORUS coordinates because the binary is
 built there.
@@ -82,9 +82,9 @@ torpedo status --json
 
 ```bash
 # AORUS
-torpedo invite testnet --hostname xps      # prints an invite code
+torpedo invite testnet --hostname xps-17-9720      # prints an invite code
 # xps  (after its own `sudo torpedo up`)
-torpedo join <invite-code> --hostname xps
+torpedo join <invite-code> --hostname xps-17-9720
 ```
 
 - [ ] xps joins and reports success.
@@ -115,7 +115,7 @@ torpedo join <room-id>
 plane), in both directions.
 
 ```bash
-torpedo ping xps            # from AORUS: RTT + loss + direct/relay path
+torpedo ping xps-17-9720    # from AORUS: RTT + loss + direct/relay path
 torpedo ping aorus          # from xps: the reverse direction
 ping 10.99.<xps>            # raw ICMP through the TUN (default fw allows in icmp)
 torpedo netcheck            # endpoint diagnostics on each node
@@ -272,11 +272,14 @@ ping github.com                             # resolves after restore
 ```
 
 - [ ] `torpedo up` shows the **DNS-001** warning naming
+  
       `/etc/resolv.conf.before-torpedo` and the restore command.
 - [ ] Backup exists while up; the live file carries the `# Added by torpedo`
+  
       marker and points at `100.100.100.53`.
 - [ ] Normal (non-`.ray`) DNS still resolves while up (upstream passthrough).
 - [ ] After uninstall, `/etc/resolv.conf` matches the original, the backup file is
+  
       gone, and `github.com` resolves.
 - [ ] No leftover NetworkManager `dns=none` drop-in or torpedo routes.
 
@@ -291,8 +294,10 @@ sudo torpedo status                         # confirm it came back
 ```
 
 - [ ] A symlinked `/etc/resolv.conf` is not left dangling or pointing at a dead
+  
       resolver after teardown.
 - [ ] After a hard kill, DNS recovers on the daemon's auto-restart
+  
       (`restore_stale_backups` on start; the panic path also runs
       `emergency_restore_resolv_conf`). Note any window where DNS was down.
 
@@ -332,8 +337,10 @@ ping github.com                                # resolves after restore
 ```
 
 - [ ] `torpedo up` prints the DNS-001 warning naming `/etc/resolv.conf.before-torpedo`
+  
       and the restore command.
 - [ ] Backup exists while up; the live file carries the `# Added by torpedo` marker
+  
       and points at `100.100.100.53`.
 - [ ] Non-`.ray` DNS resolves while up (upstream passthrough).
 - [ ] After uninstall, `diff` is empty (original restored) and the backup file is gone.
@@ -344,6 +351,7 @@ ping github.com                                # resolves after restore
 ## Priority
 
 Treat as **mandatory** (the fork's purpose or the worst failure modes):
+
 - Stage 0/8 Tailscale coexistence, Stage 1/2 subnet configurability,
   Stage 11 stable IP on restart, Stage 13 clean uninstall / DNS restore.
 
@@ -359,5 +367,52 @@ torpedo update --check          # must no-op / refuse (SELF_UPDATE_ENABLED = fal
 Record date, machines, Tailscale on/off, network placement (LAN vs cross-NAT),
 and any `[!]` findings with the `torpedo report` bundle path.
 
-- Run: _____  Machines: _____  Tailscale: _____  Placement: _____
-- Findings:
+### Run 2026-07-07 (in progress)
+
+- Machines: **AORUS** (Ubuntu 24.04, systemd-resolved / **tier-1 split-DNS**,
+  coordinator) + **xps-17-9720** (LMDE trixie, **tier-5 direct `/etc/resolv.conf`
+  takeover**, member).
+- Tailscale: **on** (both nodes).
+- Placement: TBD (determine direct vs relay at the connectivity stage).
+- Progress: Stages 0-2 done on AORUS — created `testnet` on `10.99.0.0/16`, address
+  `10.99.56.74`, role coordinator (**subnet configurability confirmed**). xps Stage 0
+  done (daemon up; tier-5 takeover occurred). Join pending.
+
+Findings:
+
+- [!] **DNS-001 delivery bug (confirmed).** On tier-5 xps the takeover, backup
+  (`/etc/resolv.conf.before-torpedo`), and WARN log all worked, but `sudo torpedo up`
+  printed only `already up` with **no** warning. Root cause: the daemon auto-activates
+  the data plane at startup, so the takeover + warning happen there (logged), and the
+  interactive `up` short-circuits before the `warnings` channel is populated. Fix:
+  persist DNS mode/warning on the daemon; return it from `up` even on `already up`, and
+  surface it in `torpedo status` (merges DNS-001-fix + DNS-002).
+- [!] **Resolver IP is subnet-derived; docs are stale.** Magic DNS resolver is
+  `10.88.100.53` (subnet-relative to the default subnet, by design — avoids Tailscale's
+  `100.100.100.100`), NOT `100.100.100.53`. This plan and AGENTS.md still say
+  `100.100.100.53`; correct them. Open question: does it move to `10.99.100.53` when xps
+  joins the `10.99` network? (verify at the join / Magic DNS stage).
+- [!] **resolv.conf re-assert storm at startup.** 3x `resolv.conf was overwritten;
+  re-asserting torpedo DNS` within ~1s on xps (trample fight with NM/dhclient/Tailscale),
+  settled after the NM `dns=none` drop-in applied. Watch for recurrence or sustained
+  churn on other hosts.
+- [~] **Tailscale-DNS interposition (works, note it).** torpedo captured Tailscale's
+  `100.100.100.100` as its upstream and became the sole `nameserver`, preserving the
+  `ts.<tailnet>` search domain. Non-`.ray` DNS still resolves (`github.com` 36 ms), so
+  coexistence works, but torpedo is now the DNS chokepoint on a Tailscale host.
+- [!] **CRITICAL — `create --subnet` corrupts the data plane.** `create --subnet
+  10.99.0.0/16` derived the network roster/blob addresses in `10.99` but did NOT set
+  the node's TUN/config subnet: on both nodes `config get subnet` = `<default>` and
+  `ifconfig tun0` = `10.88.x`, while `status`/roster show `10.99.x`. Because peers are
+  registered at roster addresses no TUN actually holds, **no IP forwarding works** —
+  raw `ping` fails to BOTH the roster IP (`10.99.101.108`: no route, `tun0` is
+  `10.88/16`) and the real TUN IP (`10.88.101.108`: no peer, registered at `10.99`).
+  Only identity-based `torpedo ping` works (direct, 7 ms). Supported workaround:
+  `torpedo config set subnet <cidr>` + `sudo torpedo restart` on EVERY node BEFORE
+  create. Fix: `create --subnet` must set the node subnet (apply live or require a
+  restart), or be rejected when it differs from the node's current subnet.
+- [!] **`torpedo invite --hostname` not supported (doc mismatch).** `torpedo invite
+  testnet --hostname xps-17-9720` errors `unexpected argument '--hostname'`; usage is
+  just `torpedo invite <NETWORK>`. AGENTS.md (inherited from upstream) documents
+  `--hostname`/`--expires`/`--qr`/`--reusable`/`list`/`revoke` on invite that this
+  binary lacks. Audit AGENTS.md against the actual CLI and trim to what exists.

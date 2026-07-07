@@ -303,6 +303,10 @@ impl MeshManager {
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            warning: crate::membership::subnet_change_warning(
+                crate::config::node_subnet(),
+                self.identity.subnet(),
+            ),
         })
     }
 
