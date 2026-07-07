@@ -393,6 +393,14 @@ impl MeshManager {
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network created");
 
+        // FW-001: a closed network this node created is trusted (invite-gated), so
+        // inbound from it defaults to allow — the mesh behaves like a normal LAN and
+        // host-service auth is the gate. Open networks keep the deny-inbound default.
+        if mode == GroupMode::Restricted {
+            let cfg = self.firewall.set_closed_default(&name, true);
+            let _ = crate::firewall::save_firewall(&cfg);
+        }
+
         Ok(IpcMessage::Created {
             name,
             network_key: net_public_key,

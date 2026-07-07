@@ -114,6 +114,15 @@ pub enum RuleOrigin {
     /// reconvergence never touches it. The SSH allow-list (per-network) is the
     /// real authorization gate; this only opens the port at the packet layer.
     Ssh,
+    /// FW-001: per-network inbound default-allow for a CLOSED network this node
+    /// created or joined with an invite/reusable key. A trusted (invite-gated)
+    /// mesh behaves like a normal LAN — connectivity is open and the host
+    /// service's own auth (SSH keys, etc.) is the gate. Materialized as an
+    /// `allow in any` rule scoped to that network (see [`closed_default_rule`]),
+    /// appended at the BACK so any explicit rule (including a deny) overrides it.
+    /// Removed when the node leaves the network; reconvergence never touches it.
+    /// Open networks get no such rule and keep the deny-inbound default.
+    ClosedDefault,
 }
 
 impl RuleOrigin {
@@ -135,6 +144,22 @@ pub fn ssh_passthrough_rule() -> FirewallRule {
         peer: PeerFilter::Any,
         network: None,
         origin: RuleOrigin::Ssh,
+    }
+}
+
+/// FW-001: the per-network inbound default-allow rule for a closed network —
+/// `allow in any` scoped to `network`, so every inbound flow arriving via that
+/// (trusted, invite-gated) network is permitted unless an explicit rule denies
+/// it first.
+pub fn closed_default_rule(network: &str) -> FirewallRule {
+    FirewallRule {
+        direction: Direction::In,
+        action: Action::Allow,
+        protocol: Protocol::Any,
+        port: None,
+        peer: PeerFilter::Any,
+        network: Some(network.to_string()),
+        origin: RuleOrigin::ClosedDefault,
     }
 }
 
@@ -546,6 +571,24 @@ impl SharedFirewall {
         self.update(config.clone());
         config
     }
+
+    /// FW-001: install or remove the per-network inbound default-allow rule for a
+    /// closed network. `enabled=true` (created-closed / invite-joined) appends one
+    /// `allow in any --network <network>` rule at the BACK, so explicit rules win;
+    /// `enabled=false` (left the network) removes exactly that rule. Idempotent.
+    /// Returns the updated config to persist.
+    pub fn set_closed_default(&self, network: &str, enabled: bool) -> FirewallConfig {
+        let mut config = (*self.get_config()).clone();
+        config.rules.retain(|r| {
+            !(matches!(r.origin, RuleOrigin::ClosedDefault)
+                && r.network.as_deref() == Some(network))
+        });
+        if enabled {
+            config.rules.push(closed_default_rule(network));
+        }
+        self.update(config.clone());
+        config
+    }
 }
 
 fn protocol_matches(filter: Protocol, ip_proto: u8) -> bool {
@@ -916,6 +959,7 @@ pub fn rule_view(
         RuleOrigin::Local => None,
         RuleOrigin::Network(n) => Some(n.clone()),
         RuleOrigin::Ssh => Some("ssh".to_string()),
+        RuleOrigin::ClosedDefault => Some("closed-net default".to_string()),
     };
     FirewallRuleView {
         direction: rule.direction,
@@ -1014,6 +1058,30 @@ mod tests {
     fn parse_not_ip() {
         let pkt = vec![0x30; 40]; // version nibble 3
         assert!(parse_packet_info(&pkt).is_none());
+    }
+
+    // FW-001: set_closed_default seeds a network-scoped `allow in any` rule for a
+    // closed network and removes it on leave.
+    #[test]
+    fn closed_default_seeds_and_removes_network_scoped_allow() {
+        let fw = SharedFirewall::new(FirewallConfig::default());
+        let cfg = fw.set_closed_default("testnet", true);
+        let r = cfg
+            .rules
+            .iter()
+            .find(|r| matches!(r.origin, RuleOrigin::ClosedDefault))
+            .expect("closed-default rule must be seeded");
+        assert_eq!(r.direction, Direction::In);
+        assert_eq!(r.action, Action::Allow);
+        assert_eq!(r.protocol, Protocol::Any);
+        assert_eq!(r.network.as_deref(), Some("testnet"));
+        let cfg = fw.set_closed_default("testnet", false);
+        assert!(
+            !cfg.rules
+                .iter()
+                .any(|r| matches!(r.origin, RuleOrigin::ClosedDefault)),
+            "closed-default rule must be removed on leave"
+        );
     }
 
     #[test]

@@ -64,6 +64,7 @@ ip -4 addr show tun0                           # inet is 10.99.x (10.88.x if you
 - [ ] Daemon starts on both (no "refusing to run next to Tailscale").
 - [ ] `ip addr show tun0` shows the chosen subnet on **both** nodes (must match).
 - [ ] Tailscale is still fully functional on the node(s) where it runs.
+
 - Note: `torpedo config get subnet` is root-only — use `sudo torpedo config get subnet`
   (a non-root call now hints instead of printing a misleading `<default>`).
 
@@ -78,6 +79,7 @@ torpedo create --name testnet --hostname aorus   # closed by default; --open for
 
 - [ ] A room id (network public key) is printed.
 - [ ] Without `--hostname` the node auto-generates a random name (e.g. `hill`); pass
+  
       `--hostname` to control it, or fix it later with `torpedo hostname testnet aorus`.
 
 ## Stage 2 — Check parameters (AORUS)
@@ -104,6 +106,7 @@ torpedo join <invite-code> --hostname xps-17-9720
 
 - [ ] xps joins and reports success.
 - [ ] If xps was NOT on the network's subnet before joining, `join` prints a
+  
       `⚠ subnet … takes effect after sudo torpedo restart` — restart xps, then it
       lands on the shared subnet. (Do Stage 0's subnet step first to avoid this.)
 
@@ -292,13 +295,17 @@ ping github.com                             # resolves after restore
 - [ ] `torpedo up` shows the **DNS-001** warning naming
   
       `/etc/resolv.conf.before-torpedo` and the restore command.
+
 - [ ] Backup exists while up; the live file carries the `# Added by torpedo`
   
       marker and points at the subnet-derived resolver (e.g. `10.99.100.53`).
+
 - [ ] Normal (non-`.ray`) DNS still resolves while up (upstream passthrough).
+
 - [ ] After uninstall, `/etc/resolv.conf` matches the original, the backup file is
   
       gone, and `github.com` resolves.
+
 - [ ] No leftover NetworkManager `dns=none` drop-in or torpedo routes.
 
 ### 13c — Symlinked resolv.conf + crash recovery
@@ -314,6 +321,7 @@ sudo torpedo status                         # confirm it came back
 - [ ] A symlinked `/etc/resolv.conf` is not left dangling or pointing at a dead
   
       resolver after teardown.
+
 - [ ] After a hard kill, DNS recovers on the daemon's auto-restart
   
       (`restore_stale_backups` on start; the panic path also runs
@@ -357,11 +365,15 @@ ping github.com                                # resolves after restore
 - [ ] `torpedo up` prints the DNS-001 warning naming `/etc/resolv.conf.before-torpedo`
   
       and the restore command.
+
 - [ ] Backup exists while up; the live file carries the `# Added by torpedo` marker
   
       and points at the subnet-derived resolver (e.g. `10.99.100.53`).
+
 - [ ] Non-`.ray` DNS resolves while up (upstream passthrough).
+
 - [ ] After uninstall, `diff` is empty (original restored) and the backup file is gone.
+
 - [ ] This ran with no peers, confirming DNS-001 is validated in isolation from the mesh.
 
 ---

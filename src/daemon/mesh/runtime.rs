@@ -850,6 +850,10 @@ impl MeshManager {
         // Remove from config even if the network wasn't active
         let removed_from_config = config::delete_network(name).unwrap_or(false);
 
+        // FW-001: drop this network's inbound default-allow rule (if any) on leave.
+        let cfg = self.firewall.set_closed_default(name, false);
+        let _ = crate::firewall::save_firewall(&cfg);
+
         if was_active || removed_from_config {
             tracing::info!(network = %name, "left network");
             IpcMessage::Ok {

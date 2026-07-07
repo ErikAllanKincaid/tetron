@@ -553,3 +553,31 @@ class SubnetChangeObservableAndAnnounced(Requirement):
     ENFORCEMENT: unit test on subnet_change_warning (reconcile's `test` check).
     """
     req_id = "SUBNET-014"
+
+
+class ClosedNetworkInboundDefaultAllow(Requirement):
+    """REQUIREMENT-ID: FW-001
+
+    A CLOSED (invite-gated) network is a trusted mesh, so inbound from it defaults
+    to ALLOW: connectivity is open like a normal LAN and the host service's own
+    auth (SSH keys, DB creds, etc.) is the gate, instead of requiring an explicit
+    firewall rule per service. OPEN networks keep the secure deny-inbound default —
+    a stranger who joins must be explicitly allowed.
+
+    Mechanism: an `allow in any` rule scoped to the network (RuleOrigin::ClosedDefault
+    / firewall::closed_default_rule), appended at the BACK so any explicit rule —
+    including a deny — overrides it. SharedFirewall::set_closed_default(net, on)
+    seeds/removes it and returns the config to persist. Seeded when this node
+    CREATES a closed (Restricted) network or JOINS one with an invite/reusable key
+    (both prove the network is closed); removed on leave/nuke. Reconvergence (which
+    replaces RuleOrigin::Network suggestion rules) never touches it.
+
+    v1 limitation: members do not yet learn a network's mode from the signed blob,
+    so the trigger is LOCAL knowledge (created-closed / invite-joined). An
+    approval-joined closed network, or any open network, gets no rule and stays
+    deny — conservative (deny) when the mode is unknown. Propagating the mode in
+    the blob so members always classify correctly is a follow-up.
+
+    ENFORCEMENT: unit test on set_closed_default (reconcile's `test` check).
+    """
+    req_id = "FW-001"

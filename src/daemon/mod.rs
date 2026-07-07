@@ -817,16 +817,27 @@ impl MeshManager {
                 auto_accept_firewall,
                 auto_accept_files,
             } => {
-                self.join_network(
-                    &network_key,
-                    name.as_deref(),
-                    hostname,
-                    invite,
-                    coordinator,
-                    auto_accept_firewall,
-                    auto_accept_files,
-                )
-                .await
+                let had_invite = invite.is_some();
+                let resp = self
+                    .join_network(
+                        &network_key,
+                        name.as_deref(),
+                        hostname,
+                        invite,
+                        coordinator,
+                        auto_accept_firewall,
+                        auto_accept_files,
+                    )
+                    .await;
+                // FW-001: a successful invite/reusable-key join proves a trusted
+                // (closed) network → default-allow inbound for it.
+                if had_invite
+                    && let IpcMessage::Joined { name: net_name, .. } = &resp
+                {
+                    let cfg = self.firewall.set_closed_default(net_name, true);
+                    let _ = crate::firewall::save_firewall(&cfg);
+                }
+                resp
             }
             IpcMessage::Leave { name } => self.leave_network(&name).await,
             IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
