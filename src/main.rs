@@ -1135,8 +1135,15 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             // config::load() would silently return defaults — misreporting e.g.
             // `subnet` as <default>. Detect the unreadable file and hint to use
             // sudo instead of printing a wrong value.
+            // The config dir (0750 root:torpedo) and settings.toml (0600
+            // root:root) are inaccessible to a non-operator user, so opening it
+            // fails with PermissionDenied — bail on that rather than let
+            // config::load() fall back to a misleading default. (NotFound on a
+            // fresh node is fine; load() handles it.)
             let settings = config::config_dir()?.join("settings.toml");
-            if settings.exists() && std::fs::File::open(&settings).is_err() {
+            if let Err(e) = std::fs::File::open(&settings)
+                && e.kind() == std::io::ErrorKind::PermissionDenied
+            {
                 anyhow::bail!(
                     "config is root-only; re-run with sudo: sudo torpedo config get{}",
                     key.as_deref().map(|k| format!(" {k}")).unwrap_or_default()
