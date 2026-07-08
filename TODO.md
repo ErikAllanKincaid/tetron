@@ -20,9 +20,12 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
       **Primary fix landed (DNS-005):** Magic DNS is now opt-in — `magic-dns`
       config (`off|auto|direct`, default `auto`) no longer seizes
       `/etc/resolv.conf` unless `direct`, so the loop cannot occur by default;
-      reach peers by mesh IP (`torpedo status`). Still to do: verify live on
-      xps + Tailscale, and implement `DNS-004` (100.64/10 loop-breaker +
-      real-upstream recovery) as the safety net for the opt-in `direct` path.
+      reach peers by mesh IP (`torpedo status`). Verified live on xps + Tailscale
+      (default `auto`: resolv.conf untouched, join succeeds, no loop).
+      **`DNS-004` also landed** (100.64/10 loop-breaker + real-upstream recovery
+      from Tailscale's pre-takeover backup) as the safety net for the opt-in
+      `magic-dns direct` path. NM D-Bus recovery source deferred. Still to do:
+      live-verify the `direct` path on xps + Tailscale.
 
 - [x] Documentation: `README.md` (torpedo-focused fork intro + background/further
       reading + image) and `AGENTS.md` (canonical agent guide; `CLAUDE.md` symlink).

@@ -756,44 +756,57 @@ class ForeignOverlayUpstreamLoopBreaker(Requirement):
     100.100.100.100, so after the filter it is empty and non-`.ray` DNS dies).
     To restore working internet DNS, recover the genuine upstream, in priority:
       (a) config `dns_upstreams` if the operator set it (already honored via
-          config::resolve_upstreams);
-      (b) NetworkManager's DHCP-learned nameservers via D-Bus (the physical NIC's
-          Ip4Config.Nameservers — unpoisoned even while Tailscale owns
-          resolv.conf, since tailscale0 is unmanaged; this is where NM detection
-          EARNS its keep, as a SOURCE, not as a gate on (1); confirmed present as
-          192.168.1.1 on the xps repro host, NM in default mode);
-      (c) a coexisting overlay's own pre-takeover backup file
-          (/etc/resolv.pre-tailscale-backup.conf — on the repro host it held
-          `nameserver 192.168.1.1`), parsed with the same 100.64/10 exclusion;
+          config::resolve_upstreams, applied before recovery runs);
+      (b) IMPLEMENTED: a coexisting overlay's own pre-takeover backup file —
+          Tailscale's /etc/resolv.pre-tailscale-backup.conf, where it stashes the
+          true DHCP upstream (on the repro host it held `nameserver 192.168.1.1`);
+          read by dns_config::recover_real_upstreams() and parsed with the SAME
+          100.64/10 exclusion so a poisoned backup can never re-introduce the loop.
+      (c) DEFERRED: NetworkManager's DHCP-learned nameservers via D-Bus (the
+          physical NIC's Ip4Config.Nameservers — unpoisoned even while Tailscale
+          owns resolv.conf, since tailscale0 is unmanaged; NM detection as a
+          SOURCE, not a gate on (1)). A more general source than (b) but more
+          code; the backup-file source already covers the Tailscale repro, so NM
+          D-Bus is a follow-up if a no-Tailscale-backup host ever needs it.
       (d) if still empty, DO NOT silently egress to a public resolver: leave
           non-`.ray` unresolved and surface a clear warning naming
           `torpedo config set dns-upstreams <ip>` (reuses the DNS-001 warnings
-          channel + the DNS-002 status surface). A public default may later be
-          an explicit opt-in, never the silent fallback.
-    Result: order-independent correctness. Whether Tailscale or torpedo starts
-    first, torpedo forwards non-`.ray` to the REAL router, `.ray` resolves
-    locally, and `.ts.net` still resolves (Tailscale stays authoritative for its
-    own zone — no loop, because torpedo's base is now the real router, not a VPN
-    proxy).
+          channel). A public default may later be an explicit opt-in, never the
+          silent fallback.
+    Wired in DnsManager::configure: only when is_direct && the resolved upstream
+    set is empty. Result (VERIFIED LIVE on xps + Tailscale, `magic-dns direct`):
+    no loop, `github.com` resolves via torpedo->192.168.1.1, `.ray` resolves
+    locally, tailscaled shows zero `deadline exceeded`/`queue full`.
+
+    KNOWN LIMITATION of `direct` on a Tailscale host (verified: NXDOMAIN): while
+    torpedo owns resolv.conf it is the SOLE nameserver and forwards non-`.ray`
+    queries to the real router, which does not know `.ts.net` — so Tailscale's own
+    MagicDNS names stop resolving system-wide (Tailscale itself still answers when
+    queried directly at 100.100.100.100). `direct` therefore trades `.ts.net` for
+    `.ray`. Recovering BOTH needs the deferred `.ts.net`->Tailscale forwarding
+    (below), or the clean answer: run systemd-resolved so both VPNs take the
+    split-DNS path and neither seizes resolv.conf.
 
     (3) HOUSEKEEPING — purge stale `100.100.100.53` literals that misdocument
     torpedo's own resolver as the legacy /10-derived address instead of the
     subnet-derived magic_dns_v4_node() (10.88.100.53 on the default subnet):
-    src/dns_config.rs module doc (line ~3), the comments at ~953 and ~1079, and
-    the test fixture string at ~1206/~1224. Cosmetic but prevents a reader from
-    trusting a wrong resolver IP (the standing "resolver IP is subnet-derived"
-    doc-fix item).
+    done in src/dns_config.rs (module doc, the two direct-mode comments, and the
+    resolv_conf_is_ours test fixture). Cosmetic but prevents a reader from
+    trusting a wrong resolver IP.
 
-    NON-GOAL (v1): actively reconfiguring Tailscale, or special-casing `.ts.net`
-    forwarding. Not needed — once torpedo's base is the real router, Tailscale's
-    own authoritative answering keeps `.ts.net` working with no torpedo help.
+    DEFERRED (v2): special-case `.ts.net` (and the tailnet reverse zones) to
+    forward to 100.100.100.100 instead of the router, which would restore
+    Tailscale MagicDNS under `direct` with no loop (Tailscale is authoritative for
+    its own zone, so it answers rather than re-forwarding). Not done in v1 — the
+    `direct` path is opt-in and the clean recommendation is systemd-resolved.
+    NON-GOAL: actively reconfiguring Tailscale itself.
 
-    ENFORCEMENT: unit tests (reconcile.py's `test` check) — (i)
-    parse_resolv_nameservers drops ALL 100.64/10 addresses (100.100.100.100 and
-    100.100.100.53) while keeping a real router IP (192.168.1.1); (ii) the
-    recovery chain's ordering/short-circuit is a pure, tested helper. The NM
-    D-Bus source and the true two-daemon loop are not unit-testable in-process
-    (per DNS-003), so a live xps + Tailscale re-test remains the integration gate.
+    ENFORCEMENT: unit tests (reconcile.py's `test` check) — is_overlay_resolver
+    matches the whole 100.64/10 range and nothing else; parse_resolv_nameservers
+    drops ALL 100.64/10 addresses (100.100.100.100 and 100.100.100.53) while
+    keeping a real router IP (192.168.1.1). recover_real_upstreams (file read) and
+    the true two-daemon loop are not unit-testable in-process (per DNS-003), so a
+    live xps + Tailscale re-test in `magic-dns direct` remains the integration gate.
     """
     req_id = "DNS-004"
 

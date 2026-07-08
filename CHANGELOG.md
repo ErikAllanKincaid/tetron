@@ -120,7 +120,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   convenience only — reach peers by their mesh IP from `torpedo status` (the mesh,
   firewall, SSH, and file transfer never use system DNS). `direct` restores the
   old takeover behavior for hosts that want `.ray` and have no clean backend;
-  `off` never configures system DNS at all.
+  `off` never configures system DNS at all. When `direct` takes over on a host
+  running Tailscale, torpedo no longer forwards DNS to Tailscale's own resolver
+  (any `100.64.0.0/10` overlay address is skipped) and recovers the real upstream
+  from Tailscale's pre-takeover backup, so the two do not form a query loop.
+  Note: while `direct` is active torpedo is the sole resolver, so Tailscale's own
+  `*.ts.net` names stop resolving on that host — use `auto` (the default) or
+  systemd-resolved if you need both.
 - **`ray firewall show` clarifies the firewall is separate from your host
   firewall**: the output now notes that this is a mesh firewall applied on top of
   your host/kernel firewall (both must allow a packet), so it is not forgotten

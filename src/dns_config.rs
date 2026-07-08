@@ -1,6 +1,7 @@
 //! OS-level DNS resolver configuration for Magic DNS.
 //!
-//! Configures the system to route `.ray` queries to our local resolver at 100.100.100.53:53.
+//! Configures the system to route `.ray` queries to our in-daemon resolver at the
+//! subnet-derived magic IP (see [`crate::dns::magic_dns_v4_node`]).
 //! macOS: SCDynamicStore with session keys (auto-cleanup on process exit).
 //! Linux: systemd-resolved / resolvconf / direct /etc/resolv.conf.
 
@@ -854,16 +855,46 @@ impl DnsConfigurator for Resolvconf {
 
 // Pure helpers — NOT cfg-gated so their unit tests run on macOS (the dev host).
 
-/// Extract IPv4 `nameserver` entries from resolv.conf contents, excluding our
-/// own magic IP (so we never capture ourselves as an upstream → no forward loop).
+/// True if `ip` is in the RFC 6598 CGNAT / shared range 100.64.0.0/10 — where
+/// overlay VPNs park self-referential stub resolvers (Tailscale's magic resolver,
+/// and the legacy pre-fork rayfish one). A genuine recursive resolver never lives
+/// there, so we must never forward DNS to one: doing so is exactly the mutual
+/// torpedo<->Tailscale forwarding loop (DNS-004 loop-breaker).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_overlay_resolver(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+/// Extract IPv4 `nameserver` entries from resolv.conf contents, excluding our own
+/// magic IP AND any overlay-VPN resolver in 100.64.0.0/10 (so we never capture
+/// ourselves or a neighbor VPN as an upstream → no forward loop).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_resolv_nameservers(contents: &str) -> Vec<Ipv4Addr> {
     contents
         .lines()
         .filter_map(|l| l.trim().strip_prefix("nameserver "))
         .filter_map(|s| s.trim().parse::<Ipv4Addr>().ok())
-        .filter(|ip| *ip != crate::dns::magic_dns_v4_node())
+        .filter(|ip| *ip != crate::dns::magic_dns_v4_node() && !is_overlay_resolver(*ip))
         .collect()
+}
+
+/// Best-effort recovery of the REAL upstream resolver for direct mode when the
+/// takeover captured nothing usable — e.g. a Tailscale-owned resolv.conf listed
+/// only its own 100.64/10 resolver, which the loop-breaker drops, leaving the
+/// captured set empty. Reads another VPN's pre-takeover backup of resolv.conf
+/// (currently Tailscale's, which stashes the true DHCP upstream there) and
+/// returns its nameservers, run through the same overlay-range exclusion so we
+/// never re-introduce the loop. Empty when nothing is recoverable (the caller
+/// then warns the operator to set `dns-upstreams`).
+#[cfg(target_os = "linux")]
+pub async fn recover_real_upstreams() -> Vec<Ipv4Addr> {
+    // Tailscale's direct DNS manager backs up the pre-Tailscale resolv.conf here.
+    const TAILSCALE_BACKUP: &str = "/etc/resolv.pre-tailscale-backup.conf";
+    let contents = tokio::fs::read_to_string(TAILSCALE_BACKUP)
+        .await
+        .unwrap_or_default();
+    parse_resolv_nameservers(&contents)
 }
 
 /// Render a direct-mode resolv.conf that points only at the magic resolver IP.
@@ -984,7 +1015,7 @@ pub async fn run_resolv_reassert(search: Vec<String>, token: tokio_util::sync::C
 // When we fall to the direct /etc/resolv.conf takeover it's because no
 // split-DNS backend was found — on an NM host that means NM is in plain
 // `default` mode and owns resolv.conf, regenerating it on every connection /
-// DHCP-lease event and trampling our `nameserver 100.100.100.53`. Dropping a
+// DHCP-lease event and trampling our magic-IP `nameserver` line. Dropping a
 // `dns=none` config snippet makes NM leave resolv.conf entirely to us
 // (Tailscale takes the same "stop the fight" stance over re-asserting forever).
 // Reversible: removed + reloaded on revert. The inotify re-assert remains the
@@ -1110,7 +1141,7 @@ async fn restore_file(path: &Path) -> Result<()> {
 /// NetworkManager drop-in (so NM resumes owning DNS). No async, best-effort.
 ///
 /// This is the safety net the user asked for: with NM quieting, a panic that
-/// left `dns=none` in place **and** resolv.conf pointing at 100.100.100.53 would
+/// left `dns=none` in place **and** resolv.conf pointing at our now-dead resolver would
 /// blackhole all DNS until the service restarts and `restore_stale_backups()`
 /// runs. Restoring synchronously here closes that window immediately. A no-op
 /// when no backup exists (split-DNS modes never overwrite resolv.conf).
@@ -1230,14 +1261,14 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::{
-        nm_dns_none_dropin, parse_resolv_nameservers, render_direct_resolv_conf,
-        resolv_conf_is_ours, resolver_ip,
+        is_overlay_resolver, nm_dns_none_dropin, parse_resolv_nameservers,
+        render_direct_resolv_conf, resolv_conf_is_ours, resolver_ip,
     };
 
     #[test]
     fn resolv_conf_is_ours_detects_marker() {
         assert!(resolv_conf_is_ours(
-            "# Added by torpedo - do not edit\nnameserver 100.100.100.53\n"
+            "# Added by torpedo - do not edit\nnameserver 10.88.100.53\n"
         ));
         assert!(!resolv_conf_is_ours(
             "# Generated by NetworkManager\nnameserver 192.168.1.1\n"
@@ -1253,12 +1284,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_resolv_nameservers_extracts_ipv4_excluding_magic() {
+    fn parse_resolv_nameservers_excludes_magic_and_overlay() {
         // Build the input with the actual magic resolver IP so the test tracks a
-        // configurable subnet instead of a hardcoded 100.100.100.53.
+        // configurable subnet instead of a hardcoded literal. Include a Tailscale
+        // overlay resolver (100.100.100.100) and the legacy rayfish one
+        // (100.100.100.53) — both must be dropped (DNS-004 loop-breaker).
         let magic = crate::dns::magic_dns_v4_node();
         let c = format!(
-            "# Generated by NetworkManager\nsearch home\nnameserver 192.168.1.1\nnameserver 8.8.8.8\nnameserver {magic}\n"
+            "# Generated by NetworkManager\nsearch home\nnameserver 192.168.1.1\nnameserver 8.8.8.8\nnameserver 100.100.100.100\nnameserver 100.100.100.53\nnameserver {magic}\n"
         );
         assert_eq!(
             parse_resolv_nameservers(&c),
@@ -1266,7 +1299,17 @@ mod tests {
                 "192.168.1.1".parse::<Ipv4Addr>().unwrap(),
                 "8.8.8.8".parse::<Ipv4Addr>().unwrap()
             ]
-        ); // the magic resolver IP is excluded
+        ); // magic + every 100.64/10 overlay resolver excluded
+    }
+
+    #[test]
+    fn is_overlay_resolver_matches_cgnat_range() {
+        for ip in ["100.64.0.1", "100.100.100.100", "100.100.100.53", "100.127.255.255"] {
+            assert!(is_overlay_resolver(ip.parse().unwrap()), "{ip} should be overlay");
+        }
+        for ip in ["192.168.1.1", "8.8.8.8", "100.63.255.255", "100.128.0.1", "10.88.100.53"] {
+            assert!(!is_overlay_resolver(ip.parse().unwrap()), "{ip} should NOT be overlay");
+        }
     }
 
     #[test]

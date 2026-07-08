@@ -60,8 +60,28 @@ impl DnsManager {
                 // Merge any user-configured DNS upstreams over the system-captured
                 // set (replace drops the captured ones; augment tries custom first).
                 let dns_override = config::load().map(|c| c.dns_upstreams).unwrap_or_default();
-                let upstreams = config::resolve_upstreams(&dns_override, captured);
+                #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+                let mut upstreams = config::resolve_upstreams(&dns_override, captured);
                 let is_direct = c.name() == "direct-resolv.conf";
+                // DNS-004: in direct mode the loop-breaker may have dropped the
+                // only captured upstream (a foreign overlay resolver), leaving us
+                // with nowhere to forward non-`.ray` queries. Recover the REAL
+                // upstream from another VPN's pre-takeover backup; if none, warn.
+                #[cfg(target_os = "linux")]
+                if is_direct && upstreams.is_empty() {
+                    upstreams = dns_config::recover_real_upstreams().await;
+                    if upstreams.is_empty() {
+                        warnings.push(
+                            "torpedo took over /etc/resolv.conf but could not find a real \
+                             upstream DNS server (the previous file pointed only at another \
+                             VPN's resolver). Non-.ray DNS will not resolve until you set one: \
+                             `torpedo config set dns-upstreams <ip>`."
+                                .to_string(),
+                        );
+                    } else {
+                        tracing::info!(upstreams = ?upstreams, "DNS-004: recovered real upstream(s) for direct mode");
+                    }
+                }
                 #[cfg(target_os = "linux")]
                 let search = c.search_domains();
                 tracing::info!(backend = c.name(), resolver_ip = %crate::dns::magic_dns_v4_node(), upstreams = ?upstreams, "Magic DNS active");

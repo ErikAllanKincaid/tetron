@@ -300,7 +300,7 @@ pub(crate) enum Command {
         /// "on" or "off"
         state: String,
     },
-    /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet)
+    /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet, magic-dns)
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -489,24 +489,27 @@ pub(crate) enum ConfigAction {
     /// Show settings (all, or one key)
     #[command(visible_alias = "ls")]
     Get {
-        /// relay, discovery-dns, dns-upstreams, or subnet (omit for all)
+        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns (omit for all)
         key: Option<String>,
     },
     /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs;
-    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16). Applies on restart.
+    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16); `magic-dns` takes
+    /// off|auto|direct (auto = never seize /etc/resolv.conf). Applies on restart.
     Set {
-        /// relay, discovery-dns, dns-upstreams, or subnet
+        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
         key: String,
-        /// Comma list of presets / URLs / IPv4s, or a CIDR for subnet (empty resets)
+        /// Server keys: comma list of presets/URLs/IPv4s. subnet: a CIDR.
+        /// magic-dns: off|auto|direct. Empty resets to the default.
         value: String,
         /// Replace the defaults instead of augmenting them (server keys only)
         #[arg(long)]
         replace: bool,
     },
-    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/16)
+    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/16;
+    /// magic-dns -> auto)
     #[command(visible_alias = "rm")]
     Unset {
-        /// relay, discovery-dns, dns-upstreams, or subnet
+        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
         key: String,
     },
 }
