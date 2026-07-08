@@ -1,16 +1,16 @@
 name: Nightly
 
-# Rolling pre-release built from every push to main. Moves the `nightly` tag
-# to the new commit, recreates the `nightly` pre-release, and overwrites its
-# Linux binaries (macOS/Android disabled — see CI-002). Self-update is
+# Rolling pre-release, built on demand from the Actions tab ("Run workflow")
+# or `gh workflow run nightly.yml`. Moves the `nightly` tag to HEAD of the
+# branch it's run against, recreates the `nightly` pre-release, and overwrites
+# its Linux binaries (macOS/Android disabled — see CI-002). Self-update is
 # disabled in this fork (CON-006), so this is for manual download only.
+# Manual-only on purpose (CI-003): no automatic push trigger, so every rebuild
+# is a deliberate action instead of firing on every doc/spec-only commit.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
-# Avoid two main pushes racing to move the tag / clobber assets.
+# Avoid two concurrent runs racing to move the tag / clobber assets.
 concurrency:
   group: nightly
   cancel-in-progress: true

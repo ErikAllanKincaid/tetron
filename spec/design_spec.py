@@ -1025,3 +1025,34 @@ class ReleaseWorkflowLinuxOnlyForNow(Requirement):
     release.
     """
     req_id = "CI-002"
+
+
+class NightlyWorkflowManualOnly(Requirement):
+    """REQUIREMENT-ID: CI-003
+
+    Decided 2026-07-08, right after CI-001 fixed `nightly.yml`'s dead
+    `push: branches: [master]` trigger to `main`. On reflection, an automatic
+    push trigger is the wrong default for this project's actual commit
+    pattern: many pushes are doc/spec/TODO-only (this session alone landed
+    several), and each would have silently kicked off a full rebuild + moved
+    the shared `nightly` tag the moment CI-001 made the trigger live.
+
+    Fix: `nightly.yml`'s `on:` block is now `workflow_dispatch:` only — no
+    `push:` trigger at all. A nightly build now happens only when explicitly
+    requested (Actions tab -> Nightly -> "Run workflow", or `gh workflow run
+    nightly.yml`), against whichever branch/ref is chosen at dispatch time
+    (defaults to `main`). `release.yml` is unaffected — it already triggers on
+    tag push / manual dispatch, not branch push, so it never had this problem.
+
+    A `push` + `paths:` filter (only rebuild when `src/**`/`Cargo.toml`/
+    `Cargo.lock`/the workflow file itself changes) was considered as an
+    alternative that keeps some automation while filtering out doc-only
+    noise; deferred in favor of full manual control while this pipeline is
+    still new and untrusted. Revisit once the pipeline has a track record.
+
+    ENFORCEMENT: none — YAML workflow file, same rationale as RENAME-012/
+    CI-001/CI-002. Verified by reading the diff (no `push:` key under `on:`)
+    and, once tried, that pushing to `main` alone does NOT start a run while
+    "Run workflow" does.
+    """
+    req_id = "CI-003"
