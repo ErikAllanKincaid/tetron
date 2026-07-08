@@ -70,9 +70,12 @@ torpedo status                                # daemon reachable
 ip -4 addr show tun0                           # inet is 10.99.x (10.88.x if you skipped)
 ```
 
-- [ ] Daemon starts on both (no "refusing to run next to Tailscale").
-- [ ] `ip addr show tun0` shows the chosen subnet on **both** nodes (must match).
-- [ ] Tailscale is still fully functional on the node(s) where it runs.
+- [x] Daemon starts on both (no "refusing to run next to Tailscale").
+- [x] `ip addr show tun0` shows the chosen subnet on **both** nodes (must match).
+      AORUS `10.99.49.50/16`, xps `10.99.3.155/16`.
+- [x] Tailscale is still fully functional on the node(s) where it runs.
+      `tailscale status` shows both nodes' own tailnet address active and
+      peers visible, unaffected by torpedo's `10.99.0.0/16` overlay.
 
 - Note: `torpedo config get subnet` is root-only — use `sudo torpedo config get subnet`
   (a non-root call now hints instead of printing a misleading `<default>`).
@@ -86,10 +89,13 @@ set in Stage 0, so no `--subnet` here — the node is already on it).
 torpedo create --name testnet --hostname aorus   # closed by default; --open for public
 ```
 
-- [ ] A room id (network public key) is printed.
+- [x] A room id (network public key) is printed. `cdcbbcfe…3935`. Hint text
+      correctly shows `torpedo join …` / `torpedo up` (RENAME-011 confirmed
+      live in this exact command).
 - [ ] Without `--hostname` the node auto-generates a random name (e.g. `hill`); pass
   
       `--hostname` to control it, or fix it later with `torpedo hostname testnet aorus`.
+      (Not exercised this run — we always passed `--hostname` explicitly.)
 
 ## Stage 2 — Check parameters (AORUS)
 
@@ -97,8 +103,9 @@ torpedo create --name testnet --hostname aorus   # closed by default; --open for
 torpedo status --json
 ```
 
-- [ ] Our mesh IPv4 is inside `10.99.0.0/16` (NOT `100.64.x.x`).
-- [ ] Network role is `coordinator`; a `200::/7` IPv6 is assigned.
+- [x] Our mesh IPv4 is inside `10.99.0.0/16` (NOT `100.64.x.x`). `10.99.49.50`.
+- [x] Network role is `coordinator`; a `200::/7` IPv6 is assigned.
+      `role: "Coordinator"`, ipv6 `21f:cfa6:2bd9:7d75:8002:c6b9:29cb:85ee`.
 
 ## Stage 3 — Enroll xps by invite
 
@@ -495,11 +502,20 @@ Findings:
 - Subnet decision for this attempt: custom `10.99.0.0/16` (not the default),
   specifically to regression-test the SUBNET-014 fixes against the exact
   failure attempt 1 hit.
-- Progress: Stage 0 install done on both — `torpedo up` run fresh on AORUS and
-  xps, binary confirmed current (`torpedo version` = `6ffee52b` on both,
-  matching `git log -1`). Both nodes currently on the **default** `10.88.0.0/16`
-  (tun0: AORUS `10.88.49.50`, xps `10.88.3.155`) — the `config set subnet` +
-  `restart` step to move both to `10.99.0.0/16` is next.
+- Progress: **Stage 0 complete.** `torpedo up` run fresh on AORUS and xps,
+  binary confirmed current at each step (`torpedo version` = `6ffee52b`
+  initially, then rebuilt mid-run to `1c332832` after RENAME-011 landed —
+  reinstalled + restarted on both nodes). Both nodes now on custom
+  `10.99.0.0/16` (tun0: AORUS `10.99.49.50`, xps `10.99.3.155`), confirmed via
+  `sudo torpedo config get subnet` on each. Tailscale confirmed still fully
+  functional on both (`tailscale status` shows each node's own tailnet address
+  active, peers visible) alongside the `10.99` overlay.
+- Mid-run detour: found + fixed **RENAME-011** (41 leftover user-facing `ray`
+  strings, incl. the `torpedo version` banner printing `ray` on one line and
+  `torpedo` on the other) and the 1Password backup item title. Committed
+  (`2dab79e`, `1c33283`), libspec-linked, pushed. Live-confirmed post-fix: the
+  `config set subnet` hint now correctly says `sudo torpedo restart` (was
+  `sudo ray restart`), and `torpedo version` prints `torpedo` consistently.
 
 Findings so far:
 
@@ -513,3 +529,28 @@ Findings so far:
   all. Rules out "stale state from the old run" as an explanation; this is a
   real, deterministic gap in the current code, not fixed by SUBNET-014/FW-001
   (unrelated areas). Confirms the fix noted in attempt 1 is still needed.
+- [!] **RENAME-011 — ~40 leftover user-facing `ray` strings (fixed mid-run).**
+  Found while inspecting a `config set subnet` hint (`Run 'sudo ray restart'`).
+  Broader sweep turned up CLI hints, error messages, an IPC message, the
+  `apply --example` YAML, the version banner, and shell-completion
+  registration all still hardcoding the pre-fork binary name. See
+  `spec/design_spec.py`'s `RENAME-011` for the full list; fixed and verified
+  live in this run (not just by `reconcile.py`).
+- [!] **CRITICAL — DNS-003: mutual DNS forwarding loop with Tailscale on
+  tier-5 hosts (top priority, NOT fixed yet).** Hit trying to run Stage 3's
+  `torpedo join` on xps: failed immediately with "Service 'pkarr' failed".
+  Root cause is not pkarr at all — it is total system DNS failure. torpedo's
+  tier-5 `DirectResolvConf` takeover correctly captures Tailscale's
+  `100.100.100.100` as upstream and rewrites `/etc/resolv.conf` to point at
+  torpedo's own magic resolver (`10.99.100.53`) — but `tailscaled` ALSO
+  watches `/etc/resolv.conf` to find its own forwarding upstream, so it then
+  adopts torpedo's magic IP as *its* upstream. Every non-`.ray` query now
+  bounces torpedo -> Tailscale -> torpedo forever, confirmed live in
+  `journalctl -u tailscaled`: `dns udp query: waiting for response or error
+  from [10.99.100.53]: context deadline exceeded`. `.ray` resolution itself is
+  unaffected (instant, correct NXDOMAIN/SOA) — this is specifically the
+  upstream-forwarding path. Full diagnosis, evidence, and why AORUS (tier-1)
+  didn't show it: `spec/design_spec.py`'s `DNS-003` (`NoMutualDnsForwardingLoopWithTailscale`).
+  This breaks the fork's headline coexistence promise on tier-5 hosts, which
+  DNS-001 itself already documents as "the common case" for a minimal
+  install — not an edge case. Blocking Stage 3+ on xps until fixed.

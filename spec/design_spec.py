@@ -611,6 +611,247 @@ class SurfaceDnsTakeoverWarning(Requirement):
     req_id = "DNS-001"
 
 
+class NoMutualDnsForwardingLoopWithTailscale(Requirement):
+    """REQUIREMENT-ID: DNS-003
+
+    CRITICAL, TOP PRIORITY — found live in Phase-7 two-machine testing
+    (2026-07-08, xps-17-9720). On a tier-5 host (no systemd-resolved,
+    NetworkManager, resolvectl, or resolvconf — DirectResolvConf takeover,
+    same class of host DNS-001 covers) running Tailscale, torpedo and
+    Tailscale form a MUTUAL DNS FORWARDING LOOP that breaks ALL DNS
+    resolution system-wide — not just `.ray` names, ALL of it, including the
+    torpedo daemon's own outbound HTTP (pkarr discovery). This directly
+    defeats the fork's entire reason to exist: coexisting with Tailscale.
+
+    SYMPTOMS (all observed live on xps-17-9720, a minimal Debian-trixie-family
+    host, LMDE, with Tailscale active):
+    - `torpedo join <invite>` fails immediately: "failed to resolve network
+      record: failed to resolve network record: Service 'pkarr' failed".
+    - Direct queries to EITHER resolver hang for the full timeout and return
+      nothing: `dig @100.100.100.100 github.com` (Tailscale's quad-100) and
+      `dig @10.99.100.53 github.com` (torpedo's magic resolver, subnet-derived)
+      both time out. Critically, `dig @10.99.100.53 <anything>.ray` answers
+      correctly and instantly (NXDOMAIN + SOA, 0ms) — torpedo's local `.ray`
+      answering path and its TUN-interception plumbing are NOT the bug.
+    - `ping -c1 github.com` on the host: "Temporary failure in name
+      resolution" — total outbound DNS failure, confirmed independent of any
+      particular application.
+    - Raw ICMP to both `100.100.100.100` and `10.99.100.53` succeeds fine
+      (sub-millisecond) as both root and non-root — the network/routing path
+      is healthy; this is a DNS-application-layer bug, not connectivity.
+    - `journalctl -u tailscaled` shows, at the exact moment of failure:
+      `dns udp query: waiting for response or error from [10.99.100.53]:
+      context deadline exceeded` and `dns udp query: request queue full`
+      (with hundreds of queries dropped under `[RATELIMIT]`) — i.e.
+      Tailscale's own DNS proxy is ALSO stuck waiting on torpedo's resolver.
+
+    DIAGNOSIS (root cause, confirmed via `/etc/resolv.conf.before-torpedo`,
+    the daemon's own capture log, and the interleaved torpedo/tailscaled
+    journal):
+    1. Before torpedo ran, `/etc/resolv.conf` was Tailscale's own file:
+       `nameserver 100.100.100.100` (this is the literal content of the
+       `.before-torpedo` backup — confirmed).
+    2. `DirectResolvConf::new()` (src/dns_config.rs) reads that file BEFORE
+       overwriting it and correctly captures `100.100.100.100` as the sole
+       upstream via `parse_resolv_nameservers` (also confirmed via the
+       daemon's own `took over /etc/resolv.conf directly … upstreams=
+       [100.100.100.100]` log line, present at every one of several restarts
+       in this test run). torpedo's capture step is NOT the bug — it also
+       already excludes its own magic IP from a captured upstream list
+       (`parse_resolv_nameservers` filters `crate::dns::magic_dns_v4_node()`),
+       so torpedo correctly guards against looping to itself on re-takeover.
+    3. `DirectResolvConf::apply()` then overwrites `/etc/resolv.conf` to point
+       solely at torpedo's own magic resolver IP (`10.99.100.53`, subnet-
+       derived).
+    4. `tailscaled` ITSELF watches `/etc/resolv.conf` to learn where to
+       forward queries its own quad-100 resolver can't answer (the same
+       "watch resolv.conf for the real upstream" design torpedo uses,
+       independently implemented). Once torpedo rewrites the file, tailscaled
+       adopts torpedo's magic IP (`10.99.100.53`) as ITS OWN upstream —
+       tailscaled has no way to know that IP belongs to another VPN's
+       self-referential resolver, so it has no equivalent guard.
+    5. Net effect, a perfect two-hop loop with no real exit: an app's query
+       hits `10.99.100.53` (torpedo, the OS's sole nameserver) -> torpedo
+       does not recognize the name as `.ray` -> forwards to its captured
+       upstream `100.100.100.100` (Tailscale) -> Tailscale's quad-100 also
+       does not recognize the name -> forwards to ITS captured upstream,
+       `10.99.100.53` -> back to torpedo. Neither side ever reaches the real
+       internet; each side's own timeout eventually fires (torpedo's
+       `forward_once`, 3s; tailscaled's own deadline), which is exactly the
+       observed hang-then-timeout behavior, not an instant error.
+
+    WHY THIS WAS NOT CAUGHT ON THE COORDINATOR (AORUS, tier-1): AORUS has
+    systemd-resolved, so torpedo took the D-Bus split-DNS registration path
+    (`configured systemd-resolved via D-Bus for .ray`) instead of touching
+    `/etc/resolv.conf` at all, and Tailscale itself very likely also registers
+    with systemd-resolved there rather than writing the file directly — so
+    there is no file for the two to collide over. This loop is specific to
+    hosts where BOTH torpedo and Tailscale independently fall back to direct
+    `/etc/resolv.conf` management (tier-5, this fork's own DNS-001 scenario) —
+    which, per DNS-001's own framing, is not a rare edge case: it is "the
+    common case on a default Debian trixie server / minimal install", i.e.
+    exactly the kind of host an operator would run a lean VPN mesh on.
+
+    IMPACT: on any tier-5 host running Tailscale, `sudo torpedo up` silently
+    breaks ALL system DNS (not just `.ray`), including torpedo's own ability
+    to join a network (pkarr discovery needs working DNS to resolve
+    `dns.iroh.link`). This is a total, silent failure of the fork's headline
+    coexistence promise on a documented-common host class, not a cosmetic bug.
+
+    NOT YET FIXED — left open deliberately for focused design work (this
+    docstring is diagnostic, not prescriptive). Candidate directions worth
+    weighing, none chosen yet: detect that Tailscale is active (e.g. a
+    `tailscale0` interface or `100.100.100.100` present in the pre-takeover
+    resolv.conf) and refuse the direct takeover / warn loudly instead of
+    proceeding blind; special-case known other-VPN quad-resolver IPs
+    (`100.100.100.100`) by never handing them out as a captured upstream
+    that could loop back; or (a smaller, more surgical option) detect the
+    specific loop pattern at forward time (a query that bounces back to
+    ourselves) and fail fast with a clear error instead of a silent hang.
+
+    ENFORCEMENT: none yet (no fix designed or landed). Add a unit test once a
+    fix direction is chosen; this is exactly the kind of interaction bug a
+    single-process unit test cannot catch on its own (it requires a second,
+    real DNS-proxying daemon), so integration-level verification (a live
+    two-machine re-test with Tailscale + a tier-5 host) is the real gate.
+    """
+    req_id = "DNS-003"
+
+
+class ForeignOverlayUpstreamLoopBreaker(Requirement):
+    """REQUIREMENT-ID: DNS-004
+
+    The SAFETY NET for the opt-in `magic-dns direct` takeover. The primary
+    resolution of DNS-003 is DNS-005, which makes the /etc/resolv.conf takeover
+    opt-in so the loop cannot occur by default. This requirement hardens the
+    remaining case: a user who explicitly runs `torpedo config set magic-dns
+    direct` on a tier-5 host that ALSO runs Tailscale. Without it, that opt-in
+    would re-expose the mutual torpedo<->Tailscale DNS forwarding loop of
+    DNS-003. Two decoupled mechanisms plus housekeeping.
+
+    (1) LOOP-BREAKER — never adopt a foreign overlay VPN's resolver as our
+    upstream. `parse_resolv_nameservers` (src/dns_config.rs) already drops our
+    OWN magic IP; extend the same filter to drop EVERY address in the whole
+    CGNAT / shared range 100.64.0.0/10 (RFC 6598). That range is where overlay
+    VPNs park self-referential stub resolvers (Tailscale's 100.100.100.100, and
+    the LEGACY rayfish magic 100.100.100.53 from before this fork moved the
+    default subnet to 10.88.0.0/16) — a genuine recursive resolver essentially
+    never lives there. A captured 100.64/10 address is precisely the poison that
+    forms the loop, so refusing to forward to it breaks the loop at the source.
+
+    This is deliberately NOT gated on "NetworkManager in default DNS mode" (an
+    early candidate). That signal is wrong twice over: it MISSES the pure no-NM
+    tier-5 host (minimal Debian netinst on ifupdown+dhclient or systemd-networkd
+    without resolved), which DNS-001 itself calls "the common case" and which
+    loops identically; and it is unnecessary, because the filter is already
+    scoped to the only risky path (captured_upstreams() is non-empty ONLY in
+    DirectResolvConf — every split-DNS backend returns empty) AND self-gates by
+    content (it does nothing unless a 100.64/10 address is actually present,
+    which only happens when a foreign overlay poisoned resolv.conf). On a normal
+    tier-5 host with a real router (e.g. 192.168.1.1) and no Tailscale it is a
+    no-op. Every drop is logged so an operator can see it happened.
+
+    (2) REAL-UPSTREAM RECOVERY — the loop-breaker alone converts a hang into a
+    failure (on a Tailscale-first-then-torpedo host the captured set was ONLY
+    100.100.100.100, so after the filter it is empty and non-`.ray` DNS dies).
+    To restore working internet DNS, recover the genuine upstream, in priority:
+      (a) config `dns_upstreams` if the operator set it (already honored via
+          config::resolve_upstreams);
+      (b) NetworkManager's DHCP-learned nameservers via D-Bus (the physical NIC's
+          Ip4Config.Nameservers — unpoisoned even while Tailscale owns
+          resolv.conf, since tailscale0 is unmanaged; this is where NM detection
+          EARNS its keep, as a SOURCE, not as a gate on (1); confirmed present as
+          192.168.1.1 on the xps repro host, NM in default mode);
+      (c) a coexisting overlay's own pre-takeover backup file
+          (/etc/resolv.pre-tailscale-backup.conf — on the repro host it held
+          `nameserver 192.168.1.1`), parsed with the same 100.64/10 exclusion;
+      (d) if still empty, DO NOT silently egress to a public resolver: leave
+          non-`.ray` unresolved and surface a clear warning naming
+          `torpedo config set dns-upstreams <ip>` (reuses the DNS-001 warnings
+          channel + the DNS-002 status surface). A public default may later be
+          an explicit opt-in, never the silent fallback.
+    Result: order-independent correctness. Whether Tailscale or torpedo starts
+    first, torpedo forwards non-`.ray` to the REAL router, `.ray` resolves
+    locally, and `.ts.net` still resolves (Tailscale stays authoritative for its
+    own zone — no loop, because torpedo's base is now the real router, not a VPN
+    proxy).
+
+    (3) HOUSEKEEPING — purge stale `100.100.100.53` literals that misdocument
+    torpedo's own resolver as the legacy /10-derived address instead of the
+    subnet-derived magic_dns_v4_node() (10.88.100.53 on the default subnet):
+    src/dns_config.rs module doc (line ~3), the comments at ~953 and ~1079, and
+    the test fixture string at ~1206/~1224. Cosmetic but prevents a reader from
+    trusting a wrong resolver IP (the standing "resolver IP is subnet-derived"
+    doc-fix item).
+
+    NON-GOAL (v1): actively reconfiguring Tailscale, or special-casing `.ts.net`
+    forwarding. Not needed — once torpedo's base is the real router, Tailscale's
+    own authoritative answering keeps `.ts.net` working with no torpedo help.
+
+    ENFORCEMENT: unit tests (reconcile.py's `test` check) — (i)
+    parse_resolv_nameservers drops ALL 100.64/10 addresses (100.100.100.100 and
+    100.100.100.53) while keeping a real router IP (192.168.1.1); (ii) the
+    recovery chain's ordering/short-circuit is a pure, tested helper. The NM
+    D-Bus source and the true two-daemon loop are not unit-testable in-process
+    (per DNS-003), so a live xps + Tailscale re-test remains the integration gate.
+    """
+    req_id = "DNS-004"
+
+
+class MagicDnsIsOptInNeverSeizesResolvConf(Requirement):
+    """REQUIREMENT-ID: DNS-005
+
+    THE PRIMARY resolution of DNS-003: torpedo does not touch /etc/resolv.conf by
+    default. Magic DNS (`.ray` name resolution) is a convenience, not a
+    requirement — the mesh data plane, firewall, embedded SSH, and file transfer
+    never use system DNS, the `torpedo` CLI resolves hostnames daemon-side from
+    the roster, and `torpedo status` already lists every peer's mesh IP (its own
+    IP on each network header + an ipv4 column per peer row). So an operator can
+    reach every host by mesh IP (or a one-time ~/.ssh/config alias) with no OS-DNS
+    changes at all. Seizing /etc/resolv.conf to answer `.ray` is exactly what
+    collides with another VPN that manages the same file (Tailscale) and produces
+    the DNS-003 blackhole — so it must never be the default.
+
+    MECHANISM: a node-global setting `magic_dns: MagicDnsMode` in settings.toml
+    (config.rs), three values, set via `torpedo config set magic-dns off|auto|direct`:
+      - `off`   — never configure OS DNS at all; DnsManager::configure returns
+                  early. Pure mesh-IP operation.
+      - `auto`  — DEFAULT. Use a CLEAN split-DNS backend if present
+                  (systemd-resolved / NetworkManager dnsmasq / resolvconf — all
+                  cooperative, none collide with another VPN); if only the direct
+                  /etc/resolv.conf takeover remains, DECLINE it and surface a
+                  plain-English notice (dns_config::magic_dns_declined_notice)
+                  naming the two ways to enable `.ray`: install systemd-resolved,
+                  or `magic-dns direct`.
+      - `direct`— additionally permit the /etc/resolv.conf takeover as a last
+                  resort (the pre-existing behavior), now guarded by DNS-004's
+                  loop-breaker. Opt-in only.
+    detect_and_configure(tun_name, allow_direct) returns Option<Box<dyn
+    DnsConfigurator>>: Some(clean backend) is always used when present; the direct
+    fallback is constructed only when allow_direct (i.e. mode == direct);
+    otherwise Ok(None) => the decline notice. `off` short-circuits before
+    detection. The cooperative backends are UNCHANGED — this only removes the
+    unconditional DirectResolvConf fallback from the default path.
+
+    WHY THIS IS THE RIGHT DEFAULT (field topology): the tier-5 host in the repro
+    is the workstation (xps-17, LMDE trixie, NM in default DNS mode), the tier-1
+    clean host is the headless server (AORUS, systemd-resolved). On a workstation
+    the user does want `.ray`, but the safe default is still hands-off: it never
+    blackholes DNS, and the workstation user can either install systemd-resolved
+    (moves to the clean path both torpedo and Tailscale share) or opt into
+    `magic-dns direct`. Users who love Magic DNS keep it — for free on any host
+    with a clean backend (`auto` just works there, e.g. AORUS), or via the opt-in
+    on a minimal host.
+
+    ENFORCEMENT: unit tests (reconcile.py's `test` check) — MagicDnsMode::default
+    is Auto and !allows_direct; parse/set/get roundtrip incl. reset-on-empty and
+    rejection of a bad mode; persistence across save/load. The decline-vs-takeover
+    branch and the true two-daemon coexistence are integration-verified by the
+    live xps + Tailscale re-test (per DNS-003).
+    """
+    req_id = "DNS-005"
+
+
 class SubnetChangeObservableAndAnnounced(Requirement):
     """REQUIREMENT-ID: SUBNET-014
 

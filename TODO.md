@@ -5,6 +5,25 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
 
 ## Upcoming (active agenda)
 
+- [ ] **DNS-003 — CRITICAL, TOP PRIORITY: mutual DNS forwarding loop with
+      Tailscale on tier-5 hosts.** Found 2026-07-08 live testing on xps-17-9720.
+      torpedo's `DirectResolvConf` takeover rewrites `/etc/resolv.conf` to its
+      own magic resolver; `tailscaled` also watches that file for its own
+      upstream and adopts torpedo's IP, creating a forever query loop between
+      the two (`torpedo -> Tailscale -> torpedo -> ...`). Breaks ALL system DNS
+      (not just `.ray`), including torpedo's own pkarr discovery (so `torpedo
+      join` fails with a misleading "Service 'pkarr' failed"). `.ray` names
+      resolve fine — the bug is specifically the non-`.ray` upstream-forwarding
+      path. Does not reproduce on tier-1 (systemd-resolved) hosts, since
+      neither daemon touches `/etc/resolv.conf` there. See
+      `spec/design_spec.py`'s `DNS-003` for full diagnosis + evidence.
+      **Primary fix landed (DNS-005):** Magic DNS is now opt-in — `magic-dns`
+      config (`off|auto|direct`, default `auto`) no longer seizes
+      `/etc/resolv.conf` unless `direct`, so the loop cannot occur by default;
+      reach peers by mesh IP (`torpedo status`). Still to do: verify live on
+      xps + Tailscale, and implement `DNS-004` (100.64/10 loop-breaker +
+      real-upstream recovery) as the safety net for the opt-in `direct` path.
+
 - [x] Documentation: `README.md` (torpedo-focused fork intro + background/further
       reading + image) and `AGENTS.md` (canonical agent guide; `CLAUDE.md` symlink).
 - [ ] Testing: build a distributable binary for the other test machines

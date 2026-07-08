@@ -108,6 +108,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Magic DNS no longer seizes `/etc/resolv.conf` by default.** New setting
+  `torpedo config set magic-dns off|auto|direct` (default `auto`). In `auto`,
+  torpedo uses a clean split-DNS backend when one exists (systemd-resolved,
+  NetworkManager dnsmasq, resolvconf) but otherwise leaves `/etc/resolv.conf`
+  untouched instead of taking it over — so it no longer collides with another
+  VPN that manages the same file (e.g. Tailscale on a minimal Debian host, which
+  previously caused a mutual DNS forwarding loop that broke all name resolution).
+  When it declines, `torpedo up` prints how to enable `.ray`: install
+  systemd-resolved, or opt in with `magic-dns direct`. `.ray` names are a
+  convenience only — reach peers by their mesh IP from `torpedo status` (the mesh,
+  firewall, SSH, and file transfer never use system DNS). `direct` restores the
+  old takeover behavior for hosts that want `.ray` and have no clean backend;
+  `off` never configures system DNS at all.
 - **`ray firewall show` clarifies the firewall is separate from your host
   firewall**: the output now notes that this is a mesh firewall applied on top of
   your host/kernel firewall (both must allow a packet), so it is not forgotten

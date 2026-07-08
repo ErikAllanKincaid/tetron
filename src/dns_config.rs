@@ -68,47 +68,81 @@ pub async fn revert(configurator: &dyn DnsConfigurator) -> Result<()> {
     configurator.revert().await
 }
 
-pub async fn detect_and_configure(tun_name: &str) -> Result<Box<dyn DnsConfigurator>> {
+/// Detect the OS DNS backend and configure it to route `.ray` to our resolver.
+///
+/// Returns `Ok(Some(configurator))` when a backend was configured, or `Ok(None)`
+/// when no *clean* split-DNS backend exists and `allow_direct` is false — i.e.
+/// the caller asked us NOT to seize `/etc/resolv.conf`, so torpedo leaves the
+/// host's DNS untouched (the default `magic-dns auto` posture). Only the direct
+/// `/etc/resolv.conf` takeover is gated by `allow_direct`; every cooperative
+/// backend (systemd-resolved, NetworkManager dnsmasq, resolvconf) is always used
+/// when present, since none of them collide with another VPN's DNS management.
+pub async fn detect_and_configure(
+    tun_name: &str,
+    allow_direct: bool,
+) -> Result<Option<Box<dyn DnsConfigurator>>> {
     // Only the macOS/Linux branches consume `tun_name`; on any other target
     // (e.g. Android) the function falls through to the unsupported-platform bail.
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let _ = tun_name;
+    let _ = (tun_name, allow_direct);
 
     #[cfg(target_os = "macos")]
     {
-        let _ = tun_name;
+        // macOS uses SCDynamicStore session keys, not /etc/resolv.conf, so there
+        // is nothing to collide over — `allow_direct` is irrelevant.
+        let _ = (tun_name, allow_direct);
         let configurator = MacosDynamicStoreDns;
         configurator.apply().await?;
-        return Ok(Box::new(configurator));
+        return Ok(Some(Box::new(configurator)));
     }
 
     #[cfg(target_os = "linux")]
     {
         if let Some(c) = try_systemd_resolved_dbus(tun_name).await {
             c.apply().await?;
-            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+            return Ok(Some(Box::new(c) as Box<dyn DnsConfigurator>));
         }
         if let Some(c) = try_networkmanager_dbus(tun_name).await {
             c.apply().await?;
-            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+            return Ok(Some(Box::new(c) as Box<dyn DnsConfigurator>));
         }
         if let Some(c) = try_systemd_resolved_cli(tun_name) {
             c.apply().await?;
-            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+            return Ok(Some(Box::new(c) as Box<dyn DnsConfigurator>));
         }
         if let Some(c) = try_resolvconf() {
             c.apply().await?;
-            return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+            return Ok(Some(Box::new(c) as Box<dyn DnsConfigurator>));
+        }
+        // No clean split-DNS backend. The only remaining option seizes
+        // /etc/resolv.conf outright — do it only when explicitly opted in
+        // (`magic-dns direct`), never by default, so torpedo never fights
+        // another VPN (e.g. Tailscale) over that file.
+        if !allow_direct {
+            return Ok(None);
         }
         let c = DirectResolvConf::new().await;
         c.apply().await?;
-        return Ok(Box::new(c) as Box<dyn DnsConfigurator>);
+        return Ok(Some(Box::new(c) as Box<dyn DnsConfigurator>));
     }
 
     #[allow(unreachable_code)]
     {
         anyhow::bail!("DNS configuration not supported on this platform");
     }
+}
+
+/// The plain-English notice printed when `magic-dns auto` declined to seize
+/// `/etc/resolv.conf` because no clean split-DNS backend was found. Explains that
+/// `.ray` names will not resolve locally, that peers are still reachable by mesh
+/// IP, and the two ways to get `.ray` back.
+pub fn magic_dns_declined_notice() -> String {
+    "no split-DNS backend found (systemd-resolved / NetworkManager / resolvconf), \
+     so torpedo left /etc/resolv.conf untouched and .ray names will not resolve on \
+     this host. Reach peers by their mesh IP instead (see `torpedo status`). To enable \
+     .ray here, either install systemd-resolved (clean coexistence with Tailscale), or \
+     opt in to the /etc/resolv.conf takeover with `torpedo config set magic-dns direct`."
+        .to_string()
 }
 
 pub fn restore_stale_backups() {

@@ -44,10 +44,18 @@ impl DnsManager {
     /// (Linux direct-resolv.conf mode) spawn the inotify re-assert watcher.
     /// Failures are non-fatal — pushed to `warnings` so `ray up` can surface them.
     pub(crate) async fn configure(&self, tun_name: &str, warnings: &mut Vec<String>) {
+        // Magic DNS is opt-in-by-posture: `off` skips OS-DNS entirely, `auto`
+        // (default) uses only a clean split-DNS backend and never seizes
+        // /etc/resolv.conf, `direct` additionally permits the takeover fallback.
+        let mode = config::load().map(|c| c.magic_dns).unwrap_or_default();
+        if mode.is_off() {
+            tracing::info!("magic-dns off: not configuring system DNS (reach peers by mesh IP)");
+            return;
+        }
         // Configure system DNS to route .ray queries to our in-daemon resolver.
         dns_config::restore_stale_backups();
-        match dns_config::detect_and_configure(tun_name).await {
-            Ok(c) => {
+        match dns_config::detect_and_configure(tun_name, mode.allows_direct()).await {
+            Ok(Some(c)) => {
                 let captured = c.captured_upstreams();
                 // Merge any user-configured DNS upstreams over the system-captured
                 // set (replace drops the captured ones; augment tries custom first).
@@ -74,6 +82,14 @@ impl DnsManager {
                 }
                 #[cfg(not(target_os = "linux"))]
                 let _ = is_direct;
+            }
+            Ok(None) => {
+                // `magic-dns auto` and no clean split-DNS backend: we chose NOT
+                // to seize /etc/resolv.conf. Surface the plain-English notice so
+                // the operator knows .ray is off here and how to enable it.
+                let notice = dns_config::magic_dns_declined_notice();
+                tracing::info!("{notice}");
+                warnings.push(notice);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to configure system DNS (Magic DNS requires manual setup)");
