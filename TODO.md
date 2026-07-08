@@ -83,7 +83,7 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
 - [ ] **Investigate — resolv.conf re-assert storm** (3x within ~1s at startup on xps):
       confirm it always settles; if some hosts sustain the trample fight, damp the
       re-assert loop or widen the quiet-window guard.
-- [ ] **CRITICAL — `create --subnet` corrupts the data plane** (Phase-7): it sets the
+- [x] **CRITICAL — `create --subnet` corrupts the data plane** (Phase-7): it sets the
       network roster/blob to the requested subnet but leaves the node's TUN/config
       subnet at default, so roster (`10.99.x`) and TUN (`10.88.x`) diverge and NO IP
       forwarding works between nodes (raw `ping` fails both ways; only `torpedo ping`,
@@ -93,6 +93,12 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
       when it differs from the node's current subnet with a clear "run `config set
       subnet <cidr>` + restart first" message. See `create_join.rs` create path +
       `set_node_subnet` + `blob_subnet`.
+      Done (SUBNET-014): took the "warn honestly, require restart" option, not the
+      "apply live" one. `membership::subnet_change_warning` (unit-tested) is called
+      from all three create/join sites in `create_join.rs`, carried on the `Created`/
+      `Joined` IPC messages, and printed by the CLI as `⚠ subnet … takes effect after
+      sudo torpedo restart`. The silent mismatch-until-restart window is gone; the
+      mismatch itself (until you actually restart) still exists by design.
 - [x] **Doc — audit AGENTS.md invite/CLI against the real binary**: `torpedo invite`
       has no `--hostname`/`--expires`/`--qr`/`--reusable`/`list`/`revoke` (usage is just
       `invite <NETWORK>`), yet AGENTS.md (inherited from upstream) documents them. Sweep
