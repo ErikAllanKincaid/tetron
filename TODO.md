@@ -75,9 +75,11 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
       optional): the daemon exposes its DNS backend / takeover state; `status` (and
       `--json`) show it, covering the non-interactive (reboot / auto-activate) path where
       `up` prints nothing. Add `dns_mode` to `StatusResponse`; CLI renders it.
-- [ ] **Doc fix — resolver IP is subnet-derived** (`10.88.100.53` on the default subnet,
+- [x] **Doc fix — resolver IP is subnet-derived** (`10.88.100.53` on the default subnet,
       not `100.100.100.53`): correct AGENTS.md, TESTING.md, and any prose that hardcodes
-      `100.100.100.53`.
+      `100.100.100.53`. Done (DOC-001): AGENTS.md's 4 hardcoded-literal mentions reworded
+      to describe the subnet-derived formula; DESIGN.md/TESTING.md's mentions were
+      already correctly historical and needed no change.
 - [ ] **Investigate — resolv.conf re-assert storm** (3x within ~1s at startup on xps):
       confirm it always settles; if some hosts sustain the trample fight, damp the
       re-assert loop or widen the quiet-window guard.
@@ -91,17 +93,60 @@ Tracking for deferred work on the fork. See `DESIGN.md` for decisions,
       when it differs from the node's current subnet with a clear "run `config set
       subnet <cidr>` + restart first" message. See `create_join.rs` create path +
       `set_node_subnet` + `blob_subnet`.
-- [ ] **Doc — audit AGENTS.md invite/CLI against the real binary**: `torpedo invite`
+- [x] **Doc — audit AGENTS.md invite/CLI against the real binary**: `torpedo invite`
       has no `--hostname`/`--expires`/`--qr`/`--reusable`/`list`/`revoke` (usage is just
       `invite <NETWORK>`), yet AGENTS.md (inherited from upstream) documents them. Sweep
       AGENTS.md for other commands/flags the fork's binary does not actually implement.
+      Done (DOC-001): the original diagnosis was wrong, not the binary — all those flags
+      exist, they belong to an explicit `create` subcommand clap requires spelled out
+      before it will parse subcommand flags. AGENTS.md/TESTING.md corrected to show
+      `create` explicitly rather than trimmed, since nothing was actually missing.
+- [ ] **TOR-001 — `--tor` is endpoint-wide, not per-network.** Found 2026-07-08
+      auditing `src/transport.rs`. `bootstrap.rs:171-174` computes one bool — "does
+      *any* saved network want Tor" — and builds the single shared iroh endpoint
+      accordingly; `bind_endpoint` then adds `TorCustomTransport` **alongside**
+      relay/direct (`transport.rs:134-151`), never in place of them. So enabling
+      `--tor` on one network adds the Tor path to the daemon's endpoint globally —
+      every other network on that same daemon rides the same Tor-capable endpoint
+      too. There is no way to run "network A over Tor only, network B direct-only"
+      on one node, and no way to force Tor-exclusive (no relay/direct fallback) for
+      a hardened case. May be intentional (AGENTS.md already documents "adds Tor
+      transport alongside relay"), but the per-network `--tor` flag on
+      `create`/`join` implies isolation it doesn't deliver. Options:
+      (a) leave as-is, just correct the CLI help text so `--tor` reads as a
+      daemon-wide opt-in rather than a per-network toggle;
+      (b) make it a true per-network mode by dialing/accepting that network's
+      ALPN only over the Tor transport (bigger change — iroh's transport
+      selection is endpoint-wide, not per-connection-aware of which ALPN a
+      connect is for, so this needs upstream-level support or a per-network
+      endpoint, which conflicts with the "single shared endpoint" architecture);
+      (c) add a `torpedo config set transport tor-only` global kill-switch that
+      drops relay/direct entirely once Tor is enabled, for the fully-anonymous
+      single-purpose-node case.
+- [ ] **TOR-002 — enabling `--tor` on a running daemon silently has no effect
+      until restart.** Found 2026-07-08, same audit. `create_network_inner`
+      (`create_join.rs:233`) never touches the endpoint; the endpoint is only
+      built once at daemon bootstrap (`bootstrap.rs`). Unlike the subnet-mismatch
+      case a few lines below it (which explicitly errors with "run `torpedo
+      config set subnet <cidr>` and restart"), there is no equivalent warning
+      here — `torpedo create --tor` (or `join --tor`) on a live daemon with no
+      prior Tor network succeeds and reports success, but the connection never
+      actually uses Tor until `sudo torpedo restart`. Options:
+      (a) cheapest/likely right: detect the mismatch (`--tor` requested but the
+      running endpoint has no Tor transport) and return a warning in the
+      `Created`/`Joined` response, same pattern as the subnet case;
+      (b) rebuild the endpoint live when the first Tor network is added (bigger
+      change — endpoint rebuild mid-run affects every already-connected peer on
+      every network, need to re-home all live connections);
+      (c) document the restart requirement in AGENTS.md/CLI help and leave the
+      silent gap (weakest option, easy to miss since it fails open with no
+      error).
 
-## Platform rewrites (macOS, Android) — adapt to torpedo
+## macOS rewrite — adapt to torpedo
 
-Decision: adapt both to torpedo rather than rip out. Ripping out stays the
+Decision: adapt to torpedo rather than rip out. Ripping out stays the
 alternative only if torpedo becomes permanently Linux-only.
 
-### macOS rewrite
 - [ ] Make `route_peer_range` **subnet-agnostic** (`src/tun.rs:286`, `#[cfg(macos)]`):
       it hardcodes `route add -inet 100.64.0.0/10` (+ `-inet6 200::/7`). The Linux
       path already reads the network's configured subnet; the macOS path does not,
@@ -113,7 +158,11 @@ alternative only if torpedo becomes permanently Linux-only.
 - [ ] **Must build + test on a real Mac** — cfg(macos) code is not compiled or
       type-checked on this Linux host, so all the above is compiler-unverified.
 
-### Android torpedo rewrite
+## Android rewrite — adapt to torpedo
+
+Decision: adapt to torpedo rather than rip out. Ripping out stays the
+alternative only if torpedo becomes permanently Linux-only.
+
 - [ ] **Deep-link scheme mismatch (broken):** `AndroidManifest.xml` registers
       `android:scheme="rayfish"` but the Rust side is now `torpedo://` (RENAME-007).
       Android deep links do not work until the manifest is updated to `torpedo`.
