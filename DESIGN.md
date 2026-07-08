@@ -10,8 +10,13 @@ original proposal (`SPEC_PROPOSAL_rayfish_fork.md`).
 ## Subnet representation
 
 - In-memory type is `Option<(Ipv4Addr, u8)>` (base address + prefix length),
-  exactly as SUBNET-001 specifies. `None` means "default", i.e. `100.64.0.0/10`,
-  preserving today's behavior for the no-flag case.
+  exactly as SUBNET-001 specifies. `None` means "default" — originally
+  `100.64.0.0/10` (preserving upstream's behavior for the no-flag case at the
+  time this section was written). **Superseded by SUBNET-011**: the default
+  is now `10.88.0.0/16`, an uncommon 10.x slice that avoids Tailscale's own
+  `100.64.0.0/10` CGNAT claim even with no `--subnet` flag at all — the
+  no-flag case is supposed to already avoid the collision the fork exists to
+  fix, not merely support avoiding it when asked.
 - On the wire / on disk it is serialized as a **CIDR string** (e.g.
   `"10.88.0.0/16"`) via the shared `membership::cidr_opt` serde helper. This is
   required because `AppConfig` is TOML and a `(Ipv4Addr, u8)` tuple would be an
@@ -89,8 +94,18 @@ it is what currently refuses to start next to Tailscale.
 - `MAGIC_DNS_V4` becomes a function of the configured subnet (an offset within
   it) instead of the fixed `100.100.100.53`; assumes `/24` or larger.
 - The PTR/reverse-lookup NXDOMAIN range check mirrors `ensure_in_cgnat_range`.
-- The macOS branch of `route_peer_range` is left untouched (out of scope; Linux
-  only per the proposal).
+- The macOS branch of `route_peer_range` was left untouched here (out of
+  scope; Linux only per the proposal). **Superseded**: TODO.md later reversed
+  the scope call — "Decision: adapt both [macOS, Android] to torpedo rather
+  than rip out" — so this is no longer a permanent exclusion, just an
+  unfinished one. The macOS branch (and `route_self_loopback`) still
+  hardcodes `100.64.0.0/10` today and ignores `--subnet`, is not compiled or
+  type-checked on any Linux host or CI runner, and has never been built or
+  run on a real Mac. That combination — untested, known-wrong subnet, real
+  risk of misrouting a Mac's network config — is exactly why CI-002 gates the
+  release/nightly workflows' macOS job off (`if: false`) rather than shipping
+  it: this bullet and CI-002 describe the same open gap from two angles (the
+  code isn't ready; therefore the pipeline doesn't publish it).
 
 ### Documented extension #2 — reconcile.py MAGIC_DNS grep
 
@@ -138,18 +153,80 @@ was updated to match.
   `config.rs`) — upstream's own hosted infrastructure (CON-001, §4.2).
 - **`update::REPO_SLUG = "rayfish/rayfish"`** and the "rayfish release" messages
   — the auto-updater fetches from upstream's GitHub releases. Renaming would
-  break it (external infra, same class as the relay preset). CAVEAT: do NOT
-  enable auto-update on this fork — it would fetch and install an upstream
-  rayfish binary over `torpedo`.
-- **`rayfish://` deep-link scheme** (`deeplink.rs`) — only *parsed* (input),
-  never generated/displayed; renaming touches the parser, many tests, and OS
-  URI registration for no wire/functional benefit.
-- **`dns_config.rs` resolv.conf markers** (`# Added by rayfish`, `tun-rayfish`,
-  `rayfish-dns.conf`, `.before-rayfish`) — the tool's own Linux DNS-management
-  markers; internally consistent (write and check both say `rayfish`) and out of
-  the proposal's listed scope. Not wire traffic; left as-is.
+  break it (external infra, same class as the relay preset). **Strengthened
+  since this was written**: rather than relying on the operator not to enable
+  auto-update, `update::SELF_UPDATE_ENABLED = false` (CON-006) now hard-disables
+  every self-update code path at compile time, so the risk this bullet warned
+  about can no longer occur even by mistake.
 - **OpenTelemetry service name / metrics labels** (`stats.rs`, `main.rs`) —
   §4.2 optional, cosmetic, no functional effect.
-- **macOS** service/plist/SCDynamicStore identifiers (`com.rayfish.vpn`, etc.) —
-  out of scope (Linux-only fork).
 - Descriptive doc-comments that mention rayfish as the upstream project.
+
+The following three items were listed here as deliberately-not-renamed when
+this section was written, but were **all later renamed** (RENAME-006/007/008)
+once their actual risk was better understood — kept below, struck through
+their original reasoning, since the *why it changed* is worth keeping:
+
+- ~~`rayfish://` deep-link scheme (`deeplink.rs`) — only parsed, never
+  generated/displayed; renaming touches the parser, many tests, and OS URI
+  registration for no wire/functional benefit.~~ **Renamed to `torpedo://`
+  (RENAME-007).** The "no benefit" call undersold the cost of leaving it: a
+  stray `rayfish://` handler is a real collision surface if a genuine rayfish
+  install is ever present on the same host (exactly the class of problem this
+  fork exists to avoid). `deeplink.rs` now parses `torpedo://` exclusively.
+- ~~`dns_config.rs` resolv.conf markers (`# Added by rayfish`, `tun-rayfish`,
+  `rayfish-dns.conf`, `.before-rayfish`) — internally consistent and out of
+  scope; not wire traffic; left as-is.~~ **Renamed to `torpedo` (RENAME-006)**:
+  `# Added by torpedo`, `tun-torpedo`, `torpedo-dns.conf`, `.before-torpedo`.
+  This one mattered in practice, not just in theory — a live DNS incident on a
+  test machine was traced to a **stale pre-rename install** still writing the
+  old `# Added by rayfish` marker and fighting the current `torpedo` daemon
+  for `/etc/resolv.conf`; having distinct, current markers is exactly what
+  made that misconfiguration diagnosable instead of silently confusing.
+- ~~macOS service/plist/SCDynamicStore identifiers (`com.rayfish.vpn`, etc.) —
+  out of scope (Linux-only fork).~~ **Renamed to `com.torpedo.vpn`
+  (RENAME-008)**, done anyway despite the "Linux-only" framing at the time —
+  see the macOS `route_peer_range` note above for the actual current state of
+  macOS support (identity renamed; routing logic still not fixed).
+
+## CI / release pipeline (RENAME-012, CI-001..003)
+
+`.github/workflows/{release,nightly,ci}.yml` were inherited from upstream
+verbatim and never adapted after the binary rename — nobody had tried to
+actually cut a release on this fork until now, so the drift went unnoticed.
+
+- **RENAME-012**: both `release.yml` and `nightly.yml` packaged
+  `target/<target>/release/ray` and asset names like `ray-linux-x86_64`,
+  `rayfish-android.apk` — the `cp` step would fail outright the moment either
+  workflow ran, since this fork's `Cargo.toml` renamed the bin target to
+  `torpedo`. Fixed to `torpedo`/`torpedo-linux-x86_64`/`torpedo-android.apk`.
+  Deliberately **not** touched: `src/update.rs`'s `release_asset_name`
+  (`ray-{os}-{arch}`), which names assets on **upstream's** rayfish/rayfish
+  releases for the disabled self-updater (see the REPO_SLUG bullet above) — a
+  different `ray` than this one, and out of scope for the same reason.
+- **CI-001**: `ci.yml` and `nightly.yml` both triggered on
+  `push: branches: [master]`, but this repo's default branch is `main` —
+  neither had ever fired on an ordinary push. Confirmed live: before this fix,
+  GitHub Actions had likely never executed on this fork at all; `reconcile.py`
+  (run locally) was the only gate actually exercised.
+- **CI-002**: macOS and Android release jobs are unfinished/unsafe to publish
+  (macOS: see the `route_peer_range` note above; Android: the deep-link
+  scheme is broken, ironically the mirror image of the RENAME-007 fix above —
+  the *Rust* side now parses `torpedo://`, but `AndroidManifest.xml` still
+  registers `rayfish://`, so the two ends of the same feature disagree).
+  Rather than delete the working job definitions or ship known-broken
+  binaries, both are kept (with RENAME-012's identity fixes already applied)
+  but gated `if: false` at the job level in both workflows, so re-enabling
+  either is a one-line flip once that platform is actually finished and
+  tested on real hardware.
+- **CI-003**: `nightly.yml` was changed from `push`-triggered to
+  `workflow_dispatch`-only. Many pushes to this repo are doc/spec/TODO-only;
+  an automatic trigger would rebuild and move the shared `nightly` tag on
+  every one of those. A nightly build is now a deliberate action (Actions tab
+  -> "Run workflow", or `gh workflow run nightly.yml`) rather than an
+  implicit side effect of committing. `release.yml` never had this problem —
+  it triggers on tag push / manual dispatch, not a branch push.
+
+Live-verified 2026-07-08: pushing 3 commits to `main` produced exactly one
+workflow run (`CI`, `event=push`) and no `Nightly` run — confirming CI-001's
+branch fix and CI-003's manual-only change both behave as designed.
