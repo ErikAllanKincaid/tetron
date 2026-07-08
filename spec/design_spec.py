@@ -1056,3 +1056,46 @@ class NightlyWorkflowManualOnly(Requirement):
     "Run workflow" does.
     """
     req_id = "CI-003"
+
+
+class SecurityPolicyIdentityAndReportingFix(Requirement):
+    """REQUIREMENT-ID: RENAME-013
+
+    Found 2026-07-08, same review pass that recovered a `SECURITY.md`
+    unexpectedly missing from disk (a pre-existing unstaged working-tree
+    deletion unrelated to this session's edits) and read it once restored.
+    The file was upstream's own `SECURITY.md`, inherited verbatim and never
+    adapted — same pattern as RENAME-012's release workflows, but with a
+    sharper edge because this one is functionally misleading, not just
+    cosmetically stale:
+
+    - The vulnerability-reporting link pointed at
+      `github.com/rayfish/rayfish/security/advisories/new` — upstream's own
+      repo, not `ErikAllanKincaid/torpedo`. A real report against this fork
+      would have gone to unrelated upstream maintainers who could not act on
+      it.
+    - The fallback contact was `dario@rayfish.xyz` — upstream's maintainer,
+      same misdirection. Distinct from the `Cargo.toml` author-attribution
+      carve-out (KEEP-ON-PURPOSE list): that one honestly credits upstream's
+      *code*; this one misrouted a fork-specific *bug report* to someone
+      unrelated to the fork.
+    - `master` branch references (this repo's default is `main`) and a
+      `ray report` command reference (binary is `torpedo`).
+    - A "Supported versions" table implying a formal release/backport policy
+      that this pre-release, unreleased personal fork does not have.
+
+    Fix: the reporting link now points at `ErikAllanKincaid/torpedo`'s own
+    private vulnerability advisories page. The upstream email fallback was
+    dropped entirely rather than replaced with the operator's own address —
+    decision: GitHub private reporting only, no personal email published in a
+    public repo file. `master` -> `main`, `ray report` -> `torpedo report`.
+    The versions table was replaced with an honest "personal, pre-release
+    fork, report against `main`" statement. The "Security model" section
+    (identity-based addressing, discovery-vs-admission, signed `GroupBlob`,
+    `SO_PEERCRED` IPC auth, secrets-at-rest) was already accurate and is
+    unchanged in substance.
+
+    ENFORCEMENT: none — Markdown, not `src/**/*.rs`, same rationale as
+    RENAME-012. Verified by reading the diff.
+    """
+    req_id = "RENAME-013"

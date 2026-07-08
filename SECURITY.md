@@ -2,26 +2,22 @@
 
 ## Supported versions
 
-Rayfish is pre-1.0. Security fixes are applied to the latest released version
-and `master`. Please upgrade to the latest release before reporting an issue.
-
-| Version | Supported |
-| ------- | --------- |
-| latest release / `master` | ✅ |
-| older releases | ❌ |
+Torpedo is a personal, pre-release fork of rayfish — no versioned releases
+have been published yet, and there is no formal backport policy. Report
+against the current `main`.
 
 ## Reporting a vulnerability
 
 Please report security vulnerabilities **privately** — do not open a public
 GitHub issue.
 
-- Preferred: [GitHub private vulnerability reporting](https://github.com/rayfish/rayfish/security/advisories/new).
-- Or email **dario@rayfish.xyz**.
+Use [GitHub private vulnerability reporting](https://github.com/ErikAllanKincaid/torpedo/security/advisories/new)
+on this repository.
 
 Include enough detail to reproduce: affected version/commit, configuration, and
-a description (ideally a proof of concept). We will acknowledge your report,
-keep you updated on remediation, and credit you in the release notes unless you
-prefer to remain anonymous.
+a description (ideally a proof of concept). Reports will be acknowledged, kept
+updated on remediation, and credited in the release notes unless you prefer to
+remain anonymous.
 
 ## Security model (context for reviewers)
 
@@ -44,5 +40,5 @@ A few load-bearing properties, so reports can be scoped accurately:
   root or the configured operator.
 - **Secrets at rest.** Invite ledgers are written `0600`; invite secrets are
   stored only as blake3 hashes; identity backups are encrypted (argon2 +
-  chacha20poly1305). `ray report` bundles a *sanitized* status with no secret
-  keys.
+  chacha20poly1305). `torpedo report` bundles a *sanitized* status with no
+  secret keys.
