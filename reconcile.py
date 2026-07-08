@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-007) from spec/design_spec.py.
+# Checks the automatable constraints (CON-001..CON-008) from spec/design_spec.py.
 # It does NOT check the Requirement classes (SUBNET-*/RENAME-*); those are
 # structural/design requirements verified by reading the diff and code directly.
 import json
@@ -94,6 +94,35 @@ def check_host_identity() -> dict:
     return {"leak_count": leaks}
 
 
+def check_build_tooling_identity() -> dict:
+    """RENAME-010/CON-008: none of the collision-prone `rayfish` build-tooling
+    tokens may remain in `justfile` or `contrib/`. Curated set, same rationale
+    as CON-007 (host_identity) but for non-Rust build/deploy tooling, which
+    CON-007's src/**/*.rs scan does not cover. Does not flag `ray-mobile`/
+    `libray_mobile` (the Android crate/artifact name) — a separate,
+    deliberately-undecided item, not a regression of this fix."""
+    tokens = [
+        'binary := "ray"',  # justfile's binary variable, pre-fix form
+        "groupadd rayfish",
+        "systemctl restart rayfish",
+        "systemctl stop rayfish",
+        "/etc/rayfish",
+        "rayfish.service",
+        "com.rayfish.vpn",
+    ]
+    targets = [Path("justfile")]
+    if Path("contrib").is_dir():
+        targets += [p for p in Path("contrib").rglob("*") if p.is_file()]
+    leaks = 0
+    for p in targets:
+        if not p.exists():
+            continue
+        text = p.read_text()
+        for t in tokens:
+            leaks += text.count(t)
+    return {"unexpected_count": leaks}
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -103,6 +132,7 @@ if __name__ == "__main__":
         "relay_preset_untouched": check_relay_preset(),
         "self_update": check_self_update(),
         "host_identity": check_host_identity(),
+        "build_tooling_identity": check_build_tooling_identity(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -113,5 +143,6 @@ if __name__ == "__main__":
         and ctx["relay_preset_untouched"]["value"] == "rayfish"
         and ctx["self_update"]["enabled"] is False
         and ctx["host_identity"]["leak_count"] == 0
+        and ctx["build_tooling_identity"]["unexpected_count"] == 0
     )
     sys.exit(0 if ok else 1)

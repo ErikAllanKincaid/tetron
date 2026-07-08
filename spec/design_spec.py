@@ -494,6 +494,54 @@ class NoResidualHostIdentityLeak(Constraint):
     enforcement_logic = "{{ host_identity.leak_count == 0 }}"
 
 
+class BuildToolingIdentityRenamed(Requirement):
+    """REQUIREMENT-ID: RENAME-010
+
+    `justfile`'s `deploy`/`deploy-dev`/`cross` recipes carried the pre-fork
+    identity (`binary := "ray"`, `groupadd rayfish`, `systemctl restart
+    rayfish`) — fixed in commit `b2c2d89` (`binary := "torpedo"`, `groupadd
+    torpedo`, `systemctl restart torpedo`), predating this requirement being
+    formally tracked. `contrib/` (`com.torpedo.vpn.plist`, `torpedo.service`)
+    was already clean. This class exists mainly to record that the fix landed
+    and give CON-008 (below) something to cite — see CON-008 for the
+    anti-regression gate.
+
+    Out of scope on purpose: `ray-mobile`/`libray_mobile` (the Android
+    crate/artifact name referenced from `justfile`'s `apk` recipe) is a
+    separate, deliberately-undecided naming question (TODO.md's Android
+    rewrite section) — not a leftover to clean up here, and CON-008's token
+    list does not flag it.
+
+    Also fixed alongside this (2026-07-08): AGENTS.md's "justfile caution"
+    note still warned `just cross`/`just deploy`/`just deploy-dev` were stale
+    and unsafe to use, describing the pre-`b2c2d89` state — corrected to
+    reflect that the identity fix landed and they're safe to use.
+
+    ENFORCEMENT: see CON-008.
+    """
+    req_id = "RENAME-010"
+
+
+class NoResidualBuildToolingIdentityLeak(Constraint):
+    """CONSTRAINT-ID: CON-008
+
+    Anti-regression gate for RENAME-010, mirroring CON-007's approach but for
+    build/deploy tooling instead of Rust source: CON-007's `host_identity`
+    check only scans `src/**/*.rs`, so a stale `rayfish` token reintroduced in
+    `justfile` or `contrib/` would go completely undetected by the existing
+    gates. Curated token set (same anti-false-positive rationale as CON-007):
+    `binary := "ray"`, `groupadd rayfish`, `systemctl restart rayfish`,
+    `systemctl stop rayfish`, `/etc/rayfish`, `rayfish.service`,
+    `com.rayfish.vpn`. Deliberately excludes `ray-mobile`/`libray_mobile`
+    (RENAME-010's documented out-of-scope item).
+
+    ENFORCEMENT (reconcile.py): build_tooling_identity.unexpected_count
+    equals 0.
+    """
+    constraint_id = "CON-008"
+    enforcement_logic = "{{ build_tooling_identity.unexpected_count == 0 }}"
+
+
 class UserFacingCommandNameRenamed(Requirement):
     """REQUIREMENT-ID: RENAME-011
 

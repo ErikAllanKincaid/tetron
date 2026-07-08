@@ -25,7 +25,7 @@ Everything that *was* renamed (binary, ALPNs, listen port, config/log/socket pat
 Changes in this fork are **spec-driven and committed one requirement at a time**:
 
 - **`spec/design_spec.py`** — one Python class per requirement/constraint. The ID is the first line of the docstring (e.g. `SUBNET-001`, `RENAME-006`, `CON-007`). `Requirement` subclasses are structural/design (verified by reading the diff + code); `Constraint` subclasses carry an `enforcement_logic` Jinja expression and are the automatable gates. A `UserStory` captures intent.
-- **`reconcile.py`** — the per-commit gate. Run `python3 reconcile.py` from the repo root; it must exit `0`. It runs seven checks and prints a JSON context: `build` (cargo build), `clippy` (`-D warnings`, 0 warnings), `test` (cargo test), `grep_hardcoded_cgnat` (no stray `100.64`/`100.100.100` literals in `membership.rs`/`tun.rs`/`dns.rs` beyond allowed comment lines), `relay_preset_untouched` (**CON-001**, must equal `"rayfish"`), `self_update` (**CON-006**, `SELF_UPDATE_ENABLED` must be `false`), and `host_identity` (**CON-007**, curated-token `leak_count` must be `0`).
+- **`reconcile.py`** — the per-commit gate. Run `python3 reconcile.py` from the repo root; it must exit `0`. It runs eight checks and prints a JSON context: `build` (cargo build), `clippy` (`-D warnings`, 0 warnings), `test` (cargo test), `grep_hardcoded_cgnat` (no stray `100.64`/`100.100.100` literals in `membership.rs`/`tun.rs`/`dns.rs` beyond allowed comment lines), `relay_preset_untouched` (**CON-001**, must equal `"rayfish"`), `self_update` (**CON-006**, `SELF_UPDATE_ENABLED` must be `false`), `host_identity` (**CON-007**, curated-token `leak_count` must be `0` across `src/**/*.rs`), and `build_tooling_identity` (**CON-008**/RENAME-010, the same curated-token approach for non-Rust build tooling — `justfile`/`contrib/` — that CON-007's `src/**/*.rs` scan can't cover; `unexpected_count` must be `0`).
 - **libspec** — spec snapshots are recorded **manually after each commit**: `/home/erik/code/libspec/.venv/bin/libspec link --vcs git --revision <sha> --metadata "..."`. `libspec diff` previews. There is **no `build` command**. Each such link mutates `.libspec/libspec.jsonl`, which is folded into the next commit.
 
 **The loop for a change:** amend/add the requirement class in `spec/design_spec.py` → implement → `python3 reconcile.py` until green → commit (conventional subject; **no authorship trailers of any kind**) → `libspec link` the new sha.
@@ -49,7 +49,7 @@ cargo build --release          # distributable binary at target/release/torpedo
 
 The crate splits into a library (`src/lib.rs`, daemon modules as `pub mod`) and a thin binary (`src/main.rs`, the `torpedo` CLI/IPC client, `use rayfish::…` — the library name is kept, see KEEP-ON-PURPOSE). The split lets benchmarks (`benches/`) and integration tests reach the internal data path; `cargo install` builds the binary against the in-package library unchanged.
 
-**justfile caution:** `just cross`/`just deploy`/`just deploy-dev` are **stale** (still reference `binary := "ray"`, `groupadd rayfish`, `systemctl restart rayfish`). Do not use them until fixed; build/deploy manually for now.
+**justfile:** `just cross`/`just deploy`/`just deploy-dev` identity was fixed (`binary := "torpedo"`, `groupadd torpedo`, `systemctl restart torpedo`) — safe to use. `ray-mobile`/`libray_mobile` (Android crate/artifact name) is a separate, deliberately-undecided item, see the Android rewrite section in TODO.md.
 
 ## Run
 
