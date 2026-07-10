@@ -217,8 +217,7 @@ class BuildPasses(Constraint):
 class ClippyClean(Constraint):
     """CONSTRAINT-ID: CON-004
 
-    cargo clippy --all-targets is warning-free, per this repo's own
-    CONTRIBUTING.md convention.
+    cargo clippy --all-targets is warning-free.
 
     ENFORCEMENT (reconcile.py): clippy.warnings equals 0.
     """
@@ -1197,3 +1196,80 @@ class DocsMatchCurrentBinaryAndSubnetFormula(Requirement):
     `src/dns.rs`.
     """
     req_id = "DOC-001"
+
+
+class ReportAndRepoSurfaceIdentityRenamed(Requirement):
+    """REQUIREMENT-ID: RENAME-014
+
+    Sibling of RENAME-011, but for the `rayfish` **product name** (not the
+    `ray` binary short-name RENAME-011 handled) leaking into the diagnostic /
+    reporting / repo surface — files RENAME-006..011 never touched. Found via
+    the 2026-07-10 tree-wide `ray|rayfish` audit (Workstream A). Each is a
+    LIVE, user-facing string that self-identifies the fork as upstream:
+
+    - `src/daemon/mesh/diagnostics.rs` — `torpedo report` is active (unlike
+      self-update). Renamed the sysinfo banner (`"rayfish {version}"`), the
+      report bundle filename (`/tmp/rayfish-report-{ts}.tgz` — also a
+      collision-prone host artifact: a genuine rayfish on the same host would
+      write the same /tmp name), and the pre-filled GitHub issue title (both
+      the crash and non-crash branches) + body header — all `rayfish` ->
+      `torpedo`. Every bug report a user files currently mislabels itself.
+    - `.github/ISSUE_TEMPLATE/bug_report.yml` + `feature_request.yml` — the
+      user-facing issue forms said `rayfish` and used `ray <cmd>` examples.
+      The load-bearing fix: bug_report told reporters logs live in
+      `/var/log/rayfish` / `/Library/Logs/rayfish` — the WRONG directories
+      (real paths are `/var/log/torpedo`, `/Library/Logs/torpedo`, per
+      `logdir.rs`). Both `rayfish` -> `torpedo` and `ray <cmd>` -> `torpedo
+      <cmd>` throughout (issue templates are user-facing, so RENAME-011's
+      source-comment carve-out does not apply).
+    - `cliff.toml` — the changelog "Full Changelog" compare link was
+      hardcoded to `github.com/rayfish/rayfish/compare/...`, rendering an
+      upstream URL into this fork's published release notes. Repointed to the
+      fork repo (`github.com/ErikAllanKincaid/torpedo`, matching
+      `status.rs`'s `REPORT_REPO_URL`). Distinct from the KEEP-ON-PURPOSE
+      `REPO_SLUG = "rayfish/rayfish"` (self-update target, CON-006) — that
+      names upstream on purpose; this one is our own changelog. Also fixed
+      `CHANGELOG.md`'s header line ("All notable changes to Rayfish" ->
+      "Torpedo"); the changelog *body* keeps its historical `ray <cmd>`
+      entries (RENAME-011's deferred cosmetic class, not rewritten).
+    - `src/firewall.rs` — folded in: a comment claimed `firewall.toml` is
+      `0640 root:rayfish`; the real group is `torpedo` (`groupadd torpedo`,
+      RENAME-002). Comment-only, but it misdescribed actual file permissions.
+
+    All literal string swaps, no behavior change: verified that nothing parses
+    the bundle filename or sysinfo line (display-only), no test asserts these
+    strings, and the issue templates/cliff URL are consumed only by GitHub /
+    git-cliff rendering.
+
+    Deliberately EXCLUDED: source doc-comments still saying `ray <verb>` /
+    `rayfish` (RENAME-011's deferred cosmetic carve-out, Workstream C); the
+    Prometheus metric names `rayfish`/`rayfish_peer` in `src/stats.rs`
+    (Workstream B — a metric rename breaks existing scrapers, needs its own
+    decision); test fixtures (`rayfish-test-`, `rayfish 0.1.0`) which do not
+    reach users.
+
+    ENFORCEMENT: see CON-009 (curated-token anti-regression gate).
+    """
+    req_id = "RENAME-014"
+
+
+class NoResidualReportIdentityLeak(Constraint):
+    """CONSTRAINT-ID: CON-009
+
+    Anti-regression gate for RENAME-014, same curated-token approach as
+    CON-007/CON-008 but spanning a file set neither covers: the Rust source
+    report path (`src/**/*.rs`) PLUS the release/repo tooling `.github/**` and
+    `cliff.toml`. Curated so it never false-positives on KEEP-ON-PURPOSE names
+    (the kept `REPO_SLUG` `rayfish/rayfish` has no `/compare` suffix; the relay
+    presets, crate name, and author attribution are all different tokens) and
+    never trips on RENAME-011's deliberately-deferred `ray <verb>` comments
+    (those are the `ray` short-name, not these `rayfish`/path tokens).
+
+    Tokens: `rayfish-report`, `root:rayfish`, `rayfish {version}` (src report
+    strings); `/var/log/rayfish`, `/Library/Logs/rayfish` (issue-template log
+    paths); `rayfish/rayfish/compare` (cliff changelog link).
+
+    ENFORCEMENT (reconcile.py): report_identity.unexpected_count equals 0.
+    """
+    constraint_id = "CON-009"
+    enforcement_logic = "{{ report_identity.unexpected_count == 0 }}"

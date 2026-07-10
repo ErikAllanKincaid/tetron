@@ -771,7 +771,7 @@ pub fn load_firewall() -> Result<FirewallConfig> {
 pub fn save_firewall(config: &FirewallConfig) -> Result<()> {
     let path = firewall_path()?;
     let content = toml::to_string_pretty(config).context("serialize firewall config")?;
-    // Not secret-bearing → 0640 root:rayfish, written atomically.
+    // Not secret-bearing → 0640 root:torpedo, written atomically.
     crate::config::write_file(&path, content.as_bytes(), false)
 }
 

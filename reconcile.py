@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-008) from spec/design_spec.py.
+# Checks the automatable constraints (CON-001..CON-009) from spec/design_spec.py.
 # It does NOT check the Requirement classes (SUBNET-*/RENAME-*); those are
 # structural/design requirements verified by reading the diff and code directly.
 import json
@@ -123,6 +123,35 @@ def check_build_tooling_identity() -> dict:
     return {"unexpected_count": leaks}
 
 
+def check_report_identity() -> dict:
+    """CON-009/RENAME-014: none of the collision-prone `rayfish` product-name
+    tokens on the diagnostic/report + repo surface may remain. Spans a file set
+    CON-007 (src only) and CON-008 (justfile/contrib) do not cover: `src/**/*.rs`
+    plus the release/repo tooling `.github/**` and `cliff.toml`. Curated set, so
+    it never trips on the KEEP-ON-PURPOSE `rayfish` names (the kept REPO_SLUG
+    `rayfish/rayfish` has no `/compare` suffix; presets/crate/author differ) nor
+    on RENAME-011's deferred `ray <verb>` comments (a different token)."""
+    tokens = [
+        "rayfish-report",  # torpedo report bundle filename (diagnostics.rs)
+        "root:rayfish",  # firewall.toml perms comment (firewall.rs)
+        "rayfish {version}",  # report sysinfo/issue banner (diagnostics.rs)
+        "/var/log/rayfish",  # bug-report template log path
+        "/Library/Logs/rayfish",  # bug-report template log path (macOS)
+        "rayfish/rayfish/compare",  # cliff.toml changelog compare link
+    ]
+    targets = list(Path("src").rglob("*.rs"))
+    if Path(".github").is_dir():
+        targets += [p for p in Path(".github").rglob("*") if p.is_file()]
+    if Path("cliff.toml").exists():
+        targets.append(Path("cliff.toml"))
+    leaks = 0
+    for p in targets:
+        text = p.read_text()
+        for t in tokens:
+            leaks += text.count(t)
+    return {"unexpected_count": leaks}
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -133,6 +162,7 @@ if __name__ == "__main__":
         "self_update": check_self_update(),
         "host_identity": check_host_identity(),
         "build_tooling_identity": check_build_tooling_identity(),
+        "report_identity": check_report_identity(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -144,5 +174,6 @@ if __name__ == "__main__":
         and ctx["self_update"]["enabled"] is False
         and ctx["host_identity"]["leak_count"] == 0
         and ctx["build_tooling_identity"]["unexpected_count"] == 0
+        and ctx["report_identity"]["unexpected_count"] == 0
     )
     sys.exit(0 if ok else 1)

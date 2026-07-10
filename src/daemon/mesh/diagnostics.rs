@@ -193,7 +193,7 @@ impl MeshManager {
         let uptime = self.start.elapsed().as_secs();
         let active = self.active.load(Ordering::SeqCst);
         let mut sysinfo = String::new();
-        let _ = writeln!(sysinfo, "rayfish {version}");
+        let _ = writeln!(sysinfo, "torpedo {version}");
         let _ = writeln!(sysinfo, "os: {os}  arch: {arch}");
         if !uname.is_empty() {
             let _ = writeln!(sysinfo, "uname: {uname}");
@@ -233,7 +233,7 @@ impl MeshManager {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let path = std::path::PathBuf::from("/tmp").join(format!("rayfish-report-{ts}.tgz"));
+        let path = std::path::PathBuf::from("/tmp").join(format!("torpedo-report-{ts}.tgz"));
         if let Err(e) = write_bundle(&path, &files) {
             return IpcMessage::Error {
                 message: format!("failed to write report bundle: {e}"),
@@ -251,12 +251,12 @@ impl MeshManager {
         }
 
         let issue_title = if has_panics {
-            format!("[report] crash diagnostics from {os} (rayfish {version})")
+            format!("[report] crash diagnostics from {os} (torpedo {version})")
         } else {
-            format!("[report] diagnostics from {os} (rayfish {version})")
+            format!("[report] diagnostics from {os} (torpedo {version})")
         };
         let mut issue_body = String::new();
-        let _ = writeln!(issue_body, "**rayfish {version}** on {os}/{arch}");
+        let _ = writeln!(issue_body, "**torpedo {version}** on {os}/{arch}");
         let _ = writeln!(issue_body);
         if has_panics {
             let _ = writeln!(

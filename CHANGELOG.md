@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Rayfish are documented here. The format is based on
+All notable changes to Torpedo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -150,6 +150,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`torpedo report` and the issue templates now identify as torpedo**: the
+  diagnostic bundle (`/tmp/torpedo-report-*.tgz`), its sysinfo banner, and the
+  pre-filled GitHub issue title/body said `rayfish`, so every bug report
+  mislabeled itself as upstream. The bug-report template also pointed at the
+  wrong log directory (`/var/log/rayfish`); it now names the real path
+  (`/var/log/torpedo`, or `/Library/Logs/torpedo` on macOS). The changelog
+  "Full Changelog" compare link now points at the torpedo repository instead of
+  upstream.
 - **`ray status` peer traffic counters now line up**: the per-peer up/down
   columns were packed into a single field, so the `↓` counter drifted from row to
   row and the block did not read as a table. Up and down are now their own
