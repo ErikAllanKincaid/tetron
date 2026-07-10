@@ -3,7 +3,7 @@
 //! An invite is a single-use, expiring credential that lets a new machine join a
 //! closed network without live operator approval. The coordinator mints invites
 //! and is the *only* node that can verify and burn them — the ledger lives on the
-//! coordinator's machine at `~/.config/rayfish/invites/<network>.toml` and is
+//! coordinator's machine at `~/.config/torpedo/invites/<network>.toml` and is
 //! never published into the GroupBlob.
 //!
 //! The invite *code* handed to a joiner is `bs58(network_pubkey || coordinator ||
@@ -58,7 +58,7 @@ struct InviteFile {
     invites: Vec<Invite>,
 }
 
-/// A flattened, display-ready view of an invite (used for `ray invite list`).
+/// A flattened, display-ready view of an invite (used for `torpedo invite list`).
 pub struct InviteView {
     pub id: String,
     /// One of `pending`, `redeemed`, `revoked`, `expired`.
@@ -182,7 +182,7 @@ impl InviteStore {
     /// Mint a new invite valid for `ttl`, persist it, and return `(secret, id)`.
     /// The raw secret is returned only here so it can be encoded into the code.
     /// `hostname` (trusted networks) is assigned authoritatively on redemption,
-    /// so the holder joins with `ray join <code>` and no `--hostname`.
+    /// so the holder joins with `torpedo join <code>` and no `--hostname`.
     pub fn mint(
         &mut self,
         ttl: Duration,

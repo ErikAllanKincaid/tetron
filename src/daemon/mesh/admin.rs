@@ -8,7 +8,7 @@ impl MeshManager {
     /// authenticated mesh stream, making it a co-coordinator (can publish /
     /// suggest firewall rules). The key is shared (shared-key model), so this is
     /// a transfer of publish capability, not an attributable delegation. The
-    /// grant is recorded locally for `ray admin list`.
+    /// grant is recorded locally for `torpedo admin list`.
     pub(crate) async fn admin_add(&self, network: &str, identity_str: &str) -> IpcMessage {
         let Some(identity) = self.resolve_short_id_any_network(identity_str) else {
             return IpcMessage::Error {
@@ -114,7 +114,7 @@ impl MeshManager {
     }
 
     /// List this network's key-holders: the local node (if it holds the key) plus
-    /// every identity it has granted the key to (`ray admin add`).
+    /// every identity it has granted the key to (`torpedo admin add`).
     pub(crate) fn admin_list(&self, network: &str) -> IpcMessage {
         let self_id = self.endpoint.id();
         let mut admins = Vec::new();
@@ -147,6 +147,6 @@ impl MeshManager {
     }
 
     // -----------------------------------------------------------------------
-    // Direct connections (ray connect)
+    // Direct connections (torpedo connect)
     // -----------------------------------------------------------------------
 }

@@ -1,5 +1,5 @@
 //! Thin wrapper over the 1Password CLI (`op`) for storing/reading the encrypted
-//! identity backup blob produced by `ray pair backup`.
+//! identity backup blob produced by `torpedo pair backup`.
 //!
 //! The blob stored here is the same `enc1…` base58 string the bare backup
 //! prints: the secret key encrypted with Argon2 + XChaCha20Poly1305 under a

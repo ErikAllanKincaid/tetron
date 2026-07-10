@@ -1312,3 +1312,67 @@ class ObservabilityIdentityRenamed(Requirement):
     derive constant with no runtime assertion.
     """
     req_id = "RENAME-015"
+
+
+class SourceCommentCliNameSwept(Requirement):
+    """REQUIREMENT-ID: RENAME-016
+
+    Workstream C of the `ray`/`rayfish` audit: the cosmetic source-comment
+    residue RENAME-009 and RENAME-011 deliberately DEFERRED ("left for a later
+    opportunistic pass"). Finishing it here so the fork reads consistently and,
+    critically, so a coding agent reading a comment does not emit a `ray <verb>`
+    that no longer exists.
+
+    Two parts:
+
+    (1) **`ray <verb>` CLI/binary references (217 across 44 src files).** Every
+    occurrence of the pre-fork binary name `ray` followed by a subcommand (or
+    the "run ray without sudo" prose) reworded to `torpedo`, in doc-comments,
+    line comments, AND the dead `cli/update.rs`/`update.rs` string tail that
+    RENAME-011 left behind the `SELF_UPDATE_ENABLED` early-return. Sweeping the
+    dead tail too is what makes the CON-010 gate viable (RENAME-011 had rejected
+    a gate precisely because those strings still held `ray <verb>`). Applied by
+    the lookbehind regex `(?<![.\\w-])ray (?=[a-z])`, which by construction skips
+    every KEEP form: `.ray` (Magic-DNS TLD), `ray-proto`/`ray-mobile` (crate
+    names), `stingray`/`array` (substrings), `rayfish` (crate/preset), and the
+    `"ray"` network-name wordlist entry. `ray-{os}-{arch}` upstream release
+    asset names (hyphenated) are untouched.
+
+    (2) **`rayfish` product-name prose in comments (9 of 24 candidates).** The
+    9 that describe THIS fork's own daemon/behavior reworded to `torpedo`
+    (`daemon/mod.rs` "The rayfish daemon", `firewall.rs` "rayfish/iroh control
+    plane", `transport.rs` data-plane shape, `cli/firewall.rs` "the rayfish
+    firewall", `cli/status.rs` header example, `invite.rs` `~/.config/rayfish`
+    path, `apply.rs` hostname note). The other 15 are KEEP: they name UPSTREAM
+    deliberately (coexistence comments in `dns_config.rs`/`deeplink.rs`/
+    `status.rs`, the `rayfish`-operated preset URLs in `config.rs`, the
+    `RAYFISH_CONFIG_DIR` collision note, the `rayfish/n0` preset keyword).
+
+    No behavioral effect: comments and one unreachable dead-code string tail;
+    build/clippy/test unaffected. No CHANGELOG entry (pure-internal).
+
+    ENFORCEMENT: CON-010 gates part (1) — the clean, recurring class. Part (2)
+    is NOT gated: a `rayfish`-prose gate cannot be made false-positive-free
+    given the many legitimate `rayfish` tokens (crate, preset, REPO_SLUG,
+    attribution, deliberate upstream mentions), so it is verified by reading.
+    """
+    req_id = "RENAME-016"
+
+
+class NoResidualCliNameLeak(Constraint):
+    """CONSTRAINT-ID: CON-010
+
+    Anti-regression gate for RENAME-016 part (1): the pre-fork `ray <verb>`
+    binary reference must not reappear in `src/**/*.rs`. Regex, not a token
+    list — `(?<![.\\w-])ray (?=[a-z])` — so it matches a bare `ray ` + lowercase
+    word (always a stale CLI reference) while the lookbehind excludes every
+    KEEP form (`.ray` TLD, `ray-proto`/`ray-mobile`, `stingray`/`array`,
+    `rayfish`). This is the gate RENAME-011 could not add until Workstream C
+    also swept the dead `cli/update.rs` string tail (its last false-positive
+    source). Does not cover `rayfish` product-name prose (RENAME-016 part 2,
+    ungated — see that requirement).
+
+    ENFORCEMENT (reconcile.py): cli_reference_identity.unexpected_count equals 0.
+    """
+    constraint_id = "CON-010"
+    enforcement_logic = "{{ cli_reference_identity.unexpected_count == 0 }}"

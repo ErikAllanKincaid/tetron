@@ -565,7 +565,7 @@ pub struct ReusableKey {
     pub created: u64,
     /// Unix seconds after which the key is no longer redeemable.
     pub expires: u64,
-    /// Set by `ray invite revoke`; a revoked key admits no one.
+    /// Set by `torpedo invite revoke`; a revoked key admits no one.
     pub revoked: bool,
 }
 
@@ -578,7 +578,7 @@ pub struct GroupBlob {
     pub approved: Vec<ApprovedEntry>,
     /// Coordinator-suggested firewall rules, keyed by subject hostname (the `*`
     /// subject targets every node). Advisory: each node queues them for
-    /// `ray firewall accept`, or auto-installs them if it opted into
+    /// `torpedo firewall accept`, or auto-installs them if it opted into
     /// `--auto-accept-firewall`. `BTreeMap` keys keep the encoding canonical.
     #[serde(default, skip_serializing_if = "SuggestedFirewall::is_empty")]
     pub suggested_firewall: SuggestedFirewall,

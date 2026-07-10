@@ -1,4 +1,4 @@
-//! Device-cert generation floors (`ray unpair` / rotation).
+//! Device-cert generation floors (`torpedo unpair` / rotation).
 //!
 //! A `DeviceCert` carries a `generation`. Revocation is a *fleet rotation*: the
 //! owning user bumps its generation and publishes the new value as a signed

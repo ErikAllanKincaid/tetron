@@ -325,7 +325,7 @@ impl MeshManager {
 
         // Placement must be explicitly resolvable (download-dir / download-user /
         // operator). With none configured we do not write as root: leave the
-        // offer queued for manual `ray files accept`.
+        // offer queued for manual `torpedo files accept`.
         let (dir, cred) = match resolve_download_target() {
             Some((dir, cred)) => (dir, cred),
             None => {
@@ -569,7 +569,7 @@ impl MeshManager {
     }
 
     /// Enumerate this user's paired secondary devices from the network rosters
-    /// (`ray pair list`). A paired device is any roster member whose
+    /// (`torpedo pair list`). A paired device is any roster member whose
     /// `user_identity` is ours but whose device id is neither ours nor the user
     /// identity itself.
     pub(crate) fn list_paired_devices(&self) -> IpcMessage {
@@ -610,7 +610,7 @@ impl MeshManager {
         IpcMessage::PairedDevices { devices }
     }
 
-    /// Revoke one of this user's paired devices (`ray unpair`). Primary-only.
+    /// Revoke one of this user's paired devices (`torpedo unpair`). Primary-only.
     ///
     /// Persists + publishes a signed revocation record for the device key,
     /// enforces it locally right away, best-effort tells the device to wipe its

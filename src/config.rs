@@ -107,7 +107,7 @@ pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub my_hostname: Option<String>,
     /// A locally-requested rename not yet confirmed by the signed blob. Set by
-    /// `ray hostname` on a member; the durable "deliver this rename to the
+    /// `torpedo hostname` on a member; the durable "deliver this rename to the
     /// coordinator" intent. Survives daemon restarts and is *not* clobbered when
     /// a reconverge applies a stale blob (unlike `my_hostname`), so the rename
     /// keeps being re-sent until the coordinator publishes it. Cleared once the
@@ -127,36 +127,36 @@ pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportMode>,
     /// This node auto-installs coordinator-suggested firewall rules without a
-    /// manual review queue. Set per-network by `ray join --auto-accept-firewall`
-    /// or toggled later with `ray firewall auto-accept <net> on|off`.
+    /// manual review queue. Set per-network by `torpedo join --auto-accept-firewall`
+    /// or toggled later with `torpedo firewall auto-accept <net> on|off`.
     #[serde(default, alias = "allow_trusted")]
     pub auto_accept_firewall: bool,
     /// Auto-accept incoming file offers from our own paired devices on this
-    /// network (no manual `ray files accept`). Own-devices-only (the sender's
+    /// network (no manual `torpedo files accept`). Own-devices-only (the sender's
     /// user identity must match ours); secure default off. Set per-network by
-    /// `ray join --auto-accept-files` or toggled with
-    /// `ray files auto-accept <net> on|off`.
+    /// `torpedo join --auto-accept-files` or toggled with
+    /// `torpedo files auto-accept <net> on|off`.
     #[serde(default)]
     pub auto_accept_files: bool,
     /// Identities this coordinator has granted the per-network secret key to
-    /// (`ray admin add`). Local tracking only — the key is shared and not
+    /// (`torpedo admin add`). Local tracking only — the key is shared and not
     /// attributable, so this is the coordinator's record of grants, not a
     /// verifiable roster. Never published in the GroupBlob.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<EndpointId>,
-    /// This is an auto-minted 2-peer "direct connection" network (`ray connect`),
-    /// not a user-created mesh. Tagged so `ray status` can label it `[direct]`
+    /// This is an auto-minted 2-peer "direct connection" network (`torpedo connect`),
+    /// not a user-created mesh. Tagged so `torpedo status` can label it `[direct]`
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
     /// Peers authorized to SSH into this node over this network's mesh link
-    /// (`ray firewall ssh allow <net> <peer>`). Only consulted when the global
+    /// (`torpedo firewall ssh allow <net> <peer>`). Only consulted when the global
     /// `ssh_enabled` toggle is on. Empty = no peer may SSH in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ssh_allow: Vec<SshRule>,
     /// Node-local, per-network aliases (`alias name -> identity string`), set via
-    /// `ray alias`. Display-only convenience: shown inline in `ray status` and
-    /// used to seed `ray apply`'s `aliases:` map. Never published in the
+    /// `torpedo alias`. Display-only convenience: shown inline in `torpedo status` and
+    /// used to seed `torpedo apply`'s `aliases:` map. Never published in the
     /// GroupBlob.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, String>,
@@ -275,7 +275,7 @@ fn parse_entries(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Apply a `ray config set`/`unset` to the in-memory config. An empty value or
+/// Apply a `torpedo config set`/`unset` to the in-memory config. An empty value or
 /// the lone keyword `n0` resets the key to its default (iroh n0). Validates
 /// every entry, so a bad URL/IP or unknown preset is rejected before persist.
 pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) -> Result<()> {
@@ -364,7 +364,7 @@ fn render_override(o: &ServerOverride) -> String {
     }
 }
 
-/// Render config settings as `(key, value)` rows for `ray config get`. With a
+/// Render config settings as `(key, value)` rows for `torpedo config get`. With a
 /// key, returns just that one (error on unknown key); without, all three.
 pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, String)>> {
     let row = |k: &str| -> Result<(String, String)> {
@@ -474,7 +474,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub operator_uid: Option<u32>,
     /// Personal default hostname used when creating/joining a network without an
-    /// explicit `--hostname`. Set via `ray up --hostname <name>`. `None` falls
+    /// explicit `--hostname`. Set via `torpedo up --hostname <name>`. `None` falls
     /// back to a random generated name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_hostname: Option<String>,
@@ -490,7 +490,7 @@ pub struct AppConfig {
         with = "crate::membership::cidr_opt"
     )]
     pub subnet: Option<crate::membership::Subnet>,
-    /// Per-user "contact key" used by `ray connect`: a standing, rotatable
+    /// Per-user "contact key" used by `torpedo connect`: a standing, rotatable
     /// identity (distinct from the transport key and per-network keys) published
     /// to pkarr so others can request a direct connection without a room id or
     /// invite code. Lazily generated on first use via [`contact_secret`].
@@ -511,14 +511,14 @@ pub struct AppConfig {
     /// Set via `torpedo config set magic-dns off|auto|direct`.
     #[serde(default)]
     pub magic_dns: MagicDnsMode,
-    /// Global toggle for the embedded mesh SSH server (`ray firewall ssh on`).
+    /// Global toggle for the embedded mesh SSH server (`torpedo firewall ssh on`).
     /// When on, the daemon listens on each mesh IP's port 22 and admits peers
     /// authorized in a network's [`NetworkConfig::ssh_allow`] list. Off by default.
     #[serde(default)]
     pub ssh_enabled: bool,
     /// Opt-in automatic updates: when on, the daemon periodically checks for a
     /// newer stable release, swaps the binary, and restarts itself onto it. Off
-    /// by default; enable via `ray install --auto-update` or `ray auto-update on`.
+    /// by default; enable via `torpedo install --auto-update` or `torpedo auto-update on`.
     #[serde(default)]
     pub auto_update: bool,
     /// Last release tag the auto-updater attempted (e.g. `v0.2.0`). Persisted so a
@@ -532,11 +532,11 @@ pub struct AppConfig {
     pub auto_update_last_attempt: Option<i64>,
     /// Absolute directory where auto-accepted (own-device) files are written.
     /// `None` falls back to `download_user`, then the operator's ~/Downloads.
-    /// Set via `ray files download-dir <path>`.
+    /// Set via `torpedo files download-dir <path>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<String>,
     /// Unix uid that owns auto-accepted files (and whose ~/Downloads receives
-    /// them when `download_dir` is unset). Set via `ray files download-user`.
+    /// them when `download_dir` is unset). Set via `torpedo files download-user`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_user: Option<u32>,
     #[serde(default)]
@@ -545,13 +545,13 @@ pub struct AppConfig {
     /// admission. See [`PendingJoinEntry`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_joins: Vec<PendingJoinEntry>,
-    /// This user's current device-cert generation (`ray unpair` / rotation). A
+    /// This user's current device-cert generation (`torpedo unpair` / rotation). A
     /// bump revokes every device below it; the current value is published to
     /// pkarr as the "floor" that verifiers reject certs beneath. `0` means no
     /// rotation has happened. See [`crate::revocation`].
     #[serde(default)]
     pub cert_generation: u64,
-    /// Device keys this user has revoked via `ray unpair` (hex `EndpointId`).
+    /// Device keys this user has revoked via `torpedo unpair` (hex `EndpointId`).
     /// **Local-only, never published** — the generation floor is what propagates.
     /// The primary keeps this list so it can refuse to re-issue a revoked device
     /// that reconnects with a stale cert, while re-issuing the devices it keeps.

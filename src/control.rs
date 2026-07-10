@@ -17,7 +17,7 @@ use crate::membership::{ApprovedEntry, Member};
 /// The user's private key signs the device's public key. Any peer can verify
 /// the binding using only the user's public key.
 ///
-/// `generation` is the cert's issuance epoch (`ray unpair`). A user publishes a
+/// `generation` is the cert's issuance epoch (`torpedo unpair`). A user publishes a
 /// current "floor" generation to pkarr; verifiers reject any cert below it, so a
 /// bump revokes every device at once and the ones you keep are re-issued fresh
 /// certs at the new generation. The signature covers the generation, so it can't
@@ -89,7 +89,7 @@ pub enum PairMsg {
     },
 }
 
-/// Messages for the `ray connect` friend-request handshake (ALPN
+/// Messages for the `torpedo connect` friend-request handshake (ALPN
 /// `torpedo/connect/1`). The initiator (A) dials the recipient's (B) contact
 /// key, sends `Request`, and polls until `Approved`. Approval is recipient-only:
 /// only B acts, A just waits.
@@ -196,7 +196,7 @@ pub enum ControlMsg {
     InviteUsed {
         secret_hash: Vec<u8>,
     },
-    /// Active liveness probe for `ray ping`. The receiver echoes back a `Pong`
+    /// Active liveness probe for `torpedo ping`. The receiver echoes back a `Pong`
     /// carrying the same nonce over a fresh stream (the control readers drop the
     /// stream's send half, so the reply cannot ride the request stream). The
     /// pinging side correlates by nonce to measure round-trip time.
@@ -207,7 +207,7 @@ pub enum ControlMsg {
     Pong {
         nonce: u64,
     },
-    /// Primary → secondary: this device has been unpaired (`ray unpair`). Sent
+    /// Primary → secondary: this device has been unpaired (`torpedo unpair`). Sent
     /// best-effort over a shared network's mesh connection. The receiver acts on
     /// it only when the sender's identity is the `user_identity` in its own device
     /// cert (so a stranger cannot trigger a wipe): it deletes its stored device
@@ -216,7 +216,7 @@ pub enum ControlMsg {
     /// cooperative device.
     Unpaired,
     /// Primary → secondary: a freshly-signed cert at a new generation, pushed
-    /// after a rotation (`ray unpair`) so a kept device stays above the floor.
+    /// after a rotation (`torpedo unpair`) so a kept device stays above the floor.
     /// Accepted only when it is signed by the device's own user identity and
     /// binds the device's own key at a generation no lower than the current one.
     CertRefresh {
@@ -261,7 +261,7 @@ pub async fn recv_msg(stream: &mut RecvStream) -> Result<ControlMsg> {
 
 /// Send any serializable message as a length-prefixed msgpack frame, then finish
 /// the stream (same one-message-per-stream contract as [`send_msg`]). Used by
-/// the `ray connect` handshake (`ConnectMsg`).
+/// the `torpedo connect` handshake (`ConnectMsg`).
 pub async fn send_framed<T: Serialize>(stream: &mut SendStream, msg: &T) -> Result<()> {
     let body = rmp_serde::to_vec_named(msg).context("serialize framed message")?;
     let len = (body.len() as u32).to_be_bytes();

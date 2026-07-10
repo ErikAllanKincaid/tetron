@@ -78,7 +78,7 @@ pub(crate) async fn join_mesh_shared(
     // control listener's `InviteShare`/`InviteUsed` handling (a co-coordinator
     // learning of invites it didn't mint) is serialized with mint/redeem.
     invite_lock: Arc<tokio::sync::Mutex<()>>,
-    // Shared with the router; lets the member control reader resolve `ray ping`
+    // Shared with the router; lets the member control reader resolve `torpedo ping`
     // Pongs back to the waiting handler.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) -> Result<JoinResult> {
@@ -269,7 +269,7 @@ fn persist_join_config(
                 )
             })
             .unwrap_or((false, None, vec![], BTreeMap::new(), false));
-    // The toggle command (`ray files auto-accept`) is authoritative, so preserve
+    // The toggle command (`torpedo files auto-accept`) is authoritative, so preserve
     // a previously-persisted value; the join-time `--auto-accept-files` seed only
     // needs to take effect on the first join (no prior config).
     let auto_accept_files = prev_auto_accept_files || auto_accept_files;
@@ -861,7 +861,7 @@ pub(crate) fn spawn_reconnect_loop(
                 continue;
             }
 
-            // A deliberate `ray leave` (graceful close with the leave code) means
+            // A deliberate `torpedo leave` (graceful close with the leave code) means
             // the peer is gone for good — don't spin a reconnect task against it.
             // The coordinator's MemberSync will prune it from our roster.
             if event.intentional {

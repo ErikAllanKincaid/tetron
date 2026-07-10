@@ -90,7 +90,7 @@ pub(crate) async fn ipc_join(
     } else {
         None
     };
-    // `ray join <arg>` accepts either a bare room id (the network public key) or
+    // `torpedo join <arg>` accepts either a bare room id (the network public key) or
     // a self-contained invite code. An invite decodes to the network key plus the
     // coordinator to dial and a one-time secret to present.
     let (network_key, invite, coordinator) = match invite::decode_invite_code(network_key) {
@@ -215,7 +215,7 @@ pub(crate) async fn ipc_leave(name: &str) -> Result<()> {
 }
 
 /// Render a TTL in seconds back to the largest whole `Nw`/`Nd`/`Nh` unit
-/// (falling back to seconds), for display in `ray ephemeral show` and status.
+/// (falling back to seconds), for display in `torpedo ephemeral show` and status.
 pub(crate) fn format_ttl(secs: u64) -> String {
     if secs.is_multiple_of(604_800) {
         format!("{}w", secs / 604_800)
@@ -228,7 +228,7 @@ pub(crate) fn format_ttl(secs: u64) -> String {
     }
 }
 
-/// `ray ephemeral <net> <duration|off|show>`: set, clear, or print a network's
+/// `torpedo ephemeral <net> <duration|off|show>`: set, clear, or print a network's
 /// ephemeral auto-kick TTL.
 pub(crate) async fn ipc_ephemeral(network: &str, arg: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;
@@ -279,7 +279,7 @@ pub(crate) async fn ipc_ephemeral(network: &str, arg: &str) -> Result<()> {
 
 /// Parse a human duration (`Nh`/`Nd`/`Nw`) into seconds, enforcing a 1-hour
 /// floor. Returns the TTL in seconds or a user-facing error string. Used by
-/// `ray ephemeral <net> <duration>` to set the per-network policy.
+/// `torpedo ephemeral <net> <duration>` to set the per-network policy.
 pub(crate) fn parse_ephemeral_duration(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let split = s

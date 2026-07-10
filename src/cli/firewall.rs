@@ -102,7 +102,7 @@ pub(crate) async fn ipc_firewall(action: FirewallAction) -> Result<()> {
     Ok(())
 }
 
-/// `ray firewall ssh ...`: toggle the embedded mesh SSH server and manage
+/// `torpedo firewall ssh ...`: toggle the embedded mesh SSH server and manage
 /// per-network allow lists.
 async fn ipc_firewall_ssh(action: SshAction) -> Result<()> {
     let mut filter: Option<String> = None;
@@ -144,7 +144,7 @@ async fn ipc_firewall_ssh(action: SshAction) -> Result<()> {
     Ok(())
 }
 
-/// Render `ray firewall ssh show` output (or JSON), optionally filtered to one
+/// Render `torpedo firewall ssh show` output (or JSON), optionally filtered to one
 /// network.
 fn render_ssh_state(
     enabled: bool,
@@ -212,7 +212,7 @@ pub(crate) fn render_firewall_rules(
 ) -> String {
     let mut out = String::from("\n");
     if default.is_some() {
-        // The rayfish firewall is separate from (and applies on top of) the host
+        // The torpedo firewall is separate from (and applies on top of) the host
         // OS / kernel firewall; both must allow a packet for it to pass.
         out.push_str(&format!(
             "  {}\n\n",
@@ -303,7 +303,7 @@ pub(crate) fn render_firewall_rules(
     out
 }
 
-/// `ray firewall pending`: fetch the queued suggestions, then either run the
+/// `torpedo firewall pending`: fetch the queued suggestions, then either run the
 /// interactive picker (TTY) or print a static table (piped / `--json`).
 pub(crate) async fn ipc_firewall_pending(network: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;
@@ -399,7 +399,7 @@ pub(crate) fn parse_suggest_token(spec: &str, flag: &str) -> Result<(String, Str
     Ok((peer.to_string(), ports.to_string()))
 }
 
-/// `ray firewall suggest`: read the network's current suggestions, merge the
+/// `torpedo firewall suggest`: read the network's current suggestions, merge the
 /// requested subject edits, and publish the updated set (coordinator-only).
 pub(crate) async fn ipc_firewall_suggest(
     network: &str,
@@ -460,7 +460,7 @@ pub(crate) async fn ipc_firewall_suggest(
     Ok(())
 }
 
-/// `ray apply <spec>`: reconcile trusted networks against a deploy spec.
+/// `torpedo apply <spec>`: reconcile trusted networks against a deploy spec.
 ///
 /// B2 — orchestrator: for each network in the spec, `Create { trusted }` if it
 /// isn't active, then publish the spec's `firewall` block as suggestions
@@ -514,7 +514,7 @@ pub(crate) async fn ipc_apply(
     // Expand groups/aliases against live status into a pure hostname-keyed spec.
     let mut expanded = apply::DeploySpec::default();
     for (net_name, fw) in &spec.networks {
-        // Seed from the network's stored `ray alias` map (already canonical), then
+        // Seed from the network's stored `torpedo alias` map (already canonical), then
         // let the spec's own `aliases:` override on name conflict. Stored aliases
         // are node-local and never reach the blob.
         let stored_aliases = status_networks
@@ -650,7 +650,7 @@ pub(crate) fn joined_hostnames(networks: &[ipc::NetworkStatus], network: &str) -
     hosts.into_iter().collect()
 }
 
-/// `ray identityof <net> <host>`: print the identity string to paste into a
+/// `torpedo identityof <net> <host>`: print the identity string to paste into a
 /// spec's `aliases:` map. Resolves to the user identity if the device is paired,
 /// else the device's transport identity. Open read.
 pub(crate) async fn cmd_identityof(network: &str, hostname: &str, json: bool) -> Result<()> {
@@ -682,7 +682,7 @@ pub(crate) async fn cmd_identityof(network: &str, hostname: &str, json: bool) ->
 
 /// Resolve a joined hostname to `(identity, paired)` on one network: self matches
 /// by device identity; a peer prefers its user identity when paired, else its
-/// device endpoint id. Shared by `ray identityof` and `ray alias set`.
+/// device endpoint id. Shared by `torpedo identityof` and `torpedo alias set`.
 pub(crate) fn resolve_host_identity(
     net: &ipc::NetworkStatus,
     self_id: &str,

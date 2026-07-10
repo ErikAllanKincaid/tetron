@@ -1,5 +1,5 @@
 //! DHT publishers for the mesh core: the notify-driven network-record
-//! publisher, the contact-record publisher (`ray connect`), the lazy
+//! publisher, the contact-record publisher (`torpedo connect`), the lazy
 //! co-coordinator publisher, and the shared snapshot-refresh + publish step.
 
 use super::super::*;
@@ -55,11 +55,11 @@ pub(crate) fn spawn_network_publisher(
     })
 }
 
-/// Publish this node's contact record (`ray connect`).
+/// Publish this node's contact record (`torpedo connect`).
 /// Publishes the `contact_key -> current endpoint` pkarr record on a TTL/2
 /// interval (record TTL is 300s). Runs for the lifetime of the daemon (control
 /// plane), not gated by the data-plane `active` flag, so standby nodes stay
-/// reachable for `ray connect` requests. Reads `contact_secret` fresh from
+/// reachable for `torpedo connect` requests. Reads `contact_secret` fresh from
 /// config each cycle so a `RotateContact` takes effect without a restart.
 pub(crate) fn spawn_contact_publisher(
     client: PkarrRelayClient,
@@ -85,7 +85,7 @@ pub(crate) fn spawn_contact_publisher(
     })
 }
 
-/// Republish this user's cert-generation floor (`ray unpair` / rotation).
+/// Republish this user's cert-generation floor (`torpedo unpair` / rotation).
 /// Publishes `user_key -> generation` on a TTL/2 interval so the floor stays
 /// resolvable while this daemon runs (not gated by the data-plane `active` flag,
 /// so a standby node still advertises it). Only the primary signs it — its

@@ -305,7 +305,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
-    /// Authorize a user to run ray without sudo (requires root)
+    /// Authorize a user to run torpedo without sudo (requires root)
     SetOperator {
         /// Username or numeric UID to grant operator access
         user: String,

@@ -1,4 +1,4 @@
-//! Embedded mesh SSH server (`ray firewall ssh on`), Tailscale-style.
+//! Embedded mesh SSH server (`torpedo firewall ssh on`), Tailscale-style.
 //!
 //! The daemon runs a small SSH server bound to each of this node's mesh IPs on
 //! port 22. A stock `ssh` client connecting to `<peer>.ray` (or the mesh IP)
@@ -14,7 +14,7 @@
 //! local unix user, including root — tighter user-mapping is future work.
 //!
 //! Authorization is evaluated once, when the connection is accepted, so
-//! `ray firewall ssh allow/deny` changes apply to *new* sessions; an
+//! `torpedo firewall ssh allow/deny` changes apply to *new* sessions; an
 //! already-established session is not torn down by a later `deny`.
 
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ pub(crate) use crate::forward::SSH_LISTEN_PORT;
 
 /// Per-network SSH authorization snapshot: network name -> the network's SSH
 /// allow rules (peer + permitted login users). Held in an [`ArcSwap`] so
-/// `ray firewall ssh allow/deny` updates are picked up by a live listener
+/// `torpedo firewall ssh allow/deny` updates are picked up by a live listener
 /// without a restart.
 pub type SshAuthz = Arc<ArcSwap<HashMap<String, Vec<crate::config::SshRule>>>>;
 
@@ -124,7 +124,7 @@ fn resolve_user_policy(authz: &SshAuthz, user: &EndpointId, networks: &[SmolStr]
     policy
 }
 
-/// Handle to a running SSH server so the daemon can stop it on `ray down` /
+/// Handle to a running SSH server so the daemon can stop it on `torpedo down` /
 /// `ssh off`. Dropping or cancelling the token tears down every listener.
 pub struct SshServer {
     peers: PeerTable,

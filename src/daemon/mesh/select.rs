@@ -91,7 +91,7 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
 /// truth) and persist our own — possibly coordinator-corrected — hostname. Called
 /// whenever a roster update arrives so renames, joins, and departures all reflect
 /// in `*.ray` resolution immediately.
-/// Pick which connection path to report in `ray status`. Prefers the path iroh
+/// Pick which connection path to report in `torpedo status`. Prefers the path iroh
 /// has selected; otherwise falls back to the best concrete path so a live
 /// connection never renders as `Unknown` (`?`). Priority Direct > Relay > Tor.
 /// Returns the index into `classes`, or `None` only when there are no paths.

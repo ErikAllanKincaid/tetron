@@ -200,7 +200,7 @@ impl MeshManager {
         }
     }
 
-    /// Materialized suggested rules awaiting manual review (`ray firewall
+    /// Materialized suggested rules awaiting manual review (`torpedo firewall
     /// pending`). Returns the rules as structured views; the CLI renders them as
     /// an interactive picker on a TTY or a static table otherwise.
     pub(crate) fn firewall_pending(&self, network: &str) -> IpcMessage {
@@ -375,7 +375,7 @@ impl MeshManager {
         }
     }
 
-    /// `ray firewall default allow|deny` flips the **inbound** default (the
+    /// `torpedo firewall default allow|deny` flips the **inbound** default (the
     /// outbound default stays `Allow` — you always initiate freely). `allow`
     /// restores the old permissive inbound posture; `deny` is the secure default.
     /// Inbound ICMP-allow is a separate built-in default and is unaffected.
@@ -403,7 +403,7 @@ impl MeshManager {
         save_firewall_warn(&config);
     }
 
-    /// `ray firewall on|off`: the global kill switch. `off` sets
+    /// `torpedo firewall on|off`: the global kill switch. `off` sets
     /// `config.disabled = true` so `evaluate_packet` allows every packet
     /// (rules and defaults are bypassed; the anti-spoof check upstream still
     /// runs). Hot-swaps the live `ArcSwap`, so the effect is immediate.
@@ -424,7 +424,7 @@ impl MeshManager {
     }
 
     // -----------------------------------------------------------------------
-    // Mesh SSH (`ray firewall ssh ...`)
+    // Mesh SSH (`torpedo firewall ssh ...`)
     // -----------------------------------------------------------------------
 
     /// Toggle the embedded mesh SSH server. Persists `ssh_enabled`, seeds/removes

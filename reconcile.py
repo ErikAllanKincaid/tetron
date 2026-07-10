@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-009) from spec/design_spec.py.
+# Checks the automatable constraints (CON-001..CON-010) from spec/design_spec.py.
 # It does NOT check the Requirement classes (SUBNET-*/RENAME-*); those are
 # structural/design requirements verified by reading the diff and code directly.
 import json
@@ -156,6 +156,21 @@ def check_report_identity() -> dict:
     return {"unexpected_count": leaks}
 
 
+def check_cli_reference_identity() -> dict:
+    """CON-010/RENAME-016: no `ray <verb>` reference to the pre-fork binary name
+    may remain in src (comments or strings). The lookbehind makes this clean
+    where a bare `rayfish` grep could not be: it matches `ray ` + a lowercase
+    word only when NOT preceded by `.`, a word char, or `-`, so it never trips
+    on the KEEP forms — `.ray` (Magic-DNS TLD), `ray-proto`/`ray-mobile` (crate
+    names), `stingray`/`array` (substrings), or `rayfish`. Every match is a
+    stale CLI/binary reference that should read `torpedo`."""
+    pat = re.compile(r"(?<![.\w-])ray (?=[a-z])")
+    n = 0
+    for p in Path("src").rglob("*.rs"):
+        n += len(pat.findall(p.read_text()))
+    return {"unexpected_count": n}
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -167,6 +182,7 @@ if __name__ == "__main__":
         "host_identity": check_host_identity(),
         "build_tooling_identity": check_build_tooling_identity(),
         "report_identity": check_report_identity(),
+        "cli_reference_identity": check_cli_reference_identity(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -179,5 +195,6 @@ if __name__ == "__main__":
         and ctx["host_identity"]["leak_count"] == 0
         and ctx["build_tooling_identity"]["unexpected_count"] == 0
         and ctx["report_identity"]["unexpected_count"] == 0
+        and ctx["cli_reference_identity"]["unexpected_count"] == 0
     )
     sys.exit(0 if ok else 1)

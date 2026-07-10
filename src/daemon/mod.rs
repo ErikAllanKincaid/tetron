@@ -1,4 +1,4 @@
-//! The rayfish daemon: a long-lived, root-owned process that holds the iroh
+//! The torpedo daemon: a long-lived, root-owned process that holds the iroh
 //! [`Endpoint`], the TUN device, the [`PeerTable`], and the [`ProtocolRouter`],
 //! and serves the unprivileged CLI over a Unix-socket IPC channel.
 //!
@@ -96,7 +96,7 @@ mod mesh;
 // `mod.rs` and the other `mesh/` submodules (via `use super::super::*`) call them
 // by bare name, as before the split.
 pub(crate) use mesh::*;
-// `run_daemon` (the `ray daemon` entry point) stays public for the binary.
+// `run_daemon` (the `torpedo daemon` entry point) stays public for the binary.
 pub use mesh::run_daemon;
 // `build_headless` is the embedder (mobile) construction entry point.
 pub use mesh::build_headless;
@@ -141,11 +141,11 @@ pub(crate) struct MeshCtx {
     hostname_table: dns::HostnameTable,
     reverse_table: dns::ReverseLookupTable,
     device_user_map: peers::DeviceUserMap,
-    /// Last-known revoked device keys per user identity (`ray unpair`). Consulted
+    /// Last-known revoked device keys per user identity (`torpedo unpair`). Consulted
     /// wherever a `DeviceCert` is trusted (admission, MeshHello, reconverge) so a
     /// revoked device stops being honored mesh-wide. See [`crate::revocation`].
     revocation: RevocationCache,
-    /// Peers removed from a network's roster (via `ray kick` or a stale-entry
+    /// Peers removed from a network's roster (via `torpedo kick` or a stale-entry
     /// prune during reconverge), keyed by `(network, transport id)`. A member
     /// closes such a peer's connection but can't see its own close code, so its
     /// reconnect loop would re-dial the removed peer (which still lists it) and
@@ -239,7 +239,7 @@ pub(crate) struct NetworkState {
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
     subnet: Subnet,
-    /// Materialized suggested rules awaiting manual `ray firewall accept` on a
+    /// Materialized suggested rules awaiting manual `torpedo firewall accept` on a
     /// node that did not opt into `--auto-accept-firewall`. Empty when
     /// auto-accepting.
     pending_suggestions: Vec<firewall::FirewallRule>,
@@ -378,9 +378,9 @@ pub struct MeshManager {
     /// Magic DNS naming tables, resolver, and OS-DNS configurator (see [`DnsManager`]).
     dns: DnsManager,
     mdns_enabled: bool,
-    /// Whether this node opted into automatic stable updates (`ray auto-update
-    /// on` / `ray install --auto-update`). Read at startup; when set, `run_daemon`
-    /// spawns the periodic update task. Echoed back in `ray status`.
+    /// Whether this node opted into automatic stable updates (`torpedo auto-update
+    /// on` / `torpedo install --auto-update`). Read at startup; when set, `run_daemon`
+    /// spawns the periodic update task. Echoed back in `torpedo status`.
     auto_update: bool,
     /// Name of the OS TUN device (desktop) or a placeholder until a packet
     /// interface is attached. Interior-mutable because on embedders (mobile) the
@@ -400,26 +400,26 @@ pub struct MeshManager {
     /// File-transfer + pairing state and ALPN accept arms (see [`FileService`]).
     /// Shared with [`ProtocolRouter`], which runs the accept arms.
     files: Arc<FileService>,
-    /// `ray connect` state + ALPN accept arm (see [`ConnectService`]). Shared with
+    /// `torpedo connect` state + ALPN accept arm (see [`ConnectService`]). Shared with
     /// [`ProtocolRouter`], which runs the accept arm.
     connect: Arc<ConnectService>,
     device_cert: Option<control::DeviceCert>,
     device_user_map: peers::DeviceUserMap,
-    /// Device-cert revocation cache (`ray unpair`); see [`MeshCtx::revocation`].
+    /// Device-cert revocation cache (`torpedo unpair`); see [`MeshCtx::revocation`].
     revocation: RevocationCache,
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
-    /// This node's contact id (`ray connect`): the public half of the rotatable
+    /// This node's contact id (`torpedo connect`): the public half of the rotatable
     /// contact key. The secret lives in config (read fresh by the publisher and
     /// `rotate_contact` so rotation needs no restart); only the public id is
-    /// surfaced here for `ray status` / `ray contact id`.
+    /// surfaced here for `torpedo status` / `torpedo contact id`.
     contact_public: EndpointId,
     /// Whether the VPN is currently active (TUN up, networks connected) or on
     /// standby. Toggled by the `Up`/`Down` IPC commands.
     active: Arc<AtomicBool>,
     /// Live per-network SSH allow lists for the embedded mesh SSH server. Swapped
-    /// atomically on `ray firewall ssh allow/deny`, so a running listener picks up
+    /// atomically on `torpedo firewall ssh allow/deny`, so a running listener picks up
     /// changes without restart. See [`crate::ssh`]. Desktop-only: the embedded
     /// mesh SSH server isn't part of the Android build.
     #[cfg(feature = "desktop")]
@@ -443,7 +443,7 @@ pub struct MeshManager {
 /// Map key-holding status to a [`NetworkRole`].
 ///
 /// A node that holds the per-network secret key (original coordinator or one
-/// promoted via `ray admin add`) runs as `Coordinator`; all other nodes run
+/// promoted via `torpedo admin add`) runs as `Coordinator`; all other nodes run
 /// as `Member`.
 fn role_for_key_holder(holds_network_key: bool) -> NetworkRole {
     if holds_network_key {
@@ -658,7 +658,7 @@ impl MeshManager {
                 pending_pongs: self.protocol_router.pending_pongs.clone(),
             })),
         );
-        // Flip the stored role so `ray status` reports Coordinator immediately.
+        // Flip the stored role so `torpedo status` reports Coordinator immediately.
         if let Some(mut handle) = self.networks.get_mut(network) {
             handle.role = NetworkRole::Coordinator;
         }
@@ -1160,7 +1160,7 @@ fn format_size(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::BINARY)
 }
 
-/// Entry point for `ray daemon`. Builds the always-on infrastructure, enters
+/// Entry point for `torpedo daemon`. Builds the always-on infrastructure, enters
 /// the active VPN state, then serves IPC until shutdown. The heavy lifting is
 /// delegated to [`build_daemon`] (construction) and [`serve_ipc`] (the request
 /// loop); see the module docs for the infrastructure-vs-active-state split.
@@ -1241,7 +1241,7 @@ async fn send_member_sync(conn: &Connection) {
     let _ = open_and_send(conn, &ControlMsg::MemberSync).await;
 }
 
-/// Reply to a `ray ping` probe by echoing `Pong{nonce}` over a fresh stream
+/// Reply to a `torpedo ping` probe by echoing `Pong{nonce}` over a fresh stream
 /// (see [`open_and_send`] for why the reply can't ride the request stream back).
 async fn respond_pong(conn: &Connection, nonce: u64) {
     let _ = open_and_send(conn, &ControlMsg::Pong { nonce }).await;

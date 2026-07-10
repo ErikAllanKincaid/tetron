@@ -105,7 +105,7 @@ pub(crate) async fn print_pending_changelog(
     println!();
 }
 
-/// `ray update`: replace this binary with a GitHub release and, if the system
+/// `torpedo update`: replace this binary with a GitHub release and, if the system
 /// service is installed, restart the daemon onto the new binary.
 ///
 /// Stable (default) tracks the latest published release and gates on semver.
@@ -145,7 +145,7 @@ pub(crate) async fn cmd_update(
         .context("failed to build HTTP client")?;
 
     // Authenticate the api.github.com calls below when a token is available so
-    // repeated `ray update` runs don't trip the 60/hr-per-IP anonymous limit.
+    // repeated `torpedo update` runs don't trip the 60/hr-per-IP anonymous limit.
     let token = github_token();
 
     // `--list`: enumerate published releases (newest first) and exit. No root,
@@ -181,7 +181,7 @@ pub(crate) async fn cmd_update(
     })
     .await
     .context(if let Some(tag) = &pinned_tag {
-        format!("failed to find release {tag} (see `ray update --list`)")
+        format!("failed to find release {tag} (see `torpedo update --list`)")
     } else if nightly {
         "failed to query the nightly pre-release (is one published yet?)".to_string()
     } else {
@@ -235,7 +235,7 @@ pub(crate) async fn cmd_update(
         if let Some(daemon_version) = daemon_version().await
             && daemon_version != current
         {
-            println!("daemon:  {daemon_version} (stale — run `sudo ray update` to restart it)");
+            println!("daemon:  {daemon_version} (stale — run `sudo torpedo update` to restart it)");
         }
         if up_to_date {
             println!("rayfish is up to date");
@@ -257,7 +257,7 @@ pub(crate) async fn cmd_update(
             } else {
                 String::new()
             };
-            println!("run `sudo ray update{flag}` to upgrade");
+            println!("run `sudo torpedo update{flag}` to upgrade");
         }
         return Ok(());
     }
@@ -282,7 +282,7 @@ pub(crate) async fn cmd_update(
     download_verify_and_install(&client, &bin_url, &expected, &asset, current, &remote_label).await
 }
 
-/// `ray update --list`: enumerate published releases (newest first) and exit.
+/// `torpedo update --list`: enumerate published releases (newest first) and exit.
 /// No root, no install.
 async fn cmd_update_list(client: &Client, token: &Option<String>, current: &str) -> Result<()> {
     let spinner = progress::spinner("fetching releases…");
@@ -349,7 +349,7 @@ async fn download_verify_and_install(
 
     // If the service is installed, the daemon is still running the old binary.
     // Go through the full install path: rewrite the unit (its exec path may have
-    // changed when `ray update` runs from a different location than the
+    // changed when `torpedo update` runs from a different location than the
     // installed binary) and fully reload it via unload+load (launchctl) /
     // daemon-reload+restart (systemd) so the service manager honors the
     // rewritten unit. A bare `kickstart`/in-place restart would relaunch the
@@ -358,14 +358,14 @@ async fn download_verify_and_install(
     if service_installed {
         install_and_start_service(None).await
     } else {
-        println!("run `sudo ray up` to start the service with the new binary");
+        println!("run `sudo torpedo up` to start the service with the new binary");
         Ok(())
     }
 }
 
 /// Best-effort fetch of the running daemon's compiled version over IPC.
 /// Returns `None` if no daemon is reachable or it predates the version field
-/// (empty string). Used by `ray update --check` and never fails the caller.
+/// (empty string). Used by `torpedo update --check` and never fails the caller.
 pub(crate) async fn daemon_version() -> Option<String> {
     let mut stream = ipc::connect().await.ok()?;
     ipc::send(&mut stream, ipc::IpcMessage::Status).await.ok()?;

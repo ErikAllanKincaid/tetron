@@ -1,6 +1,6 @@
 //! Filesystem location for the daemon's rolling log files.
 //!
-//! The daemon runs as root, so these files are root-owned. `ray report` reads
+//! The daemon runs as root, so these files are root-owned. `torpedo report` reads
 //! them daemon-side (it already has access) and bundles them for the user.
 
 use std::path::PathBuf;

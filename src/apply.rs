@@ -223,7 +223,7 @@ pub fn expected_hosts(spec: &DeploySpec) -> Vec<String> {
 /// rules simply aren't emitted yet and will materialize on a later apply once the
 /// user joins, mirroring how `firewall::materialize_suggestions` skips
 /// unresolved peers).
-/// Merge a network's stored (node-local `ray alias`) map with a spec's inline
+/// Merge a network's stored (node-local `torpedo alias`) map with a spec's inline
 /// `aliases:` map. The spec wins on a name conflict. Both are already canonical
 /// (`name -> identity`); the result seeds [`expand_firewall`]. Stored aliases are
 /// node-local and never reach the blob, exactly like spec aliases.
@@ -361,7 +361,7 @@ networks:
     fn parse_yaml_empty_networks() {
         // A file may create networks with no firewall blocks.
         // Note: the `config` crate lowercases keys, so spec network/host names should be
-        // lowercase (rayfish hostnames are generated lowercase).
+        // lowercase (torpedo hostnames are generated lowercase).
         let yaml = r#"
 networks:
   neta:
@@ -531,7 +531,7 @@ networks:
 
     #[test]
     fn merge_aliases_spec_overrides_stored() {
-        // Stored (node-local `ray alias`) seeds the map; the spec's inline
+        // Stored (node-local `torpedo alias`) seeds the map; the spec's inline
         // `aliases:` wins on a name conflict and adds new names.
         let stored: BTreeMap<String, String> = [
             ("alice".to_string(), "id-stored-alice".to_string()),

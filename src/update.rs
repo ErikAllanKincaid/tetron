@@ -1,4 +1,4 @@
-//! Reusable self-update engine shared by the `ray update` CLI and the daemon's
+//! Reusable self-update engine shared by the `torpedo update` CLI and the daemon's
 //! opt-in auto-updater. Pure GitHub-release plumbing: resolve a release, fetch
 //! and verify its SHA-256 sidecar, and atomically swap the running binary. No
 //! printing, no root checks, no service restart — those belong to the callers
@@ -118,11 +118,11 @@ pub struct GhRelease {
     #[serde(default)]
     pub name: Option<String>,
     /// Whether GitHub marks this a pre-release (nightlies and `-rc`/`-` tags),
-    /// used to annotate `ray update --list`.
+    /// used to annotate `torpedo update --list`.
     #[serde(default)]
     pub prerelease: bool,
     /// The release notes (git-cliff renders these from conventional commits in
-    /// `release.yml`). Printed by `ray update` so the user sees what each pending
+    /// `release.yml`). Printed by `torpedo update` so the user sees what each pending
     /// version changes; `None`/empty for releases without notes.
     #[serde(default)]
     pub body: Option<String>,

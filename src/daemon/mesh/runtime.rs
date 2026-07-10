@@ -518,7 +518,7 @@ impl MeshManager {
 
     /// Connect to every saved network (control plane). Run once at daemon
     /// startup so mesh connections follow the daemon lifecycle, not the data
-    /// plane: `ray down` keeps these connected so the node stays online to
+    /// plane: `torpedo down` keeps these connected so the node stays online to
     /// peers. Connections are dropped only on leave/nuke/shutdown.
     pub(crate) async fn connect_all_networks(self: &Arc<Self>) {
         let app_config = match config::load() {
@@ -605,7 +605,7 @@ impl MeshManager {
             });
         }
 
-        // Publish the contact record immediately so `ray connect` works right
+        // Publish the contact record immediately so `torpedo connect` works right
         // away, rather than waiting up to one publisher interval (the active-gated
         // `spawn_contact_publisher` only re-checks every TTL/2).
         if let Some(secret) = app_config.contact_secret_key.clone()
@@ -681,7 +681,7 @@ impl MeshManager {
     /// route calls are skipped.
     pub async fn activate(self: &Arc<Self>, hostname: Option<String>) -> IpcMessage {
         // Persist the personal default hostname first (before the already-active
-        // short-circuit) so `ray up --hostname X` records the new default even
+        // short-circuit) so `torpedo up --hostname X` records the new default even
         // when the VPN is already up. Used as the fallback for future
         // creates/joins; doesn't rename networks already joined.
         if let Some(h) = hostname {
@@ -712,7 +712,7 @@ impl MeshManager {
         }
 
         // Non-fatal problems hit while activating. The daemon stays up, but we
-        // return these to the client so `ray up` can tell the user something is
+        // return these to the client so `torpedo up` can tell the user something is
         // wrong instead of silently reporting success on a degraded VPN.
         let mut warnings: Vec<String> = Vec::new();
 

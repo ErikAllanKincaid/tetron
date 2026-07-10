@@ -5,7 +5,7 @@
 use super::super::*;
 
 /// Extra context a coordinator needs to prune the canonical member list when a
-/// peer leaves deliberately (`ray leave`). Members pass `None` and only ever
+/// peer leaves deliberately (`torpedo leave`). Members pass `None` and only ever
 /// drop the connection from the [`PeerTable`].
 pub(crate) struct CoordinatorCleanup {
     pub(crate) state: SharedNetworkState,
@@ -49,7 +49,7 @@ pub(crate) fn spawn_peer_cleanup(
                             }
                             tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, network = %ev.network, intentional = ev.intentional, "removing dead peer");
 
-                            // A deliberate `ray leave` (graceful close) prunes the
+                            // A deliberate `torpedo leave` (graceful close) prunes the
                             // member from the roster; any other drop stamps the
                             // member's `last_seen` so the ephemeral pruner can age
                             // it out. Both republish the signed blob and broadcast
@@ -117,7 +117,7 @@ pub(crate) fn spawn_coordinator_control_reader(
     token: CancellationToken,
     // Serializes single-use invite ledger access for the invite-gossip arms.
     invite_lock: Arc<tokio::sync::Mutex<()>>,
-    // Fires the waiting `ray ping` handler when a matching `Pong` arrives.
+    // Fires the waiting `torpedo ping` handler when a matching `Pong` arrives.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
     let MeshCtx {
@@ -230,7 +230,7 @@ pub(crate) fn spawn_coordinator_control_reader(
             };
 
             // Verify and store device cert if present, unless it is below the
-            // issuing user's generation floor (`ray unpair`) — a revoked/stale
+            // issuing user's generation floor (`torpedo unpair`) — a revoked/stale
             // cert is not recorded as a paired device, so it stops resolving to
             // the user's identity. (A `Reissue` verdict — our own stale device —
             // is treated as fine to record; the admission path pushes its refresh.)
@@ -425,7 +425,7 @@ pub(crate) async fn finalize_removal(
 /// Coordinator-only: periodically evict members that have been offline longer
 /// than the network's `ephemeral_ttl_secs` (off by default). Ticks every
 /// [`PRUNE_INTERVAL`] plus once shortly after spawn, reading the TTL fresh from
-/// config each tick so `ray ephemeral` takes effect without a restart. Reuses
+/// config each tick so `torpedo ephemeral` takes effect without a restart. Reuses
 /// the exact kick teardown, batched into one publish per sweep.
 pub(crate) fn spawn_stale_member_pruner(
     ctx: MeshCtx,

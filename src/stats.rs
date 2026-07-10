@@ -109,7 +109,7 @@ impl ForwardMetrics {
     }
 
     /// Read the current counters into a serializable snapshot for diagnostics
-    /// (`ray report`) and ad-hoc inspection. `start` is the daemon start time,
+    /// (`torpedo report`) and ad-hoc inspection. `start` is the daemon start time,
     /// used to compute uptime.
     pub fn snapshot(&self, start: Instant) -> MetricsSnapshot {
         let drops = DropReason::ALL

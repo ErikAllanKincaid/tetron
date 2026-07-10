@@ -50,7 +50,7 @@ pub(crate) struct CoordinatorAcceptState {
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
     /// Shared with this network's [`NetworkHandle`]; see its `invite_lock`.
     pub(crate) invite_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Shared with the router; lets the control reader resolve `ray ping` Pongs.
+    /// Shared with the router; lets the control reader resolve `torpedo ping` Pongs.
     pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 }
 
@@ -159,7 +159,7 @@ impl CoordinatorAcceptState {
                 tracing::warn!(peer = %remote_id.fmt_short(), "invalid device certificate");
                 return;
             }
-            // Judge the cert against the generation floor (`ray unpair`). This one
+            // Judge the cert against the generation floor (`torpedo unpair`). This one
             // check covers every admission branch below — owner auto-admit,
             // invite, live-approved, and open. A cert below the floor (a revoked
             // device, or a stale sibling seen from a secondary) is rejected; our
@@ -193,7 +193,7 @@ impl CoordinatorAcceptState {
                 .insert(remote_id, cert.user_identity);
         }
 
-        // A peer pre-approved via `ray accept` is admitted directly.
+        // A peer pre-approved via `torpedo accept` is admitted directly.
         let is_approved = self.state.read().unwrap().approved.is_approved(&remote_id);
         if is_approved {
             // Live-approved name is joiner-chosen, not authoritative.
@@ -227,7 +227,7 @@ impl CoordinatorAcceptState {
         }
 
         // Unknown peer, no invite: open networks auto-admit; closed networks
-        // queue the request for live operator approval (`ray accept`).
+        // queue the request for live operator approval (`torpedo accept`).
         let mode = self.state.read().unwrap().mode;
         match mode {
             GroupMode::Open => {
@@ -816,11 +816,11 @@ pub(crate) struct ProtocolRouter {
     /// delegates the `FILES_ALPN`/`PAIR_ALPN` arms to this; `MeshManager` holds
     /// the same handle for the IPC-side file/pairing commands.
     files: Arc<FileService>,
-    /// `ray connect` state (pending/approved/outgoing maps) and the `CONNECT_ALPN`
+    /// `torpedo connect` state (pending/approved/outgoing maps) and the `CONNECT_ALPN`
     /// accept arm. The accept loop delegates to this; `MeshManager` holds the same
     /// handle for the IPC-side connect commands.
     connect: Arc<ConnectService>,
-    /// In-flight `ray ping` probes, keyed by nonce. The control reader fires the
+    /// In-flight `torpedo ping` probes, keyed by nonce. The control reader fires the
     /// oneshot when the matching `Pong` arrives so the ping handler can measure
     /// round-trip time. Cloned into both control readers.
     pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,

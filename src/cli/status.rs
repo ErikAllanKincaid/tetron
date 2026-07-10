@@ -46,8 +46,8 @@ pub(crate) fn infer_hint(message: &str) -> Option<String> {
 
 /// Render a "next steps" footer: an aligned list of suggested commands.
 /// ```text
-///     next  ray status   see who's online
-///           ray up       activate the VPN
+///     next  torpedo status   see who's online
+///           torpedo up       activate the VPN
 /// ```
 pub(crate) fn print_next(steps: &[(&str, &str)]) {
     let rows: Vec<Vec<layout::Cell>> = steps
@@ -168,7 +168,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 return Ok(());
             }
             let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);
-            // Header: rayfish ● up    mDNS on    endpoint k7f2…9qx4
+            // Header: torpedo ● up    mDNS on    endpoint k7f2…9qx4
             let state = if active {
                 format!("{} {}", style::dot_online(), style::value("up"))
             } else {
@@ -265,7 +265,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
 
 /// Render one network block: header (name · role · dns · ip · member count),
 /// the aligned peer table, and the shareable join code (suppressed for direct
-/// `ray connect` networks).
+/// `torpedo connect` networks).
 fn print_network(net: &ipc::NetworkStatus) {
     let role = net.role.to_string();
     // Just the hostname: the network name is already the block header, so the
@@ -335,7 +335,7 @@ fn print_network(net: &ipc::NetworkStatus) {
         println!("{}", indent(&layout::columns(&rows, 3), 4));
     }
 
-    // join code. Direct (`ray connect`) networks have no shareable room id, so
+    // join code. Direct (`torpedo connect`) networks have no shareable room id, so
     // the join code is suppressed for them.
     if let Some(ref key) = net.network_key
         && !net.role.is_direct()
@@ -494,8 +494,8 @@ fn print_pending_summary(
     print!("{}", indent(&layout::columns(&rows, 3), 4));
 }
 
-/// `ray down`: put the daemon on standby (tear down the TUN, revert DNS, drop
-/// connections) while leaving the daemon process running so `ray up` can
+/// `torpedo down`: put the daemon on standby (tear down the TUN, revert DNS, drop
+/// connections) while leaving the daemon process running so `torpedo up` can
 /// reactivate it without root.
 pub(crate) async fn ipc_down() -> Result<()> {
     let mut stream = ipc::connect().await?;

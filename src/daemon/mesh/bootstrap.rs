@@ -1,6 +1,6 @@
 //! Daemon process bootstrap and the IPC server. Moved out of `daemon/mod.rs`.
 //!
-//! `run_daemon` is the process entry point (called by the `ray daemon`
+//! `run_daemon` is the process entry point (called by the `torpedo daemon`
 //! command): it builds the shared [`MeshManager`], reconnects saved networks,
 //! and runs the IPC accept loop until shutdown. `build_daemon` wires the endpoint
 //! / TUN / protocol router / metrics; `serve_ipc` + `handle_ipc_client` answer
@@ -41,7 +41,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     }
 
     // Connect the control plane (mesh connections) once, for the daemon's
-    // whole lifetime, then bring the data plane up. `ray up`/`ray down` toggle
+    // whole lifetime, then bring the data plane up. `torpedo up`/`torpedo down` toggle
     // only the data plane after this; connections persist across `down` so the
     // node stays online to peers.
     daemon.connect_all_networks().await;
@@ -72,7 +72,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // "Endpoint dropped without calling `Endpoint::close`. Aborting
     // ungracefully." and can leave the process lingering until the service
     // manager escalates to SIGKILL — which delays the relaunch on
-    // `ray restart`/`ray update` past the client's reachability probe. Closing
+    // `torpedo restart`/`torpedo update` past the client's reachability probe. Closing
     // it here lets QUIC connections terminate cleanly and the process exit
     // promptly so the new daemon comes up fast.
     daemon.endpoint.close().await;
@@ -87,8 +87,8 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 /// metrics-server guard, which must outlive the process.
 /// The ALPNs the endpoint advertises at boot: one per saved network plus the
 /// network-independent blobs / file-transfer / pairing / connect ALPNs. A
-/// freshly-started daemon with no active network must still accept `ray pair` /
-/// `ray send` / `ray connect`, otherwise the initial handshake fails with "peer
+/// freshly-started daemon with no active network must still accept `torpedo pair` /
+/// `torpedo send` / `torpedo connect`, otherwise the initial handshake fails with "peer
 /// doesn't support any known protocol" until the first create/join triggers
 /// `refresh_alpns()`. Mirrors `ProtocolRouter::alpns()`.
 fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
@@ -161,7 +161,7 @@ async fn build_daemon(
     // Point the pkarr client at the configured discovery-DNS server (if any)
     // before any record publish/resolve happens.
     dht::set_discovery_override(&app_config.discovery_dns);
-    // Lazily generate + persist this node's contact key (`ray connect`). The
+    // Lazily generate + persist this node's contact key (`torpedo connect`). The
     // secret stays in config; only its public id is held in `MeshManager`.
     let contact_public = config::contact_secret(&mut app_config).public();
     if let Err(e) = config::save_settings(&app_config) {
@@ -291,12 +291,12 @@ async fn build_daemon(
     // opted-in network).
     spawn_file_auto_accept(daemon.clone(), new_file_rx, token.clone());
 
-    // --- Contact record publisher (ray connect) ---
+    // --- Contact record publisher (torpedo connect) ---
     if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
         spawn_contact_publisher(pkarr_client, daemon.endpoint.id(), token.clone());
     }
 
-    // --- Device-cert revocation (ray unpair) ---
+    // --- Device-cert revocation (torpedo unpair) ---
     // Seed the floor cache from this user's persisted generation so it is
     // enforced locally the instant the daemon comes up, ahead of any pkarr fetch.
     // A primary's endpoint id is the user identity that signed the certs.

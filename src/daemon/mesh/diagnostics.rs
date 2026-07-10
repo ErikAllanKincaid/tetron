@@ -55,7 +55,7 @@ impl MeshManager {
         }
     }
 
-    /// Build one network's `NetworkStatus` for `ray status`. The peer list comes
+    /// Build one network's `NetworkStatus` for `torpedo status`. The peer list comes
     /// from the *roster* (every known member, not just live connections) so
     /// offline peers still show (Tailscale-style) with `connection: None`.
     fn network_status(
@@ -171,7 +171,7 @@ impl MeshManager {
     /// Assemble a diagnostic `.tgz` (logs + metrics + sanitized status + system
     /// info) on disk and return its path plus a pre-filled GitHub issue. Runs
     /// daemon-side because the log files are root-owned; the resulting bundle is
-    /// chowned to the calling user so an unprivileged `ray report` can attach it.
+    /// chowned to the calling user so an unprivileged `torpedo report` can attach it.
     ///
     /// Sanitization: the bundle is built only from already-public material — the
     /// `StatusResponse` (which never carries secret keys), counters, and the log
@@ -240,7 +240,7 @@ impl MeshManager {
             };
         }
 
-        // Make it readable by, and owned by, the user who invoked `ray report`.
+        // Make it readable by, and owned by, the user who invoked `torpedo report`.
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
         if let Some((uid, gid)) = peer_cred {
@@ -337,10 +337,10 @@ impl MeshManager {
     }
 
     // -----------------------------------------------------------------------
-    // Diagnostics (ray ping / ray netcheck)
+    // Diagnostics (torpedo ping / torpedo netcheck)
     // -----------------------------------------------------------------------
 
-    /// Resolve a `ray ping` peer argument (hostname / IPv4 / short id / `self`)
+    /// Resolve a `torpedo ping` peer argument (hostname / IPv4 / short id / `self`)
     /// to its virtual IPv4 plus a display name. Mirrors `resolve_peer_name` but
     /// returns the address (so `lookup_v4` can yield a live connection).
     pub(crate) async fn resolve_peer_ip(&self, name: &str) -> Option<(Ipv4Addr, String)> {

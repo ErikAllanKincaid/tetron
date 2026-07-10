@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// transfer simply can't connect — the version gate needs no in-band check.
 pub const FILES_ALPN: &[u8] = b"torpedo/files/1";
 
-/// Identity-level ALPN for the `ray connect` friend-request handshake. Unlike
+/// Identity-level ALPN for the `torpedo connect` friend-request handshake. Unlike
 /// `network_alpn`, this is not per-network — it accepts connection requests
 /// addressed to this node's contact key. The trailing `/1` is its protocol
 /// version — **bump it on any breaking change to the `ConnectMsg` handshake**;
@@ -153,7 +153,7 @@ async fn bind_endpoint(
     builder.bind().await.context("failed to bind iroh endpoint")
 }
 
-/// Builds the [`QuicTransportConfig`] for rayfish's data-plane shape (one stream
+/// Builds the [`QuicTransportConfig`] for torpedo's data-plane shape (one stream
 /// of QUIC datagrams per peer, plus a few reliable control streams).
 ///
 /// Starts from iroh's builder defaults (which carry the multipath / NAT-traversal
@@ -237,7 +237,7 @@ pub async fn connect_to_peer_with_alpn(
         Ok(conn) => conn,
         // An ALPN mismatch fails the QUIC/TLS handshake opaquely. Map that one
         // case to an actionable hint (it's a heuristic — a peer that isn't
-        // running rayfish at all looks similar — hence "may be").
+        // running torpedo at all looks similar — hence "may be").
         Err(e) if is_alpn_mismatch(&e.to_string()) => {
             return Err(e).context(
                 "no shared protocol with peer — it may be running an incompatible \

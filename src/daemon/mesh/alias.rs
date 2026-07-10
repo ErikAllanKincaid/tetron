@@ -1,13 +1,13 @@
 //! Local alias handlers for `MeshManager`: `set_alias` / `remove_alias` /
 //! `list_aliases`. Aliases are a node-local, per-network convenience (`alias
-//! name -> identity string`) that show inline in `ray status` and seed `ray
+//! name -> identity string`) that show inline in `torpedo status` and seed `ray
 //! apply`'s `aliases:` map. They are never published in the signed GroupBlob.
 
 use super::super::*;
 
 impl MeshManager {
     /// Bind a local alias to an identity for a network. The identity is already
-    /// canonicalized CLI-side (the string `ray identityof` prints); this just
+    /// canonicalized CLI-side (the string `torpedo identityof` prints); this just
     /// persists the mapping. Overwrites any existing alias of the same name.
     pub(crate) fn set_alias(&self, network: &str, identity: &str, alias: &str) -> IpcMessage {
         let mut net = match config::load_network(network) {

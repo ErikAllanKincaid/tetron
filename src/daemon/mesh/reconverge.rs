@@ -8,7 +8,7 @@ use super::super::*;
 /// Materialize this node's suggested firewall rules for `network` from the
 /// verified blob state, then either install them (replacing the prior
 /// `Network(net)` set, leaving `Local` rules untouched) when the node opted into
-/// `--auto-accept-firewall`, or queue them for manual `ray firewall accept`. A
+/// `--auto-accept-firewall`, or queue them for manual `torpedo firewall accept`. A
 /// node with no assigned hostname is a no-op. Peer hostnames are resolved against
 /// the blob's member list, so a rule for a not-yet-joined peer appears once it
 /// joins and the roster updates.
@@ -40,7 +40,7 @@ pub(crate) fn apply_suggested_firewall(
         firewall::materialize_suggestions(network_name, &my_hostname, &suggestions, &resolve);
 
     // Auto-install only if this node opted into `--auto-accept-firewall` for the
-    // network; otherwise queue the materialized rules for `ray firewall accept`.
+    // network; otherwise queue the materialized rules for `torpedo firewall accept`.
     let auto_accept = config::load()
         .ok()
         .and_then(|c| {
@@ -270,7 +270,7 @@ pub(crate) fn prune_departed_peers(
         // identity, not the transport id the PeerTable is keyed on. Check both.
         let user_id = device_user_map.resolve(&peer_id);
         // A peer whose cert is below its owning user's generation floor
-        // (`ray unpair`) is severed even if a stale roster still lists it — the
+        // (`torpedo unpair`) is severed even if a stale roster still lists it — the
         // floor is authoritative over the (possibly not-yet-republished)
         // membership. The peer's cert lives in the roster entry.
         let member_cert = {
@@ -338,7 +338,7 @@ pub(crate) async fn apply_roster_to_dns(
                 );
                 if let Some(me) = members.iter().find(|m| m.identity == my_identity) {
                     // Override our own DNS entry so `.ray` resolution and
-                    // `ray status` reflect the pending name immediately.
+                    // `torpedo status` reflect the pending name immediately.
                     let v6 = derive_ipv6(&my_identity);
                     entries.retain(|(_, v4, _)| *v4 != me.ip);
                     entries.push((pending.clone(), me.ip, v6));

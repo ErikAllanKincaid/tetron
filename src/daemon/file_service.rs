@@ -10,7 +10,7 @@
 
 use super::*;
 
-/// A received file offer awaiting `ray files accept`.
+/// A received file offer awaiting `torpedo files accept`.
 pub(crate) struct PendingFile {
     pub(crate) id: u64,
     pub(crate) from: EndpointId,
@@ -21,7 +21,7 @@ pub(crate) struct PendingFile {
 }
 
 pub(crate) struct FileService {
-    /// Received file offers awaiting `ray files accept`.
+    /// Received file offers awaiting `torpedo files accept`.
     pub(crate) pending_files: Arc<std::sync::Mutex<Vec<PendingFile>>>,
     /// Monotonic id source for pending offers.
     pub(crate) file_id_counter: Arc<AtomicU64>,
@@ -31,7 +31,7 @@ pub(crate) struct FileService {
     secret_key: SecretKey,
     /// Auto-accept nudge: each newly-queued offer's id is sent here so the
     /// daemon-wide worker (`spawn_file_auto_accept`) can evaluate it for
-    /// own-device auto-accept without waiting for a manual `ray files accept`.
+    /// own-device auto-accept without waiting for a manual `torpedo files accept`.
     new_file_tx: mpsc::UnboundedSender<u64>,
 }
 
@@ -46,7 +46,7 @@ impl FileService {
         }
     }
 
-    /// `FILES_ALPN`: read a single `FileOffer` and queue it for `ray files`.
+    /// `FILES_ALPN`: read a single `FileOffer` and queue it for `torpedo files`.
     /// Rejects offers whose claimed sender doesn't match the dialing identity.
     pub(crate) async fn accept_file_offer(&self, conn: Connection) {
         let pending = self.pending_files.clone();
@@ -76,7 +76,7 @@ impl FileService {
                             // Nudge the auto-accept worker: it accepts only offers
                             // from our own paired devices on an opted-in network,
                             // and no-ops otherwise, so the offer stays queued for
-                            // `ray files accept` unless it qualifies.
+                            // `torpedo files accept` unless it qualifies.
                             let _ = self.new_file_tx.send(id);
                         } else {
                             tracing::warn!(claimed = %from.fmt_short(), actual = %remote_id.fmt_short(), "file offer identity mismatch");

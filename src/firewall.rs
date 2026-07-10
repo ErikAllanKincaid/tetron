@@ -6,11 +6,11 @@
 //! read from the TUN device on the outbound side, and QUIC datagrams from peers
 //! on the inbound side — see `forward::run_mesh` / `forward::evaluate_inbound`).
 //!
-//! The rayfish/iroh **control plane** (`Welcome`, `MemberSync`, `BlobUpdated`,
+//! The torpedo/iroh **control plane** (`Welcome`, `MemberSync`, `BlobUpdated`,
 //! `MeshHello`, …) travels over QUIC *bidirectional streams*,
 //! not datagrams, and the iroh transport itself runs on the host's real network
 //! interfaces — neither ever enters the TUN device. **The firewall therefore
-//! cannot block rayfish/iroh connections**, regardless of rules. Blocking the VPN
+//! cannot block torpedo/iroh connections**, regardless of rules. Blocking the VPN
 //! transport itself is deliberately impossible from the firewall policy.
 //!
 //! ## Default posture (no user rules)
@@ -27,15 +27,15 @@
 //! | Return traffic       | allow (conntrack, see below) |
 //!
 //! So joining a public/open network never exposes a local service port to peers.
-//! `ray firewall default allow` flips inbound TCP/UDP back to permissive (the old
-//! behaviour); `ray firewall default deny` restores the secure inbound default.
+//! `torpedo firewall default allow` flips inbound TCP/UDP back to permissive (the old
+//! behaviour); `torpedo firewall default deny` restores the secure inbound default.
 //! The outbound default is always `allow` and is not affected by
-//! `ray firewall default`.
+//! `torpedo firewall default`.
 //!
 //! Inbound ICMP-allow is **not** a hard-coded special case: a fresh config ships
 //! a seeded, ordinary `allow in icmp` rule (`default_icmp_rule`) that the rule
-//! scan matches first. It shows up in `ray firewall show` like any other rule, so
-//! a user who wants to deny ICMP simply removes it (`ray firewall remove <i>`),
+//! scan matches first. It shows up in `torpedo firewall show` like any other rule, so
+//! a user who wants to deny ICMP simply removes it (`torpedo firewall remove <i>`),
 //! after which inbound ICMP falls through to the deny default. (An explicit
 //! `deny in icmp` rule ordered before it also blocks it — explicit rules always
 //! win, first-match.)
@@ -97,7 +97,7 @@ impl PortRange {
 }
 
 /// Where a [`FirewallRule`] came from. `Local` rules are hand-added by this
-/// device (`ray firewall add`) and are never touched by trusted-network
+/// device (`torpedo firewall add`) and are never touched by trusted-network
 /// reconvergence. `Network(net)` rules were materialized from a coordinator's
 /// suggestions for that network; the node replaces the whole `Network(net)` set
 /// on each blob update, so the blob stays authoritative for what it manages.
@@ -108,7 +108,7 @@ pub enum RuleOrigin {
     Local,
     Network(String),
     /// Auto-seeded passthrough rule for the embedded mesh SSH server: when
-    /// `ray firewall ssh on` is set, the daemon installs an `allow in tcp:22`
+    /// `torpedo firewall ssh on` is set, the daemon installs an `allow in tcp:22`
     /// rule with this origin so SSH packets reach the in-daemon listener under
     /// the deny-inbound default. `ssh off` removes exactly this rule, and
     /// reconvergence never touches it. The SSH allow-list (per-network) is the
@@ -165,7 +165,7 @@ pub fn closed_default_rule(network: &str) -> FirewallRule {
 
 /// Two rules have the same *selector* if they match the same traffic —
 /// direction, protocol, port, peer, and network — regardless of `action` or
-/// `origin`. Used by `ray firewall add` to merge a contradicting/duplicate rule
+/// `origin`. Used by `torpedo firewall add` to merge a contradicting/duplicate rule
 /// (drop the old same-selector entry, keep only the new one) so the rule list
 /// stays bounded instead of accumulating shadowed rules on every toggle.
 pub fn same_selector(a: &FirewallRule, b: &FirewallRule) -> bool {
@@ -231,14 +231,14 @@ pub struct FirewallConfig {
     /// reply (TCP RST or ICMP unreachable, see [`crate::reject`]) so the initiator
     /// fails immediately instead of hanging; when `false` (the default), denied
     /// packets are silently dropped (stealthy, no reply). Opt-in via
-    /// `ray firewall reject on`; `#[serde(default)]` keeps existing
+    /// `torpedo firewall reject on`; `#[serde(default)]` keeps existing
     /// `firewall.toml` files on the silent-drop posture.
     #[serde(default)]
     pub reject: bool,
     /// Global kill switch. When `true`, the firewall stops enforcing: every packet
     /// is allowed regardless of rules or defaults (the ingress anti-spoof check in
     /// [`crate::forward::evaluate_inbound`] still runs, it is upstream of this).
-    /// Set via `ray firewall off`; `#[serde(default)]` keeps existing
+    /// Set via `torpedo firewall off`; `#[serde(default)]` keeps existing
     /// `firewall.toml` files enforcing on upgrade.
     #[serde(default)]
     pub disabled: bool,
@@ -255,7 +255,7 @@ fn default_outbound_action() -> Action {
 
 /// The seeded "allow inbound ICMP from any peer" rule that ships in a fresh
 /// firewall config. It is an ordinary `Local`, first-match rule (not a magic
-/// default), so `ray firewall show` lists it and `ray firewall remove <i>`
+/// default), so `torpedo firewall show` lists it and `torpedo firewall remove <i>`
 /// deletes it — removing it makes the inbound default deny ICMP too.
 pub fn default_icmp_rule() -> FirewallRule {
     FirewallRule {
@@ -395,7 +395,7 @@ impl SharedFirewall {
         self.inner.load().reject
     }
 
-    /// Whether the firewall is globally disabled (`ray firewall off`). When true,
+    /// Whether the firewall is globally disabled (`torpedo firewall off`). When true,
     /// `evaluate_packet` allows every packet.
     pub fn disabled(&self) -> bool {
         self.inner.load().disabled
@@ -418,7 +418,7 @@ impl SharedFirewall {
         peer: &EndpointId,
         network: Option<&str>,
     ) -> Action {
-        // Global kill switch (`ray firewall off`): allow everything, skip rules,
+        // Global kill switch (`torpedo firewall off`): allow everything, skip rules,
         // defaults, and conntrack. The ingress anti-spoof check runs upstream in
         // `forward::evaluate_inbound`, so spoofed sources are still dropped.
         if self.inner.load().disabled {
@@ -777,7 +777,7 @@ pub fn save_firewall(config: &FirewallConfig) -> Result<()> {
 
 pub fn parse_port_range(s: &str) -> Result<PortRange> {
     // `*` = wildcard = all ports. Accepted anywhere a port spec is expected
-    // (local `ray firewall add --port '*'` and suggested-firewall tokens).
+    // (local `torpedo firewall add --port '*'` and suggested-firewall tokens).
     if s.trim() == "*" {
         return Ok(PortRange {
             start: 0,
@@ -804,7 +804,7 @@ pub fn parse_port_range(s: &str) -> Result<PortRange> {
 ///
 /// Each item is a single port, a `start-end` range, or `*` (see
 /// `parse_port_range`); empty items (e.g. a trailing comma) are skipped. Used by
-/// `ray firewall add --port 80,443`, which turns each range into its own rule.
+/// `torpedo firewall add --port 80,443`, which turns each range into its own rule.
 /// Errors if no usable item remains.
 pub fn parse_port_list(s: &str) -> Result<Vec<PortRange>> {
     let ranges = s
@@ -934,7 +934,7 @@ pub fn materialize_suggestions(
     // (Deny by default) already drops everything an allow-list doesn't cover,
     // so we don't append a network-scoped catch-all deny — it would only be
     // redundant under the deny default and would surprise operators reviewing
-    // `ray firewall pending` with a rule they never suggested.
+    // `torpedo firewall pending` with a rule they never suggested.
     rules
 }
 
@@ -1216,7 +1216,7 @@ mod tests {
 
     #[test]
     fn default_allow_override_permits_inbound_tcp() {
-        // `ray firewall default allow` flips the inbound default back to
+        // `torpedo firewall default allow` flips the inbound default back to
         // permissive.
         let fw = SharedFirewall::new(FirewallConfig {
             default_inbound: Action::Allow,
@@ -1296,7 +1296,7 @@ mod tests {
 
     #[test]
     fn disabled_allows_everything_both_directions() {
-        // `ray firewall off`: the kill switch allows every packet regardless of
+        // `torpedo firewall off`: the kill switch allows every packet regardless of
         // the deny-inbound default, bypassing rules entirely.
         let fw = SharedFirewall::new(FirewallConfig {
             disabled: true,

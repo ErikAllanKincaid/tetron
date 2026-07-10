@@ -40,12 +40,12 @@ pub fn effective_pkarr_url() -> String {
         .unwrap_or_else(|| PKARR_RELAY_URL.to_string())
 }
 
-/// pkarr record name for a user's contact key (`ray connect`). Published under
+/// pkarr record name for a user's contact key (`torpedo connect`). Published under
 /// the contact key, it maps the contact id to the user's current transport
 /// EndpointId so a peer can dial them without knowing the transport id.
 const CONTACT_RECORD_NAME: &str = "_torpedo_contact";
 
-/// pkarr record name for a user's device-cert **generation floor** (`ray unpair`
+/// pkarr record name for a user's device-cert **generation floor** (`torpedo unpair`
 /// / rotation). Published under the user's own key (the identity that signs
 /// device certs), it carries a single monotonic generation. Any peer that sees a
 /// `DeviceCert` resolves this record for `cert.user_identity` and rejects the
@@ -77,7 +77,7 @@ pub fn create_pkarr_client(ep: &Endpoint) -> Result<PkarrRelayClient> {
 /// publishing coordinator's mesh protocol version (`m,<v>` =
 /// [`transport::MESH_PROTOCOL_VERSION`]). The version lets a joiner detect an
 /// incompatible mesh protocol *before* dialing (where the versioned ALPN would
-/// otherwise reject it opaquely), so it can surface a precise "run ray update"
+/// otherwise reject it opaquely), so it can surface a precise "run torpedo update"
 /// error. The record is network-key-signed, so the version can't be spoofed.
 pub fn encode_network_record(
     key: &SecretKey,
@@ -139,7 +139,7 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
 }
 
 // ---------------------------------------------------------------------------
-// Contact record encoding / decoding (ray connect)
+// Contact record encoding / decoding (torpedo connect)
 // ---------------------------------------------------------------------------
 
 /// Encode a contact record: maps the contact key to the user's current
@@ -174,7 +174,7 @@ pub fn decode_contact_record(packet: &SignedPacket) -> Result<EndpointId> {
 }
 
 // ---------------------------------------------------------------------------
-// Cert-generation floor encoding / decoding (ray unpair / rotation)
+// Cert-generation floor encoding / decoding (torpedo unpair / rotation)
 // ---------------------------------------------------------------------------
 
 /// Encode a cert-generation floor record: the user's current generation. Signed

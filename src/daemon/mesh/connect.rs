@@ -1,10 +1,10 @@
-//! Direct-connection (`ray connect`) handlers for `MeshManager`, plus the shared
+//! Direct-connection (`torpedo connect`) handlers for `MeshManager`, plus the shared
 //! `store_and_publish_group` helper. Split out of `daemon/mod.rs`.
 
 use super::super::*;
 
 impl MeshManager {
-    /// Name of a live direct (`ray connect`) network whose roster includes
+    /// Name of a live direct (`torpedo connect`) network whose roster includes
     /// `peer`, if any — used to short-circuit duplicate connects.
     pub(crate) fn existing_direct_network_with(&self, peer: &EndpointId) -> Option<String> {
         let direct: HashSet<String> = config::load()
@@ -51,7 +51,7 @@ impl MeshManager {
     }
 
     /// Join an approved direct network and flag it `direct` in config so it shows
-    /// as `[direct]` in `ray status`.
+    /// as `[direct]` in `torpedo status`.
     pub(crate) async fn join_direct(
         self: &Arc<Self>,
         room_id: EndpointId,
@@ -124,7 +124,7 @@ impl MeshManager {
         });
     }
 
-    /// `ray connect <contact-id>`: request a direct connection by contact id.
+    /// `torpedo connect <contact-id>`: request a direct connection by contact id.
     pub(crate) async fn connect(
         self: &Arc<Self>,
         contact_id: &str,
@@ -198,7 +198,7 @@ impl MeshManager {
         }
     }
 
-    /// `ray connections`: list pending incoming connect requests.
+    /// `torpedo connections`: list pending incoming connect requests.
     pub fn list_connections(&self) -> IpcMessage {
         let now = Instant::now();
         let requests = self
@@ -261,7 +261,7 @@ impl MeshManager {
         }
     }
 
-    /// `ray connections approve <id>`: approve a pending connect request, minting
+    /// `torpedo connections approve <id>`: approve a pending connect request, minting
     /// a 2-peer network with the requester pre-approved.
     pub async fn approve_connection(self: &Arc<Self>, id_prefix: &str) -> IpcMessage {
         let found = self
@@ -338,7 +338,7 @@ impl MeshManager {
         }
     }
 
-    /// `ray contact rotate`: replace this node's contact key. The old contact id
+    /// `torpedo contact rotate`: replace this node's contact key. The old contact id
     /// stops resolving once its pkarr record expires (~5 min).
     pub(crate) async fn rotate_contact(&self) -> IpcMessage {
         let mut cfg = match config::load() {
@@ -367,7 +367,7 @@ impl MeshManager {
     }
 
     /// Store the current group snapshot as a blob and re-publish the pkarr record
-    /// so members reconcile the new membership (used after `ray accept`).
+    /// so members reconcile the new membership (used after `torpedo accept`).
     pub(crate) async fn store_and_publish_group(&self, network: &str) {
         let (hash, net_key, snap_bytes) = {
             let Some(handle) = self.networks.get(network) else {

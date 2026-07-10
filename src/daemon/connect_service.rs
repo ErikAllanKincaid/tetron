@@ -1,4 +1,4 @@
-//! `ray connect` (direct-connection) state and its ALPN accept arm, owned as one
+//! `torpedo connect` (direct-connection) state and its ALPN accept arm, owned as one
 //! unit instead of living loose inside `ProtocolRouter`.
 //!
 //! Holds the three connect maps (pending/approved/outgoing) and the
@@ -9,7 +9,7 @@
 
 use super::*;
 
-/// A pending incoming `ray connect` request, awaiting `ray connections approve`.
+/// A pending incoming `torpedo connect` request, awaiting `torpedo connections approve`.
 /// Keyed by the requester's transport endpoint id (not contact id) so it
 /// survives the requester rotating their contact key.
 #[derive(Clone)]
@@ -21,14 +21,14 @@ pub(crate) struct PendingConnect {
 }
 
 pub(crate) struct ConnectService {
-    /// `ray connect` requests received on `CONNECT_ALPN`, awaiting approval.
+    /// `torpedo connect` requests received on `CONNECT_ALPN`, awaiting approval.
     /// Keyed by the requester's transport endpoint id.
     pub(crate) pending_connects: Arc<DashMap<EndpointId, PendingConnect>>,
     /// Approved connect requests: requester endpoint id → (room id, coordinator).
     /// The `CONNECT_ALPN` handler replies `Approved` from here when the requester
-    /// re-dials after `ray connections approve`.
+    /// re-dials after `torpedo connections approve`.
     pub(crate) approved_connects: Arc<DashMap<EndpointId, (EndpointId, EndpointId)>>,
-    /// Peer endpoints we have sent an outgoing `ray connect` request to. Used by
+    /// Peer endpoints we have sent an outgoing `torpedo connect` request to. Used by
     /// the concurrency tie-break: if both peers requested *and* approved each
     /// other, only the higher endpoint id mints, avoiding a duplicate network.
     pub(crate) outgoing_connects: Arc<DashSet<EndpointId>>,
@@ -43,9 +43,9 @@ impl ConnectService {
         }
     }
 
-    /// `CONNECT_ALPN`: handle a `ray connect` friend request. Binds the request
+    /// `CONNECT_ALPN`: handle a `torpedo connect` friend request. Binds the request
     /// to the dialing identity, replies `Approved` if already accepted
-    /// (idempotent), else queues it as `Pending` for `ray connections approve`.
+    /// (idempotent), else queues it as `Pending` for `torpedo connections approve`.
     pub(crate) async fn accept_connect_request(&self, conn: Connection) {
         let pending = self.pending_connects.clone();
         let approved = self.approved_connects.clone();

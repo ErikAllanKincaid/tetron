@@ -60,7 +60,7 @@ pub fn store_device_cert(cert: &DeviceCert) -> Result<()> {
     Ok(())
 }
 
-/// Delete this device's stored cert (`ray unpair` best-effort wipe on the
+/// Delete this device's stored cert (`torpedo unpair` best-effort wipe on the
 /// unpaired device). Idempotent: succeeds if the file is already absent.
 pub fn delete_device_cert() -> Result<()> {
     let path = device_cert_path()?;

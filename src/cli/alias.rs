@@ -1,6 +1,6 @@
-//! `ray alias` handlers: bind/list/remove node-local, per-network aliases for a
-//! user identity. Aliases are display-only (shown inline in `ray status`) and
-//! seed `ray apply`'s `aliases:` map; they never reach the signed blob.
+//! `torpedo alias` handlers: bind/list/remove node-local, per-network aliases for a
+//! user identity. Aliases are display-only (shown inline in `torpedo status`) and
+//! seed `torpedo apply`'s `aliases:` map; they never reach the signed blob.
 
 use crate::*;
 
@@ -13,7 +13,7 @@ pub(crate) async fn cmd_alias(network: &str, action: AliasAction, json: bool) ->
 }
 
 /// Bind `alias` to the identity named by `key`. `key` is either an identity
-/// string (from `ray identityof`) or a currently-joined hostname resolved to its
+/// string (from `torpedo identityof`) or a currently-joined hostname resolved to its
 /// identity locally.
 async fn alias_set(network: &str, key: &str, alias: &str) -> Result<()> {
     if !hostname::is_valid_hostname(alias) {
