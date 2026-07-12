@@ -94,6 +94,8 @@ Directory and working name: torpedo-min. The binary stays `torpedo` (D5). The Ca
 
 **Decision:** the crate name `rayfish`, the `use rayfish::…` paths, the `info,rayfish=debug` log filter, and the `ray-proto` helper crate are NOT renamed during the MINIMAL phases. No agent working in this repository may "finish the rename" of these. The reason is the cherry-pick channel: during phases 1-6 fixes flow from full torpedo, and a crate rename would make every one of them conflict on import lines for zero functional gain. The crate name is not wire-visible and not published, so nothing is lost by waiting.
 
+**Candidate name:** `tetron`, from Tetronarce californica, the Pacific electric ray formerly classified as Torpedo californica; the genus rename mirrors this fork's own rename, and the name stays in the ray family that named rayfish. Availability (crates.io, GitHub, AUR/apt, domain, the Teijin "Tetoron" polyester trademark) must be checked at RENAME-M01 decision time.
+
 **Trigger:** torpedo-min becomes a standalone public project with its own name, repository, and releases. If it stays a private lean build synced from torpedo, the rename never happens.
 
 **When:** only after Phase 6 verification is green and any pending torpedo cherry-picks have landed. Expect cherry-picks after the rename to need manual import fixups; do it in a quiet window and accept that cost consciously.
