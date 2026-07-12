@@ -1491,9 +1491,9 @@ class NoResidualTestCgnatLeak(Constraint):
 
 
 # ==========================================================================
-# torpedo-min: the minimal variant (MINIMAL-*, CON-M*)
+# tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
-# This repository is torpedo-min, a clone of full torpedo at 4809edb that
+# This repository is tetron, a clone of full torpedo at 4809edb that
 # strips the product down to its core: connect machines into a private mesh
 # with stable identity-derived addresses. See PROPOSAL.md for the rationale
 # and design decisions D1-D6, PLAN.md for the commit-by-commit execution
@@ -1513,12 +1513,12 @@ class MinimalIntent(UserStory):
     those jobs well, while remaining wire-compatible with full torpedo.
 
     Priority: high.
-    User journey: install torpedo-min on two machines -> create a network on
+    User journey: install tetron on two machines -> create a network on
     one -> join from the other -> approve the join -> reach the peer by its
     mesh IP from `torpedo status` -> filter traffic with nftables on the TUN
     interface if desired.
     Acceptance: the CLI exposes exactly the surface in PROPOSAL.md; the main
-    crate is roughly 15k lines; a torpedo-min node and a full torpedo node
+    crate is roughly 15k lines; a tetron node and a full torpedo node
     interoperate on one network; the trimmed e2e harness is green.
     """
     brief_title = "Minimal connect-only variant"
@@ -1532,7 +1532,7 @@ class MinimalIntent(UserStory):
 class MinimalScope(Requirement):
     """REQUIREMENT-ID: MINIMAL-001
 
-    torpedo-min provides exactly: identity, membership, mesh transport, TUN
+    tetron provides exactly: identity, membership, mesh transport, TUN
     forwarding, closed-network admission with live approval, and a plain CLI
     (create/join/leave/nuke/requests/accept/deny/admin/kick/status/up/down/
     config/completions/version plus the sudo service verbs). Policy
@@ -1553,7 +1553,7 @@ class RemoveSelfUpdate(Requirement):
     src/cli/update.rs, the `update`/`auto-update` CLI and the
     `install --auto-update` flag, and the deps it alone pulls (reqwest, the
     direct rustls handle, self-replace, sha2, semver). Full torpedo already
-    ships it disabled (CON-006); in torpedo-min absence replaces the gate,
+    ships it disabled (CON-006); in tetron absence replaces the gate,
     so CON-006 and reconcile.py's `self_update` value check retire in the
     same commit (replaced by the CON-M01 dependency-absence gate).
     """
@@ -1781,7 +1781,7 @@ class TorPerNetworkPolicy(Requirement):
 
 
 # --------------------------------------------------------------------------
-# Constraints: torpedo-min gates (CON-M*)
+# Constraints: tetron gates (CON-M*)
 # --------------------------------------------------------------------------
 
 class DependencyAbsenceGate(Constraint):
@@ -1806,7 +1806,7 @@ class DependencyAbsenceGate(Constraint):
 class WireCompatWithFullTorpedo(Constraint):
     """CONSTRAINT-ID: CON-M02
 
-    torpedo-min stays wire-compatible with full torpedo (design decision D1):
+    tetron stays wire-compatible with full torpedo (design decision D1):
     transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob struct in
     src/membership.rs must retain its `suggested_firewall` and
     `reusable_keys` fields (ignored/preserved, never enforced or minted).

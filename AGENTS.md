@@ -2,7 +2,7 @@
 
 > **This file is the canonical guidance for any AI coding agent working in this repository.** `AGENTS.md` is the source of truth; `CLAUDE.md` is a symlink to it (so Claude Code auto-loads it while the portable `AGENTS.md` name serves every other agent tool). Edit `AGENTS.md`, never the symlink.
 
-> **THIS REPOSITORY IS `torpedo-min`**, the minimal variant of torpedo, cloned from full torpedo at 4809edb. Read `PROPOSAL.md` (what and why, design decisions D1-D6) and `PLAN.md` (commit-by-commit removal order) before doing anything. The MINIMAL-* / CON-M* section at the end of `spec/design_spec.py` governs the work here. Full torpedo lives in its own repository (`origin` points at it for cherry-picks) and must not receive changes from here. Until the MINIMAL removals land, the guidance below still describes the inherited full-torpedo surface; each removal commit trims the affected sections.
+> **THIS REPOSITORY IS `tetron`**, the minimal variant of torpedo, cloned from full torpedo at 4809edb. Read `PROPOSAL.md` (what and why, design decisions D1-D6) and `PLAN.md` (commit-by-commit removal order) before doing anything. The MINIMAL-* / CON-M* section at the end of `spec/design_spec.py` governs the work here. Full torpedo lives in its own repository (`origin` points at it for cherry-picks) and must not receive changes from here. Until the MINIMAL removals land, the guidance below still describes the inherited full-torpedo surface; each removal commit trims the affected sections.
 
 ## What Torpedo is (and is not)
 

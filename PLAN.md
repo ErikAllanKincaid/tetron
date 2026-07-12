@@ -1,4 +1,4 @@
-# torpedo-min: execution plan
+# tetron: execution plan
 
 One requirement per commit, reconcile.py green at each step, `libspec link` after each commit (see AGENTS.md workflow). Each removal commit also: trims the reconcile.py checks and tests/ harness scripts that exercised the removed feature, updates AGENTS.md/README.md/CHANGELOG.md, and retires (deletes) any inherited spec class the removal moots, noting the retirement in the commit message.
 
@@ -51,12 +51,12 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 |---|---|---|
 | 15 | MINIMAL-015 | Plain CLI: style.rs, layout.rs, progress.rs, deps indicatif/crossterm/unicode-width/humansize/mime_guess; keep NO_COLOR-free plain text and `--json`. |
 | 16 | MINIMAL-016 | Workspace: remove ray-mobile member (and the android/ dir), trim benches/ to the surviving forward path, prune Cargo.toml features to default-only, sweep cliff.toml/justfile targets that reference removed surfaces. |
-| 17 | docs | Final AGENTS.md rewrite describing torpedo-min as it now is (module list, CLI surface, flows), README rewrite with the D4 security-posture note and nftables example, CHANGELOG entry. |
+| 17 | docs | Final AGENTS.md rewrite describing tetron as it now is (module list, CLI surface, flows), README rewrite with the D4 security-posture note and nftables example, CHANGELOG entry. |
 
 ## Phase 6: verification
 
 - Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two min nodes.
-- Interop run (success criterion 3): one full-torpedo node and one torpedo-min node on the same network passing traffic. Use two LAN test machines; full torpedo deploys by its existing release path, torpedo-min by `just deploy-dev`.
+- Interop run (success criterion 3): one full-torpedo node and one tetron node on the same network passing traffic. Use two LAN test machines; full torpedo deploys by its existing release path, tetron by `just deploy-dev`.
 - Line-count and dependency audit against the success criteria in PROPOSAL.md.
 
 ## Phase 7: post-MINIMAL, on demand
