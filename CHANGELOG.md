@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **File sharing and device pairing (MINIMAL-004)**: `torpedo send`/`files`
+  (and file auto-accept + download-dir/download-user settings) and
+  `torpedo pair`/`unpair` (multi-device identity, encrypted key backup, and
+  `--1password` backup/restore) are gone, along with device certificates, the
+  `_torpedo_certgen` revocation floor, and the file/pair ALPNs. The identity
+  model collapses to one device = one user. Copy files with `scp`/`rsync` over
+  the mesh IPs, and back up the identity key yourself (it is one `0600` file
+  under the config dir). Nodes on a shared network with a full-torpedo peer
+  still decode-and-ignore its pairing/cert control messages, so the mesh keeps
+  working across both variants.
 - **Direct connect (MINIMAL-005)**: `torpedo connect`, `torpedo connections`,
   and `torpedo contact` (the contact-id friend-request flow) are gone, along
   with the `_torpedo_contact` DHT record and the connect ALPN. A private

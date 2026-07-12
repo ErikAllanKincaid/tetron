@@ -17,13 +17,6 @@ use crate::config::ServerOverride;
 #[cfg(feature = "tor")]
 use std::sync::Arc;
 
-/// ALPN for the file-transfer protocol. The trailing `/1` is its protocol
-/// version — **bump it (`/2`, …) on any breaking change to the file wire
-/// protocol** (`FileOffer`/blob handshake). iroh negotiates the ALPN at the QUIC
-/// handshake, so a peer on a different version shares no common ALPN and the
-/// transfer simply can't connect — the version gate needs no in-band check.
-pub const FILES_ALPN: &[u8] = b"torpedo/files/1";
-
 
 /// Fixed UDP port the endpoint binds so users can port-forward a stable, known
 /// port for guaranteed direct reachability (Tailscale-style). Unlike an ephemeral

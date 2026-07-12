@@ -594,10 +594,7 @@ pub(crate) fn resolve_host_identity(
         net.peers
             .iter()
             .find(|p| p.hostname.as_deref() == Some(hostname))
-            .map(|p| match p.user_identity {
-                Some(u) => (u.to_string(), true),
-                None => (p.endpoint_id.to_string(), false),
-            })
+            .map(|p| (p.endpoint_id.to_string(), false))
     }
 }
 
@@ -656,8 +653,7 @@ fn resolve_identity_hosts(
     }
     for p in &net.peers {
         let dev = p.endpoint_id.to_string();
-        let usr = p.user_identity.map(|u| u.to_string());
-        if (dev == identity || usr.as_deref() == Some(identity))
+        if dev == identity
             && let Some(h) = &p.hostname
         {
             out.push(h.clone());
@@ -753,14 +749,12 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    fn peer(hostname: &str, user: Option<iroh::EndpointId>) -> ipc::PeerStatus {
+    fn peer(hostname: &str) -> ipc::PeerStatus {
         ipc::PeerStatus {
             endpoint_id: iroh::SecretKey::generate().public(),
             ip: Ipv4Addr::new(100, 64, 0, 2),
             ipv6: None,
             hostname: Some(hostname.to_string()),
-            user_identity: user,
-            is_own_device: false,
             connection: None,
         }
     }
@@ -790,16 +784,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_paired_peer_prefers_user_identity() {
-        let user = iroh::SecretKey::generate().public();
-        let n = net(Some("me"), vec![peer("alice", Some(user))]);
-        let got = resolve_host_identity(&n, "self-id", "alice");
-        assert_eq!(got, Some((user.to_string(), true)));
-    }
-
-    #[test]
-    fn resolve_unpaired_peer_uses_endpoint_id() {
-        let p = peer("bob", None);
+    fn resolve_peer_uses_endpoint_id() {
+        let p = peer("bob");
         let want = p.endpoint_id.to_string();
         let n = net(Some("me"), vec![p]);
         let got = resolve_host_identity(&n, "self-id", "bob");
@@ -808,7 +794,7 @@ mod tests {
 
     #[test]
     fn resolve_unknown_hostname_is_none() {
-        let n = net(Some("me"), vec![peer("alice", None)]);
+        let n = net(Some("me"), vec![peer("alice")]);
         assert_eq!(resolve_host_identity(&n, "self-id", "ghost"), None);
     }
 }

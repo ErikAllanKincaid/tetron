@@ -131,13 +131,6 @@ pub struct NetworkConfig {
     /// or toggled later with `torpedo firewall auto-accept <net> on|off`.
     #[serde(default, alias = "allow_trusted")]
     pub auto_accept_firewall: bool,
-    /// Auto-accept incoming file offers from our own paired devices on this
-    /// network (no manual `torpedo files accept`). Own-devices-only (the sender's
-    /// user identity must match ours); secure default off. Set per-network by
-    /// `torpedo join --auto-accept-files` or toggled with
-    /// `torpedo files auto-accept <net> on|off`.
-    #[serde(default)]
-    pub auto_accept_files: bool,
     /// Identities this coordinator has granted the per-network secret key to
     /// (`torpedo admin add`). Local tracking only — the key is shared and not
     /// attributable, so this is the coordinator's record of grants, not a
@@ -480,45 +473,12 @@ pub struct AppConfig {
     /// Set via `torpedo config set magic-dns off|auto|direct`.
     #[serde(default)]
     pub magic_dns: MagicDnsMode,
-    /// Absolute directory where auto-accepted (own-device) files are written.
-    /// `None` falls back to `download_user`, then the operator's ~/Downloads.
-    /// Set via `torpedo files download-dir <path>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_dir: Option<String>,
-    /// Unix uid that owns auto-accepted files (and whose ~/Downloads receives
-    /// them when `download_dir` is unset). Set via `torpedo files download-user`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_user: Option<u32>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
     /// Closed-network joins queued for coordinator approval, awaiting
     /// admission. See [`PendingJoinEntry`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_joins: Vec<PendingJoinEntry>,
-    /// This user's current device-cert generation (`torpedo unpair` / rotation). A
-    /// bump revokes every device below it; the current value is published to
-    /// pkarr as the "floor" that verifiers reject certs beneath. `0` means no
-    /// rotation has happened. See [`crate::revocation`].
-    #[serde(default)]
-    pub cert_generation: u64,
-    /// Device keys this user has revoked via `torpedo unpair` (hex `EndpointId`).
-    /// **Local-only, never published** — the generation floor is what propagates.
-    /// The primary keeps this list so it can refuse to re-issue a revoked device
-    /// that reconnects with a stale cert, while re-issuing the devices it keeps.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub revoked_devices: Vec<String>,
-}
-
-
-
-/// Parse the persisted revoked device keys (`revoked_devices`) into
-/// `EndpointId`s, skipping any malformed entry.
-pub fn revoked_device_ids(config: &AppConfig) -> Vec<EndpointId> {
-    config
-        .revoked_devices
-        .iter()
-        .filter_map(|s| s.parse::<EndpointId>().ok())
-        .collect()
 }
 
 // ---- Storage layout -------------------------------------------------------
@@ -564,16 +524,8 @@ struct Settings {
     dns_upstreams: ServerOverride,
     #[serde(default)]
     magic_dns: MagicDnsMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    download_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    download_user: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_joins: Vec<PendingJoinEntry>,
-    #[serde(default)]
-    cert_generation: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    revoked_devices: Vec<String>,
 }
 
 /// Look up the `torpedo` group's gid (Linux), if the group exists.
@@ -816,11 +768,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             discovery_dns: ServerOverride::default(),
             dns_upstreams: ServerOverride::default(),
             magic_dns: MagicDnsMode::default(),
-            download_dir: None,
-            download_user: None,
             pending_joins: Vec::new(),
-            cert_generation: 0,
-            revoked_devices: Vec::new(),
         }
     };
 
@@ -856,12 +804,8 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         discovery_dns: settings.discovery_dns,
         dns_upstreams: settings.dns_upstreams,
         magic_dns: settings.magic_dns,
-        download_dir: settings.download_dir,
-        download_user: settings.download_user,
         networks,
         pending_joins: settings.pending_joins,
-        cert_generation: settings.cert_generation,
-        revoked_devices: settings.revoked_devices,
     })
 }
 
@@ -901,11 +845,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         discovery_dns: config.discovery_dns.clone(),
         dns_upstreams: config.dns_upstreams.clone(),
         magic_dns: config.magic_dns,
-        download_dir: config.download_dir.clone(),
-        download_user: config.download_user,
         pending_joins: config.pending_joins.clone(),
-        cert_generation: config.cert_generation,
-        revoked_devices: config.revoked_devices.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
@@ -1060,7 +1000,6 @@ mod tests {
                     pending_hostname: None,
                     transport: None,
                     auto_accept_firewall: false,
-                    auto_accept_files: false,
                     admins: vec![],
                     direct: false,
                     aliases: BTreeMap::new(),
@@ -1078,7 +1017,6 @@ mod tests {
                     pending_hostname: None,
                     transport: None,
                     auto_accept_firewall: false,
-                    auto_accept_files: false,
                     admins: vec![],
                     direct: false,
                     aliases: BTreeMap::new(),
@@ -1117,7 +1055,6 @@ mod tests {
             pending_hostname: None,
             transport: None,
             auto_accept_firewall: false,
-            auto_accept_files: false,
             admins: vec![],
             direct: false,
             aliases: BTreeMap::new(),
@@ -1144,7 +1081,6 @@ mod tests {
                 pending_hostname: None,
                 transport: None,
                 auto_accept_firewall: false,
-                auto_accept_files: false,
                 admins: vec![],
                 direct: false,
                 aliases: BTreeMap::new(),
@@ -1164,7 +1100,6 @@ mod tests {
             pending_hostname: None,
             transport: None,
             auto_accept_firewall: false,
-            auto_accept_files: false,
             admins: vec![],
             direct: false,
             aliases: BTreeMap::new(),
@@ -1195,7 +1130,6 @@ mod tests {
                     pending_hostname: None,
                     transport: None,
                     auto_accept_firewall: false,
-                    auto_accept_files: false,
                     admins: vec![],
                     direct: false,
                     aliases: BTreeMap::new(),
@@ -1213,7 +1147,6 @@ mod tests {
                     pending_hostname: None,
                     transport: None,
                     auto_accept_firewall: false,
-                    auto_accept_files: false,
                     admins: vec![],
                     direct: false,
                     aliases: BTreeMap::new(),
@@ -1259,7 +1192,6 @@ mod tests {
                 pending_hostname: None,
                 transport: None,
                 auto_accept_firewall: false,
-                auto_accept_files: false,
                 admins: vec![],
                 direct: false,
                 aliases: BTreeMap::new(),
@@ -1290,7 +1222,6 @@ mod tests {
                 pending_hostname: None,
                 transport: None,
                 auto_accept_firewall: false,
-                auto_accept_files: false,
                 admins: vec![],
                 direct: false,
                 aliases: BTreeMap::new(),
@@ -1356,7 +1287,6 @@ name = "test"
             network_public_key: None,
             transport: None,
             auto_accept_firewall: false,
-            auto_accept_files: false,
             admins: vec![],
             direct: false,
             aliases: BTreeMap::new(),
@@ -1394,31 +1324,6 @@ name = "test"
         let after = load_in(dir).unwrap();
         assert_eq!(after.networks.len(), 1);
         assert_eq!(after.networks[0].name, "genesis");
-    }
-
-    #[test]
-    fn settings_download_fields_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let cfg = AppConfig {
-            download_dir: Some("/srv/incoming".to_string()),
-            download_user: Some(1000),
-            ..Default::default()
-        };
-        save_settings_in(dir, &cfg).unwrap();
-
-        let loaded = load_in(dir).unwrap();
-        assert_eq!(loaded.download_dir.as_deref(), Some("/srv/incoming"));
-        assert_eq!(loaded.download_user, Some(1000));
-    }
-
-    #[test]
-    fn settings_download_fields_default_none() {
-        let tmp = tempfile::tempdir().unwrap();
-        // No settings.toml written: fields default to None.
-        let loaded = load_in(tmp.path()).unwrap();
-        assert_eq!(loaded.download_dir, None);
-        assert_eq!(loaded.download_user, None);
     }
 
     #[test]

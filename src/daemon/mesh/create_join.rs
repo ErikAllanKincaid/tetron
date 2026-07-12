@@ -16,9 +16,6 @@ struct JoinContext<'a> {
     /// attempt (a fresh join may try several coordinators).
     invite: Option<Vec<u8>>,
     auto_accept_firewall: bool,
-    /// Seed for per-network auto-accept of file offers from own devices
-    /// (`--auto-accept-files`); persisted, config wins on reconnect/restore.
-    auto_accept_files: bool,
     invite_lock: Arc<tokio::sync::Mutex<()>>,
     /// Pinned coordinator to dial first (the invite minter), if known.
     coordinator: Option<EndpointId>,
@@ -119,7 +116,6 @@ impl MeshManager {
                 dht_notify: Some(dht_notify.clone()),
                 hostname_table: self.dns.hostname_table.clone(),
                 reverse_table: self.dns.reverse_table.clone(),
-                device_user_map: self.device_user_map.clone(),
                 network_name: name.to_string(),
             }),
         ));
@@ -344,7 +340,6 @@ impl MeshManager {
             network_public_key: Some(net_public_key),
             transport: None,
             auto_accept_firewall: false,
-            auto_accept_files: false,
             admins: vec![],
             direct,
             aliases: BTreeMap::new(),
@@ -421,7 +416,6 @@ impl MeshManager {
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
         auto_accept_firewall: bool,
-        auto_accept_files: bool,
     ) -> IpcMessage {
         match self
             .join_network_inner(
@@ -431,7 +425,6 @@ impl MeshManager {
                 invite.clone(),
                 coordinator,
                 auto_accept_firewall,
-                auto_accept_files,
                 true,
             )
             .await
@@ -467,7 +460,6 @@ impl MeshManager {
                                 invite.clone(),
                                 coordinator,
                                 auto_accept_firewall,
-                                auto_accept_files,
                                 true,
                             )
                             .await
@@ -506,9 +498,6 @@ impl MeshManager {
         // Auto-install coordinator-suggested firewall rules on this network
         // (`--auto-accept-firewall`); persisted so it survives restarts.
         auto_accept_firewall: bool,
-        // Seed for per-network auto-accept of file offers from own devices
-        // (`--auto-accept-files`); persisted, config wins on reconnect/restore.
-        auto_accept_files: bool,
         // True for a fresh join (we send a JoinRequest first); false when
         // restoring a network we're already a member of (legacy handshake where
         // the coordinator speaks first).
@@ -566,7 +555,6 @@ impl MeshManager {
             net_pubkey,
             invite,
             auto_accept_firewall,
-            auto_accept_files,
             invite_lock: invite_lock.clone(),
             coordinator,
         };
@@ -865,7 +853,6 @@ impl MeshManager {
             self.mesh_ctx(),
             disconnect_tx.clone(),
             cancel.clone(),
-            self.current_device_cert(),
         )
     }
 
@@ -892,12 +879,10 @@ impl MeshManager {
             JoinParams {
                 my_hostname: Some(ctx.my_hostname.to_string()),
                 net_pubkey: ctx.net_pubkey,
-                device_cert: self.current_device_cert(),
                 invite_secret,
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
                 auto_accept_firewall: ctx.auto_accept_firewall,
-                auto_accept_files: ctx.auto_accept_files,
                 initial,
             },
             disconnect_tx.clone(),
@@ -1210,7 +1195,6 @@ impl MeshManager {
                 self.mesh_ctx(),
                 disconnect_tx.clone(),
                 cancel.clone(),
-                self.current_device_cert(),
             )];
 
             self.dial_all_members(
@@ -1312,7 +1296,7 @@ impl MeshManager {
                                 identity: my_identity,
                                 ip: my_ip,
                                 hostname: my_hostname.clone(),
-                                device_cert: self.current_device_cert(),
+                                device_cert: None,
                             },
                         )
                         .await;
@@ -1337,7 +1321,6 @@ impl MeshManager {
                             disconnect_tx: disconnect_tx.clone(),
                             token: cancel.clone(),
                             stats: self.stats.clone(),
-                            device_user_map: self.device_user_map.clone(),
                         },
                     );
                     tracing::info!(

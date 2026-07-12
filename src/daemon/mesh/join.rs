@@ -34,14 +34,13 @@ enum HandshakeOutcome {
 
 /// By-value parameters for one [`join_mesh_shared`] handshake, grouped so the
 /// function's argument list stays manageable. These are all decided once, at the
-/// call site, per join: the joiner's chosen hostname and cert, the invite secret
+/// call site, per join: the joiner's chosen hostname, the invite secret
 /// it presents, the blob-derived `suggested_firewall`/`reusable_keys` it
 /// inherits, its firewall consent, and whether this is a fresh join or a
 /// reconnect.
 pub(crate) struct JoinParams {
     pub(crate) my_hostname: Option<String>,
     pub(crate) net_pubkey: EndpointId,
-    pub(crate) device_cert: Option<control::DeviceCert>,
     pub(crate) invite_secret: Option<Vec<u8>>,
     /// From the fetched blob: the current coordinator-suggested firewall rules,
     /// persisted so a member inherits them.
@@ -51,10 +50,6 @@ pub(crate) struct JoinParams {
     pub(crate) reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     /// Consent: auto-install suggested rules without a manual review queue.
     pub(crate) auto_accept_firewall: bool,
-    /// Seed for per-network auto-accept of file offers from own devices
-    /// (`--auto-accept-files`). Persisted config wins on reconnect/restore; this
-    /// is only the first-join seed.
-    pub(crate) auto_accept_files: bool,
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
     /// speaks first).
     pub(crate) initial: bool,
@@ -95,12 +90,10 @@ pub(crate) async fn join_mesh_shared(
     let JoinParams {
         my_hostname,
         net_pubkey,
-        device_cert,
         invite_secret,
         suggested_firewall,
         reusable_keys,
         auto_accept_firewall,
-        auto_accept_files,
         initial,
     } = params;
     let my_identity = identity.local_identity();
@@ -118,7 +111,6 @@ pub(crate) async fn join_mesh_shared(
         initial,
         invite_secret,
         &my_hostname,
-        &device_cert,
     )
     .await?
     {
@@ -135,20 +127,12 @@ pub(crate) async fn join_mesh_shared(
         net_pubkey,
         &my_hostname,
         auto_accept_firewall,
-        auto_accept_files,
     )?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
     // so send a MeshHello. A fresh join already conveyed it in the JoinRequest.
     if !initial {
-        send_reconnect_hello(
-            &initial_conn,
-            my_identity,
-            my_ip,
-            network_name,
-            &device_cert,
-        )
-        .await?;
+        send_reconnect_hello(&initial_conn, my_identity, my_ip, network_name).await?;
     }
 
     // Register the coordinator connection as our first peer, then dial the rest
@@ -174,7 +158,6 @@ pub(crate) async fn join_mesh_shared(
         my_identity,
         my_ip,
         remote_id,
-        &device_cert,
         &peers,
         &worker_ctx,
         &disconnect_tx,
@@ -211,7 +194,6 @@ pub(crate) async fn join_mesh_shared(
         net_pubkey,
         alpn.to_vec(),
         my_ip,
-        device_cert.clone(),
     );
 
     spawn_member_control_listener(
@@ -247,7 +229,6 @@ fn persist_join_config(
     net_pubkey: EndpointId,
     my_hostname: &Option<String>,
     auto_accept_firewall: bool,
-    auto_accept_files: bool,
 ) -> Result<()> {
     let persisted_hostname = members
         .iter()
@@ -257,14 +238,9 @@ fn persist_join_config(
     // Preserve across reconnects/restores state the just-fetched blob doesn't
     // carry: the direct-connection flag, a queued rename intent, and
     // node-local aliases.
-    let (direct, pending_hostname, aliases, prev_auto_accept_files) =
-        config::load_network(network_name)?
-            .map(|n| (n.direct, n.pending_hostname, n.aliases, n.auto_accept_files))
-            .unwrap_or((false, None, BTreeMap::new(), false));
-    // The toggle command (`torpedo files auto-accept`) is authoritative, so preserve
-    // a previously-persisted value; the join-time `--auto-accept-files` seed only
-    // needs to take effect on the first join (no prior config).
-    let auto_accept_files = prev_auto_accept_files || auto_accept_files;
+    let (direct, pending_hostname, aliases) = config::load_network(network_name)?
+        .map(|n| (n.direct, n.pending_hostname, n.aliases))
+        .unwrap_or((false, None, BTreeMap::new()));
     config::save_network(&config::NetworkConfig {
         name: network_name.to_string(),
         group_mode: GroupMode::Restricted,
@@ -277,7 +253,6 @@ fn persist_join_config(
         network_public_key: Some(net_pubkey),
         transport: None,
         auto_accept_firewall,
-        auto_accept_files,
         admins: vec![],
         direct,
         aliases,
@@ -293,7 +268,6 @@ async fn send_reconnect_hello(
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
     network_name: &str,
-    device_cert: &Option<control::DeviceCert>,
 ) -> Result<()> {
     let (mut send, _recv) = conn.open_bi().await?;
     control::send_msg(
@@ -302,7 +276,7 @@ async fn send_reconnect_hello(
             identity: my_identity,
             ip: my_ip,
             hostname: outgoing_hostname(network_name),
-            device_cert: device_cert.clone(),
+            device_cert: None,
         },
     )
     .await
@@ -382,7 +356,6 @@ async fn connect_to_roster_peers(
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
     skip_id: EndpointId,
-    device_cert: &Option<control::DeviceCert>,
     peers: &PeerTable,
     ctx: &MeshCtx,
     disconnect_tx: &mpsc::Sender<forward::DisconnectEvent>,
@@ -401,7 +374,7 @@ async fn connect_to_roster_peers(
                         identity: my_identity,
                         ip: my_ip,
                         hostname: outgoing_hostname(network_name),
-                        device_cert: device_cert.clone(),
+                        device_cert: None,
                     },
                 )
                 .await?;
@@ -444,7 +417,6 @@ async fn perform_join_handshake(
     initial: bool,
     invite_secret: Option<Vec<u8>>,
     my_hostname: &Option<String>,
-    device_cert: &Option<control::DeviceCert>,
 ) -> Result<HandshakeOutcome> {
     if initial {
         let (mut send, mut recv) = initial_conn
@@ -456,7 +428,7 @@ async fn perform_join_handshake(
             &ControlMsg::JoinRequest {
                 invite_secret,
                 hostname: my_hostname.clone(),
-                device_cert: device_cert.clone(),
+                device_cert: None,
             },
         )
         .await
@@ -551,7 +523,6 @@ fn spawn_reconverge_worker(
     net_pubkey_w: EndpointId,
     alpn_w: Vec<u8>,
     my_ip_w: Ipv4Addr,
-    device_cert_w: Option<control::DeviceCert>,
 ) {
     tokio::spawn(async move {
         // Backstop tick so a queued rename is retried even on a quiet
@@ -592,7 +563,6 @@ fn spawn_reconverge_worker(
                 my_identity_w,
                 &alpn_w,
                 my_ip_w,
-                &device_cert_w,
             )
             .await;
         }
@@ -773,16 +743,10 @@ fn spawn_member_control_listener(
                                         let _ = tx.send(());
                                     }
                                 }
-                                ControlMsg::Unpaired => {
-                                    // Our primary is unpairing this device. The
-                                    // helper verifies the sender signed our cert,
-                                    // so a stranger is a no-op.
-                                    wipe_cert_if_unpaired_by(initial_conn.remote_id());
-                                }
-                                ControlMsg::CertRefresh { cert } => {
-                                    // Our primary rotated and re-issued us.
-                                    store_refreshed_cert(&cert);
-                                }
+                                // Pairing is removed; tolerate a full-torpedo
+                                // peer's pairing control messages (D1 wire
+                                // compat: decode and ignore, never error).
+                                ControlMsg::Unpaired | ControlMsg::CertRefresh { .. } => {}
                                 _ => {}
                             }
                         }
@@ -805,7 +769,6 @@ pub(crate) fn spawn_reconnect_loop(
     ctx: MeshCtx,
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
-    device_cert: Option<control::DeviceCert>,
 ) -> JoinHandle<()> {
     // The reconnect MeshHello reads the current hostname fresh from config
     // (`outgoing_hostname`), so no captured hostname is threaded through.
@@ -814,7 +777,6 @@ pub(crate) fn spawn_reconnect_loop(
         tun_tx,
         stats,
         firewall,
-        device_user_map,
         pruned_peers,
         ..
     } = ctx;
@@ -881,8 +843,6 @@ pub(crate) fn spawn_reconnect_loop(
             let token = token.clone();
             let stats = stats.clone();
             let firewall = firewall.clone();
-            let device_cert = device_cert.clone();
-            let device_user_map = device_user_map.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -912,7 +872,7 @@ pub(crate) fn spawn_reconnect_loop(
                                     identity: my_identity,
                                     ip: my_ip,
                                     hostname: outgoing_hostname(&network_name),
-                                    device_cert: device_cert.clone(),
+                                    device_cert: None,
                                 },
                             )
                             .await
@@ -934,7 +894,6 @@ pub(crate) fn spawn_reconnect_loop(
                                     disconnect_tx,
                                     token,
                                     stats,
-                                    device_user_map,
                                 },
                             );
                             return;

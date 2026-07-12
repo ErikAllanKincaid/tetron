@@ -140,7 +140,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
             packets_tx,
             bytes_rx,
             bytes_tx,
-            pending_files,
             ..
         } => {
             if json_enabled() {
@@ -152,9 +151,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
                     "traffic": {
                         "packets_rx": packets_rx, "packets_tx": packets_tx,
                         "bytes_rx": bytes_rx, "bytes_tx": bytes_tx,
-                    },
-                    "pending": {
-                        "files": pending_files,
                     },
                 }));
                 return Ok(());
@@ -206,7 +202,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 }
             }
 
-            print_pending_summary(&networks, pending_files);
+            print_pending_summary(&networks);
 
             // Daemon/CLI version skew: after a manual binary upgrade the CLI is
             // new but the long-running daemon may still be the old one (e.g. it
@@ -315,13 +311,13 @@ fn print_network(net: &ipc::NetworkStatus) {
     }
 }
 
-/// Resolve a peer's local alias, if any: match its identity (user identity when
-/// paired, else device endpoint id) against the inverted alias map.
+/// Resolve a peer's local alias, if any: match its endpoint id against the
+/// inverted alias map.
 fn peer_alias<'a>(
     peer: &ipc::PeerStatus,
     alias_by_identity: &HashMap<&str, &'a str>,
 ) -> Option<&'a str> {
-    let identity = peer.user_identity.unwrap_or(peer.endpoint_id).to_string();
+    let identity = peer.endpoint_id.to_string();
     alias_by_identity.get(identity.as_str()).copied()
 }
 
@@ -343,32 +339,8 @@ fn render_peer_row(
         Some(a) => format!("{base} [{a}]"),
         None => base,
     };
-    // Ownership annotation, rendered as its own styled segment appended to the
-    // host (so it never nests inside the host's color). Mark our own paired
-    // devices; attribute an *unaliased* paired device to its owning user. When
-    // an alias is shown it already names the owner (it is keyed on the user
-    // identity for a paired device), so we skip the redundant segment.
-    let annotation: Option<(String, String)> = if peer.is_own_device {
-        Some(("(your device)".into(), style::green("(your device)")))
-    } else if alias.is_none() {
-        peer.user_identity.map(|uid| {
-            let s = format!("(user {})", uid.fmt_short());
-            let styled = style::faint(&s);
-            (s, styled)
-        })
-    } else {
-        None
-    };
-    // Plain text used for column width measurement includes the annotation.
-    let host_plain = match &annotation {
-        Some((plain, _)) => format!("{host} {plain}"),
-        None => host.clone(),
-    };
-    // Build the styled host, keeping the base and annotation in distinct colors.
-    let host_styled = |base_style: fn(&str) -> String| match &annotation {
-        Some((_, styled)) => format!("{} {styled}", base_style(&host)),
-        None => base_style(&host),
-    };
+    let host_plain = host.clone();
+    let host_styled = |base_style: fn(&str) -> String| base_style(&host);
     match &peer.connection {
         Some(ci) => {
             let via = match ci.conn_type {
@@ -409,8 +381,8 @@ fn render_peer_row(
 
 /// Render the trailing "pending" summary: things waiting on the user, each with
 /// the command that clears it. Per-network items (firewall suggestions, join
-/// requests) name their network; file offers are global.
-fn print_pending_summary(networks: &[ipc::NetworkStatus], pending_files: usize) {
+/// requests) name their network.
+fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
     let mut pending: Vec<(usize, String, String)> = Vec::new();
     for net in networks {
         if net.pending_suggestions > 0 {
@@ -427,13 +399,6 @@ fn print_pending_summary(networks: &[ipc::NetworkStatus], pending_files: usize) 
                 format!("torpedo requests {}", net.name),
             ));
         }
-    }
-    if pending_files > 0 {
-        pending.push((
-            pending_files,
-            pluralize(pending_files, "file offer"),
-            "torpedo files".to_string(),
-        ));
     }
     if pending.is_empty() {
         return;

@@ -54,7 +54,6 @@ pub(crate) async fn drain_pending_rename(
     network_name: &str,
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
-    device_cert: &Option<control::DeviceCert>,
 ) {
     // `apply_roster_to_dns` already cleared the intent if the blob confirmed it,
     // so a value here means it's genuinely still outstanding.
@@ -93,7 +92,7 @@ pub(crate) async fn drain_pending_rename(
                             identity: my_identity,
                             ip: my_ip,
                             hostname: Some(pending.clone()),
-                            device_cert: device_cert.clone(),
+                            device_cert: None,
                         },
                     )
                     .await;

@@ -149,7 +149,6 @@ pub(crate) async fn reconverge_and_apply(
     my_identity: EndpointId,
     alpn: &[u8],
     my_ip: Ipv4Addr,
-    device_cert: &Option<control::DeviceCert>,
 ) {
     let MeshCtx {
         peers,
@@ -157,8 +156,6 @@ pub(crate) async fn reconverge_and_apply(
         firewall,
         hostname_table,
         reverse_table,
-        device_user_map,
-        revocation,
         pruned_peers,
         ..
     } = ctx;
@@ -173,16 +170,7 @@ pub(crate) async fn reconverge_and_apply(
         // the hash never changes. Keep driving the rename to the coordinator
         // (the drain no-ops unless `pending_hostname` is set).
         let roster = state.read().unwrap().roster();
-        drain_pending_rename(
-            endpoint,
-            &roster,
-            alpn,
-            network_name,
-            my_identity,
-            my_ip,
-            device_cert,
-        )
-        .await;
+        drain_pending_rename(endpoint, &roster, alpn, network_name, my_identity, my_ip).await;
         return;
     }
     let Some(data) =
@@ -224,28 +212,11 @@ pub(crate) async fn reconverge_and_apply(
     // datagrams until the connection closes — so close it. We record the peer in
     // `pruned_peers` first: closing wakes our own reconnect loop, which would
     // otherwise re-dial the peer (it still lists us) and re-form the link.
-    prune_departed_peers(
-        peers,
-        device_user_map,
-        revocation,
-        pruned_peers,
-        state,
-        network_name,
-        my_identity,
-    );
+    prune_departed_peers(peers, pruned_peers, state, network_name, my_identity);
     apply_suggested_firewall(firewall, my_identity, network_name, state);
     // If a local rename is still unconfirmed by this just-applied blob, keep
     // delivering it to the coordinator set until it lands.
-    drain_pending_rename(
-        endpoint,
-        &roster,
-        alpn,
-        network_name,
-        my_identity,
-        my_ip,
-        device_cert,
-    )
-    .await;
+    drain_pending_rename(endpoint, &roster, alpn, network_name, my_identity, my_ip).await;
     tracing::info!(network = %network_name, "reconverged from signed record");
 }
 
@@ -256,40 +227,27 @@ pub(crate) async fn reconverge_and_apply(
 /// reconnect loop skips the re-dial that closing the connection would trigger.
 pub(crate) fn prune_departed_peers(
     peers: &PeerTable,
-    device_user_map: &peers::DeviceUserMap,
-    revocation: &RevocationCache,
     pruned_peers: &Arc<DashSet<(String, EndpointId)>>,
     state: &SharedNetworkState,
     network_name: &str,
     my_identity: EndpointId,
 ) {
-    // Cert-floor authority for this node, computed once (config + disk reads).
-    let (issuing, my_gen, revoked_set) = cert_authority(my_identity);
     for (peer_id, ip, conn) in peers.peers_for_network_with_conn(network_name) {
-        // Membership is by roster identity, which for a paired peer is its user
-        // identity, not the transport id the PeerTable is keyed on. Check both.
-        let user_id = device_user_map.resolve(&peer_id);
-        // A peer whose cert is below its owning user's generation floor
-        // (`torpedo unpair`) is severed even if a stale roster still lists it — the
-        // floor is authoritative over the (possibly not-yet-republished)
-        // membership. The peer's cert lives in the roster entry.
-        let member_cert = {
-            let s = state.read().unwrap();
-            s.members
-                .all()
-                .iter()
-                .find(|m| m.identity == peer_id || m.identity == user_id)
-                .and_then(|m| m.device_cert.clone())
-        };
-        let revoked = member_cert.as_ref().is_some_and(|cert| {
-            revocation::cert_decision(cert, issuing, my_gen, &|d| revoked_set.contains(d), revocation)
-                == revocation::CertDecision::Reject
-        });
+        // Membership is by roster identity, which for a paired full-torpedo peer
+        // is its user identity, not the transport id the PeerTable is keyed on.
+        // We keep no device→user map, but such a roster entry carries the peer's
+        // device cert, so match its `device_key` against the transport id (D1
+        // wire compat: never prune a paired full node that is still a member).
         let still_member = {
             let s = state.read().unwrap();
-            s.members.is_member(&peer_id) || s.members.is_member(&user_id)
+            s.members.all().iter().any(|m| {
+                m.identity == peer_id
+                    || m.device_cert
+                        .as_ref()
+                        .is_some_and(|c| c.device_key == peer_id)
+            })
         };
-        if !revoked && (still_member || peer_id == my_identity || user_id == my_identity) {
+        if still_member || peer_id == my_identity {
             continue;
         }
         tracing::info!(peer = %peer_id.fmt_short(), network = %network_name, "pruning peer no longer in roster");

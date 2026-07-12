@@ -14,9 +14,7 @@
 #   - whitelist (allow-list + the node's own default-deny) vs blacklist
 #     (denies-only) semantics observed by real TCP probes;
 #   - the rule matrix: UDP, a TCP port range, same-selector replace (allow↔deny),
-#     and per-network rule scoping (`--network`) at the data plane;
-#   - `torpedo send` reaches a deny-all host: file transfer rides FILES_ALPN (a
-#     control-plane QUIC stream), not TUN/IP traffic, so the firewall never gates it.
+#     and per-network rule scoping (`--network`) at the data plane.
 #
 # Reads tests/e2e/firewall/.servers (written by provision.sh). Does NOT modify
 # infra. Re-runnable (resets torpedo state each run unless KEEP_STATE=1).
@@ -165,20 +163,6 @@ stop_tcp_listener "$B" 7000
 on "$B" 'torpedo firewall remove 0' 2>&1 | strip | sed 's/^/   b| /'
 on "$B" 'torpedo firewall remove 0' 2>&1 | strip | sed 's/^/   b| /'
 on "$B" 'torpedo firewall default deny' 2>&1 | strip | sed 's/^/   b| /'
-
-# ---------------------------------------------------------------------------
-step "6. file send bypasses the firewall (deny-all inbound)"
-# srv-b is left at `default deny` (all inbound TCP/UDP blocked, ICMP-only) by the
-# previous step. `torpedo send` rides the identity-level FILES_ALPN (torpedo/files/1)
-# as a control-plane QUIC stream, NOT TUN/IP traffic — so the per-device firewall
-# (which filters forwarded packets) never sees it. A deny-all host can still
-# receive files. This proves send availability is gated by shared-network
-# membership, not by the firewall posture.
-DENY_DEFAULT="$(on "$B" 'torpedo firewall show --json' | jq -r '(.default_inbound // "") | ascii_downcase')"
-[[ "$DENY_DEFAULT" == "deny" ]] \
-  && pass "srv-b inbound default is deny (TCP/UDP blocked)" \
-  || fail "srv-b inbound default is not deny (got '${DENY_DEFAULT}')"
-send_recv "$A" "$B" srv-b "torpedo send srv-a -> srv-b succeeds despite deny-all firewall"
 
 # ---------------------------------------------------------------------------
 summary

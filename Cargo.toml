@@ -62,11 +62,9 @@ iroh-tor-transport = { version = "0.1", optional = true }
 iroh-metrics = { version = "1", features = ["metrics"] }
 iroh-dns = "1"
 iroh-blobs = { version = "0.103", default-features = false, features = ["fs-store"] }
-humansize = "2"
 unicode-width = "0.2"
 indicatif = "0.18"
 crossterm = "0.29"
-mime_guess = "2"
 rand = "0.10"
 rmp-serde = "1"
 libc = "0.2"

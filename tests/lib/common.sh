@@ -292,35 +292,3 @@ peer_endpoint(){
     | (if $n == "" then . else map(select(.name == $n)) end)
     | [ .[].peers[] | select((.hostname // "") == $h) ] | .[0].endpoint_id // empty'
 }
-
-# send_recv <from-ip> <to-ip> <to-peer-hostname> <label> : torpedo send a 1MiB random
-# file and verify the sha256 round-trips after `torpedo files accept`. SR_PREFIX sets
-# the temp-file path prefix (default /tmp/ray_e2e).
-send_recv(){
-  local from="$1" to="$2" peer="$3" label="$4"
-  local pfx="${SR_PREFIX:-/tmp/ray_e2e}"
-  on "$from" "head -c 1048576 /dev/urandom > ${pfx}_src.bin; sha256sum ${pfx}_src.bin | cut -d' ' -f1 > ${pfx}_src.sha"
-  local src_sha; src_sha="$(on "$from" "cat ${pfx}_src.sha")"
-  on "$from" "torpedo send ${pfx}_src.bin $peer" 2>&1 | strip | sed 's/^/      send| /'
-  # `torpedo files` rows are `<id> <from> <size> <file> …` with a numeric id; the
-  # header row's first column is the literal "id", so match a numeric id.
-  local fid=""
-  for _ in $(seq 1 12); do
-    fid="$(on "$to" 'torpedo files' 2>/dev/null | strip | awk '$1 ~ /^[0-9]+$/ {print $1; exit}')"
-    [[ -n "$fid" ]] && break
-    sleep 3
-  done
-  if [[ -z "$fid" ]]; then fail "$label: no incoming file offer on receiver"; return; fi
-  on "$to" "rm -rf ${pfx}_recv && mkdir -p ${pfx}_recv && torpedo files accept $fid --output ${pfx}_recv" 2>&1 | strip | sed 's/^/      recv| /'
-  local dst_sha=""
-  for _ in $(seq 1 10); do
-    dst_sha="$(on "$to" "f=\$(find ${pfx}_recv -type f | head -1); [ -n \"\$f\" ] && sha256sum \"\$f\" | cut -d' ' -f1")"
-    [[ -n "$dst_sha" ]] && break
-    sleep 2
-  done
-  if [[ -n "$dst_sha" && "$dst_sha" == "$src_sha" ]]; then
-    pass "$label (sha ${src_sha:0:12}… verified)"
-  else
-    fail "$label (sent ${src_sha:0:12}… got ${dst_sha:0:12}…)"
-  fi
-}

@@ -16,8 +16,6 @@ scenarios don't cover.
 | 7 | **Graceful leave + nuke**: `torpedo leave` prunes the member promptly; `torpedo nuke` drops the network. |
 | 8 | **`torpedo apply` smoke**: `--example` prints a template and `--dry-run` normalizes a spec without creating anything. |
 
-Single-use invite redemption is already covered by the `device-cert` scenario.
-
 ## Run
 
 ```bash

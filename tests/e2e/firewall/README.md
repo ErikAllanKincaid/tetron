@@ -13,7 +13,6 @@ real TUN.
 | 3 | `--auto-accept-firewall` installs without review; `firewall auto-accept off` makes the next suggestion queue instead; **whitelist** (allow-list) admits the listed peer:port while the node's own inbound default-deny blocks an unlisted port and an unlisted peer (suggestions are additive — no catch-all is synthesized). |
 | 4 | Rule matrix: **UDP** allow vs default-deny, a **TCP port range** (8000-8010), and **same-selector replace** (deny→allow on one selector, latest wins — no dead rules). |
 | 5 | **Per-network scoping** (`--network`): a `db`-scoped rule does not match `fw` traffic, while the same rule unscoped does; the scope is recorded in `firewall show`. |
-| 6 | **File send bypasses the firewall**: with `srv-b` at `default deny` (all inbound TCP/UDP blocked), `torpedo send srv-a → srv-b` still round-trips — file transfer rides the identity-level `FILES_ALPN` control stream, not TUN/IP traffic, so the per-device firewall never gates it. |
 
 Reachability is checked with real TCP/UDP probes (`fw_allows`/`fw_denies` in
 `../../lib/common.sh`); suggestion visibility is polled (reconverge is the 60s

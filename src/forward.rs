@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::firewall::{self, Direction, SharedFirewall};
-use crate::peers::{DeviceUserMap, PeerTable};
+use crate::peers::PeerTable;
 use crate::stats::{DropReason, ForwardMetrics};
 
 /// Maximum datagram size accepted from a peer. Anything larger is dropped before
@@ -147,7 +147,6 @@ pub struct ForwardCtx {
     pub disconnect_tx: mpsc::Sender<DisconnectEvent>,
     pub token: CancellationToken,
     pub stats: Arc<ForwardMetrics>,
-    pub device_user_map: DeviceUserMap,
 }
 
 /// True when a parsed packet is a DNS query addressed to the magic resolver IP.
@@ -281,7 +280,6 @@ pub fn spawn_peer_reader(
         disconnect_tx,
         token,
         stats,
-        device_user_map,
     } = ctx;
     use tracing::Instrument as _;
     // Tag every event from this reader (drops, connection-lost) with the peer
@@ -319,7 +317,7 @@ pub fn spawn_peer_reader(
                 },
             };
 
-            let peer_user = device_user_map.resolve(&peer_id);
+            let peer_user = peer_id;
             match evaluate_inbound(
                 &datagram, &firewall, &peer_user, peer_ip, peer_ipv6, &network,
             ) {

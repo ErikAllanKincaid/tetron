@@ -242,45 +242,6 @@ impl PeerTable {
     }
 }
 
-/// Maps device transport keys to user identities for paired devices.
-/// Used by the forwarding path to resolve ACL identities.
-#[derive(Clone)]
-pub struct DeviceUserMap {
-    inner: Arc<FastDashMap<EndpointId, EndpointId>>,
-}
-
-impl Default for DeviceUserMap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DeviceUserMap {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(FastDashMap::default()),
-        }
-    }
-
-    pub fn insert(&self, device_key: EndpointId, user_identity: EndpointId) {
-        self.inner.insert(device_key, user_identity);
-    }
-
-    pub fn resolve(&self, transport_key: &EndpointId) -> EndpointId {
-        self.inner
-            .get(transport_key)
-            .map(|e| *e.value())
-            .unwrap_or(*transport_key)
-    }
-
-    /// Drop a device's mapping so it stops resolving to a user identity. Used by
-    /// `torpedo unpair` to demote a revoked device to a plain peer immediately (its
-    /// user's firewall rules and own-device file auto-accept no longer apply).
-    pub fn remove(&self, device_key: &EndpointId) {
-        self.inner.remove(device_key);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

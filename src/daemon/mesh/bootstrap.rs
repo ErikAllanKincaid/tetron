@@ -76,11 +76,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 /// standby, so the caller is expected to run [`MeshManager::activate`] — and the
 /// metrics-server guard, which must outlive the process.
 /// The ALPNs the endpoint advertises at boot: one per saved network plus the
-/// network-independent blobs / file-transfer / pairing ALPNs. A
-/// freshly-started daemon with no active network must still accept `torpedo pair` /
-/// `torpedo send`, otherwise the initial handshake fails with "peer
-/// doesn't support any known protocol" until the first create/join triggers
-/// `refresh_alpns()`. Mirrors `ProtocolRouter::alpns()`.
+/// network-independent blobs ALPN. Mirrors `ProtocolRouter::alpns()`.
 fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
     let mut alpns: Vec<Vec<u8>> = app_config
         .networks
@@ -88,8 +84,6 @@ fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
         .filter_map(|net| net.network_public_key.as_ref().map(transport::network_alpn))
         .collect();
     alpns.push(iroh_blobs::protocol::ALPN.to_vec());
-    alpns.push(transport::FILES_ALPN.to_vec());
-    alpns.push(PAIR_ALPN.to_vec());
     alpns
 }
 
@@ -122,13 +116,9 @@ async fn build_daemon(
     // before anything reads identity or config. No-op on macOS / once migrated.
     config::migrate_location();
 
-    // --- Identity (persistent transport key + optional device certificate) ---
+    // --- Identity (persistent transport key) ---
     let key = identity::load_or_create()?;
     let public_key = key.public();
-    let device_cert = identity::load_device_cert()?;
-    if let Some(ref cert) = device_cert {
-        tracing::info!(user = %cert.user_identity.fmt_short(), "loaded device certificate");
-    }
     let collision_index = identity::load_collision_index()?;
     // The node runs a single overlay subnet / TUN. Read the operative subnet
     // (cache of the active network's signed GroupBlob value) so the identity and
@@ -187,8 +177,6 @@ async fn build_daemon(
         let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
         Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx))
     };
-    let device_user_map = peers::DeviceUserMap::new();
-
     // --- Magic DNS resolver ---
     let hostname_table = dns::new_hostname_table();
     let reverse_table = dns::new_reverse_table();
@@ -197,11 +185,7 @@ async fn build_daemon(
         reverse_table.clone(),
     ));
     // --- Protocol router + the shared MeshManager ---
-    // Auto-accept worker channel: the file service nudges this with each newly-
-    // queued offer id; the worker (spawned once the daemon exists) evaluates it.
-    let (new_file_tx, new_file_rx) = mpsc::unbounded_channel::<u64>();
-    let files = Arc::new(FileService::new(key.clone(), new_file_tx));
-    let protocol_router = Arc::new(ProtocolRouter::new(blobs_proto, files.clone()));
+    let protocol_router = Arc::new(ProtocolRouter::new(blobs_proto));
     // Promotion channel: a co-coordinator's control reader signals the main
     // daemon loop to swap in the coordinator accept handler on `AdminGrant`.
     let (promote_tx, promote_rx) = mpsc::channel::<String>(16);
@@ -220,10 +204,6 @@ async fn build_daemon(
                 tun_name: std::sync::Mutex::new(tun_name),
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
-        files,
-        device_cert,
-        device_user_map,
-        revocation: crate::revocation::RevocationCache::new(),
         pruned_peers: Arc::new(DashSet::new()),
         active: active.clone(),
 
@@ -233,32 +213,6 @@ async fn build_daemon(
     // --- Accept loop (ALPN dispatch) ---
     protocol_router.spawn_accept_loop(daemon.endpoint.clone(), token.clone());
 
-    // Auto-accept worker: evaluates each newly-queued file offer for own-device
-    // auto-accept (no-op unless the sender is our own paired device on an
-    // opted-in network).
-    spawn_file_auto_accept(daemon.clone(), new_file_rx, token.clone());
-
-    // --- Device-cert revocation (torpedo unpair) ---
-    // Seed the floor cache from this user's persisted generation so it is
-    // enforced locally the instant the daemon comes up, ahead of any pkarr fetch.
-    // A primary's endpoint id is the user identity that signed the certs.
-    {
-        let cfg = config::load().unwrap_or_default();
-        let own_user = daemon
-            .device_cert
-            .as_ref()
-            .map(|c| c.user_identity)
-            .unwrap_or_else(|| daemon.endpoint.id());
-        if cfg.cert_generation > 0 {
-            daemon.revocation.set_local(own_user, cfg.cert_generation);
-        }
-    }
-    if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
-        spawn_revocation_publisher(pkarr_client, token.clone());
-    }
-    if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
-        spawn_revocation_poller(daemon.clone(), pkarr_client, token.clone());
-    }
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
     Ok(daemon)
 }
@@ -334,26 +288,5 @@ async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Res
     let resp = daemon.handle_request(req, peer_cred).await;
     ipc::send(&mut framed, resp).await?;
     Ok(())
-}
-
-/// Daemon-wide worker: drains newly-queued file-offer ids from the file service
-/// and evaluates each for own-device auto-accept (a no-op unless the sender is
-/// one of our own paired devices on a network with `auto_accept_files` on).
-fn spawn_file_auto_accept(
-    daemon: Arc<MeshManager>,
-    mut rx: mpsc::UnboundedReceiver<u64>,
-    token: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => return,
-                id = rx.recv() => match id {
-                    Some(id) => daemon.try_auto_accept_file(id).await,
-                    None => return,
-                },
-            }
-        }
-    })
 }
 

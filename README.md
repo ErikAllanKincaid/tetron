@@ -123,15 +123,15 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename.
 - 🧱 **Per-device firewall** — a userspace firewall for mesh traffic, layered on top of your host/kernel firewall. Directional, per-port, per-network rules, secure by default. `torpedo firewall --help`.
-- 📁 **File sharing** — `torpedo send <file> <peer>`.
 - 🧩 **Declarative deploy** — `torpedo apply <spec.yaml>` reconciles networks + suggested firewall rules.
-- 📱 **Multi-device identity** — `torpedo pair` shares one identity across your devices.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `apply`, `send`, `pair`, `kick`, `ephemeral`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `apply`, `kick`, `ephemeral`, and more.
+
+> **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 
 ## Permissions
 
-Like Tailscale, the daemon authorizes each command by the **caller's UID**, not by file permissions. Read-only commands (`status`, `… show`, `files`) are open to any local user; mutating commands need root or the configured operator. The user who installs the service (`sudo torpedo up`) becomes the operator automatically. Only service-management commands need `sudo`:
+Like Tailscale, the daemon authorizes each command by the **caller's UID**, not by file permissions. Read-only commands (`status`, `… show`) are open to any local user; mutating commands need root or the configured operator. The user who installs the service (`sudo torpedo up`) becomes the operator automatically. Only service-management commands need `sudo`:
 
 ```bash
 sudo torpedo install | restart | uninstall   # manage the system service

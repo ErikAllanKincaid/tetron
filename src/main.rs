@@ -2,8 +2,8 @@
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
 use rayfish::{
-    DNS_DOMAIN, apply, config, daemon, firewall, hostname, identity, invite, ipc, layout, logdir,
-    membership, onepassword, picker, progress, shutdown, stats, style,
+    DNS_DOMAIN, apply, config, daemon, firewall, hostname, invite, ipc, layout, logdir, membership,
+    picker, progress, shutdown, stats, style,
 };
 
 use std::sync::{Arc, atomic};
@@ -93,11 +93,6 @@ pub(crate) enum Command {
         /// it, suggestions queue for `torpedo firewall accept`.
         #[arg(long)]
         auto_accept_firewall: bool,
-        /// Auto-accept incoming file transfers from your own paired devices on
-        /// this network (no manual `torpedo files accept`). Only offers whose sender
-        /// is one of your own devices are accepted.
-        #[arg(long)]
-        auto_accept_files: bool,
     },
     /// Leave a network (remove from saved config)
     #[command(visible_alias = "rm")]
@@ -256,31 +251,6 @@ pub(crate) enum Command {
         /// Username or numeric UID to grant operator access
         user: String,
     },
-    /// Send a file to a peer
-    Send {
-        /// File path to send
-        file: String,
-        /// Peer hostname or short ID
-        peer: String,
-    },
-    /// Manage incoming file transfers
-    Files {
-        #[command(subcommand)]
-        action: Option<FilesAction>,
-    },
-    /// Pair this device with another device (share user identity)
-    Pair {
-        #[command(subcommand)]
-        action: Option<PairAction>,
-        /// Pairing ticket from the primary device (shorthand for `torpedo pair accept <ticket>`)
-        ticket: Option<String>,
-    },
-    /// Revoke a paired device: invalidate its certificate mesh-wide (primary only)
-    Unpair {
-        /// Device to revoke: hostname, mesh IP, short id, or full endpoint id
-        /// (see `torpedo pair list`)
-        device: String,
-    },
     /// Print the torpedo version
     #[command(visible_alias = "ver")]
     Version,
@@ -318,44 +288,6 @@ pub(crate) enum InviteAction {
     Revoke {
         /// Invite id (from `torpedo invite <network> list`)
         id: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum PairAction {
-    /// Accept a pairing ticket from the primary device
-    Accept {
-        /// The pairing ticket
-        ticket: String,
-    },
-    /// List this user's paired devices
-    #[command(visible_alias = "ls")]
-    List,
-    /// Export an encrypted backup of the signing key
-    Backup {
-        /// Store the backup in 1Password (via the `op` CLI) instead of printing it
-        #[arg(long = "1password", alias = "op")]
-        onepassword: bool,
-        /// 1Password vault (defaults to your default vault)
-        #[arg(long)]
-        vault: Option<String>,
-        /// 1Password item title
-        #[arg(long, default_value = "Torpedo Identity")]
-        item: String,
-    },
-    /// Restore a signing key from an encrypted backup
-    Restore {
-        /// The encrypted backup string (omit when using --1password)
-        backup: Option<String>,
-        /// Read the backup from 1Password (via the `op` CLI)
-        #[arg(long = "1password", alias = "op")]
-        onepassword: bool,
-        /// 1Password vault (defaults to your default vault)
-        #[arg(long)]
-        vault: Option<String>,
-        /// 1Password item title
-        #[arg(long, default_value = "Torpedo Identity")]
-        item: String,
     },
 }
 
@@ -531,45 +463,6 @@ pub(crate) enum FirewallAction {
         network: String,
         /// `on` or `off`
         state: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum FilesAction {
-    /// Accept a pending file transfer
-    Accept {
-        /// Transfer ID (from 'torpedo files')
-        id: u64,
-        /// Output directory (default: ~/Downloads)
-        #[arg(long, short)]
-        output: Option<String>,
-    },
-    /// Toggle auto-accepting file transfers from your own paired devices on a
-    /// network (`on` also drains any already-queued offers from your devices;
-    /// `off` stops future auto-accept). Only your own devices are auto-accepted.
-    AutoAccept {
-        /// Network name
-        network: String,
-        /// `on` or `off`
-        state: String,
-    },
-    /// Set/show/clear the directory where auto-accepted files are written
-    /// (absolute path). With no argument, prints the current value.
-    DownloadDir {
-        /// Absolute path (omit to show current)
-        path: Option<String>,
-        /// Clear the setting (revert to download-user / operator fallback)
-        #[arg(long)]
-        clear: bool,
-    },
-    /// Set/show/clear the unix user that owns auto-accepted files (and whose
-    /// ~/Downloads receives them when no download-dir is set).
-    DownloadUser {
-        /// Username or numeric uid (omit to show current)
-        user: Option<String>,
-        /// Clear the setting
-        #[arg(long)]
-        clear: bool,
     },
 }
 
@@ -774,18 +667,7 @@ async fn main() -> Result<()> {
             hostname,
             tor,
             auto_accept_firewall,
-            auto_accept_files,
-        } => {
-            ipc_join(
-                &network_key,
-                name.as_deref(),
-                hostname,
-                tor,
-                auto_accept_firewall,
-                auto_accept_files,
-            )
-            .await
-        }
+        } => ipc_join(&network_key, name.as_deref(), hostname, tor, auto_accept_firewall).await,
         Command::Nuke { name, force } => ipc_nuke(&name, force).await,
         Command::Kick { network, peer } => ipc_kick(&network, &peer).await,
         Command::Ephemeral { network, arg } => ipc_ephemeral(&network, &arg).await,
@@ -829,10 +711,6 @@ async fn main() -> Result<()> {
         Command::Alias { network, action } => cmd_alias(&network, action, cli.json).await,
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
-        Command::Send { file, peer } => ipc_send_file(&file, &peer).await,
-        Command::Files { action } => ipc_files(action).await,
-        Command::Pair { action, ticket } => cmd_pair(action, ticket).await,
-        Command::Unpair { device } => ipc_unpair(&device).await,
         Command::Version => {
             println!("torpedo {FULL_VERSION}");
             Ok(())

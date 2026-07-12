@@ -12,20 +12,16 @@
 
 mod alias;
 mod admin;
-mod files;
 mod firewall;
 mod invite;
 mod network;
-mod pair;
 mod service;
 mod status;
 
 pub(crate) use alias::*;
 pub(crate) use admin::*;
-pub(crate) use files::*;
 pub(crate) use firewall::*;
 pub(crate) use invite::*;
 pub(crate) use network::*;
-pub(crate) use pair::*;
 pub(crate) use service::*;
 pub(crate) use status::*;

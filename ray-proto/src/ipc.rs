@@ -43,10 +43,6 @@ pub enum IpcMessage {
         /// without a manual review queue (`--auto-accept-firewall`).
         #[serde(default, alias = "allow_trusted")]
         auto_accept_firewall: bool,
-        /// Auto-accept incoming file offers from our own paired devices on this
-        /// network (`--auto-accept-files`).
-        #[serde(default)]
-        auto_accept_files: bool,
     },
     Leave {
         name: String,
@@ -142,13 +138,6 @@ pub enum IpcMessage {
         network: String,
         enabled: bool,
     },
-    /// Toggle per-network auto-accept of incoming file offers from our own
-    /// paired devices. `on` also drains any already-queued offers from own
-    /// devices; `off` stops future auto-accept.
-    FilesAutoAccept {
-        network: String,
-        enabled: bool,
-    },
     /// Accept the queued suggested rules for a network: install them (replacing
     /// the prior `Network(net)` set) and clear the queue.
     FirewallAccept {
@@ -190,31 +179,6 @@ pub enum IpcMessage {
     /// Response to `AliasList`: `alias name -> identity string`.
     AliasListResponse {
         aliases: BTreeMap<String, String>,
-    },
-    SendFile {
-        path: String,
-        peer: String,
-    },
-    ListFiles,
-    AcceptFile {
-        id: u64,
-        output: Option<String>,
-    },
-    StartPairing,
-    PairWithDevice {
-        endpoint_id: EndpointId,
-        secret: Vec<u8>,
-    },
-    /// List this user's paired devices (enumerated from the network rosters).
-    /// Reply: [`IpcMessage::PairedDevices`].
-    ListPairedDevices,
-    /// Revoke one of this user's paired devices (`ray unpair`). Primary-only.
-    /// Publishes a signed revocation record, drops the device locally, severs it
-    /// from networks this node coordinates, and best-effort signals the device to
-    /// wipe its own cert. Reply: [`IpcMessage::Ok`] / [`IpcMessage::Error`].
-    Unpair {
-        /// Device identifier: hostname, mesh IP, short id, or full endpoint id.
-        device: String,
     },
     /// Authorize a local user (by UID) to control the daemon without root, the
     /// way `tailscale up --operator` does. Root-only.
@@ -309,10 +273,6 @@ pub enum IpcMessage {
         packets_tx: u64,
         bytes_rx: u64,
         bytes_tx: u64,
-        /// Incoming file offers awaiting `ray files accept` (global, not
-        /// per-network). Shown in the status "pending" summary.
-        #[serde(default)]
-        pending_files: usize,
         /// Networks this node has asked to join but has not yet been admitted
         /// to (persisted `AppConfig.pending_joins`), minus any that are now
         /// active. Shown in the UI as "waiting for approval".
@@ -349,19 +309,6 @@ pub enum IpcMessage {
     FirewallPendingResponse {
         network: String,
         rules: Vec<FirewallRuleView>,
-    },
-    FileList {
-        files: Vec<PendingFileInfo>,
-    },
-    PairingTicket {
-        ticket: String,
-    },
-    PairingComplete {
-        user_identity: EndpointId,
-    },
-    /// This user's paired devices (reply to `ListPairedDevices`).
-    PairedDevices {
-        devices: Vec<PairedDeviceInfo>,
     },
     /// An invite was minted; `code` is the shareable invite string.
     InviteCreated {
@@ -413,21 +360,6 @@ pub struct AdminInfo {
     pub self_node: bool,
 }
 
-/// One of this user's paired secondary devices (reply to `ListPairedDevices`),
-/// enumerated from the network rosters as members whose `user_identity` is ours
-/// but whose device id is not.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PairedDeviceInfo {
-    /// The device's transport endpoint id (what `ray unpair` revokes).
-    pub device_id: EndpointId,
-    /// Short id form for display.
-    pub short_id: String,
-    /// The device's hostname if known from any roster.
-    pub hostname: Option<String>,
-    /// Networks this device is currently a member of.
-    pub networks: Vec<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InviteInfo {
     pub id: String,
@@ -449,15 +381,6 @@ pub struct PendingRequestInfo {
     pub short_id: String,
     pub hostname: Option<String>,
     pub waiting_secs: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PendingFileInfo {
-    pub id: u64,
-    pub from: String,
-    pub filename: String,
-    pub size: u64,
-    pub mime_type: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -510,10 +433,6 @@ pub struct PeerStatus {
     pub ip: Ipv4Addr,
     pub ipv6: Option<Ipv6Addr>,
     pub hostname: Option<String>,
-    pub user_identity: Option<EndpointId>,
-    /// True when this peer is another of the local user's own paired devices
-    /// (its resolved user identity equals ours).
-    pub is_own_device: bool,
     pub connection: Option<ConnectionInfo>,
 }
 
@@ -799,7 +718,6 @@ mod tests {
             invite: Some(vec![1, 2, 3]),
             coordinator: Some(coord),
             auto_accept_firewall: false,
-            auto_accept_files: false,
         };
         let bytes = rmp_serde::to_vec(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -837,8 +755,6 @@ mod tests {
                     ip: Ipv4Addr::new(100, 64, 10, 6),
                     ipv6: None,
                     hostname: None,
-                    user_identity: None,
-                    is_own_device: false,
                     connection: None,
                 }],
                 pending_suggestions: 0,
@@ -850,7 +766,7 @@ mod tests {
             packets_tx: 0,
             bytes_rx: 0,
             bytes_tx: 0,
-            pending_files: 0,
+            pending_networks: vec![],
         };
         let bytes = rmp_serde::to_vec(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();

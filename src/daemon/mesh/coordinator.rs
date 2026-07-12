@@ -13,7 +13,6 @@ pub(crate) struct CoordinatorCleanup {
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
     pub(crate) hostname_table: dns::HostnameTable,
     pub(crate) reverse_table: dns::ReverseLookupTable,
-    pub(crate) device_user_map: peers::DeviceUserMap,
     pub(crate) network_name: String,
 }
 
@@ -57,7 +56,7 @@ pub(crate) fn spawn_peer_cleanup(
                             // coordinator is authoritative, so members pass
                             // `coordinator = None` and do neither.
                             if let Some(c) = &coordinator {
-                                let member_id = c.device_user_map.resolve(&ev.endpoint_id);
+                                let member_id = ev.endpoint_id;
                                 let mut changed = false;
                                 {
                                     let mut st = c.state.write().unwrap();
@@ -121,16 +120,12 @@ pub(crate) fn spawn_coordinator_control_reader(
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
     let MeshCtx {
-        identity,
         peers,
         blob_store,
         hostname_table,
         reverse_table,
-        device_user_map,
-        revocation,
         ..
     } = ctx;
-    let my_identity = identity.local_identity();
     tokio::spawn(async move {
         let mut gate = crate::ratelimit::ControlGate::new();
         loop {
@@ -205,19 +200,9 @@ pub(crate) fn spawn_coordinator_control_reader(
                     }
                     continue;
                 }
-                ControlMsg::Unpaired => {
-                    // The peer claims to be our primary unpairing us. Verified
-                    // inside against our own cert's signer, so a stranger is a
-                    // no-op.
-                    wipe_cert_if_unpaired_by(remote_id);
-                    continue;
-                }
-                ControlMsg::CertRefresh { cert } => {
-                    // Our primary rotated and re-issued us. Verified inside
-                    // against our own cert (signer + device key + generation).
-                    store_refreshed_cert(&cert);
-                    continue;
-                }
+                // Pairing was removed (MINIMAL-004); tolerate these from
+                // full-torpedo peers instead of erroring the connection.
+                ControlMsg::Unpaired | ControlMsg::CertRefresh { .. } => continue,
                 _ => {}
             }
             let ControlMsg::MeshHello {
@@ -229,30 +214,18 @@ pub(crate) fn spawn_coordinator_control_reader(
                 continue;
             };
 
-            // Verify and store device cert if present, unless it is below the
-            // issuing user's generation floor (`torpedo unpair`) — a revoked/stale
-            // cert is not recorded as a paired device, so it stops resolving to
-            // the user's identity. (A `Reissue` verdict — our own stale device —
-            // is treated as fine to record; the admission path pushes its refresh.)
-            let cert_ok = device_cert.as_ref().is_some_and(|cert| {
-                if !cert.verify() || cert.device_key != remote_id {
-                    return false;
-                }
-                let (issuing, my_gen, revoked) = cert_authority(my_identity);
-                revocation::cert_decision(cert, issuing, my_gen, &|d| revoked.contains(d), &revocation)
-                    != revocation::CertDecision::Reject
-            });
+            // Store a verified device cert in the roster verbatim so full-torpedo
+            // peers keep their multi-device metadata (tetron does no revocation
+            // checking; pairing was removed by MINIMAL-004).
             if let Some(ref cert) = device_cert
-                && cert_ok
+                && cert.verify()
+                && cert.device_key == remote_id
             {
-                {
-                    let mut s = state.write().unwrap();
-                    if let Some(m) = s.members.get_mut(&remote_id) {
-                        m.user_identity = Some(cert.user_identity);
-                        m.device_cert = Some(cert.clone());
-                    }
+                let mut s = state.write().unwrap();
+                if let Some(m) = s.members.get_mut(&remote_id) {
+                    m.user_identity = Some(cert.user_identity);
+                    m.device_cert = Some(cert.clone());
                 }
-                device_user_map.insert(remote_id, cert.user_identity);
             }
 
             let Some(desired) = hostname else { continue };
@@ -413,8 +386,7 @@ pub(crate) async fn finalize_removal(
     update_snapshot_and_publish(state, &ctx.blob_store, dht_notify).await;
     broadcast_member_sync(&ctx.peers, None).await;
     for (pid, ip, conn) in ctx.peers.peers_for_network_with_conn(network) {
-        let resolved = ctx.device_user_map.resolve(&pid);
-        if victims.iter().any(|v| *v == pid || *v == resolved) {
+        if victims.contains(&pid) {
             conn.close(VarInt::from_u32(forward::KICK_CODE), b"kicked from network");
             ctx.peers
                 .remove_peer_from_network(&ip, &derive_ipv6(&pid), network);

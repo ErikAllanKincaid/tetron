@@ -67,14 +67,11 @@ pub mod layout;
 pub mod logdir;
 pub mod membership;
 pub mod network_name;
-#[cfg(feature = "desktop")]
-pub mod onepassword;
 pub mod peers;
 pub mod picker;
 pub mod progress;
 pub mod ratelimit;
 pub mod reject;
-pub mod revocation;
 pub mod shutdown;
 pub mod stats;
 pub mod style;

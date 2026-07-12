@@ -38,11 +38,10 @@
 use bytes::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::{DashMap, DashSet};
@@ -75,8 +74,7 @@ use crate::membership::{
     verify_group_blob,
 };
 use crate::network_name;
-use crate::peers::{self, PeerTable};
-use crate::revocation::{self, RevocationCache};
+use crate::peers::PeerTable;
 use crate::stats::ForwardMetrics;
 use crate::transport;
 // The desktop TUN device doesn't exist on Android, where the packet interface
@@ -109,17 +107,10 @@ pub type DaemonState = MeshManager;
 mod dns_manager;
 pub(crate) use dns_manager::DnsManager;
 
-mod file_service;
-pub(crate) use file_service::FileService;
 
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
-
-/// ALPN for the device-pairing protocol. The trailing `/1` is its protocol
-/// version — **bump it on any breaking change to the `PairMsg` handshake**;
-/// peers on different versions can't negotiate a connection (transport-enforced).
-const PAIR_ALPN: &[u8] = b"torpedo/pair/1";
 
 /// Node-wide shared handles, cloned into every per-network accept handler and
 /// background task. Every field is a cheap `Clone` — an `Arc`-backed handle, a
@@ -137,11 +128,6 @@ pub(crate) struct MeshCtx {
     firewall: SharedFirewall,
     hostname_table: dns::HostnameTable,
     reverse_table: dns::ReverseLookupTable,
-    device_user_map: peers::DeviceUserMap,
-    /// Last-known revoked device keys per user identity (`torpedo unpair`). Consulted
-    /// wherever a `DeviceCert` is trusted (admission, MeshHello, reconverge) so a
-    /// revoked device stops being honored mesh-wide. See [`crate::revocation`].
-    revocation: RevocationCache,
     /// Peers removed from a network's roster (via `torpedo kick` or a stale-entry
     /// prune during reconverge), keyed by `(network, transport id)`. A member
     /// closes such a peer's connection but can't see its own close code, so its
@@ -166,7 +152,6 @@ impl MeshCtx {
             disconnect_tx,
             token,
             stats: self.stats.clone(),
-            device_user_map: self.device_user_map.clone(),
         }
     }
 }
@@ -384,13 +369,6 @@ pub struct MeshManager {
     /// headless builder can construct the daemon and hand the receiver back to
     /// [`run_daemon`] afterwards.
     promote_rx: std::sync::Mutex<Option<mpsc::Receiver<String>>>,
-    /// File-transfer + pairing state and ALPN accept arms (see [`FileService`]).
-    /// Shared with [`ProtocolRouter`], which runs the accept arms.
-    files: Arc<FileService>,
-    device_cert: Option<control::DeviceCert>,
-    device_user_map: peers::DeviceUserMap,
-    /// Device-cert revocation cache (`torpedo unpair`); see [`MeshCtx::revocation`].
-    revocation: RevocationCache,
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
@@ -440,16 +418,6 @@ fn should_promote(current: NetworkRole) -> bool {
 }
 
 impl MeshManager {
-    /// The device cert to present when joining, preferring the on-disk copy so a
-    /// join issued right after pairing (same process, no restart) carries the
-    /// freshly stored cert rather than the value loaded at startup.
-    pub fn current_device_cert(&self) -> Option<control::DeviceCert> {
-        identity::load_device_cert()
-            .ok()
-            .flatten()
-            .or_else(|| self.device_cert.clone())
-    }
-
     /// Gracefully take the whole node offline: cancel the daemon-wide shutdown
     /// token (stopping every network run loop, the accept loop, and the
     /// data-plane forward tasks) and then close the iroh endpoint so all QUIC
@@ -478,8 +446,6 @@ impl MeshManager {
             firewall: self.firewall.clone(),
             hostname_table: self.dns.hostname_table.clone(),
             reverse_table: self.dns.reverse_table.clone(),
-            device_user_map: self.device_user_map.clone(),
-            revocation: self.revocation.clone(),
             pruned_peers: self.pruned_peers.clone(),
         }
     }
@@ -682,10 +648,8 @@ impl MeshManager {
                 | IpcMessage::FirewallShow
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
-                | IpcMessage::ListFiles
                 | IpcMessage::AliasList { .. }
                 | IpcMessage::GetEphemeral { .. }
-                | IpcMessage::ListPairedDevices
         ) {
             return None;
         }
@@ -775,7 +739,6 @@ impl MeshManager {
                 invite,
                 coordinator,
                 auto_accept_firewall,
-                auto_accept_files,
             } => {
                 let had_invite = invite.is_some();
                 let resp = self
@@ -786,7 +749,6 @@ impl MeshManager {
                         invite,
                         coordinator,
                         auto_accept_firewall,
-                        auto_accept_files,
                     )
                     .await;
                 // FW-001: a successful invite/reusable-key join proves a trusted
@@ -854,9 +816,6 @@ impl MeshManager {
             IpcMessage::FirewallAutoAccept { network, enabled } => {
                 self.firewall_auto_accept(&network, enabled)
             }
-            IpcMessage::FilesAutoAccept { network, enabled } => {
-                self.files_auto_accept(&network, enabled).await
-            }
             IpcMessage::SetHostname { network, hostname } => {
                 self.set_hostname(&network, &hostname).await
             }
@@ -867,16 +826,6 @@ impl MeshManager {
             } => self.set_alias(&network, &identity, &alias),
             IpcMessage::AliasRemove { network, alias } => self.remove_alias(&network, &alias),
             IpcMessage::AliasList { network } => self.list_aliases(&network),
-            IpcMessage::SendFile { path, peer } => self.send_file(&path, &peer).await,
-            IpcMessage::ListFiles => self.list_files(),
-            IpcMessage::AcceptFile { id, output } => self.accept_file(id, output, peer_cred).await,
-            IpcMessage::StartPairing => self.start_pairing(),
-            IpcMessage::PairWithDevice {
-                endpoint_id,
-                secret,
-            } => self.pair_with_device(endpoint_id, secret).await,
-            IpcMessage::ListPairedDevices => self.list_paired_devices(),
-            IpcMessage::Unpair { device } => self.unpair(&device).await,
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
             IpcMessage::InviteCreate {
                 network,
@@ -1026,7 +975,7 @@ impl MeshManager {
                     identity: my_identity,
                     ip: my_ip,
                     hostname: Some(new_hostname.to_string()),
-                    device_cert: self.current_device_cert(),
+                    device_cert: None,
                 };
                 if control::send_msg(&mut send, &msg).await.is_ok() {
                     sent += 1;
@@ -1083,16 +1032,6 @@ impl MeshManager {
         }
         Ok((handle.network_key, handle.invite_lock.clone()))
     }
-}
-
-fn guess_mime_type(filename: &str) -> String {
-    mime_guess::from_path(filename)
-        .first_or_octet_stream()
-        .to_string()
-}
-
-fn format_size(bytes: u64) -> String {
-    humansize::format_size(bytes, humansize::BINARY)
 }
 
 // Process bootstrap + IPC server live in `mesh/bootstrap.rs`; background tasks +
@@ -1177,8 +1116,6 @@ mod accept_handler_tests {
             firewall: SharedFirewall::new(crate::firewall::FirewallConfig::default()),
             hostname_table: dns::new_hostname_table(),
             reverse_table: dns::new_reverse_table(),
-            device_user_map: peers::DeviceUserMap::new(),
-            revocation: RevocationCache::new(),
             pruned_peers: Arc::new(DashSet::new()),
         }
     }

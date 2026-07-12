@@ -190,7 +190,6 @@ impl MeshManager {
             auto_accept_firewall: net_config
                 .map(|nc| nc.auto_accept_firewall)
                 .unwrap_or(false),
-            auto_accept_files: net_config.map(|nc| nc.auto_accept_files).unwrap_or(false),
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
             aliases: net_config.map(|nc| nc.aliases.clone()).unwrap_or_default(),
@@ -371,6 +370,66 @@ impl MeshManager {
     /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
     /// closes its own link to the target immediately. Refused on open networks
     /// (the target would auto-re-join) and against coordinators / self.
+    /// Resolve a peer argument (hostname — bare or `host.net.ray` — or a
+    /// short-id / endpoint-id prefix) to its endpoint id. Moved here from the
+    /// removed file-sharing module; backs `torpedo kick`.
+    pub(crate) async fn resolve_peer_name(&self, name: &str) -> Option<EndpointId> {
+        let suffix = format!(".{}", crate::DNS_DOMAIN);
+        let qualified = if name.ends_with(&suffix) {
+            name.to_string()
+        } else {
+            format!("{name}{suffix}")
+        };
+        if let Some((ip, _)) =
+            dns::resolve_name(&qualified, &suffix, &self.dns.hostname_table).await
+        {
+            // Try connected peers first
+            if let Some(route) = self.peers.lookup_v4(&ip) {
+                return Some(route.endpoint_id);
+            }
+            // Fall back to member list (peer may be offline or it's us)
+            for entry in self.networks.iter() {
+                let state = entry.value().state.read().unwrap();
+                if let Some(m) = state.members.all().iter().find(|m| m.ip == ip) {
+                    return Some(m.identity);
+                }
+            }
+        }
+        self.resolve_short_id_any_network(name)
+    }
+
+    /// Resolve a firewall `--peer` argument to a peer's endpoint id, accepting
+    /// far more forms than [`Self::resolve_peer_name`]: hostname (bare or
+    /// `host.net.ray`), mesh IPv4 (also for offline members, since the roster
+    /// stores v4), mesh IPv6 (connected peers only — the roster carries no v6),
+    /// or a short id / full endpoint id.
+    pub(crate) async fn resolve_peer_flexible(&self, name: &str) -> Option<EndpointId> {
+        // Hostname (Magic DNS) + short-id / endpoint-id-prefix fallback.
+        if let Some(id) = self.resolve_peer_name(name).await {
+            return Some(id);
+        }
+        // Mesh IP literal of a *connected* peer (fast path; also the only way to
+        // reach a peer by IPv6, since the roster carries no v6 address).
+        if let Ok(v4) = name.parse::<Ipv4Addr>()
+            && let Some(route) = self.peers.lookup_v4(&v4)
+        {
+            return Some(route.endpoint_id);
+        }
+        if let Ok(v6) = name.parse::<std::net::Ipv6Addr>()
+            && let Some(route) = self.peers.lookup_v6(&v6)
+        {
+            return Some(route.endpoint_id);
+        }
+        // Roster scan: an offline peer's mesh IPv4 or identity literal.
+        for entry in self.networks.iter() {
+            let state = entry.value().state.read().unwrap();
+            if let Some(id) = state.members.resolve_peer_literal(name) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
     pub(crate) async fn kick_member(&self, network: &str, peer: &str) -> IpcMessage {
         let (state, dht_notify, has_key, mode) = match self.networks.get(network) {
             Some(h) => {
@@ -400,9 +459,7 @@ impl MeshManager {
             };
         }
 
-        // Resolve the argument to a roster member. `resolve_peer_name` may hand
-        // back a transport id or a user identity; match either against the stored
-        // member key (which is the user identity for a paired peer).
+        // Resolve the argument to a roster member.
         let candidate = match self.resolve_peer_name(peer).await {
             Some(id) => id,
             None => {
@@ -411,14 +468,13 @@ impl MeshManager {
                 };
             }
         };
-        let candidate_user = self.device_user_map.resolve(&candidate);
         let (member_id, member_ip, is_coord, display) = {
             let s = state.read().unwrap();
             match s
                 .members
                 .all()
                 .into_iter()
-                .find(|m| m.identity == candidate || m.identity == candidate_user)
+                .find(|m| m.identity == candidate)
             {
                 Some(m) => (
                     m.identity,
@@ -549,7 +605,6 @@ impl MeshManager {
                 let name = net.name.clone();
                 let persisted_hostname = net.my_hostname.clone();
                 let net_auto_accept = net.auto_accept_firewall;
-                let net_auto_accept_files = net.auto_accept_files;
                 let net_pubkey = match &net.network_public_key {
                     Some(k) => k.to_string(),
                     None => {
@@ -567,7 +622,6 @@ impl MeshManager {
                             None,
                             None,
                             net_auto_accept,
-                            net_auto_accept_files,
                             false,
                         )
                         .await
@@ -594,7 +648,7 @@ impl MeshManager {
             let name = pending.name.clone();
             tokio::spawn(async move {
                 let _ = me
-                    .join_network(&key, name.as_deref(), None, None, None, false, false)
+                    .join_network(&key, name.as_deref(), None, None, None, false)
                     .await;
             });
         }

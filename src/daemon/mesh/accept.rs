@@ -152,45 +152,16 @@ impl CoordinatorAcceptState {
             _ => return,
         };
 
-        // Verify a device certificate if one is presented, and record the
-        // transport-key → user-identity binding so paired devices resolve.
-        if let Some(ref cert) = device_cert {
-            if !cert.verify() || cert.device_key != remote_id {
-                tracing::warn!(peer = %remote_id.fmt_short(), "invalid device certificate");
-                return;
-            }
-            // Judge the cert against the generation floor (`torpedo unpair`). This one
-            // check covers every admission branch below — owner auto-admit,
-            // invite, live-approved, and open. A cert below the floor (a revoked
-            // device, or a stale sibling seen from a secondary) is rejected; our
-            // own stale-but-kept device is admitted and re-issued a fresh cert.
-            let (issuing, my_gen, revoked) =
-                cert_authority(self.ctx.identity.local_identity());
-            match revocation::cert_decision(
-                cert,
-                issuing,
-                my_gen,
-                &|d| revoked.contains(d),
-                &self.ctx.revocation,
-            ) {
-                revocation::CertDecision::Reject => {
-                    tracing::warn!(peer = %remote_id.fmt_short(), "rejecting revoked/stale device certificate");
-                    return;
-                }
-                revocation::CertDecision::Reissue => {
-                    // Our own kept device that was offline during a rotation:
-                    // push it a fresh cert at our current generation, then admit.
-                    if let Ok(secret) = crate::identity::load_or_create() {
-                        let fresh =
-                            control::DeviceCert::create(&secret, &cert.device_key, my_gen);
-                        push_cert_refresh(&conn, fresh).await;
-                    }
-                }
-                revocation::CertDecision::Admit => {}
-            }
-            self.ctx
-                .device_user_map
-                .insert(remote_id, cert.user_identity);
+        // Verify a device certificate if one is presented (full-torpedo peers
+        // with paired devices send one; tetron itself never does). A verified
+        // cert is stored in the roster verbatim so full peers keep their
+        // multi-device metadata; tetron does no revocation-floor checking or
+        // reissue (pairing was removed by MINIMAL-004).
+        if let Some(ref cert) = device_cert
+            && (!cert.verify() || cert.device_key != remote_id)
+        {
+            tracing::warn!(peer = %remote_id.fmt_short(), "invalid device certificate");
+            return;
         }
 
         // A peer pre-approved via `torpedo accept` is admitted directly.
@@ -669,11 +640,6 @@ impl MemberAcceptState {
         } else {
             return;
         };
-        if let Some(ref cert) = device_cert {
-            self.ctx
-                .device_user_map
-                .insert(transport_id, cert.user_identity);
-        }
         let _ = effective_user_id;
         let (is_member, is_approved) = {
             let s = self.state.read().unwrap();
@@ -812,10 +778,6 @@ impl ProtocolHandler for MeshProtocol {
 pub(crate) struct ProtocolRouter {
     blobs: BlobsProtocol,
     handlers: DashMap<Vec<u8>, Arc<MeshProtocol>>,
-    /// File-transfer + pairing state and their ALPN accept arms. The accept loop
-    /// delegates the `FILES_ALPN`/`PAIR_ALPN` arms to this; `MeshManager` holds
-    /// the same handle for the IPC-side file/pairing commands.
-    files: Arc<FileService>,
     /// In-flight `torpedo ping` probes, keyed by nonce. The control reader fires the
     /// oneshot when the matching `Pong` arrives so the ping handler can measure
     /// round-trip time. Cloned into both control readers.
@@ -823,11 +785,10 @@ pub(crate) struct ProtocolRouter {
 }
 
 impl ProtocolRouter {
-    pub(crate) fn new(blobs: BlobsProtocol, files: Arc<FileService>) -> Self {
+    pub(crate) fn new(blobs: BlobsProtocol) -> Self {
         Self {
             blobs,
             handlers: DashMap::new(),
-            files,
             pending_pongs: Arc::new(DashMap::new()),
         }
     }
@@ -844,8 +805,6 @@ impl ProtocolRouter {
     pub(crate) fn alpns(&self) -> Vec<Vec<u8>> {
         let mut alpns: Vec<Vec<u8>> = self.handlers.iter().map(|r| r.key().clone()).collect();
         alpns.push(iroh_blobs::protocol::ALPN.to_vec());
-        alpns.push(transport::FILES_ALPN.to_vec());
-        alpns.push(PAIR_ALPN.to_vec());
         alpns
     }
 
@@ -875,8 +834,6 @@ impl ProtocolRouter {
                                 a if a == iroh_blobs::protocol::ALPN => {
                                     let _ = router.blobs.clone().accept(conn).await;
                                 }
-                                a if a == transport::FILES_ALPN => router.files.accept_file_offer(conn).await,
-                                a if a == PAIR_ALPN => router.files.accept_pair_request(conn).await,
                                 _ => {
                                     if let Some(handler) = router.handlers.get(&alpn).map(|r| r.clone()) {
                                         let _ = handler.accept(conn).await;

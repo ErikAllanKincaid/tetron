@@ -4,14 +4,12 @@
 #   ./tests/e2e.sh <scenario> [action]
 #
 # Scenarios:
-#   device-cert   3-peer device-cert / pairing test   (tests/e2e/device-cert)
 #   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
 #   apply         3-peer declarative `torpedo apply` deploy       (tests/e2e/apply)
 #   dns           2-peer Magic DNS resolution + resolv.conf takeover (tests/e2e/dns)
 #   reliability   4-peer full-mesh packet-loss test (ping + iperf3 UDP) (tests/e2e/reliability)
 #   restore-offline 3-peer member-restore-with-coordinator-offline test (tests/e2e/restore-offline)
-#   unpair        3-peer `torpedo unpair` device-cert revocation test (tests/e2e/unpair)
 #   bench         throughput / latency benchmark        (tests/bench)
 #
 # Actions:
@@ -28,14 +26,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage(){ sed -n '2,26p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
+usage(){ sed -n '2,24p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
 
 # scenario_meta <scenario> : set DIR / NAMES / LABELS for a scenario, or return 1.
 scenario_meta(){
   case "$1" in
-    device-cert) DIR="$ROOT/tests/e2e/device-cert"
-                 NAMES=(rayfish-e2e-a rayfish-e2e-b rayfish-e2e-c)
-                 LABELS=(srv-a srv-b srv-c) ;;
     firewall)    DIR="$ROOT/tests/e2e/firewall"
                  NAMES=(rayfish-fw-a rayfish-fw-b rayfish-fw-c)
                  LABELS=(srv-a srv-b srv-c) ;;
@@ -53,9 +48,6 @@ scenario_meta(){
                  LABELS=(srv-a srv-b srv-c srv-d) ;;
     restore-offline) DIR="$ROOT/tests/e2e/restore-offline"
                  NAMES=(rayfish-restore-a rayfish-restore-b rayfish-restore-c)
-                 LABELS=(srv-a srv-b srv-c) ;;
-    unpair)      DIR="$ROOT/tests/e2e/unpair"
-                 NAMES=(rayfish-unpair-a rayfish-unpair-b rayfish-unpair-c)
                  LABELS=(srv-a srv-b srv-c) ;;
     bench)       DIR="$ROOT/tests/bench"
                  NAMES=(rayfish-bench-a rayfish-bench-b)

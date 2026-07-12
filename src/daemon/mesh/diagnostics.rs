@@ -46,7 +46,6 @@ impl MeshManager {
             packets_tx: self.stats.packets_tx.get(),
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
-            pending_files: self.files.pending_files.lock().unwrap().len(),
             pending_networks,
         }
     }
@@ -122,28 +121,17 @@ impl MeshManager {
             .into_iter()
             .map(|(eid, _, conn)| (eid, conn))
             .collect();
-        // Our own user identity: the cert's user id on a paired device, else our
-        // own endpoint id (mirrors the `try_auto_accept_file` "own device" rule).
-        let own_user = self
-            .device_cert
-            .as_ref()
-            .map(|c| c.user_identity)
-            .unwrap_or(my_id);
         let peers = members
             .iter()
             .filter(|m| m.identity != my_id)
             .map(|m| {
                 let hostname = m.hostname.clone().or_else(|| lookup_hostname(m.ip));
                 let connection = connected.get(&m.identity).map(Self::gather_conn_info);
-                let user_id = self.device_user_map.resolve(&m.identity);
-                let user_identity = (user_id != m.identity).then_some(user_id);
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
                     ipv6: Some(derive_ipv6(&m.identity)),
                     hostname,
-                    user_identity,
-                    is_own_device: user_id == own_user,
                     connection,
                 }
             })
