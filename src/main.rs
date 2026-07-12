@@ -22,7 +22,7 @@ use cli::*;
 
 /// Full version string: the crate version plus the git short SHA stamped in by
 /// `build.rs` (e.g. `0.1.0 (abc12345)`). The SHA distinguishes nightly builds
-/// that share a crate version, and is what a tester quotes in a `torpedo report`.
+/// that share a crate version, and is what a tester quotes in a bug report.
 const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GIT_SHA"), ")");
 
 #[derive(Parser)]
@@ -132,8 +132,6 @@ pub(crate) enum Command {
     /// Show status of all networks (active + saved)
     #[command(visible_aliases = ["st", "ls"])]
     Status,
-    /// Collect diagnostics (logs + metrics) and open a pre-filled GitHub issue
-    Report,
     /// Run the daemon in the foreground (invoked by the system service)
     #[command(hide = true)]
     Daemon,
@@ -632,7 +630,7 @@ struct LogGuard {
 
 /// Build the tracing subscriber. The console layer (stdout) is always present;
 /// the daemon additionally gets a rolling daily file layer under [`logdir::log_dir`]
-/// so that `torpedo report` has on-disk logs to bundle.
+/// so daemon activity is diagnosable after the fact.
 /// The returned [`LogGuard`] must be kept alive for the lifetime of the process.
 fn init_tracing(to_file: bool) -> LogGuard {
     use tracing_subscriber::prelude::*;
@@ -712,7 +710,7 @@ fn init_tracing(to_file: bool) -> LogGuard {
 /// a dead subsystem (e.g. a stalled forwarding loop) is worse than a clean restart —
 /// and a live-but-broken process won't trip the service manager's restart. Aborting
 /// lets systemd/launchd restart from known-good state; peers then reconnect. The
-/// crash is captured (durably in `panic.log`) and bundled by `torpedo report`.
+/// crash is captured durably in `panic.log`.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -833,7 +831,6 @@ async fn main() -> Result<()> {
         Command::Kick { network, peer } => ipc_kick(&network, &peer).await,
         Command::Ephemeral { network, arg } => ipc_ephemeral(&network, &arg).await,
         Command::Status => ipc_status().await,
-        Command::Report => ipc_report().await,
         Command::Daemon => {
             check_root();
             install_panic_hook();

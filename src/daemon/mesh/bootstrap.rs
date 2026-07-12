@@ -222,7 +222,6 @@ async fn build_daemon(
         identity,
         peers,
         stats: stats.clone(),
-        start: Instant::now(),
         tun_tx,
         networks: Arc::new(DashMap::new()),
         shutdown_token: token.clone(),
@@ -233,7 +232,6 @@ async fn build_daemon(
                 tun_name: std::sync::Mutex::new(tun_name),
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
-        _metrics_server: std::sync::Mutex::new(None),
         files,
         connect,
         device_cert,
@@ -246,7 +244,7 @@ async fn build_daemon(
         promote_tx,
     });
 
-    // --- Accept loop (ALPN dispatch) + Prometheus metrics ---
+    // --- Accept loop (ALPN dispatch) ---
     protocol_router.spawn_accept_loop(daemon.endpoint.clone(), token.clone());
 
     // Auto-accept worker: evaluates each newly-queued file offer for own-device
@@ -280,42 +278,8 @@ async fn build_daemon(
     if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
         spawn_revocation_poller(daemon.clone(), pkarr_client, token.clone());
     }
-    let metrics_server =
-        spawn_metrics_server(stats, daemon.peers.clone(), &daemon.endpoint, token).await;
-    // Keep the metrics-server guard alive for the daemon's whole lifetime.
-    *daemon._metrics_server.lock().unwrap() = metrics_server;
-
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
     Ok(daemon)
-}
-
-/// Register torpedo counters, per-peer gauges, and iroh endpoint metrics, then
-/// start the Prometheus HTTP endpoint on `:9090`. The returned guard must be
-/// kept alive for the process lifetime; `None` means metrics export is disabled.
-async fn spawn_metrics_server(
-    stats: Arc<ForwardMetrics>,
-    peers: PeerTable,
-    endpoint: &Endpoint,
-    token: CancellationToken,
-) -> Option<iroh_metrics::service::MetricsServer> {
-    let mut registry = iroh_metrics::Registry::default();
-    registry.register(stats);
-    let peer_metrics = Arc::new(crate::stats::PeerMetrics::default());
-    registry.register(peer_metrics.clone());
-    peer_metrics.spawn_collector(peers, token);
-    registry.register_all(endpoint.metrics());
-
-    let metrics_addr: SocketAddr = ([0, 0, 0, 0], 9090).into();
-    match iroh_metrics::service::MetricsServer::spawn(metrics_addr, Arc::new(registry)).await {
-        Ok(server) => {
-            tracing::info!(addr = %server.local_addr(), "metrics server started");
-            Some(server)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to start metrics server (Prometheus export disabled)");
-            None
-        }
-    }
 }
 
 /// Bind the IPC Unix socket and serve client requests until the daemon-wide

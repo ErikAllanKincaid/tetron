@@ -37,9 +37,9 @@
 
 use bytes::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
-use std::net::{Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::net::Ipv4Addr;
+use std::path::PathBuf;
+
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -358,8 +358,6 @@ pub struct MeshManager {
     identity: IrohIdentityProvider,
     peers: PeerTable,
     stats: Arc<ForwardMetrics>,
-    /// When the daemon process started, used for uptime in diagnostics.
-    start: Instant,
     /// Sender half of the current TUN write channel, in a swappable cell.
     /// [`DaemonState::attach_tun`] creates a fresh channel on every attach and
     /// stores the new sender here, so incoming send-sites (peer readers, DNS
@@ -388,9 +386,6 @@ pub struct MeshManager {
     /// headless builder can construct the daemon and hand the receiver back to
     /// [`run_daemon`] afterwards.
     promote_rx: std::sync::Mutex<Option<mpsc::Receiver<String>>>,
-    /// Prometheus metrics-server guard. Kept alive for the daemon's whole lifetime
-    /// (dropping it stops the export); `None` if the server failed to bind.
-    _metrics_server: std::sync::Mutex<Option<iroh_metrics::service::MetricsServer>>,
     /// File-transfer + pairing state and ALPN accept arms (see [`FileService`]).
     /// Shared with [`ProtocolRouter`], which runs the accept arms.
     files: Arc<FileService>,
@@ -694,7 +689,6 @@ impl MeshManager {
         if matches!(
             req,
             IpcMessage::Status
-                | IpcMessage::Report
                 | IpcMessage::FirewallShow
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
@@ -825,7 +819,6 @@ impl MeshManager {
             }
             IpcMessage::GetEphemeral { network } => self.get_ephemeral(&network),
             IpcMessage::Status => self.status(),
-            IpcMessage::Report => self.build_report(peer_cred),
             IpcMessage::Up { hostname } => self.activate(hostname).await,
             IpcMessage::Down => self.deactivate().await,
             IpcMessage::Shutdown => {
@@ -1124,67 +1117,6 @@ fn format_size(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::BINARY)
 }
 
-/// Entry point for `torpedo daemon`. Builds the always-on infrastructure, enters
-/// the active VPN state, then serves IPC until shutdown. The heavy lifting is
-/// delegated to [`build_daemon`] (construction) and [`serve_ipc`] (the request
-/// loop); see the module docs for the infrastructure-vs-active-state split.
-/// Read the most recent rolling log files from [`crate::logdir::log_dir`],
-/// newest first, capped at ~3 MB total so report bundles stay small. Returns
-/// `(archive_name, bytes)` entries placed under `logs/` in the tarball.
-fn collect_recent_logs() -> Vec<(String, Vec<u8>)> {
-    const MAX_TOTAL: u64 = 3 * 1024 * 1024;
-
-    let dir = crate::logdir::log_dir();
-    let mut entries: Vec<PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("torpedo.log") || n == "panic.log")
-            })
-            .collect(),
-        Err(_) => return Vec::new(),
-    };
-    // Daily rotation appends a date suffix, so lexical order is chronological;
-    // take the newest files first.
-    entries.sort();
-    entries.reverse();
-
-    let mut out = Vec::new();
-    let mut total = 0u64;
-    for path in entries {
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        total += bytes.len() as u64;
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            out.push((format!("logs/{name}"), bytes));
-        }
-        if total >= MAX_TOTAL {
-            break;
-        }
-    }
-    out
-}
-
-/// Write `files` as a gzipped tar archive at `path`. Each entry is `(name, bytes)`.
-fn write_bundle(path: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
-    let file = File::create(path)?;
-    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut builder = tar::Builder::new(enc);
-    for (name, data) in files {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(0o644);
-        // `append_data` sets the path and recomputes the checksum.
-        builder.append_data(&mut header, name, data.as_slice())?;
-    }
-    builder.into_inner()?.finish()?;
-    Ok(())
-}
-
 // Process bootstrap + IPC server live in `mesh/bootstrap.rs`; background tasks +
 // roster reconvergence in `mesh/background.rs`.
 
@@ -1225,45 +1157,6 @@ async fn broadcast_member_sync(peers: &PeerTable, exclude_ip: Option<Ipv4Addr>) 
 async fn broadcast_control_msg(peers: &PeerTable, msg: &ControlMsg) {
     for (_ip, conn) in peers.all_connections() {
         let _ = open_and_send(&conn, msg).await;
-    }
-}
-
-#[cfg(test)]
-mod report_tests {
-    use super::{collect_recent_logs, write_bundle};
-
-    #[test]
-    fn test_write_bundle_is_valid_targz() {
-        let dir = std::env::temp_dir().join(format!("rayfish-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("bundle.tgz");
-        let files = vec![
-            ("sysinfo.txt".to_string(), b"rayfish 0.1.0\n".to_vec()),
-            (
-                "logs/torpedo.log.2026-06-23".to_string(),
-                b"hello log\n".to_vec(),
-            ),
-        ];
-        write_bundle(&path, &files).unwrap();
-
-        // Re-read it back through the gzip+tar decoders to prove it's well-formed.
-        let f = std::fs::File::open(&path).unwrap();
-        let dec = flate2::read::GzDecoder::new(f);
-        let mut archive = tar::Archive::new(dec);
-        let mut names: Vec<String> = archive
-            .entries()
-            .unwrap()
-            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, vec!["logs/torpedo.log.2026-06-23", "sysinfo.txt"]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_collect_recent_logs_missing_dir_is_empty() {
-        // The log dir may not exist in CI / non-root test runs; must not panic.
-        let _ = collect_recent_logs();
     }
 }
 

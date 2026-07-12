@@ -1,5 +1,5 @@
 //! CLI status & diagnostics output plus shared presentation helpers
-//! (`table`, `print_error`, …): status, down, report, set-hostname.
+//! (`table`, `print_error`, …): status, down, set-hostname.
 
 use std::collections::HashMap;
 
@@ -487,62 +487,6 @@ pub(crate) async fn ipc_down() -> Result<()> {
     Ok(())
 }
 
-/// Base repository for `torpedo report` (RENAME-009): the fork's own tracker, so
-/// diagnostics bundles open an issue here rather than on upstream rayfish. Swap
-/// this for a managed upload endpoint once the diagnostics service exists; the
-/// rest of the flow stays the same.
-pub(crate) const REPORT_REPO_URL: &str = "https://github.com/ErikAllanKincaid/torpedo";
-
-/// Ask the daemon to build a diagnostic bundle, then open a pre-filled GitHub
-/// issue so the user can attach it. The bundle is built daemon-side (logs are
-/// root-owned) and written to a path owned by the invoking user.
-pub(crate) async fn ipc_report() -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    ipc::send(&mut stream, ipc::IpcMessage::Report).await?;
-    let resp = ipc::recv(&mut stream).await?;
-    match resp {
-        ipc::IpcMessage::ReportBundle {
-            path,
-            issue_title,
-            issue_body,
-        } => {
-            println!("Diagnostic bundle written to:\n  {path}\n");
-            println!(
-                "Review it before sharing — it contains your logs, virtual IPs, and peer IDs,\n\
-                 but no private keys."
-            );
-            let url = url::Url::parse_with_params(
-                &format!("{REPORT_REPO_URL}/issues/new"),
-                &[
-                    ("title", issue_title.as_str()),
-                    ("body", issue_body.as_str()),
-                ],
-            )?;
-            println!("\nOpening a pre-filled GitHub issue — attach the bundle above.");
-            if !open_url(url.as_str()) {
-                println!("\nCouldn't open a browser. Open this URL manually:\n{url}");
-            }
-        }
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
-        other => eprintln!("Unexpected response: {:?}", other),
-    }
-    Ok(())
-}
-
-/// Best-effort: open `url` in the user's default browser. Returns false if no
-/// opener is available (e.g. headless), so the caller can print it instead.
-pub(crate) fn open_url(url: &str) -> bool {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(opener)
-        .arg(url)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 pub(crate) async fn ipc_set_hostname(network: &str, hostname: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;

@@ -1,4 +1,4 @@
-//! Packet and byte counters using iroh-metrics with Prometheus-compatible export.
+//! Packet and byte counters for the forwarding data path (iroh-metrics counters).
 //!
 //! Replaces hand-rolled atomics with `iroh_metrics::Counter` and labeled drop
 //! counters via `Family<DropLabels, Counter>`. A background logger prints
@@ -7,11 +7,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iroh_metrics::{Counter, EncodeLabelSet, EncodeLabelValue, Family, Gauge, MetricsGroup};
-use serde::Serialize;
+use iroh_metrics::{Counter, EncodeLabelSet, EncodeLabelValue, Family, MetricsGroup};
 use tokio_util::sync::CancellationToken;
 
-use crate::peers::PeerTable;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelValue)]
 pub enum DropReason {
@@ -48,18 +46,6 @@ pub struct DropLabels {
     pub reason: DropReason,
 }
 
-/// A point-in-time copy of the forwarding counters, suitable for diagnostics
-/// bundles. Serializable so it can be rendered or embedded as needed.
-#[derive(Debug, Clone, Serialize)]
-pub struct MetricsSnapshot {
-    pub packets_rx: u64,
-    pub packets_tx: u64,
-    pub bytes_rx: u64,
-    pub bytes_tx: u64,
-    /// `(reason, count)` for each drop reason, in `DropReason::ALL` order.
-    pub drops: Vec<(String, u64)>,
-    pub uptime_secs: u64,
-}
 
 #[derive(Debug, MetricsGroup)]
 #[metrics(name = "torpedo", default)]
@@ -108,23 +94,6 @@ impl ForwardMetrics {
         DropReason::ALL.iter().map(|r| self.drop_count(*r)).sum()
     }
 
-    /// Read the current counters into a serializable snapshot for diagnostics
-    /// (`torpedo report`) and ad-hoc inspection. `start` is the daemon start time,
-    /// used to compute uptime.
-    pub fn snapshot(&self, start: Instant) -> MetricsSnapshot {
-        let drops = DropReason::ALL
-            .iter()
-            .map(|r| (format!("{r:?}"), self.drop_count(*r)))
-            .collect();
-        MetricsSnapshot {
-            packets_rx: self.packets_rx.get(),
-            packets_tx: self.packets_tx.get(),
-            bytes_rx: self.bytes_rx.get(),
-            bytes_tx: self.bytes_tx.get(),
-            drops,
-            uptime_secs: start.elapsed().as_secs(),
-        }
-    }
 
     pub fn spawn_logger(self: &Arc<Self>, token: CancellationToken) {
         let stats = self.clone();
@@ -181,93 +150,9 @@ impl ForwardMetrics {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelSet)]
-pub struct PeerLabels {
-    pub peer: String,
-}
-
-#[derive(Debug, MetricsGroup)]
-#[metrics(name = "torpedo_peer", default)]
-pub struct PeerMetrics {
-    /// RTT to peer in microseconds
-    pub rtt_us: Family<PeerLabels, Gauge>,
-    /// Bytes sent to peer (from iroh connection stats)
-    pub bytes_tx: Family<PeerLabels, Gauge>,
-    /// Bytes received from peer (from iroh connection stats)
-    pub bytes_rx: Family<PeerLabels, Gauge>,
-    /// Packets lost to peer
-    pub lost_packets: Family<PeerLabels, Gauge>,
-}
-
-impl PeerMetrics {
-    pub fn spawn_collector(self: &Arc<Self>, peers: PeerTable, token: CancellationToken) {
-        let metrics = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                        for (ip, conn) in peers.all_connections() {
-                            let label = PeerLabels {
-                                peer: ip.to_string(),
-                            };
-
-                            let paths = conn.paths();
-                            if let Some(path) = paths.iter().find(|p| p.is_selected()) {
-                                let rtt_us = path.rtt().as_micros() as i64;
-                                metrics.rtt_us.get_or_create(&label).set(rtt_us);
-                            }
-
-                            let stats = conn.stats();
-                            metrics.bytes_tx.get_or_create(&label).set(stats.udp_tx.bytes as i64);
-                            metrics.bytes_rx.get_or_create(&label).set(stats.udp_rx.bytes as i64);
-                            metrics.lost_packets.get_or_create(&label).set(stats.lost_packets as i64);
-                        }
-                    }
-                    _ = token.cancelled() => return,
-                }
-            }
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-
-    // RENAME-015: the Prometheus families must export under the `torpedo`/
-    // `torpedo_peer` prefixes (renamed from `rayfish`/`rayfish_peer`), and no
-    // `rayfish`-named series may leak onto the :9090 endpoint. `name = "..."`
-    // in the derive drives the exported prefix, so this locks it end-to-end
-    // (the compile-time constant is not observable any other way).
-    #[test]
-    fn metrics_export_under_torpedo_prefix() {
-        let mut registry = iroh_metrics::Registry::default();
-        registry.register(Arc::new(ForwardMetrics::default()));
-        // PeerMetrics families are labeled, so they export no series until a
-        // sample exists — record one so the peer family actually renders.
-        let peer = Arc::new(PeerMetrics::default());
-        peer.rtt_us
-            .get_or_create(&PeerLabels {
-                peer: "testpeer".to_string(),
-            })
-            .set(42);
-        registry.register(peer);
-        let mut out = String::new();
-        registry.encode_openmetrics_to_writer(&mut out).unwrap();
-        assert!(
-            out.contains("torpedo_packets_rx"),
-            "ForwardMetrics must export under the torpedo_ prefix:\n{out}"
-        );
-        assert!(
-            out.contains("torpedo_peer_"),
-            "PeerMetrics must export under the torpedo_peer_ prefix:\n{out}"
-        );
-        assert!(
-            !out.contains("rayfish"),
-            "no rayfish-named metric may reach the :9090 endpoint:\n{out}"
-        );
-    }
 
     #[test]
     fn test_record_rx() {
@@ -315,25 +200,4 @@ mod tests {
         assert_eq!(stats.total_drops(), 3);
     }
 
-    #[test]
-    fn test_snapshot() {
-        let stats = ForwardMetrics::default();
-        stats.record_rx(100);
-        stats.record_tx(50);
-        stats.record_drop(DropReason::NoPeer);
-
-        let snap = stats.snapshot(Instant::now());
-        assert_eq!(snap.packets_rx, 1);
-        assert_eq!(snap.bytes_rx, 100);
-        assert_eq!(snap.packets_tx, 1);
-        assert_eq!(snap.bytes_tx, 50);
-        // One entry per drop reason, in DropReason::ALL order.
-        assert_eq!(snap.drops.len(), DropReason::ALL.len());
-        let no_peer = snap
-            .drops
-            .iter()
-            .find(|(r, _)| r == "NoPeer")
-            .map(|(_, c)| *c);
-        assert_eq!(no_peer, Some(1));
-    }
 }

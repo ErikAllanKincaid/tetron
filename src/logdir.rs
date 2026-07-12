@@ -1,7 +1,7 @@
 //! Filesystem location for the daemon's rolling log files.
 //!
-//! The daemon runs as root, so these files are root-owned. `torpedo report` reads
-//! them daemon-side (it already has access) and bundles them for the user.
+//! The daemon runs as root, so these files are root-owned; read them with
+//! `sudo` (or `journalctl -u torpedo` for the service console log).
 
 use std::path::PathBuf;
 

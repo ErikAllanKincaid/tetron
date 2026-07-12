@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Observability export (MINIMAL-009)**: the Prometheus metrics endpoint on
+  `:9090` and the `torpedo report` diagnostic-bundle command are gone. The
+  daemon still logs to rolling files under the log directory, and traffic
+  counters still appear in `torpedo status`.
 - **Peripheral surfaces (MINIMAL-008)**: the `otel` cargo feature (OTLP span
   export), `torpedo open` deep links (the `torpedo://` scheme), and the
   append-only peer audit log (`audit.log`) are gone.
