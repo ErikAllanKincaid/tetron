@@ -1,9 +1,10 @@
-//! CLI service-management handlers: up, install, start/stop/restart, operator.
+//! CLI service-management handlers: up, install, start/stop/restart, uninstall,
+//! operator, plus small process/daemon-reachability helpers.
 
 use crate::*;
 use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Create the `torpedo` system group if it doesn't already exist (Linux).
 /// Best-effort: the daemon's config writer falls back to `root:root` ownership
@@ -24,21 +25,20 @@ pub(crate) fn ensure_torpedo_group() {
     }
 }
 
-/// Write the system service unit/plist, substituting the path of the binary
-/// currently running so the service execs the same `ray` the user invoked
-/// (rather than a hardcoded /usr/local/bin/torpedo). Idempotent — safe to call on
-/// every `torpedo up`, keeping the exec path fresh if the binary moves.
 /// Strip the `" (deleted)"` marker Linux appends to `/proc/self/exe` once the
-/// running binary's inode has been unlinked. `torpedo update` calls `self_replace`,
-/// which unlinks the running binary, and *then* rewrites the service unit from
-/// the running exe path. Without this strip the unit would get
+/// running binary's inode has been unlinked — e.g. after a manual upgrade that
+/// replaces the installed binary while the old one is still running. Without
+/// this strip a subsequent unit rewrite would get
 /// `ExecStart=/usr/local/bin/torpedo (deleted) daemon` and the service would
-/// crash-loop with `unrecognized subcommand '(deleted)'`, bricking remote
-/// self-update.
+/// crash-loop with `unrecognized subcommand '(deleted)'`.
 pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
     path.strip_suffix(" (deleted)").unwrap_or(path)
 }
 
+/// Write the system service unit/plist, substituting the path of the binary
+/// currently running so the service execs the same binary the user invoked
+/// (rather than a hardcoded /usr/local/bin/torpedo). Idempotent — safe to call on
+/// every `torpedo up`, keeping the exec path fresh if the binary moves.
 #[allow(unused_variables)]
 pub(crate) fn ensure_service_installed() -> Result<()> {
     let exe = std::env::current_exe()
@@ -208,27 +208,8 @@ pub(crate) fn require_root() -> Result<()> {
 
 /// `torpedo install`: install the system service if needed (or refresh an existing
 /// install), then start it and verify the daemon comes up. Requires root.
-///
-/// `--auto-update` opts this node into automatic stable updates: it is persisted
-/// to `settings.toml` *before* the (re)start so the freshly launched daemon
-/// reads it at boot and spawns the periodic update task.
-pub(crate) async fn cmd_install(auto_update: bool) -> Result<()> {
+pub(crate) async fn cmd_install() -> Result<()> {
     require_root()?;
-    if auto_update {
-        // Neutralized on this fork (UPGRADE-001): the flag has no effect, so warn
-        // and do not persist it rather than silently enabling a dead setting.
-        if rayfish::update::SELF_UPDATE_ENABLED {
-            let mut cfg = config::load()?;
-            if !cfg.auto_update {
-                cfg.auto_update = true;
-                config::save_settings(&cfg)?;
-            }
-            println!("automatic stable updates enabled for this node");
-        } else {
-            println!("{}", rayfish::update::SELF_UPDATE_DISABLED_MSG);
-            println!("(--auto-update has no effect on this fork; installing without it)");
-        }
-    }
     install_and_start_service(None).await
 }
 
@@ -247,8 +228,8 @@ pub(crate) fn service_unit_exists() -> bool {
 }
 
 /// Restart the installed service via the OS service manager (without rewriting
-/// the unit file) and wait for the daemon to accept IPC again. Shared by
-/// `torpedo restart` and `torpedo update`; mirrors the `up`/`install` diagnostics.
+/// the unit file) and wait for the daemon to accept IPC again. Backs
+/// `torpedo restart`; mirrors the `up`/`install` diagnostics.
 #[allow(unreachable_code)]
 pub(crate) async fn restart_service_and_wait() -> Result<()> {
     #[cfg(target_os = "linux")]
@@ -345,5 +326,108 @@ pub(crate) async fn cmd_start() -> Result<()> {
             print_daemon_log_tail();
             std::process::exit(1);
         }
+    }
+}
+
+/// How long to wait for a freshly (re)started daemon to accept IPC before
+/// declaring it unreachable. Must comfortably exceed the service manager's
+/// stop-then-relaunch latency (SIGTERM → exit → respawn); the old 8s value was
+/// shorter than an ungraceful shutdown could take, so a healthy daemon was
+/// reported as "never became reachable" and a re-run would kill the one that
+/// had just come up.
+pub(crate) const DAEMON_REACHABLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll the IPC socket until the daemon answers or the deadline passes.
+pub(crate) async fn wait_for_daemon(timeout: Duration) -> Option<ipc::IpcFramed> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(stream) = ipc::connect().await {
+            return Some(stream);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Print the last few lines of the daemon log so a failed startup is diagnosable.
+pub(crate) fn print_daemon_log_tail() {
+    #[cfg(target_os = "macos")]
+    {
+        let path = "/var/log/torpedo.log";
+        match std::fs::read_to_string(path) {
+            Ok(contents) => {
+                let tail: Vec<&str> = contents.lines().rev().take(15).collect();
+                if tail.is_empty() {
+                    eprintln!("\n(daemon log {path} is empty)");
+                } else {
+                    eprintln!("\nLast lines of {path}:");
+                    for line in tail.into_iter().rev() {
+                        eprintln!("  {line}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("\n(could not read daemon log {path}: {e})"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("\nRecent daemon log (journalctl -u torpedo):");
+        run_cmd("journalctl", &["-u", "torpedo", "-n", "15", "--no-pager"]);
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn run_cmd(program: &str, args: &[&str]) {
+    match Command::new(program).args(args).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("warning: `{program}` exited with {status}"),
+        Err(e) => eprintln!("warning: failed to run `{program}`: {e}"),
+    }
+}
+
+/// Run a command, ignoring its exit status (used for best-effort teardown).
+#[allow(dead_code)]
+pub(crate) fn run_cmd_quiet(program: &str, args: &[&str]) {
+    let _ = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+pub(crate) fn cmd_uninstall_service() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = Path::new("/etc/systemd/system/torpedo.service");
+        if path.exists() {
+            run_cmd("systemctl", &["disable", "--now", "torpedo"]);
+            std::fs::remove_file(path)?;
+            run_cmd("systemctl", &["daemon-reload"]);
+            println!("Removed systemd service.");
+        } else {
+            println!("Service not installed.");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let path = Path::new("/Library/LaunchDaemons/com.torpedo.vpn.plist");
+        if path.exists() {
+            run_cmd("launchctl", &["unload", "-w", &path.to_string_lossy()]);
+            std::fs::remove_file(path)?;
+            println!("Removed launchd daemon.");
+        } else {
+            println!("Service not installed.");
+        }
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("service uninstallation not supported on this platform");
     }
 }

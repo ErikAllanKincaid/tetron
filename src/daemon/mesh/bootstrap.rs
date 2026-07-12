@@ -56,23 +56,13 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         .take()
         .expect("promote_rx present after build");
 
-    // Opt-in automatic updates: a single daemon-wide task that periodically
-    // checks for a newer stable release and swaps + restarts onto it. Desktop-only
-    // (the self-replacing updater is not built into the Android lib). Neutralized
-    // on this fork via SELF_UPDATE_ENABLED (UPGRADE-001), so the task is never
-    // spawned even if a stale config still has auto_update set.
-    #[cfg(feature = "desktop")]
-    if daemon.auto_update && crate::update::SELF_UPDATE_ENABLED {
-        spawn_auto_update(daemon.shutdown_token.clone());
-    }
-
     let result = serve_ipc(&daemon, promote_rx, token).await;
 
     // Close the iroh endpoint before returning. Dropping it on return logs
     // "Endpoint dropped without calling `Endpoint::close`. Aborting
     // ungracefully." and can leave the process lingering until the service
     // manager escalates to SIGKILL — which delays the relaunch on
-    // `torpedo restart`/`torpedo update` past the client's reachability probe. Closing
+    // `torpedo restart` past the client's reachability probe. Closing
     // it here lets QUIC connections terminate cleanly and the process exit
     // promptly so the new daemon comes up fast.
     daemon.endpoint.close().await;
@@ -246,7 +236,6 @@ async fn build_daemon(
         files.clone(),
         connect.clone(),
     ));
-    let auto_update = app_config.auto_update;
     // Promotion channel: a co-coordinator's control reader signals the main
     // daemon loop to swap in the coordinator accept handler on `AdminGrant`.
     let (promote_tx, promote_rx) = mpsc::channel::<String>(16);
@@ -264,7 +253,6 @@ async fn build_daemon(
         protocol_router: protocol_router.clone(),
         dns: DnsManager::new(hostname_table, reverse_table, dns_resolver.clone()),
         mdns_enabled,
-        auto_update,
         tun_name: std::sync::Mutex::new(tun_name),
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
@@ -497,101 +485,3 @@ fn spawn_file_auto_accept(
     })
 }
 
-/// First auto-update check runs ~5 min after boot (jittered), then every 6h.
-#[cfg(feature = "desktop")]
-const AUTO_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(300);
-#[cfg(feature = "desktop")]
-const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-/// Restart-loop guard: refuse a repeat of the same target inside this window.
-#[cfg(feature = "desktop")]
-const AUTO_UPDATE_BACKOFF_SECS: i64 = 24 * 60 * 60;
-
-/// Opt-in automatic updates: a single daemon-wide task that periodically checks
-/// GitHub for a newer stable release and, when found, swaps the binary and
-/// restarts the service onto it. All errors are logged and swallowed so the task
-/// never crashes the daemon.
-#[cfg(feature = "desktop")]
-fn spawn_auto_update(token: CancellationToken) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        // Jitter each tick so a fleet upgraded together doesn't hit the GitHub
-        // API in lockstep (anonymous limit is 60/hr per IP).
-        let first = AUTO_UPDATE_INITIAL_DELAY + Duration::from_secs(rand::random::<u64>() % 300);
-        tokio::select! {
-            _ = token.cancelled() => return,
-            _ = tokio::time::sleep(first) => {}
-        }
-        loop {
-            if let Err(e) = auto_update_once().await {
-                tracing::warn!(error = %e, "auto-update check failed");
-            }
-            let next = AUTO_UPDATE_INTERVAL + Duration::from_secs(rand::random::<u64>() % 300);
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = tokio::time::sleep(next) => {}
-            }
-        }
-    })
-}
-
-/// One auto-update cycle: check for a newer stable release and, if found and not
-/// backed off, swap the binary and trigger a self-restart. `Ok(())` means nothing
-/// needed doing (or the swap+restart was scheduled — the daemon is torn down and
-/// relaunched onto the new binary shortly after).
-#[cfg(feature = "desktop")]
-async fn auto_update_once() -> Result<()> {
-    let current = env!("CARGO_PKG_VERSION");
-    let asset = crate::update::release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
-    let client = crate::update::build_http_client()?;
-    let token = crate::update::github_token();
-
-    let release = crate::update::resolve_stable_release(&client, &token).await?;
-    let tag = release.tag_name.clone();
-    let latest = crate::update::normalize_version(&tag).to_string();
-    if !crate::update::version_is_newer(&latest, current) {
-        tracing::debug!(current, latest = %latest, "auto-update: already on latest stable");
-        return Ok(());
-    }
-
-    // Restart-loop guard: refuse a repeat of the same target inside the backoff
-    // window so a bad build that keeps mis-reporting its version can't tight-loop
-    // download + restart.
-    let mut cfg = config::load()?;
-    let now = unix_now();
-    if !crate::update::should_attempt_target(
-        &tag,
-        cfg.auto_update_last_target.as_deref(),
-        cfg.auto_update_last_attempt,
-        now,
-        AUTO_UPDATE_BACKOFF_SECS,
-    ) {
-        tracing::warn!(target = %tag, "auto-update: recently attempted this target, backing off");
-        return Ok(());
-    }
-
-    // Record the attempt *before* swapping so a crash mid-swap still counts
-    // against the backoff; it survives the restart via settings.toml.
-    cfg.auto_update_last_target = Some(tag.clone());
-    cfg.auto_update_last_attempt = Some(now);
-    if let Err(e) = config::save_settings(&cfg) {
-        tracing::warn!(error = %e, "auto-update: failed to persist attempt marker");
-    }
-
-    tracing::info!(current, target = %tag, "auto-update: found newer stable release, swapping");
-    let expected = crate::update::fetch_checksum(&client, &tag, &asset).await?;
-    let bin_url = crate::update::asset_download_url(&tag, &asset);
-    crate::update::download_and_swap(&client, &bin_url, &expected, &asset).await?;
-
-    tracing::info!(target = %tag, "auto-update: binary swapped, restarting service onto it");
-    crate::update::trigger_detached_restart();
-    Ok(())
-}
-
-/// Current unix time in whole seconds (best-effort; 0 before the epoch, which
-/// never happens in practice).
-#[cfg(feature = "desktop")]
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}

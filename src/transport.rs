@@ -241,7 +241,7 @@ pub async fn connect_to_peer_with_alpn(
         Err(e) if is_alpn_mismatch(&e.to_string()) => {
             return Err(e).context(
                 "no shared protocol with peer — it may be running an incompatible \
-                 torpedo version (run `torpedo update`)",
+                 torpedo version (upgrade the older node)",
             );
         }
         Err(e) => return Err(e).context("failed to connect to peer"),

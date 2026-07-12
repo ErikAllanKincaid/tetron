@@ -134,7 +134,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
         ipc::IpcMessage::StatusResponse {
             endpoint_id,
             mdns_enabled,
-            auto_update,
             active,
             contact_id,
             daemon_version,
@@ -151,7 +150,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 print_json(&serde_json::json!({
                     "endpoint": endpoint_id.to_string(),
                     "mdns": mdns_enabled,
-                    "auto_update": auto_update,
                     "active": active,
                     "contact_id": contact_id,
                     "daemon_version": daemon_version,
@@ -179,24 +177,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
             } else {
                 format!("{} {}", style::label("mDNS"), style::faint("off"))
             };
-            // Only surface auto-update in the header when it is on (opt-in), so the
-            // default line stays uncluttered.
-            let auto = if auto_update {
-                format!(
-                    "      {} {}",
-                    style::label("auto-update"),
-                    style::green("on")
-                )
-            } else {
-                String::new()
-            };
             println!();
             println!(
-                "  {}  {}      {}{}      {} {}",
+                "  {}  {}      {}      {} {}",
                 style::bold("torpedo"),
                 state,
                 mdns,
-                auto,
                 style::label("endpoint"),
                 style::value(&endpoint_id.fmt_short().to_string()),
             );
@@ -237,10 +223,10 @@ pub(crate) async fn ipc_status() -> Result<()> {
 
             print_pending_summary(&networks, pending_files, pending_connects);
 
-            // Daemon/CLI version skew: after a self-update the CLI binary is new
-            // but the long-running daemon may still be the old one (e.g. its
-            // restart failed). Empty `daemon_version` means the daemon predates
-            // this field — say nothing rather than guess.
+            // Daemon/CLI version skew: after a manual binary upgrade the CLI is
+            // new but the long-running daemon may still be the old one (e.g. it
+            // was never restarted). Empty `daemon_version` means the daemon
+            // predates this field — say nothing rather than guess.
             let cli_version = env!("CARGO_PKG_VERSION");
             if !daemon_version.is_empty() && daemon_version != cli_version {
                 println!();
@@ -252,7 +238,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 );
                 println!(
                     "  {}",
-                    style::faint("run `sudo torpedo update` to restart the daemon onto the new binary"),
+                    style::faint("run `sudo torpedo restart` to restart the daemon onto the new binary"),
                 );
             }
             println!();

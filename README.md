@@ -73,7 +73,7 @@ Everything below is the *only* difference from upstream rayfish; every other fea
 - **Configurable overlay subnet.** Set it per-network with `create --subnet`, or node-wide with `torpedo config set subnet`. The value rides the network's signed group record so every peer agrees. Default **`10.88.0.0/16`** (was `100.64.0.0/10`), chosen to coexist with Tailscale.
 - **Overlap guard.** Instead of the old "refuse if anything uses `100.64`" preflight, torpedo refuses to start only if the *chosen* subnet overlaps an existing local network — so it never hijacks your routing, and never blocks the Tailscale case.
 - **Distinct identity.** Binary `torpedo`, service `torpedo.service`, config under `/etc/torpedo`, and every wire identifier (ALPNs `torpedo/…`, DHT records `_torpedo…`, mDNS, and the fixed forwardable UDP port **43737**) are renamed so torpedo can run alongside genuine rayfish without collision.
-- **Self-update disabled.** Upstream's self-updater pulls from rayfish's release repo; enabling it here would overwrite torpedo with an upstream build. It is neutralized — [upgrade manually](#upgrading).
+- **Self-update removed.** Upstream's self-updater pulls from rayfish's release repo; enabling it here would overwrite torpedo with an upstream build. tetron deletes the machinery entirely — [upgrade manually](#upgrading).
 - **Kept on purpose:** the `rayfish` relay / discovery-DNS presets (they name upstream's hosted servers; the default is iroh's neutral n0 infrastructure), and the `.ray` Magic-DNS domain, so names are still `host.network.ray`.
 
 See `spec/design_spec.py` for the tracked requirements and the full rationale (this fork is developed spec-first with [libspec](https://github.com/drhodes/libspec)).
@@ -148,7 +148,7 @@ sudo torpedo set-operator <user>              # authorize a user to run torpedo 
 
 ## Upgrading
 
-Self-update is disabled on this fork (see [What this fork changes](#what-this-fork-changes)), so upgrade by replacing the binary:
+There is no self-update (see [What this fork changes](#what-this-fork-changes)); upgrade by replacing the binary:
 
 ```bash
 git pull

@@ -20,7 +20,6 @@ mod open;
 mod pair;
 mod service;
 mod status;
-mod update;
 
 pub(crate) use alias::*;
 pub(crate) use connect::*;
@@ -32,4 +31,3 @@ pub(crate) use open::*;
 pub(crate) use pair::*;
 pub(crate) use service::*;
 pub(crate) use status::*;
-pub(crate) use update::*;

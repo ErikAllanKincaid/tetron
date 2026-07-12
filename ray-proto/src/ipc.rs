@@ -350,11 +350,6 @@ pub enum IpcMessage {
     StatusResponse {
         endpoint_id: EndpointId,
         mdns_enabled: bool,
-        /// Whether this node opted into automatic stable updates. Reflects the
-        /// running daemon's setting (which can differ from on-disk config until a
-        /// restart). Defaulted so an older CLI/daemon pair still deserializes.
-        #[serde(default)]
-        auto_update: bool,
         /// Whether the VPN is active (TUN up, networks connected) or on standby.
         active: bool,
         /// This node's contact id (`ray connect`), shown at the top of status.
@@ -362,9 +357,10 @@ pub enum IpcMessage {
         #[serde(default)]
         contact_id: Option<String>,
         /// The running daemon's compiled version (`CARGO_PKG_VERSION`). The CLI
-        /// compares it to its own version and hints `ray update` on a mismatch
-        /// — e.g. after a self-update where the daemon never restarted onto the
-        /// new binary. Empty when talking to a daemon predating this field.
+        /// compares it to its own version and hints a restart on a mismatch
+        /// — e.g. after a manual binary upgrade where the daemon never
+        /// restarted onto the new binary. Empty when talking to a daemon
+        /// predating this field.
         #[serde(default)]
         daemon_version: String,
         networks: Vec<NetworkStatus>,
@@ -996,7 +992,6 @@ mod tests {
         let resp = IpcMessage::StatusResponse {
             endpoint_id: ep_id,
             mdns_enabled: true,
-            auto_update: false,
             active: true,
             contact_id: Some("contact123".to_string()),
             daemon_version: "0.1.0".to_string(),

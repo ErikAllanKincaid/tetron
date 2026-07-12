@@ -378,10 +378,6 @@ pub struct MeshManager {
     /// Magic DNS naming tables, resolver, and OS-DNS configurator (see [`DnsManager`]).
     dns: DnsManager,
     mdns_enabled: bool,
-    /// Whether this node opted into automatic stable updates (`torpedo auto-update
-    /// on` / `torpedo install --auto-update`). Read at startup; when set, `run_daemon`
-    /// spawns the periodic update task. Echoed back in `torpedo status`.
-    auto_update: bool,
     /// Name of the OS TUN device (desktop) or a placeholder until a packet
     /// interface is attached. Interior-mutable because on embedders (mobile) the
     /// interface is attached after construction via [`MeshManager::attach_tun`],

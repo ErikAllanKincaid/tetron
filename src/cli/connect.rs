@@ -195,7 +195,7 @@ pub(crate) async fn ipc_ping(peer: &str, count: u32, interval: u64) -> Result<()
                     "  {}",
                     style::faint(
                         "no replies — the peer may be offline, firewalled, or on an \
-                         incompatible version (run torpedo update)"
+                         incompatible version"
                     )
                 );
             } else {

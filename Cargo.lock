@@ -4801,18 +4801,13 @@ dependencies = [
  "rand 0.10.1",
  "ratelimit",
  "ray-proto",
- "reqwest",
  "rmp-serde",
  "rpassword",
  "rtnetlink",
  "russh",
- "rustls",
- "self-replace",
- "semver",
  "serde",
  "serde_json",
  "serde_yml",
- "sha2 0.10.9",
  "simple-dns",
  "smol_str 0.3.6",
  "socket2 0.5.10",
@@ -5420,17 +5415,6 @@ checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "self-replace"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
-dependencies = [
- "fastrand",
- "tempfile",
- "windows-sys 0.52.0",
 ]
 
 [[package]]

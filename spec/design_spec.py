@@ -237,8 +237,10 @@ class TestsPass(Constraint):
 
 
 # --------------------------------------------------------------------------
-# Follow-up round: node subnet at boot (SUBNET-009/010) and self-update
-# neutralization (UPGRADE-001 / CON-006).
+# Follow-up round: node subnet at boot (SUBNET-009/010).
+# (UPGRADE-001 / CON-006 — the neutralized-not-deleted self-update and its
+# kill-switch gate — were RETIRED by MINIMAL-002: tetron deletes the
+# machinery outright, so absence replaces the gate.)
 # --------------------------------------------------------------------------
 
 class ConfigSetSubnet(Requirement):
@@ -272,36 +274,6 @@ class CreateUsesNodeSubnet(Requirement):
     never silently producing a network the node's single TUN cannot carry.
     """
     req_id = "SUBNET-010"
-
-
-class SelfUpdateNeutralized(Requirement):
-    """REQUIREMENT-ID: UPGRADE-001
-
-    The self-update path is neutralized, not deleted (keeps the diff small and
-    reversible for upstream rebases). Gated on a single switch
-    `update::SELF_UPDATE_ENABLED = false`: the daemon never spawns the
-    auto-update task, and `torpedo update`, `torpedo auto-update on`, and
-    `torpedo install --auto-update` refuse with a message pointing at manual
-    binary replacement — the refusal happens before any network call, so no
-    binary is ever fetched from the (upstream) REPO_SLUG. `torpedo version`
-    stays fully functional (offline). Upgrades are done by replacing
-    /usr/local/bin/torpedo and running `sudo torpedo restart`.
-    """
-    req_id = "UPGRADE-001"
-
-
-class SelfUpdateDisabled(Constraint):
-    """CONSTRAINT-ID: CON-006
-
-    The self-update kill switch stays off: update::SELF_UPDATE_ENABLED is
-    false, so no code path fetches or installs a binary from the upstream
-    release repo. Prevents an accidental re-enable that would overwrite the
-    torpedo binary with an upstream rayfish build.
-
-    ENFORCEMENT (reconcile.py): self_update.enabled is false.
-    """
-    constraint_id = "CON-006"
-    enforcement_logic = "{{ self_update.enabled == false }}"
 
 
 class DefaultSubnetSafe(Requirement):

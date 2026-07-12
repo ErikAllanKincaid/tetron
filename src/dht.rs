@@ -77,8 +77,8 @@ pub fn create_pkarr_client(ep: &Endpoint) -> Result<PkarrRelayClient> {
 /// publishing coordinator's mesh protocol version (`m,<v>` =
 /// [`transport::MESH_PROTOCOL_VERSION`]). The version lets a joiner detect an
 /// incompatible mesh protocol *before* dialing (where the versioned ALPN would
-/// otherwise reject it opaquely), so it can surface a precise "run torpedo update"
-/// error. The record is network-key-signed, so the version can't be spoofed.
+/// otherwise reject it opaquely), so it can surface a precise "incompatible
+/// version" error. The record is network-key-signed, so the version can't be spoofed.
 pub fn encode_network_record(
     key: &SecretKey,
     blob_hash: &blake3::Hash,

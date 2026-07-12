@@ -58,16 +58,6 @@ def check_relay_preset() -> dict:
     return {"value": "rayfish" if '"rayfish" => Ok(preset.to_string())' in text else "MISSING"}
 
 
-def check_self_update() -> dict:
-    """CON-006: the self-update kill switch must stay off. `enabled` is False only
-    while the exact `SELF_UPDATE_ENABLED: bool = false;` const is present; flipping
-    it to true or removing it makes this True and fails the constraint."""
-    p = Path("src/update.rs")
-    text = p.read_text() if p.exists() else ""
-    disabled = "pub const SELF_UPDATE_ENABLED: bool = false;" in text
-    return {"enabled": not disabled}
-
-
 def check_host_identity() -> dict:
     """CON-007: none of the collision-prone rayfish host-artifact / user-identifier
     tokens may remain anywhere under src/. This is a curated token set (NOT a bare
@@ -227,7 +217,6 @@ if __name__ == "__main__":
         "test": check_tests(),
         "grep_hardcoded_cgnat": check_hardcoded_cgnat(),
         "relay_preset_untouched": check_relay_preset(),
-        "self_update": check_self_update(),
         "host_identity": check_host_identity(),
         "build_tooling_identity": check_build_tooling_identity(),
         "report_identity": check_report_identity(),
@@ -242,7 +231,6 @@ if __name__ == "__main__":
         and ctx["test"]["pass"]
         and ctx["grep_hardcoded_cgnat"]["unexpected_count"] == 0
         and ctx["relay_preset_untouched"]["value"] == "rayfish"
-        and ctx["self_update"]["enabled"] is False
         and ctx["host_identity"]["leak_count"] == 0
         and ctx["build_tooling_identity"]["unexpected_count"] == 0
         and ctx["report_identity"]["unexpected_count"] == 0

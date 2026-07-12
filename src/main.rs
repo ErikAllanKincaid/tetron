@@ -153,12 +153,7 @@ pub(crate) enum Command {
     /// Uninstall system service
     Uninstall,
     /// Install or refresh the system service and start it (requires root)
-    Install {
-        /// Opt this node into automatic stable updates: the daemon periodically
-        /// checks for a newer stable release and swaps + restarts onto it
-        #[arg(long)]
-        auto_update: bool,
-    },
+    Install,
     /// Restart the system service (requires root)
     Restart,
     /// Generate shell completions
@@ -294,12 +289,6 @@ pub(crate) enum Command {
         /// "on" or "off"
         state: String,
     },
-    /// Enable or disable automatic stable updates (applied by the daemon)
-    #[command(name = "auto-update")]
-    AutoUpdate {
-        /// "on" or "off"
-        state: String,
-    },
     /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet, magic-dns)
     Config {
         #[command(subcommand)]
@@ -343,26 +332,6 @@ pub(crate) enum Command {
     /// Print the torpedo version
     #[command(visible_alias = "ver")]
     Version,
-    /// Update torpedo to the latest GitHub release
-    #[command(visible_alias = "upgrade")]
-    Update {
-        /// Reinstall even if already on the latest version
-        #[arg(long)]
-        force: bool,
-        /// Report the latest available version without installing
-        #[arg(long)]
-        check: bool,
-        /// Track the rolling `nightly` pre-release (built from every commit to
-        /// master) instead of the latest stable release
-        #[arg(long, conflicts_with_all = ["list", "version"])]
-        nightly: bool,
-        /// List the available releases (newest first) and exit
-        #[arg(long, conflicts_with_all = ["check", "force", "version"])]
-        list: bool,
-        /// Install a specific release version, e.g. 0.1.0 (downgrades allowed)
-        #[arg(long, value_name = "VERSION")]
-        version: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1016,7 +985,7 @@ async fn main() -> Result<()> {
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),
-        Command::Install { auto_update } => cmd_install(auto_update).await,
+        Command::Install => cmd_install().await,
         Command::Restart => cmd_restart().await,
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "torpedo", &mut std::io::stdout());
@@ -1053,7 +1022,6 @@ async fn main() -> Result<()> {
         }
         Command::Alias { network, action } => cmd_alias(&network, action, cli.json).await,
         Command::Mdns { state } => cmd_mdns(&state),
-        Command::AutoUpdate { state } => cmd_auto_update(&state),
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
         Command::Send { file, peer } => ipc_send_file(&file, &peer).await,
@@ -1065,13 +1033,6 @@ async fn main() -> Result<()> {
             println!("torpedo {FULL_VERSION}");
             Ok(())
         }
-        Command::Update {
-            force,
-            check,
-            nightly,
-            list,
-            version,
-        } => cmd_update(force, check, nightly, list, version).await,
     }
 }
 
@@ -1093,34 +1054,6 @@ fn cmd_mdns(state: &str) -> Result<()> {
     config::save_settings(&app_config)?;
     println!(
         "mDNS discovery {}. Restart the daemon for changes to take effect.",
-        if enabled { "enabled" } else { "disabled" }
-    );
-    Ok(())
-}
-
-/// `torpedo auto-update on|off`: toggle opt-in automatic stable updates. Writes
-/// `settings.toml` directly (like `cmd_mdns`); the daemon reads it at startup, so
-/// the change takes effect on the next daemon restart.
-fn cmd_auto_update(state: &str) -> Result<()> {
-    let enabled = match state {
-        "on" => true,
-        "off" => false,
-        _ => {
-            eprintln!("Usage: torpedo auto-update <on|off>");
-            std::process::exit(1);
-        }
-    };
-    // Neutralized on this fork (UPGRADE-001): allow turning it off, refuse to
-    // turn it on.
-    if enabled && !rayfish::update::SELF_UPDATE_ENABLED {
-        println!("{}", rayfish::update::SELF_UPDATE_DISABLED_MSG);
-        return Ok(());
-    }
-    let mut app_config = config::load()?;
-    app_config.auto_update = enabled;
-    config::save_settings(&app_config)?;
-    println!(
-        "automatic updates {}. Restart the daemon for changes to take effect.",
         if enabled { "enabled" } else { "disabled" }
     );
     Ok(())
@@ -1226,11 +1159,10 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
 mod tests {
     use super::*;
     use ipc::FirewallRuleView;
-    use rayfish::update::{normalize_version, release_asset_name, version_is_newer};
 
     #[test]
     fn strip_deleted_suffix_sanitizes_replaced_binary_path() {
-        // After `self_replace` unlinks the running binary, Linux reports
+        // After a manual upgrade unlinks the running binary, Linux reports
         // `/proc/self/exe` with a trailing " (deleted)". The service unit must
         // not inherit it, or the daemon crash-loops on `torpedo (deleted) daemon`.
         assert_eq!(
@@ -1294,51 +1226,6 @@ mod tests {
     fn parse_suggest_token_rejects_empty() {
         assert!(parse_suggest_token("", "--allow").is_err());
         assert!(parse_suggest_token("alice", "--allow").is_err());
-    }
-
-    #[test]
-    fn release_asset_name_maps_supported_platforms() {
-        assert_eq!(
-            release_asset_name("linux", "x86_64").unwrap(),
-            "ray-linux-x86_64"
-        );
-        assert_eq!(
-            release_asset_name("linux", "aarch64").unwrap(),
-            "ray-linux-aarch64"
-        );
-        assert_eq!(
-            release_asset_name("macos", "x86_64").unwrap(),
-            "ray-macos-x86_64"
-        );
-        assert_eq!(
-            release_asset_name("macos", "aarch64").unwrap(),
-            "ray-macos-aarch64"
-        );
-    }
-
-    #[test]
-    fn release_asset_name_rejects_unsupported_platforms() {
-        assert!(release_asset_name("windows", "x86_64").is_err());
-        assert!(release_asset_name("linux", "riscv64").is_err());
-    }
-
-    #[test]
-    fn normalize_version_strips_leading_v() {
-        assert_eq!(normalize_version("v0.1.0"), "0.1.0");
-        assert_eq!(normalize_version("0.1.0"), "0.1.0");
-        assert_eq!(normalize_version("v1.2.3-rc1"), "1.2.3-rc1");
-    }
-
-    #[test]
-    fn version_is_newer_orders_semver() {
-        assert!(version_is_newer("0.2.0", "0.1.0"));
-        assert!(version_is_newer("1.0.0", "0.9.9"));
-        assert!(!version_is_newer("0.1.0", "0.1.0"));
-        assert!(!version_is_newer("0.1.0", "0.2.0")); // older latest ⇒ no downgrade
-        assert!(version_is_newer("0.1.0", "0.1.0-rc1")); // release beats prerelease
-        // Unparseable tags fall back to inequality.
-        assert!(version_is_newer("nightly", "0.1.0"));
-        assert!(!version_is_newer("weird", "weird"));
     }
 
     fn view(

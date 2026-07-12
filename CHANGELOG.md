@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **Self-update (MINIMAL-002)**: the `torpedo update` and `torpedo auto-update`
+  commands, the `install --auto-update` flag, the daemon's periodic update
+  task, and the `auto_update` status field are gone. Upstream torpedo shipped
+  this machinery disabled; tetron deletes it outright (along with the
+  reqwest/rustls/self-replace/sha2/semver dependencies). Upgrade by replacing
+  the binary and running `sudo torpedo restart`.
+
 ### Added
 
 - **DNS takeover notice**: on a host with no systemd-resolved, NetworkManager,

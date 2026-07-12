@@ -609,7 +609,7 @@ impl MeshManager {
             anyhow::ensure!(
                 net_ver == mine,
                 "incompatible mesh protocol: this network runs v{net_ver}, this build speaks v{mine} \
-                 - run `torpedo update` so both sides match"
+                 - upgrade the older node so both sides match"
             );
         }
 
