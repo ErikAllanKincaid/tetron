@@ -39,7 +39,6 @@ impl MeshManager {
 
         IpcMessage::StatusResponse {
             endpoint_id: self.endpoint.id(),
-            mdns_enabled: self.mdns_enabled,
             active: self.active.load(Ordering::SeqCst),
             contact_id: Some(self.contact_public.to_string()),
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),

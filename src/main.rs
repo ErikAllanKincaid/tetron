@@ -284,11 +284,6 @@ pub(crate) enum Command {
         /// Hostname to look up
         hostname: String,
     },
-    /// Enable or disable mDNS local peer discovery
-    Mdns {
-        /// "on" or "off"
-        state: String,
-    },
     /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet, magic-dns)
     Config {
         #[command(subcommand)]
@@ -978,7 +973,6 @@ async fn main() -> Result<()> {
             cmd_identityof(&network, &hostname, cli.json).await
         }
         Command::Alias { network, action } => cmd_alias(&network, action, cli.json).await,
-        Command::Mdns { state } => cmd_mdns(&state),
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
         Command::Send { file, peer } => ipc_send_file(&file, &peer).await,
@@ -997,27 +991,9 @@ async fn main() -> Result<()> {
 // Client-side commands (daemon optional)
 // ---------------------------------------------------------------------------
 
-fn cmd_mdns(state: &str) -> Result<()> {
-    let enabled = match state {
-        "on" => true,
-        "off" => false,
-        _ => {
-            eprintln!("Usage: torpedo mdns <on|off>");
-            std::process::exit(1);
-        }
-    };
-    let mut app_config = config::load()?;
-    app_config.mdns_enabled = enabled;
-    config::save_settings(&app_config)?;
-    println!(
-        "mDNS discovery {}. Restart the daemon for changes to take effect.",
-        if enabled { "enabled" } else { "disabled" }
-    );
-    Ok(())
-}
 
 /// `torpedo config get/set/unset`: view or change global daemon settings. Writes
-/// `settings.toml` directly (like `cmd_mdns`); relay/discovery/dns-upstreams all
+/// `settings.toml` directly; relay/discovery/dns-upstreams all
 /// take effect on the next daemon restart. On Linux the config tree is root-
 /// owned, so a write naturally requires sudo.
 fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {

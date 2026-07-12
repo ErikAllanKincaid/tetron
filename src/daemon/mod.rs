@@ -377,7 +377,6 @@ pub struct MeshManager {
     protocol_router: Arc<ProtocolRouter>,
     /// Magic DNS naming tables, resolver, and OS-DNS configurator (see [`DnsManager`]).
     dns: DnsManager,
-    mdns_enabled: bool,
     /// Name of the OS TUN device (desktop) or a placeholder until a packet
     /// interface is attached. Interior-mutable because on embedders (mobile) the
     /// interface is attached after construction via [`MeshManager::attach_tun`],

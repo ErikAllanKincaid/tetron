@@ -133,7 +133,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
     match resp {
         ipc::IpcMessage::StatusResponse {
             endpoint_id,
-            mdns_enabled,
             active,
             contact_id,
             daemon_version,
@@ -149,7 +148,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
             if json_enabled() {
                 print_json(&serde_json::json!({
                     "endpoint": endpoint_id.to_string(),
-                    "mdns": mdns_enabled,
                     "active": active,
                     "contact_id": contact_id,
                     "daemon_version": daemon_version,
@@ -166,23 +164,17 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 return Ok(());
             }
             let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);
-            // Header: torpedo ● up    mDNS on    endpoint k7f2…9qx4
+            // Header: torpedo ● up    endpoint k7f2…9qx4
             let state = if active {
                 format!("{} {}", style::dot_online(), style::value("up"))
             } else {
                 format!("{} {}", style::dot_offline(), style::faint("standby"))
             };
-            let mdns = if mdns_enabled {
-                format!("{} {}", style::label("mDNS"), style::green("on"))
-            } else {
-                format!("{} {}", style::label("mDNS"), style::faint("off"))
-            };
             println!();
             println!(
-                "  {}  {}      {}      {} {}",
+                "  {}  {}      {} {}",
                 style::bold("torpedo"),
                 state,
-                mdns,
                 style::label("endpoint"),
                 style::value(&endpoint_id.fmt_short().to_string()),
             );

@@ -163,10 +163,6 @@ pub struct NetworkConfig {
     pub ephemeral_ttl_secs: Option<u64>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// In-memory aggregate of the on-disk config. Reads assemble this from
 /// `settings.toml` (globals) + one `networks/<name>.toml` per network; writes
 /// are targeted (`save_settings` / `save_network` / `delete_network`) so a write
@@ -446,10 +442,8 @@ impl MagicDnsMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_true")]
-    pub mdns_enabled: bool,
     /// Local UID authorized to control the daemon without root (Tailscale's
     /// `--operator` model). `None` means root-only for mutating commands.
     #[serde(default)]
@@ -521,27 +515,7 @@ pub struct AppConfig {
     pub revoked_devices: Vec<String>,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            mdns_enabled: true,
-            operator_uid: None,
-            default_hostname: None,
-            subnet: None,
-            contact_secret_key: None,
-            relay: ServerOverride::default(),
-            discovery_dns: ServerOverride::default(),
-            dns_upstreams: ServerOverride::default(),
-            magic_dns: MagicDnsMode::default(),
-            download_dir: None,
-            download_user: None,
-            networks: Vec::new(),
-            pending_joins: Vec::new(),
-            cert_generation: 0,
-            revoked_devices: Vec::new(),
-        }
-    }
-}
+
 
 /// Return this node's contact key, generating and persisting it on first use.
 /// The caller is responsible for `save`-ing the config afterwards (the returned
@@ -578,7 +552,7 @@ pub fn rotate_contact_secret(config: &mut AppConfig) -> SecretKey {
 //
 // Config is sharded so a write to one network can never clobber another:
 //
-//   <config_dir>/settings.toml          globals (mdns, operator, default
+//   <config_dir>/settings.toml          globals (operator, default
 //                                        hostname, contact key) — secret-bearing
 //   <config_dir>/networks/<name>.toml   one NetworkConfig each — secret-bearing
 //
@@ -599,8 +573,6 @@ const NETWORKS_SUBDIR: &str = "networks";
 /// per-network entries, which live in their own files).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {
-    #[serde(default = "default_true")]
-    mdns_enabled: bool,
     #[serde(default)]
     operator_uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -866,7 +838,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         toml::from_str(&s).context("parsing settings.toml")?
     } else {
         Settings {
-            mdns_enabled: true,
             operator_uid: None,
             default_hostname: None,
             subnet: None,
@@ -908,7 +879,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
     }
 
     Ok(AppConfig {
-        mdns_enabled: settings.mdns_enabled,
         operator_uid: settings.operator_uid,
         default_hostname: settings.default_hostname,
         subnet: settings.subnet,
@@ -955,7 +925,6 @@ pub fn set_node_subnet(subnet: crate::membership::Subnet) -> Result<()> {
 
 fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
     let settings = Settings {
-        mdns_enabled: config.mdns_enabled,
         operator_uid: config.operator_uid,
         default_hostname: config.default_hostname.clone(),
         subnet: config.subnet,

@@ -71,7 +71,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 }
 
 /// Construct all always-on daemon infrastructure: identity, iroh endpoint, blob
-/// store, TUN device, forwarding loop, DNS resolver, mDNS discovery, protocol
+/// store, TUN device, forwarding loop, DNS resolver, protocol
 /// router, and metrics server. Returns the shared [`MeshManager`] — still on
 /// standby, so the caller is expected to run [`MeshManager::activate`] — and the
 /// metrics-server guard, which must outlive the process.
@@ -204,20 +204,13 @@ async fn build_daemon(
     };
     let device_user_map = peers::DeviceUserMap::new();
 
-    // --- Magic DNS resolver + optional mDNS local discovery ---
+    // --- Magic DNS resolver ---
     let hostname_table = dns::new_hostname_table();
     let reverse_table = dns::new_reverse_table();
     let dns_resolver = std::sync::Arc::new(crate::dns_resolver::Resolver::new(
         hostname_table.clone(),
         reverse_table.clone(),
     ));
-    let mdns_enabled = app_config.mdns_enabled;
-    if mdns_enabled {
-        spawn_mdns_discovery(&ep, token.clone());
-    } else {
-        tracing::info!("mDNS discovery disabled");
-    }
-
     // --- Protocol router + the shared MeshManager ---
     // Auto-accept worker channel: the file service nudges this with each newly-
     // queued offer id; the worker (spawned once the daemon exists) evaluates it.
@@ -245,8 +238,7 @@ async fn build_daemon(
         firewall: shared_firewall,
         protocol_router: protocol_router.clone(),
         dns: DnsManager::new(hostname_table, reverse_table, dns_resolver.clone()),
-        mdns_enabled,
-        tun_name: std::sync::Mutex::new(tun_name),
+                tun_name: std::sync::Mutex::new(tun_name),
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         _metrics_server: std::sync::Mutex::new(None),
@@ -303,54 +295,6 @@ async fn build_daemon(
 
     tracing::info!(ip = %my_ip, id = %daemon.endpoint.id().fmt_short(), "daemon started");
     Ok(daemon)
-}
-
-/// Advertise this endpoint over mDNS (`_torpedo._udp.local`) and log LAN peer
-/// discovery events until cancellation. Non-fatal: a failure just means no
-/// local discovery.
-fn spawn_mdns_discovery(ep: &Endpoint, token: CancellationToken) {
-    let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("torpedo")
-        .advertise(true)
-        .build(ep.id())
-    {
-        Ok(mdns) => mdns,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to start mDNS discovery");
-            return;
-        }
-    };
-    let Ok(lookups) = ep.address_lookup() else {
-        return;
-    };
-    lookups.add(mdns.clone());
-    tracing::info!("mDNS discovery enabled (advertising _torpedo._udp.local)");
-
-    tokio::spawn(async move {
-        use futures::StreamExt;
-        let mut events = mdns.subscribe().await;
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => break,
-                event = events.next() => match event {
-                    Some(iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. }) => {
-                        tracing::info!(
-                            peer = %endpoint_info.endpoint_id.fmt_short(),
-                            "mDNS: peer discovered on LAN"
-                        );
-                    }
-                    Some(iroh_mdns_address_lookup::DiscoveryEvent::Expired { endpoint_id }) => {
-                        tracing::info!(
-                            peer = %endpoint_id.fmt_short(),
-                            "mDNS: peer left LAN"
-                        );
-                    }
-                    None => break,
-                    _ => {}
-                }
-            }
-        }
-    });
 }
 
 /// Register torpedo counters, per-peer gauges, and iroh endpoint metrics, then

@@ -329,7 +329,6 @@ pub enum IpcMessage {
     },
     StatusResponse {
         endpoint_id: EndpointId,
-        mdns_enabled: bool,
         /// Whether the VPN is active (TUN up, networks connected) or on standby.
         active: bool,
         /// This node's contact id (`ray connect`), shown at the top of status.
@@ -956,7 +955,6 @@ mod tests {
         let peer_id = iroh::SecretKey::generate().public();
         let resp = IpcMessage::StatusResponse {
             endpoint_id: ep_id,
-            mdns_enabled: true,
             active: true,
             contact_id: Some("contact123".to_string()),
             daemon_version: "0.1.0".to_string(),

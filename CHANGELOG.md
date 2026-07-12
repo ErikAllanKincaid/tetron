@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **mDNS local discovery (MINIMAL-007)**: the `torpedo mdns` command, the
+  `mdns_enabled` setting, and LAN mDNS advertising are gone. Peer discovery is
+  relays + pkarr; LAN peers still connect directly once discovered.
 - **Embedded mesh SSH server (MINIMAL-003)**: `torpedo firewall ssh` and the
   in-daemon SSH server (with its userspace port-22 NAT) are gone, along with
   the russh/pty-process/uzers/socket2 dependencies. Remote shells are the host
