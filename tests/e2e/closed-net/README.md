@@ -14,7 +14,6 @@ scenarios don't cover.
 | 5 | **Gatekeeper resilience**: with `srv-a` taken offline (`torpedo down`), the co-coordinator `srv-b` mints a `torpedo invite --reusable` key and admits `srv-c` unattended (`--auto-accept-firewall`). |
 | 6 | **Hostname change**: `torpedo hostname` propagates to the coordinator's roster and the magic-DNS name `srv-bb.priv.ray` resolves + answers. |
 | 7 | **Graceful leave + nuke**: `torpedo leave` prunes the member promptly; `torpedo nuke` drops the network. |
-| 8 | **`torpedo apply` smoke**: `--example` prints a template and `--dry-run` normalizes a spec without creating anything. |
 
 ## Run
 

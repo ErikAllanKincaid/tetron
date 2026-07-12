@@ -66,13 +66,9 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        // Node-local aliases (display-only) come straight from config; status is
-        // not a hot path, so a per-network read is fine.
+        // Per-network config read for the ephemeral TTL; status is not a hot
+        // path, so a per-network read is fine.
         let net_cfg = config::load_network(&h.name).ok().flatten();
-        let aliases = net_cfg
-            .as_ref()
-            .map(|n| n.aliases.clone())
-            .unwrap_or_default();
         let ephemeral_ttl_secs = net_cfg.as_ref().and_then(|n| n.ephemeral_ttl_secs);
         // Resolve a mesh IPv4 back to its `.ray` hostname via the DNS snapshot.
         let lookup_hostname = |ip| {
@@ -101,7 +97,6 @@ impl MeshManager {
                         peers: vec![],
                         pending_suggestions: 0,
                         pending_requests: 0,
-                        aliases,
                         ephemeral_ttl_secs,
                     };
                 }
@@ -147,7 +142,6 @@ impl MeshManager {
             peers,
             pending_suggestions,
             pending_requests,
-            aliases,
             ephemeral_ttl_secs,
         }
     }

@@ -342,7 +342,6 @@ impl MeshManager {
             auto_accept_firewall: false,
             admins: vec![],
             direct,
-            aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         })?;
 

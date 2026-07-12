@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Declarative apply layer and local aliases (MINIMAL-011)**: `torpedo apply`
+  (with `--example`/`--dry-run`/`--prune`/`--invite-missing`), `torpedo alias`,
+  and `torpedo identityof` are gone, along with the per-network `aliases`
+  setting shown inline in `torpedo status`. Reconcile a fleet with a script
+  over `torpedo status --json`. The firewall and its coordinator suggestions
+  are untouched by this change (they are removed separately in MINIMAL-010).
 - **File sharing and device pairing (MINIMAL-004)**: `torpedo send`/`files`
   (and file auto-accept + download-dir/download-user settings) and
   `torpedo pair`/`unpair` (multi-device identity, encrypted key backup, and

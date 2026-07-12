@@ -123,11 +123,12 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename.
 - 🧱 **Per-device firewall** — a userspace firewall for mesh traffic, layered on top of your host/kernel firewall. Directional, per-port, per-network rules, secure by default. `torpedo firewall --help`.
-- 🧩 **Declarative deploy** — `torpedo apply <spec.yaml>` reconciles networks + suggested firewall rules.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `apply`, `kick`, `ephemeral`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `kick`, `ephemeral`, and more.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
+>
+> **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `torpedo apply`, `torpedo alias`, or `torpedo identityof`. Reconcile a fleet with a script over `torpedo status --json`.
 
 ## Permissions
 

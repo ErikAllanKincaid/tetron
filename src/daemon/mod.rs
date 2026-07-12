@@ -648,7 +648,6 @@ impl MeshManager {
                 | IpcMessage::FirewallShow
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
-                | IpcMessage::AliasList { .. }
                 | IpcMessage::GetEphemeral { .. }
         ) {
             return None;
@@ -819,13 +818,6 @@ impl MeshManager {
             IpcMessage::SetHostname { network, hostname } => {
                 self.set_hostname(&network, &hostname).await
             }
-            IpcMessage::AliasSet {
-                network,
-                identity,
-                alias,
-            } => self.set_alias(&network, &identity, &alias),
-            IpcMessage::AliasRemove { network, alias } => self.remove_alias(&network, &alias),
-            IpcMessage::AliasList { network } => self.list_aliases(&network),
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
             IpcMessage::InviteCreate {
                 network,

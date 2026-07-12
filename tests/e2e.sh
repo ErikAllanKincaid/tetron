@@ -6,7 +6,6 @@
 # Scenarios:
 #   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
-#   apply         3-peer declarative `torpedo apply` deploy       (tests/e2e/apply)
 #   dns           2-peer Magic DNS resolution + resolv.conf takeover (tests/e2e/dns)
 #   reliability   4-peer full-mesh packet-loss test (ping + iperf3 UDP) (tests/e2e/reliability)
 #   restore-offline 3-peer member-restore-with-coordinator-offline test (tests/e2e/restore-offline)
@@ -26,7 +25,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage(){ sed -n '2,24p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
+usage(){ sed -n '2,23p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
 
 # scenario_meta <scenario> : set DIR / NAMES / LABELS for a scenario, or return 1.
 scenario_meta(){
@@ -36,9 +35,6 @@ scenario_meta(){
                  LABELS=(srv-a srv-b srv-c) ;;
     closed-net)  DIR="$ROOT/tests/e2e/closed-net"
                  NAMES=(rayfish-closednet-a rayfish-closednet-b rayfish-closednet-c)
-                 LABELS=(srv-a srv-b srv-c) ;;
-    apply)       DIR="$ROOT/tests/e2e/apply"
-                 NAMES=(rayfish-apply-a rayfish-apply-b rayfish-apply-c)
                  LABELS=(srv-a srv-b srv-c) ;;
     dns)         DIR="$ROOT/tests/e2e/dns"
                  NAMES=(rayfish-dns-a rayfish-dns-b)

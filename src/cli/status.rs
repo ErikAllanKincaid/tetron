@@ -1,8 +1,6 @@
 //! CLI status & diagnostics output plus shared presentation helpers
 //! (`table`, `print_error`, …): status, down, set-hostname.
 
-use std::collections::HashMap;
-
 use crate::*;
 
 /// Human-readable byte size (GiB/MiB/KiB/B) for traffic and transfer counters.
@@ -260,14 +258,6 @@ fn print_network(net: &ipc::NetworkStatus) {
     }
     println!();
 
-    // Invert the local alias map (alias -> identity) for identity -> alias
-    // lookups when rendering peers.
-    let alias_by_identity: HashMap<&str, &str> = net
-        .aliases
-        .iter()
-        .map(|(alias, identity)| (identity.as_str(), alias.as_str()))
-        .collect();
-
     // Peer rows as aligned columns: glyph · host · ipv4 · via · rtt · ↑tx · ↓rx.
     // Pre-measure the widest up/down counter so each arrow hugs its number (one
     // space) while the digits still right-align across rows.
@@ -284,14 +274,7 @@ fn print_network(net: &ipc::NetworkStatus) {
     let rows: Vec<Vec<layout::Cell>> = net
         .peers
         .iter()
-        .map(|p| {
-            render_peer_row(
-                p,
-                peer_alias(p, &alias_by_identity),
-                up_w,
-                down_w,
-            )
-        })
+        .map(|p| render_peer_row(p, up_w, down_w))
         .collect();
     if rows.is_empty() {
         println!("    {}", style::faint("(no other members)"));
@@ -311,34 +294,14 @@ fn print_network(net: &ipc::NetworkStatus) {
     }
 }
 
-/// Resolve a peer's local alias, if any: match its endpoint id against the
-/// inverted alias map.
-fn peer_alias<'a>(
-    peer: &ipc::PeerStatus,
-    alias_by_identity: &HashMap<&str, &'a str>,
-) -> Option<&'a str> {
-    let identity = peer.endpoint_id.to_string();
-    alias_by_identity.get(identity.as_str()).copied()
-}
-
-/// Build one peer's status row (glyph · host · ipv4 · via · rtt · ↑tx · ↓rx). A
-/// local alias, when set, is shown inline after the host as `host [alias]`. The
+/// Build one peer's status row (glyph · host · ipv4 · via · rtt · ↑tx · ↓rx). The
 /// host is the bare hostname (no `.{network}.ray`): the network block header
 /// already names the network.
-fn render_peer_row(
-    peer: &ipc::PeerStatus,
-    alias: Option<&str>,
-    up_w: usize,
-    down_w: usize,
-) -> Vec<layout::Cell> {
-    let base = peer
+fn render_peer_row(peer: &ipc::PeerStatus, up_w: usize, down_w: usize) -> Vec<layout::Cell> {
+    let host = peer
         .hostname
         .clone()
         .unwrap_or_else(|| peer.ip.to_string());
-    let host = match alias {
-        Some(a) => format!("{base} [{a}]"),
-        None => base,
-    };
     let host_plain = host.clone();
     let host_styled = |base_style: fn(&str) -> String| base_style(&host);
     match &peer.connection {

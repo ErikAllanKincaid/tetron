@@ -48,7 +48,6 @@ pub(crate) fn spawn_path_logger(conn: IrohConnection, label: String) {
     });
 }
 
-pub mod apply;
 pub mod config;
 pub mod control;
 pub mod daemon;

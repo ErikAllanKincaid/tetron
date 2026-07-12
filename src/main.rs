@@ -2,8 +2,8 @@
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
 use rayfish::{
-    DNS_DOMAIN, apply, config, daemon, firewall, hostname, invite, ipc, layout, logdir, membership,
-    picker, progress, shutdown, stats, style,
+    DNS_DOMAIN, config, daemon, firewall, invite, ipc, layout, logdir, membership, picker, progress,
+    shutdown, stats, style,
 };
 
 use std::sync::{Arc, atomic};
@@ -33,8 +33,8 @@ const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GI
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of styled text (disables color and
-    /// spinners). Supported by `status`, `firewall show`, `files`, and other
-    /// list commands.
+    /// spinners). Supported by `status`, `firewall show`, and other list
+    /// commands.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -189,40 +189,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: AdminAction,
     },
-    /// Manage local, per-network aliases (a friendly name for a user identity).
-    /// Node-local and display-only: shown inline in `torpedo status` and used to seed
-    /// a `torpedo apply` spec's `aliases:` map. Never published to the network.
-    Alias {
-        /// Network name
-        network: String,
-        #[command(subcommand)]
-        action: AliasAction,
-    },
     /// Manage local device firewall rules
     Firewall {
         #[command(subcommand)]
         action: FirewallAction,
-    },
-    /// Reconcile trusted networks against a deploy spec file (Phase B). Creates
-    /// missing trusted networks, publishes idempotent firewall suggestions, and
-    /// reports the membership gap (expected vs joined hosts). Never joins.
-    Apply {
-        /// Path to a TOML spec file (see `torpedo apply --example`).
-        spec: Option<String>,
-        /// Drop suggested-firewall subjects that are no longer in the spec.
-        #[arg(long)]
-        prune: bool,
-        /// Show what would change without applying it.
-        #[arg(long)]
-        dry_run: bool,
-        /// Mint one-time invites for hosts the spec expects but that haven't
-        /// joined yet (hostname-bound). Without this flag, the commands are
-        /// only printed.
-        #[arg(long)]
-        invite_missing: bool,
-        /// Print an example spec file and exit.
-        #[arg(long, conflicts_with_all = ["spec", "prune", "dry_run", "invite_missing"])]
-        example: bool,
     },
     /// Change your hostname on a network
     Hostname {
@@ -230,16 +200,6 @@ pub(crate) enum Command {
         network: String,
         /// New hostname (e.g. "alice" → alice.network.ray)
         name: String,
-    },
-    /// Print a host's identity string (the value to paste into a `torpedo apply`
-    /// spec's `aliases:` map). Resolves to the user identity if the device is
-    /// paired, else the device's transport identity.
-    #[command(visible_alias = "whois")]
-    Identityof {
-        /// Network name
-        network: String,
-        /// Hostname to look up
-        hostname: String,
     },
     /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet, magic-dns)
     Config {
@@ -301,27 +261,6 @@ pub(crate) enum AdminAction {
     /// List this network's key-holders (the local node + granted members)
     #[command(visible_alias = "ls")]
     List,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum AliasAction {
-    /// Bind an alias to a user. `key` is an identity string (from `ray
-    /// identityof`) or a currently-joined hostname, resolved to its identity.
-    Set {
-        /// Identity string or a joined hostname
-        key: String,
-        /// The alias to assign
-        alias: String,
-    },
-    /// List this network's aliases
-    #[command(visible_alias = "ls")]
-    List,
-    /// Remove an alias by name
-    #[command(visible_aliases = ["rm", "del"])]
-    Remove {
-        /// The alias to remove
-        alias: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -697,18 +636,7 @@ async fn main() -> Result<()> {
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
         Command::Firewall { action } => ipc_firewall(action).await,
-        Command::Apply {
-            spec,
-            prune,
-            dry_run,
-            invite_missing,
-            example,
-        } => ipc_apply(spec, prune, dry_run, invite_missing, example).await,
         Command::Hostname { network, name } => ipc_set_hostname(&network, &name).await,
-        Command::Identityof { network, hostname } => {
-            cmd_identityof(&network, &hostname, cli.json).await
-        }
-        Command::Alias { network, action } => cmd_alias(&network, action, cli.json).await,
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
         Command::Version => {

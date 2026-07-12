@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs::Permissions;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
@@ -142,12 +141,6 @@ pub struct NetworkConfig {
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
-    /// Node-local, per-network aliases (`alias name -> identity string`), set via
-    /// `torpedo alias`. Display-only convenience: shown inline in `torpedo status` and
-    /// used to seed `torpedo apply`'s `aliases:` map. Never published in the
-    /// GroupBlob.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub aliases: BTreeMap<String, String>,
     /// Coordinator-local ephemeral policy: auto-remove a member offline
     /// longer than this many seconds. `None` = off (default). A 1-hour floor
     /// is enforced at the CLI. Local only (only the coordinator enforces);
@@ -1002,7 +995,6 @@ mod tests {
                     auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
-                    aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
                 NetworkConfig {
@@ -1019,7 +1011,6 @@ mod tests {
                     auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
-                    aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
             ],
@@ -1057,7 +1048,6 @@ mod tests {
             auto_accept_firewall: false,
             admins: vec![],
             direct: false,
-            aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         };
         upsert_network(&mut config, net);
@@ -1083,7 +1073,6 @@ mod tests {
                 auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
-                aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
             ..Default::default()
@@ -1102,7 +1091,6 @@ mod tests {
             auto_accept_firewall: false,
             admins: vec![],
             direct: false,
-            aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         };
         upsert_network(&mut config, updated.clone());
@@ -1132,7 +1120,6 @@ mod tests {
                     auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
-                    aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
                 NetworkConfig {
@@ -1149,7 +1136,6 @@ mod tests {
                     auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
-                    aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
             ],
@@ -1194,7 +1180,6 @@ mod tests {
                 auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
-                aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
             ..Default::default()
@@ -1224,7 +1209,6 @@ mod tests {
                 auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
-                aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
             ..Default::default()
@@ -1289,7 +1273,6 @@ name = "test"
             auto_accept_firewall: false,
             admins: vec![],
             direct: false,
-            aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         }
     }
@@ -1324,39 +1307,6 @@ name = "test"
         let after = load_in(dir).unwrap();
         assert_eq!(after.networks.len(), 1);
         assert_eq!(after.networks[0].name, "genesis");
-    }
-
-    #[test]
-    fn network_aliases_roundtrip_and_default_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-
-        // A network with aliases persists them across a save/load cycle.
-        let mut n = net("homelab");
-        n.aliases.insert("alice".into(), "id-alice".into());
-        n.aliases.insert("bob".into(), "id-bob".into());
-        save_network_in(dir, &n).unwrap();
-        let loaded = load_network_in(dir, "homelab").unwrap().unwrap();
-        assert_eq!(
-            loaded.aliases.get("alice").map(String::as_str),
-            Some("id-alice")
-        );
-        assert_eq!(
-            loaded.aliases.get("bob").map(String::as_str),
-            Some("id-bob")
-        );
-
-        // A network with no aliases omits the key; loading a toml without it
-        // defaults to an empty map (backward compatible with pre-alias configs).
-        let plain = net("genesis");
-        assert!(plain.aliases.is_empty());
-        let toml = ::toml::to_string(&plain).unwrap();
-        assert!(
-            !toml.contains("aliases"),
-            "empty aliases must not be serialized"
-        );
-        let back: NetworkConfig = ::toml::from_str(&toml).unwrap();
-        assert!(back.aliases.is_empty());
     }
 
     #[test]

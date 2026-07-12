@@ -141,16 +141,4 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "8. torpedo apply smoke (no mutation)"
-on "$A" 'torpedo apply --example' | strip | grep -qi 'networks' \
-  && pass "torpedo apply --example prints a spec template" || fail "torpedo apply --example missing 'networks'"
-# Write a tiny spec and dry-run it (echoes the normalized spec, creates nothing).
-# Keys are lowercase (the config crate lowercases them); fields are allows/denies.
-on "$A" "printf 'networks:\n  demo:\n    srv-a:\n      allows:\n        \"*\": icmp\n' > /tmp/spec.yaml"
-on "$A" 'torpedo apply /tmp/spec.yaml --dry-run' 2>&1 | strip | sed 's/^/   a| /'
-on "$A" 'torpedo apply /tmp/spec.yaml --dry-run' 2>&1 | strip | grep -qi 'demo' \
-  && pass "torpedo apply --dry-run normalizes the spec" || fail "torpedo apply --dry-run did not echo the spec"
-! has_net "$A" demo && pass "dry-run created no network" || fail "dry-run unexpectedly created 'demo'"
-
-# ---------------------------------------------------------------------------
 summary

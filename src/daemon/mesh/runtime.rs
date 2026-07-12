@@ -192,7 +192,6 @@ impl MeshManager {
                 .unwrap_or(false),
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
-            aliases: net_config.map(|nc| nc.aliases.clone()).unwrap_or_default(),
             ephemeral_ttl_secs: None,
         })?;
 

@@ -10,7 +10,6 @@
 //! re-exported, avoiding a name clash with the `use rayfish::{firewall, …}`
 //! aliases in the crate root.
 
-mod alias;
 mod admin;
 mod firewall;
 mod invite;
@@ -18,7 +17,6 @@ mod network;
 mod service;
 mod status;
 
-pub(crate) use alias::*;
 pub(crate) use admin::*;
 pub(crate) use firewall::*;
 pub(crate) use invite::*;

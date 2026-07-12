@@ -1609,9 +1609,21 @@ class RemoveApplyLayer(Requirement):
     """REQUIREMENT-ID: MINIMAL-011
 
     Remove the declarative apply layer (which exists to push firewall specs
-    and dies with MINIMAL-010): apply.rs, cli/alias.rs,
-    daemon/mesh/alias.rs, `torpedo identityof`, and EXAMPLE_SPEC.
-    Fleet reconciliation is a script over `torpedo status --json`.
+    and dies with MINIMAL-010): apply.rs, cli/alias.rs, daemon/mesh/alias.rs,
+    the `torpedo apply` / `torpedo alias` / `torpedo identityof` CLI (and their
+    orchestrators, previously co-located in cli/firewall.rs), EXAMPLE_SPEC, the
+    `Alias{Set,Remove,List,ListResponse}` IPC ops, the per-network `aliases`
+    config field + its `NetworkStatus.aliases` projection + the inline
+    `[alias]` status display, and the tests/e2e/apply scenario. Fleet
+    reconciliation is a script over `torpedo status --json`.
+
+    Sequencing (see PROPOSAL/PLAN): this lands BEFORE MINIMAL-010 even though
+    the numeric order is the reverse. `apply`/`identityof` code lived in
+    cli/firewall.rs and consumed the firewall-suggest IPC, so removing the
+    consumer first keeps every commit compiling AND behaviorally coherent (the
+    firewall is still fully present after this commit; a broken intermediate is
+    avoided). The GroupBlob `suggested_firewall` field and ray-proto
+    policy.rs/firewall.rs wire types are untouched here (D1).
     """
     req_id = "MINIMAL-011"
 

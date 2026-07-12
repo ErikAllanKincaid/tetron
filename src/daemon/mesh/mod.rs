@@ -11,7 +11,6 @@
 
 mod accept;
 mod admin;
-mod alias;
 mod bootstrap;
 mod coordinator;
 mod create_join;

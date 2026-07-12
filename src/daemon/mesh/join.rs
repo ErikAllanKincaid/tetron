@@ -236,11 +236,10 @@ fn persist_join_config(
         .and_then(|m| m.hostname.clone())
         .or(my_hostname.clone());
     // Preserve across reconnects/restores state the just-fetched blob doesn't
-    // carry: the direct-connection flag, a queued rename intent, and
-    // node-local aliases.
-    let (direct, pending_hostname, aliases) = config::load_network(network_name)?
-        .map(|n| (n.direct, n.pending_hostname, n.aliases))
-        .unwrap_or((false, None, BTreeMap::new()));
+    // carry: the direct-connection flag and a queued rename intent.
+    let (direct, pending_hostname) = config::load_network(network_name)?
+        .map(|n| (n.direct, n.pending_hostname))
+        .unwrap_or((false, None));
     config::save_network(&config::NetworkConfig {
         name: network_name.to_string(),
         group_mode: GroupMode::Restricted,
@@ -255,7 +254,6 @@ fn persist_join_config(
         auto_accept_firewall,
         admins: vec![],
         direct,
-        aliases,
         ephemeral_ttl_secs: None,
     })
 }
