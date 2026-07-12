@@ -207,22 +207,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: Option<ContactAction>,
     },
-    /// Probe a peer over the mesh: report round-trip latency, packet loss, and
-    /// whether the path is direct or relayed. Unlike `status`, this sends live
-    /// echo probes that verify the round-trip end to end.
-    Ping {
-        /// Peer to probe: hostname, mesh IP, or short id.
-        peer: String,
-        /// Number of probes to send.
-        #[arg(short, long, default_value_t = 3)]
-        count: u32,
-        /// Delay between probes, in milliseconds.
-        #[arg(short, long, default_value_t = 1000)]
-        interval: u64,
-    },
-    /// Report this node's network conditions: bound UDP port, home relay and its
-    /// latency, public addresses, and IPv4/IPv6/UDP reachability.
-    Netcheck,
     /// Grant the network key to a member (coordinator only). The grantee becomes
     /// a co-coordinator: it can publish the signed blob and suggest firewall
     /// rules. Trusted-network multi-admin.
@@ -953,12 +937,6 @@ async fn main() -> Result<()> {
         } => ipc_connect(&contact_id, hostname).await,
         Command::Connections { action } => ipc_connections(action).await,
         Command::Contact { action } => ipc_contact(action).await,
-        Command::Ping {
-            peer,
-            count,
-            interval,
-        } => ipc_ping(&peer, count, interval).await,
-        Command::Netcheck => ipc_netcheck().await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
         Command::Firewall { action } => ipc_firewall(action).await,
         Command::Apply {

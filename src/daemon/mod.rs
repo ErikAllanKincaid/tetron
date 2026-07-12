@@ -702,8 +702,6 @@ impl MeshManager {
                 | IpcMessage::ListFiles
                 | IpcMessage::Connections
                 | IpcMessage::ContactId
-                | IpcMessage::Ping { .. }
-                | IpcMessage::Netcheck
                 | IpcMessage::AliasList { .. }
                 | IpcMessage::GetEphemeral { .. }
                 | IpcMessage::ListPairedDevices
@@ -926,12 +924,6 @@ impl MeshManager {
                 contact_id: self.contact_public.to_string(),
             },
             IpcMessage::RotateContact => self.rotate_contact().await,
-            IpcMessage::Ping {
-                peer,
-                count,
-                interval_ms,
-            } => self.ping(&peer, count, interval_ms).await,
-            IpcMessage::Netcheck => self.netcheck().await,
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },

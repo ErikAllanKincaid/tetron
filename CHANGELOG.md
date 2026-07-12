@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **`torpedo ping` and `torpedo netcheck` (MINIMAL-006)**: the mesh echo-probe
+  and endpoint-diagnostics commands are gone. Probe reachability with the
+  system `ping` against a peer's mesh IP from `torpedo status`. Nodes still
+  answer mesh Ping probes from full-torpedo peers.
 - **mDNS local discovery (MINIMAL-007)**: the `torpedo mdns` command, the
   `mdns_enabled` setting, and LAN mDNS advertising are gone. Peer discovery is
   relays + pkarr; LAN peers still connect directly once discovered.

@@ -291,17 +291,6 @@ pub enum IpcMessage {
     /// `ray contact rotate`: rotate this node's contact key (old id stops
     /// resolving once its pkarr record expires).
     RotateContact,
-    /// `ray ping <peer>`: active liveness probe. Resolves `peer`, sends `count`
-    /// echo probes over the mesh connection, and returns per-probe RTTs. Open
-    /// read, like `Status`.
-    Ping {
-        peer: String,
-        count: u32,
-        interval_ms: u64,
-    },
-    /// `ray netcheck`: local endpoint diagnostics (bound port, home relay,
-    /// reachability). Open read.
-    Netcheck,
 
     // Responses
     Ok {
@@ -360,36 +349,6 @@ pub enum IpcMessage {
         /// active. Shown in the UI as "waiting for approval".
         #[serde(default)]
         pending_networks: Vec<String>,
-    },
-    /// Reply to `Ping`. `probes` holds one entry per probe in send order: the
-    /// measured round-trip in milliseconds, or `None` if that probe timed out.
-    PingResponse {
-        /// Resolved display name for the peer (hostname if known, else short id).
-        peer_name: String,
-        conn_type: ConnType,
-        remote_addr: Option<String>,
-        /// Network whose connection the probes traversed.
-        network: String,
-        probes: Vec<Option<f64>>,
-    },
-    /// Reply to `Netcheck`. Local endpoint diagnostics. Fields the underlying
-    /// iroh API does not reliably expose are left `None` rather than guessed.
-    NetcheckResponse {
-        /// Bound UDP port of the shared endpoint.
-        bound_port: u16,
-        /// True when the bound port is the fixed `TORPEDO_LISTEN_PORT` (manually
-        /// forwardable); false when the daemon fell back to an ephemeral port.
-        port_is_fixed: bool,
-        /// Home relay URL the endpoint currently prefers.
-        home_relay: Option<String>,
-        /// Round-trip to the home relay, if measurable.
-        relay_latency_ms: Option<f64>,
-        /// Observed public IPv4 / mapped address, if known.
-        public_ipv4: Option<String>,
-        /// Observed public IPv6 address, if known.
-        public_ipv6: Option<String>,
-        /// Whether UDP appears to work (the endpoint has a usable direct path).
-        udp: bool,
     },
     /// The device's local firewall (reply to `FirewallShow`). Structured so the
     /// CLI renders it with color on the *user's* TTY and serializes it for

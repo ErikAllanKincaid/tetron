@@ -131,7 +131,7 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 - 🧩 **Declarative deploy** — `torpedo apply <spec.yaml>` reconciles networks + suggested firewall rules.
 - 📱 **Multi-device identity** — `torpedo pair` shares one identity across your devices.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `apply`, `send`, `pair`, `kick`, `ephemeral`, `netcheck`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `apply`, `send`, `pair`, `kick`, `ephemeral`, and more.
 
 ## Permissions
 
