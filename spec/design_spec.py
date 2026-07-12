@@ -1488,3 +1488,286 @@ class NoResidualTestCgnatLeak(Constraint):
     """
     constraint_id = "CON-012"
     enforcement_logic = "{{ test_subnet_identity.unexpected_count == 0 }}"
+
+
+# ==========================================================================
+# torpedo-min: the minimal variant (MINIMAL-*, CON-M*)
+#
+# This repository is torpedo-min, a clone of full torpedo at 4809edb that
+# strips the product down to its core: connect machines into a private mesh
+# with stable identity-derived addresses. See PROPOSAL.md for the rationale
+# and design decisions D1-D6, PLAN.md for the commit-by-commit execution
+# order. Inherited SUBNET-*/RENAME-*/CON-* specs above remain valid until a
+# MINIMAL removal commit retires them explicitly. New constraints use the
+# CON-M* namespace so future full-torpedo CON-0xx numbers never collide on
+# cherry-pick.
+# ==========================================================================
+
+
+class MinimalIntent(UserStory):
+    """USER-STORY: MINIMAL-INTENT
+
+    Strip torpedo to a single-purpose tool that connects machines into a
+    private mesh network, delegating firewalling, name resolution, file
+    transfer, remote shells, and updates to the host tools that already do
+    those jobs well, while remaining wire-compatible with full torpedo.
+
+    Priority: high.
+    User journey: install torpedo-min on two machines -> create a network on
+    one -> join from the other -> approve the join -> reach the peer by its
+    mesh IP from `torpedo status` -> filter traffic with nftables on the TUN
+    interface if desired.
+    Acceptance: the CLI exposes exactly the surface in PROPOSAL.md; the main
+    crate is roughly 15k lines; a torpedo-min node and a full torpedo node
+    interoperate on one network; the trimmed e2e harness is green.
+    """
+    brief_title = "Minimal connect-only variant"
+    priority = "high"
+
+
+# --------------------------------------------------------------------------
+# Requirements: scope and removals (MINIMAL-*)
+# --------------------------------------------------------------------------
+
+class MinimalScope(Requirement):
+    """REQUIREMENT-ID: MINIMAL-001
+
+    torpedo-min provides exactly: identity, membership, mesh transport, TUN
+    forwarding, closed-network admission with live approval, and a plain CLI
+    (create/join/leave/nuke/requests/accept/deny/admin/kick/status/up/down/
+    config/completions/version plus the sudo service verbs). Policy
+    enforcement, naming, file transfer, remote shells, diagnostics probes,
+    self-update, and multi-device identity are out of scope. Wire
+    compatibility with full torpedo is preserved (see CON-M02): protocol
+    version 1, unchanged ALPNs, unchanged GroupBlob schema; control messages
+    a min node no longer initiates are answered passively or ignored on
+    receipt, never a decode error or connection close.
+    """
+    req_id = "MINIMAL-001"
+
+
+class RemoveSelfUpdate(Requirement):
+    """REQUIREMENT-ID: MINIMAL-002
+
+    Remove the self-update machinery entirely: src/update.rs,
+    src/cli/update.rs, the `update`/`auto-update` CLI and the
+    `install --auto-update` flag, and the deps it alone pulls (reqwest, the
+    direct rustls handle, self-replace, sha2, semver). Full torpedo already
+    ships it disabled (CON-006); in torpedo-min absence replaces the gate,
+    so CON-006 and reconcile.py's `self_update` value check retire in the
+    same commit (replaced by the CON-M01 dependency-absence gate).
+    """
+    req_id = "MINIMAL-002"
+
+
+class RemoveEmbeddedSsh(Requirement):
+    """REQUIREMENT-ID: MINIMAL-003
+
+    Remove the embedded mesh SSH server: src/ssh.rs, the userspace
+    22<->30022 NAT in src/forward.rs, the `firewall ssh` CLI surface, the
+    ssh_enabled/ssh_allow config keys, deps russh/pty-process/uzers, and
+    tests/e2e/ssh. Remote shells are the host sshd's job, reached over the
+    mesh IPs.
+    """
+    req_id = "MINIMAL-003"
+
+
+class RemoveFilesAndPairing(Requirement):
+    """REQUIREMENT-ID: MINIMAL-004
+
+    Remove file transfer and multi-device pairing: daemon/mesh/files.rs,
+    daemon/file_service.rs, cli/files.rs, cli/pair.rs, onepassword.rs,
+    revocation.rs, the FILES_ALPN/PAIR_ALPN accept arms, the _torpedo_certgen
+    pkarr record, and DeviceUserMap (identity model collapses to one device =
+    one user). iroh-blobs STAYS: it transports the signed GroupBlob
+    (reconverge.rs fetches it by hash over the blobs ALPN) and is core
+    infrastructure, not a file-sharing extra. File copying is scp/rsync's
+    job; key backup is the operator's job (the key is one file).
+    """
+    req_id = "MINIMAL-004"
+
+
+class RemoveDirectConnect(Requirement):
+    """REQUIREMENT-ID: MINIMAL-005
+
+    Remove the direct-connect (friend request) flow: daemon/connect_service.rs,
+    daemon/mesh/connect.rs, cli/connect.rs, CONNECT_ALPN, the _torpedo_contact
+    pkarr publisher, and contact_secret_key. A 2-peer link is a 2-member
+    network created and approved the normal way.
+    """
+    req_id = "MINIMAL-005"
+
+
+class RemoveDiagnostics(Requirement):
+    """REQUIREMENT-ID: MINIMAL-006
+
+    Remove `torpedo ping` and `torpedo netcheck` plus
+    daemon/mesh/diagnostics.rs. Reachability probing is ping/mtr's job over
+    the mesh IPs. For wire compat (D1) a min node keeps a passive
+    ControlMsg::Ping -> Pong responder so probes from full nodes still work.
+    """
+    req_id = "MINIMAL-006"
+
+
+class RemoveMdns(Requirement):
+    """REQUIREMENT-ID: MINIMAL-007
+
+    Remove mDNS local discovery: spawn_mdns_discovery, the `torpedo mdns`
+    CLI, the mdns_enabled config key, and the iroh-mdns-address-lookup dep.
+    Discovery is relays + pkarr.
+    """
+    req_id = "MINIMAL-007"
+
+
+class RemovePeripherals(Requirement):
+    """REQUIREMENT-ID: MINIMAL-008
+
+    Remove peripheral surfaces: the `tor` and `otel` cargo features and
+    their optional deps, deep links (deeplink.rs, cli/open.rs, the
+    torpedo:// scheme), and the audit log (audit.rs).
+    """
+    req_id = "MINIMAL-008"
+
+
+class RemoveObservabilityExport(Requirement):
+    """REQUIREMENT-ID: MINIMAL-009
+
+    Remove the observability export surface: the stats.rs Prometheus
+    exporter on :9090 and `torpedo report` (build_report, the .tgz bundle,
+    the pre-filled GitHub issue). Per-peer counters that status display or
+    forward.rs logging still need are kept as plain fields. Logs stay
+    (logdir.rs, rolling files); shipping them anywhere is out of scope.
+    """
+    req_id = "MINIMAL-009"
+
+
+class RemoveFirewall(Requirement):
+    """REQUIREMENT-ID: MINIMAL-010
+
+    Remove the userspace firewall: firewall.rs, cli/firewall.rs,
+    daemon/mesh/firewall.rs, reject.rs, picker.rs, firewall.toml, the
+    auto_accept_firewall config key, the firewall benches, and
+    tests/e2e/firewall. forward.rs keeps only the upstream anti-spoof
+    ingress check. Packet filtering is nftables/ufw's job on the TUN
+    interface; README states the posture change (every mesh peer reaches
+    every port) loudly, with the nftables equivalent. Wire compat (D1):
+    GroupBlob keeps its suggested_firewall field; reconverge ignores it and
+    coordinator republish preserves it verbatim; ray-proto policy.rs types
+    stay.
+    """
+    req_id = "MINIMAL-010"
+
+
+class RemoveApplyLayer(Requirement):
+    """REQUIREMENT-ID: MINIMAL-011
+
+    Remove the declarative apply layer (which exists to push firewall specs
+    and dies with MINIMAL-010): apply.rs, cli/alias.rs,
+    daemon/mesh/alias.rs, `torpedo identityof`, and EXAMPLE_SPEC.
+    Fleet reconciliation is a script over `torpedo status --json`.
+    """
+    req_id = "MINIMAL-011"
+
+
+class RemoveMagicDns(Requirement):
+    """REQUIREMENT-ID: MINIMAL-012
+
+    Remove Magic DNS and all OS DNS mutation: dns.rs, dns_config.rs,
+    dns_resolver.rs, dns_packet.rs, daemon/dns_manager.rs, the port-53
+    intercept in forward.rs, the magic-dns/dns-upstreams config keys, deps
+    zbus/inotify, the panic-hook resolv.conf restore, and tests/e2e/dns.
+    Peers are reached by mesh IP from `torpedo status`; naming is
+    /etc/hosts' job (or a script over `status --json`). Hostnames remain in
+    the roster (wire compat, status display). The daemon's host footprint
+    shrinks to: TUN device, routes, config dir, log dir, unix socket.
+    """
+    req_id = "MINIMAL-012"
+
+
+class ApprovalOnlyAdmission(Requirement):
+    """REQUIREMENT-ID: MINIMAL-013
+
+    One admission mode: `torpedo create` always makes a Restricted network
+    (`--open` removed); joiners land in the pending queue and are admitted
+    with `torpedo accept`. Removed: the single-use invite ledger (invite.rs,
+    cli/invite.rs, daemon/mesh/invite.rs), invite gossip sending, and
+    reusable-key minting. Kept: joiner-side invite-code redemption (a min
+    node can still join a full-torpedo network by invite), blob reusable-key
+    validation, requests/accept/deny, admin add/list (co-coordinator grant
+    is the availability story for admission), and kick. InviteShare/
+    InviteUsed from full co-coordinators are ignored on receipt, never an
+    error (D1).
+    """
+    req_id = "MINIMAL-013"
+
+
+class FixedHostnameNoEphemeral(Requirement):
+    """REQUIREMENT-ID: MINIMAL-014
+
+    Remove hostname rename propagation (`torpedo hostname`,
+    daemon/mesh/rename.rs, pending_hostname) and the ephemeral auto-kick TTL
+    (`torpedo ephemeral`, spawn_stale_member_pruner). Hostname is fixed at
+    join; the coordinator still resolves collisions at admission. Manual
+    `kick` remains the remediation tool.
+    """
+    req_id = "MINIMAL-014"
+
+
+class PlainCliPresentation(Requirement):
+    """REQUIREMENT-ID: MINIMAL-015
+
+    Plain-text CLI output: remove style.rs, layout.rs, progress.rs and deps
+    indicatif/crossterm/unicode-width/humansize/mime_guess. `--json` stays
+    on every read command (the composable Unix interface). No colors,
+    spinners, glyphs, or interactive pickers.
+    """
+    req_id = "MINIMAL-015"
+
+
+class WorkspaceTrim(Requirement):
+    """REQUIREMENT-ID: MINIMAL-016
+
+    Trim the workspace to the one product: remove the ray-mobile member and
+    android/ (the Android build reuses subsystems MINIMAL removes), reduce
+    benches/ to the surviving forward path, prune cargo features to the
+    default set, and sweep justfile/cliff.toml targets that reference
+    removed surfaces.
+    """
+    req_id = "MINIMAL-016"
+
+
+# --------------------------------------------------------------------------
+# Constraints: torpedo-min gates (CON-M*)
+# --------------------------------------------------------------------------
+
+class DependencyAbsenceGate(Constraint):
+    """CONSTRAINT-ID: CON-M01
+
+    Anti-regression gate for the MINIMAL removals: Cargo.toml's direct
+    dependency sections must not name any dep owned by a removed subsystem:
+    reqwest, rustls, self-replace, sha2, semver, russh, pty-process, uzers,
+    zbus, inotify, iroh-mdns-address-lookup, indicatif, crossterm,
+    unicode-width, humansize, mime_guess, opentelemetry*,
+    iroh-tor-transport. (iroh and iroh-blobs are core and exempt.) Added to
+    reconcile.py once phases 1-2 of PLAN.md create the condition it gates.
+
+    ENFORCEMENT (reconcile.py): dependency_absence.unexpected_count equals 0.
+    """
+    constraint_id = "CON-M01"
+    enforcement_logic = "{{ dependency_absence.unexpected_count == 0 }}"
+
+
+class WireCompatWithFullTorpedo(Constraint):
+    """CONSTRAINT-ID: CON-M02
+
+    torpedo-min stays wire-compatible with full torpedo (design decision D1):
+    transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob struct in
+    src/membership.rs must retain its `suggested_firewall` and
+    `reusable_keys` fields (ignored/preserved, never enforced or minted).
+    Breaking this silently severs mixed min/full networks.
+
+    ENFORCEMENT (reconcile.py): wire_compat.mesh_version equals 1 and
+    wire_compat.blob_fields_present is true.
+    """
+    constraint_id = "CON-M02"
+    enforcement_logic = "{{ wire_compat.mesh_version == 1 and wire_compat.blob_fields_present }}"

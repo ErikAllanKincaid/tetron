@@ -2,6 +2,8 @@
 
 > **This file is the canonical guidance for any AI coding agent working in this repository.** `AGENTS.md` is the source of truth; `CLAUDE.md` is a symlink to it (so Claude Code auto-loads it while the portable `AGENTS.md` name serves every other agent tool). Edit `AGENTS.md`, never the symlink.
 
+> **THIS REPOSITORY IS `torpedo-min`**, the minimal variant of torpedo, cloned from full torpedo at 4809edb. Read `PROPOSAL.md` (what and why, design decisions D1-D6) and `PLAN.md` (commit-by-commit removal order) before doing anything. The MINIMAL-* / CON-M* section at the end of `spec/design_spec.py` governs the work here. Full torpedo lives in its own repository (`origin` points at it for cherry-picks) and must not receive changes from here. Until the MINIMAL removals land, the guidance below still describes the inherited full-torpedo surface; each removal commit trims the affected sections.
+
 ## What Torpedo is (and is not)
 
 Torpedo is a **fork of [rayfish](https://github.com/rayfish/rayfish)**, a P2P mesh VPN powered by [iroh](https://iroh.computer). It is not original software; almost all architecture, protocol design, and code are upstream's. The fork exists for **one product goal**: make the overlay IPv4 subnet **configurable** so Torpedo can run alongside Tailscale on the same host. Upstream hardcodes `100.64.0.0/10` (the CGNAT range Tailscale also claims) and refuses to start next to Tailscale; Torpedo defaults to `10.88.0.0/16` and lets the operator pick any CIDR per network.
