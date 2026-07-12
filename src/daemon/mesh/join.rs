@@ -255,20 +255,12 @@ fn persist_join_config(
         .and_then(|m| m.hostname.clone())
         .or(my_hostname.clone());
     // Preserve across reconnects/restores state the just-fetched blob doesn't
-    // carry: the direct-connection flag, a queued rename intent, the SSH allow
-    // list, and node-local aliases.
-    let (direct, pending_hostname, ssh_allow, aliases, prev_auto_accept_files) =
+    // carry: the direct-connection flag, a queued rename intent, and
+    // node-local aliases.
+    let (direct, pending_hostname, aliases, prev_auto_accept_files) =
         config::load_network(network_name)?
-            .map(|n| {
-                (
-                    n.direct,
-                    n.pending_hostname,
-                    n.ssh_allow,
-                    n.aliases,
-                    n.auto_accept_files,
-                )
-            })
-            .unwrap_or((false, None, vec![], BTreeMap::new(), false));
+            .map(|n| (n.direct, n.pending_hostname, n.aliases, n.auto_accept_files))
+            .unwrap_or((false, None, BTreeMap::new(), false));
     // The toggle command (`torpedo files auto-accept`) is authoritative, so preserve
     // a previously-persisted value; the join-time `--auto-accept-files` seed only
     // needs to take effect on the first join (no prior config).
@@ -288,7 +280,6 @@ fn persist_join_config(
         auto_accept_files,
         admins: vec![],
         direct,
-        ssh_allow,
         aliases,
         ephemeral_ttl_secs: None,
     })

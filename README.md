@@ -127,7 +127,6 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename.
 - 🧱 **Per-device firewall** — a userspace firewall for mesh traffic, layered on top of your host/kernel firewall. Directional, per-port, per-network rules, secure by default. `torpedo firewall --help`.
-- 🔑 **Mesh SSH, no keys** — `torpedo firewall ssh on` runs an embedded SSH server on your mesh IPs; connect with a stock client (`ssh user@host.ray`), authenticated by mesh identity.
 - 📁 **File sharing** — `torpedo send <file> <peer>`.
 - 🧩 **Declarative deploy** — `torpedo apply <spec.yaml>` reconciles networks + suggested firewall rules.
 - 📱 **Multi-device identity** — `torpedo pair` shares one identity across your devices.

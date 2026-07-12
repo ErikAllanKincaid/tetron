@@ -414,19 +414,6 @@ pub struct MeshManager {
     /// Whether the VPN is currently active (TUN up, networks connected) or on
     /// standby. Toggled by the `Up`/`Down` IPC commands.
     active: Arc<AtomicBool>,
-    /// Live per-network SSH allow lists for the embedded mesh SSH server. Swapped
-    /// atomically on `torpedo firewall ssh allow/deny`, so a running listener picks up
-    /// changes without restart. See [`crate::ssh`]. Desktop-only: the embedded
-    /// mesh SSH server isn't part of the Android build.
-    #[cfg(feature = "desktop")]
-    ssh_authz: crate::ssh::SshAuthz,
-    /// Cancellation token for the running SSH listeners (`None` when off / on
-    /// standby). Set by [`MeshManager::start_ssh`], cleared by `stop_ssh`.
-    // The only readers/writers (`start_ssh`/`stop_ssh`) are desktop-only, so on a
-    // `--no-default-features` (Android) build the field is inert; silence the
-    // resulting dead-code warning there rather than dropping the field.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-    ssh_token: std::sync::Mutex<Option<CancellationToken>>,
     /// Promotion signal: a co-coordinator's per-peer control reader sends the
     /// network name here after persisting an `AdminGrant` key, and the main
     /// daemon loop ([`serve_ipc`]) drains it into
@@ -713,7 +700,6 @@ impl MeshManager {
                 | IpcMessage::FirewallShow
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
-                | IpcMessage::FirewallSshShow
                 | IpcMessage::ListFiles
                 | IpcMessage::Connections
                 | IpcMessage::ContactId
@@ -894,14 +880,6 @@ impl MeshManager {
             IpcMessage::FilesAutoAccept { network, enabled } => {
                 self.files_auto_accept(&network, enabled).await
             }
-            IpcMessage::FirewallSshSet { enabled } => self.firewall_ssh_set(enabled),
-            IpcMessage::FirewallSshAllow {
-                network,
-                peer,
-                users,
-                allow,
-            } => self.firewall_ssh_allow(&network, &peer, users, allow).await,
-            IpcMessage::FirewallSshShow => self.firewall_ssh_show(),
             IpcMessage::SetHostname { network, hostname } => {
                 self.set_hostname(&network, &hostname).await
             }

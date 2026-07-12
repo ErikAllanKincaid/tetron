@@ -138,13 +138,6 @@ async fn build_daemon(
     crate::dns::init_node_overlay(node_subnet);
     let identity = IrohIdentityProvider::new(public_key, collision_index, node_subnet);
     let my_ip = identity.local_ip();
-    // Register our mesh addresses for the userspace SSH port NAT (mesh `:22`
-    // <-> the embedded server's listen port). Stays inactive until `ssh on`.
-    forward::init_ssh_nat(
-        my_ip,
-        derive_ipv6(&identity.local_identity()),
-        crate::forward::SSH_LISTEN_PORT,
-    );
 
     // --- iroh endpoint (one ALPN per saved network + the blobs ALPN) ---
     let mut app_config = config::load()?;
@@ -265,9 +258,7 @@ async fn build_daemon(
         pruned_peers: Arc::new(DashSet::new()),
         contact_public,
         active: active.clone(),
-        #[cfg(feature = "desktop")]
-        ssh_authz: crate::ssh::new_authz(),
-        ssh_token: std::sync::Mutex::new(None),
+
         promote_tx,
     });
 

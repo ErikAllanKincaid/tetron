@@ -2,9 +2,6 @@
 //! connect-all, activate/deactivate (data plane), teardown, leave. Split out of `daemon/mod.rs`.
 
 use super::super::*;
-// Only the desktop-gated `start_ssh` binds SSH listeners on concrete IPs.
-#[cfg(feature = "desktop")]
-use std::net::IpAddr;
 use std::sync::RwLock;
 
 /// The membership a coordinator restores at startup, sourced from the signed
@@ -196,9 +193,6 @@ impl MeshManager {
             auto_accept_files: net_config.map(|nc| nc.auto_accept_files).unwrap_or(false),
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
-            ssh_allow: net_config
-                .map(|nc| nc.ssh_allow.clone())
-                .unwrap_or_default(),
             aliases: net_config.map(|nc| nc.aliases.clone()).unwrap_or_default(),
             ephemeral_ttl_secs: None,
         })?;
@@ -622,56 +616,6 @@ impl MeshManager {
         tracing::info!(networks = count, "control plane connected");
     }
 
-    /// Rebuild the live per-network SSH allow-list snapshot from persisted
-    /// config, so a running listener authorizes against current rules. Cheap and
-    /// only called on SSH config changes / activation (not the hot path).
-    #[cfg(feature = "desktop")]
-    pub(crate) fn rebuild_ssh_authz(&self) {
-        let mut map = HashMap::new();
-        if let Ok(cfg) = config::load() {
-            for n in &cfg.networks {
-                if !n.ssh_allow.is_empty() {
-                    map.insert(n.name.clone(), n.ssh_allow.clone());
-                }
-            }
-        }
-        self.ssh_authz.store(Arc::new(map));
-    }
-
-    /// Start the embedded mesh SSH listeners on this node's mesh addresses, if
-    /// not already running. Idempotent. Bound to the data plane: called from
-    /// `activate` when `ssh_enabled`, and from the `ssh on` IPC while active.
-    #[cfg(feature = "desktop")]
-    pub(crate) fn start_ssh(self: &Arc<Self>) {
-        let mut guard = self.ssh_token.lock().unwrap();
-        if guard.is_some() {
-            return;
-        }
-        let token = CancellationToken::new();
-        *guard = Some(token.clone());
-        drop(guard);
-        self.rebuild_ssh_authz();
-        let my_v4 = self.identity.local_ip();
-        let my_v6 = derive_ipv6(&self.identity.local_identity());
-        let server = crate::ssh::SshServer::new(
-            self.peers.clone(),
-            self.device_user_map.clone(),
-            self.ssh_authz.clone(),
-        );
-        server.spawn(vec![IpAddr::V4(my_v4), IpAddr::V6(my_v6)], token);
-        // Turn on the userspace port NAT so mesh `:22` reaches the listener.
-        crate::forward::set_ssh_nat_active(true);
-    }
-
-    /// Stop the SSH listeners if running. Idempotent.
-    #[cfg(feature = "desktop")]
-    pub(crate) fn stop_ssh(&self) {
-        crate::forward::set_ssh_nat_active(false);
-        if let Some(t) = self.ssh_token.lock().unwrap().take() {
-            t.cancel();
-        }
-    }
-
     /// Activate the VPN: bring the TUN interface up, configure system DNS.
     /// Idempotent — a no-op if already active. Runs entirely inside the
     /// (root) daemon, so the IPC client needs no privileges.
@@ -759,13 +703,6 @@ impl MeshManager {
         let dns_tun_name = self.tun_name.lock().unwrap().clone();
         self.dns.configure(&dns_tun_name, &mut warnings).await;
 
-        // Start the embedded mesh SSH server if enabled. It binds the mesh IPs'
-        // port 22, so it follows the data plane (mesh addresses must be up).
-        #[cfg(feature = "desktop")]
-        if config::load().map(|c| c.ssh_enabled).unwrap_or(false) {
-            self.start_ssh();
-        }
-
         tracing::info!("data plane activated");
         if warnings.is_empty() {
             IpcMessage::Ok {
@@ -792,10 +729,6 @@ impl MeshManager {
                 message: "already on standby".into(),
             };
         }
-
-        // The SSH listeners bind the mesh IPs, which go down with the data plane.
-        #[cfg(feature = "desktop")]
-        self.stop_ssh();
 
         // Clone the TUN name out of the lock before awaiting (see `activate`);
         // the DnsManager reverts system DNS and clears the TUN search domains.

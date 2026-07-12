@@ -27,22 +27,18 @@ strip = "symbols"
 [[bin]]
 name = "torpedo"
 path = "src/main.rs"
-# The `ray` CLI/daemon binary is desktop-only: it drives the TUN device, the
-# embedded SSH server, and 1Password backup, none of which
-# exist on Android. Gating it on the `desktop` feature means a
+# The `ray` CLI/daemon binary is desktop-only: it drives the TUN device and
+# 1Password backup, neither of which exists on Android. Gating it on the `desktop` feature means a
 # `--no-default-features` build (the Android library build) compiles only the
 # library and skips this target instead of failing on desktop-only code.
 required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-# Desktop-only surface: the TUN-backed daemon binary, the embedded mesh SSH
-# server (russh/pty-process/uzers), and interactive password prompts (rpassword).
-# Off for the Android library build, which reuses only the mesh/forward core.
+# Desktop-only surface: the TUN-backed daemon binary and interactive password
+# prompts (rpassword). Off for the Android library build, which reuses only the
+# mesh/forward core.
 desktop = [
-    "dep:russh",
-    "dep:pty-process",
-    "dep:uzers",
     "dep:rpassword",
 ]
 tor = ["dep:iroh-tor-transport"]
@@ -117,17 +113,6 @@ argon2 = "0.5.3"
 rpassword = { version = "7.5.4", optional = true }
 async-trait = "0.1"
 bytesize = "2.4.0"
-# Embedded mesh SSH server (`ray firewall ssh on`): pure-Rust async SSH on tokio.
-# Use the `ring` crypto backend (already in the tree via iroh) instead of the
-# default `aws-lc-rs`, whose C build breaks cross-compilation (`just cross`).
-russh = { version = "0.54", default-features = false, features = ["ring", "flate2"], optional = true }
-# PTY allocation + login-shell spawning for SSH sessions (async/tokio).
-pty-process = { version = "0.5", features = ["async"], optional = true }
-# getpwnam-style passwd lookup to resolve the requested SSH unix user.
-uzers = { version = "0.12", optional = true }
-# Build the mesh SSH listener socket with SO_REUSEADDR/SO_REUSEPORT so binding
-# a specific mesh IP's port 22 coexists with a host sshd on 0.0.0.0:22.
-socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 tempfile = "3"

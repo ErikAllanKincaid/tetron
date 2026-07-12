@@ -78,8 +78,6 @@ pub mod ratelimit;
 pub mod reject;
 pub mod revocation;
 pub mod shutdown;
-#[cfg(feature = "desktop")]
-pub mod ssh;
 pub mod stats;
 pub mod style;
 pub mod transport;

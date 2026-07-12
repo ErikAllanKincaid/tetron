@@ -10,7 +10,6 @@
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
 #   apply         3-peer declarative `torpedo apply` deploy       (tests/e2e/apply)
 #   dns           2-peer Magic DNS resolution + resolv.conf takeover (tests/e2e/dns)
-#   ssh           2-peer mesh SSH (`torpedo firewall ssh`) allow/deny matrix (tests/e2e/ssh)
 #   reliability   4-peer full-mesh packet-loss test (ping + iperf3 UDP) (tests/e2e/reliability)
 #   restore-offline 3-peer member-restore-with-coordinator-offline test (tests/e2e/restore-offline)
 #   unpair        3-peer `torpedo unpair` device-cert revocation test (tests/e2e/unpair)
@@ -52,9 +51,6 @@ scenario_meta(){
                  LABELS=(srv-a srv-b srv-c) ;;
     dns)         DIR="$ROOT/tests/e2e/dns"
                  NAMES=(rayfish-dns-a rayfish-dns-b)
-                 LABELS=(srv-a srv-b) ;;
-    ssh)         DIR="$ROOT/tests/e2e/ssh"
-                 NAMES=(rayfish-ssh-a rayfish-ssh-b)
                  LABELS=(srv-a srv-b) ;;
     reliability) DIR="$ROOT/tests/e2e/reliability"
                  NAMES=(rayfish-reli-a rayfish-reli-b rayfish-reli-c rayfish-reli-d)

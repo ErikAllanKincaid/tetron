@@ -149,11 +149,6 @@ pub struct NetworkConfig {
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
-    /// Peers authorized to SSH into this node over this network's mesh link
-    /// (`torpedo firewall ssh allow <net> <peer>`). Only consulted when the global
-    /// `ssh_enabled` toggle is on. Empty = no peer may SSH in.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ssh_allow: Vec<SshRule>,
     /// Node-local, per-network aliases (`alias name -> identity string`), set via
     /// `torpedo alias`. Display-only convenience: shown inline in `torpedo status` and
     /// used to seed `torpedo apply`'s `aliases:` map. Never published in the
@@ -166,20 +161,6 @@ pub struct NetworkConfig {
     /// never rides the signed blob.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ephemeral_ttl_secs: Option<u64>,
-}
-
-/// One mesh-SSH authorization entry: a peer and the local unix users it may log
-/// in as. `peer` is a peer's user-identity (hex [`EndpointId`]) or `"*"` (any
-/// peer on the network). `users` lists the permitted login accounts; an **empty
-/// list means any non-root user** (the secure default), and `"*"` in the list
-/// means any user including root. Setting a peer's rule replaces its `users`
-/// (last write wins); the SSH server folds rules across shared networks at
-/// login (see [`crate::ssh`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SshRule {
-    pub peer: String,
-    #[serde(default)]
-    pub users: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -511,11 +492,6 @@ pub struct AppConfig {
     /// Set via `torpedo config set magic-dns off|auto|direct`.
     #[serde(default)]
     pub magic_dns: MagicDnsMode,
-    /// Global toggle for the embedded mesh SSH server (`torpedo firewall ssh on`).
-    /// When on, the daemon listens on each mesh IP's port 22 and admits peers
-    /// authorized in a network's [`NetworkConfig::ssh_allow`] list. Off by default.
-    #[serde(default)]
-    pub ssh_enabled: bool,
     /// Absolute directory where auto-accepted (own-device) files are written.
     /// `None` falls back to `download_user`, then the operator's ~/Downloads.
     /// Set via `torpedo files download-dir <path>`.
@@ -557,7 +533,6 @@ impl Default for AppConfig {
             discovery_dns: ServerOverride::default(),
             dns_upstreams: ServerOverride::default(),
             magic_dns: MagicDnsMode::default(),
-            ssh_enabled: false,
             download_dir: None,
             download_user: None,
             networks: Vec::new(),
@@ -646,8 +621,6 @@ struct Settings {
     dns_upstreams: ServerOverride,
     #[serde(default)]
     magic_dns: MagicDnsMode,
-    #[serde(default)]
-    ssh_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     download_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -902,7 +875,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             discovery_dns: ServerOverride::default(),
             dns_upstreams: ServerOverride::default(),
             magic_dns: MagicDnsMode::default(),
-            ssh_enabled: false,
             download_dir: None,
             download_user: None,
             pending_joins: Vec::new(),
@@ -945,7 +917,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         discovery_dns: settings.discovery_dns,
         dns_upstreams: settings.dns_upstreams,
         magic_dns: settings.magic_dns,
-        ssh_enabled: settings.ssh_enabled,
         download_dir: settings.download_dir,
         download_user: settings.download_user,
         networks,
@@ -993,7 +964,6 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         discovery_dns: config.discovery_dns.clone(),
         dns_upstreams: config.dns_upstreams.clone(),
         magic_dns: config.magic_dns,
-        ssh_enabled: config.ssh_enabled,
         download_dir: config.download_dir.clone(),
         download_user: config.download_user,
         pending_joins: config.pending_joins.clone(),
@@ -1157,7 +1127,6 @@ mod tests {
                     auto_accept_files: false,
                     admins: vec![],
                     direct: false,
-                    ssh_allow: vec![],
                     aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
@@ -1176,7 +1145,6 @@ mod tests {
                     auto_accept_files: false,
                     admins: vec![],
                     direct: false,
-                    ssh_allow: vec![],
                     aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
@@ -1216,7 +1184,6 @@ mod tests {
             auto_accept_files: false,
             admins: vec![],
             direct: false,
-            ssh_allow: vec![],
             aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         };
@@ -1244,7 +1211,6 @@ mod tests {
                 auto_accept_files: false,
                 admins: vec![],
                 direct: false,
-                ssh_allow: vec![],
                 aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
@@ -1265,7 +1231,6 @@ mod tests {
             auto_accept_files: false,
             admins: vec![],
             direct: false,
-            ssh_allow: vec![],
             aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         };
@@ -1297,7 +1262,6 @@ mod tests {
                     auto_accept_files: false,
                     admins: vec![],
                     direct: false,
-                    ssh_allow: vec![],
                     aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
@@ -1316,7 +1280,6 @@ mod tests {
                     auto_accept_files: false,
                     admins: vec![],
                     direct: false,
-                    ssh_allow: vec![],
                     aliases: BTreeMap::new(),
                     ephemeral_ttl_secs: None,
                 },
@@ -1363,7 +1326,6 @@ mod tests {
                 auto_accept_files: false,
                 admins: vec![],
                 direct: false,
-                ssh_allow: vec![],
                 aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
@@ -1395,7 +1357,6 @@ mod tests {
                 auto_accept_files: false,
                 admins: vec![],
                 direct: false,
-                ssh_allow: vec![],
                 aliases: BTreeMap::new(),
                 ephemeral_ttl_secs: None,
             }],
@@ -1481,7 +1442,6 @@ name = "test"
             auto_accept_files: false,
             admins: vec![],
             direct: false,
-            ssh_allow: vec![],
             aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         }

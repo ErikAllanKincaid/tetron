@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Embedded mesh SSH server (MINIMAL-003)**: `torpedo firewall ssh` and the
+  in-daemon SSH server (with its userspace port-22 NAT) are gone, along with
+  the russh/pty-process/uzers/socket2 dependencies. Remote shells are the host
+  sshd's job: it listens on the mesh IPs like any other interface, so
+  `ssh user@<mesh-ip>` keeps working with your normal keys and config.
 - **Self-update (MINIMAL-002)**: the `torpedo update` and `torpedo auto-update`
   commands, the `install --auto-update` flag, the daemon's periodic update
   task, and the `auto_update` status field are gone. Upstream torpedo shipped

@@ -7,8 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
@@ -33,115 +32,6 @@ const MAX_PEER_DATAGRAM: usize = 1500;
 /// one is exhausted (the old chunk stays alive via the `Bytes` already handed to
 /// quinn and is freed as those datagrams are sent).
 const TX_POOL_CHUNK: usize = 64 * 1024;
-
-/// The port a stock `ssh` client targets (`ssh user@host.ray`). Defined here in
-/// the always-compiled forward core because the userspace SSH NAT below rewrites
-/// it on every platform, including Android, where the desktop-only `crate::ssh`
-/// module (which re-exports this) is gated out.
-pub(crate) const SSH_PORT: u16 = 22;
-
-/// Internal port the embedded SSH server binds. Mesh `:22` is translated
-/// to/from this port by the userspace NAT below. Chosen below the ephemeral
-/// source-port ranges so the outbound NAT (which matches `src_port == this`)
-/// can't collide with a kernel-assigned ephemeral port. See `crate::ssh`.
-pub(crate) const SSH_LISTEN_PORT: u16 = 30022;
-
-/// Userspace NAT that maps this node's mesh `:22` to/from the embedded SSH
-/// server's internal listen port ([`SSH_LISTEN_PORT`]). The kernel
-/// won't let us bind `<mesh-ip>:22` alongside a host sshd on `0.0.0.0:22`, so
-/// instead of an OS-firewall redirect (which would be Linux-only) we translate
-/// the port inside our own forwarding path — portable across every platform the
-/// TUN runs on. Inbound (peer -> us) rewrites dest `22 -> listen`; outbound
-/// (us -> peer) rewrites source `listen -> 22`. Active only while `torpedo firewall
-/// ssh` is on.
-struct SshNat {
-    active: AtomicBool,
-    v4: Ipv4Addr,
-    v6: Ipv6Addr,
-    listen_port: u16,
-}
-
-static SSH_NAT: OnceLock<SshNat> = OnceLock::new();
-
-/// Register this node's mesh addresses + SSH listen port. Called once at daemon
-/// start; the NAT stays inactive until [`set_ssh_nat_active`].
-pub fn init_ssh_nat(v4: Ipv4Addr, v6: Ipv6Addr, listen_port: u16) {
-    let _ = SSH_NAT.set(SshNat {
-        active: AtomicBool::new(false),
-        v4,
-        v6,
-        listen_port,
-    });
-}
-
-/// Toggle the SSH port NAT (on when the mesh SSH server is running).
-pub fn set_ssh_nat_active(on: bool) {
-    if let Some(nat) = SSH_NAT.get() {
-        nat.active.store(on, Ordering::Relaxed);
-    }
-}
-
-/// The NAT config, or `None` when unset or inactive.
-fn ssh_nat() -> Option<&'static SshNat> {
-    SSH_NAT.get().filter(|n| n.active.load(Ordering::Relaxed))
-}
-
-impl SshNat {
-    fn is_ours(&self, ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(v) => v == self.v4,
-            IpAddr::V6(v) => v == self.v6,
-        }
-    }
-}
-
-/// RFC 1624 incremental checksum update for a single changed 16-bit word:
-/// `HC' = ~(~HC + ~m + m')`. Used so a port rewrite doesn't require recomputing
-/// the whole TCP checksum.
-fn csum_replace2(check: u16, old: u16, new: u16) -> u16 {
-    let mut sum = (!check as u32) + (!old as u32 & 0xffff) + new as u32;
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-/// Rewrite a TCP port in place for the SSH NAT, fixing the TCP checksum. When
-/// `inbound`, maps dest `22 -> listen_port` (packet addressed to our mesh `:22`);
-/// otherwise maps source `listen_port -> 22` (our SSH server's reply). Returns
-/// `true` if it rewrote. `info` is the already-parsed header, so the common case
-/// (no match) costs nothing.
-fn rewrite_ssh_port(pkt: &mut [u8], info: &firewall::PacketInfo, inbound: bool) -> bool {
-    let Some(nat) = ssh_nat() else { return false };
-    if info.protocol != 6 {
-        return false; // TCP only
-    }
-    let ihl = match pkt.first().map(|b| b >> 4) {
-        Some(4) => ((pkt[0] & 0x0f) as usize) * 4,
-        Some(6) => 40, // rayfish packets carry no IPv6 extension headers
-        _ => return false,
-    };
-    if pkt.len() < ihl + 18 {
-        return false;
-    }
-    let (port_off, old, new) = if inbound {
-        if !nat.is_ours(info.dst_ip) || info.dst_port != SSH_PORT {
-            return false;
-        }
-        (ihl + 2, SSH_PORT, nat.listen_port)
-    } else {
-        if !nat.is_ours(info.src_ip) || info.src_port != nat.listen_port {
-            return false;
-        }
-        (ihl, nat.listen_port, SSH_PORT)
-    };
-    pkt[port_off..port_off + 2].copy_from_slice(&new.to_be_bytes());
-    let ck_off = ihl + 16;
-    let old_ck = u16::from_be_bytes([pkt[ck_off], pkt[ck_off + 1]]);
-    let new_ck = csum_replace2(old_ck, old, new);
-    pkt[ck_off..ck_off + 2].copy_from_slice(&new_ck.to_be_bytes());
-    true
-}
 
 /// Decision returned by [`evaluate_inbound`] for a datagram received from a peer.
 pub(crate) enum InboundDecision {
@@ -180,7 +70,7 @@ pub(crate) fn evaluate_inbound(
     // Ingress anti-spoofing: a peer may only inject packets sourced from its own
     // assigned mesh address. Anything else (e.g. one peer forging another's mesh
     // IP) is dropped before the firewall or any in-daemon listener sees it, so
-    // identity-from-source-IP (used by mesh SSH) stays trustworthy.
+    // identity-from-source-IP stays trustworthy.
     let src_ok = match info.src_ip {
         IpAddr::V4(v4) => v4 == peer_ip,
         IpAddr::V6(v6) => v6 == peer_ipv6,
@@ -364,18 +254,6 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             stats.record_drop(DropReason::Backpressure);
             continue;
         }
-        // SSH NAT: rewrite our reply's source port (listen -> 22) so the peer
-        // sees it as coming from `:22`. The cheap pre-check (TCP + source port ==
-        // listen port) gates the copy; `rewrite_ssh_port` still confirms the
-        // source IP is ours and no-ops otherwise, so ordinary traffic is untouched.
-        let pkt = if ssh_nat().is_some_and(|n| info.protocol == 6 && info.src_port == n.listen_port)
-        {
-            let mut v = pkt.to_vec();
-            rewrite_ssh_port(&mut v, &info, false);
-            Bytes::from(v)
-        } else {
-            pkt
-        };
         match route.conn.send_datagram(pkt) {
             Ok(()) => stats.record_tx(n),
             Err(e) => {
@@ -447,22 +325,6 @@ pub fn spawn_peer_reader(
             ) {
                 InboundDecision::Accept => {
                     stats.record_rx(datagram.len());
-                    // SSH NAT: a packet to our mesh `:22` is rewritten to the
-                    // SSH server's internal listen port before injection. The
-                    // anti-spoof + firewall checks above already ran on the
-                    // original `:22` packet. Cheap pre-check avoids a copy on
-                    // ordinary traffic.
-                    let datagram = match ssh_nat() {
-                        Some(_) => match firewall::parse_packet_info(&datagram) {
-                            Some(info) if info.protocol == 6 && info.dst_port == SSH_PORT => {
-                                let mut v = datagram.to_vec();
-                                rewrite_ssh_port(&mut v, &info, true);
-                                Bytes::from(v)
-                            }
-                            _ => datagram,
-                        },
-                        None => datagram,
-                    };
                     // Resolve the live writer for each packet: the sender is
                     // swapped on every TUN re-attach (VPN toggle). A send error
                     // means the writer is currently down (standby between a
@@ -708,84 +570,6 @@ mod tests {
             evaluate_inbound(&pkt, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
             InboundDecision::Accept
         ));
-    }
-
-    /// Compute the TCP checksum of a v4 packet (20-byte IP header) with the
-    /// checksum field treated as zero — what a correct packet's field should hold.
-    fn tcp_csum_v4(pkt: &[u8]) -> u16 {
-        let tcp = &pkt[20..];
-        let mut sum = 0u32;
-        for off in [12, 14, 16, 18] {
-            sum += u16::from_be_bytes([pkt[off], pkt[off + 1]]) as u32;
-        }
-        sum += 6; // protocol
-        sum += tcp.len() as u32;
-        let mut i = 0;
-        while i + 1 < tcp.len() {
-            if i != 16 {
-                // skip the checksum field itself
-                sum += u16::from_be_bytes([tcp[i], tcp[i + 1]]) as u32;
-            }
-            i += 2;
-        }
-        while (sum >> 16) != 0 {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-        !(sum as u16)
-    }
-
-    #[test]
-    fn ssh_nat_rewrites_port_and_keeps_checksum_valid() {
-        // `SSH_NAT` is a process-global `OnceLock`, so another test in this binary
-        // (e.g. the headless daemon build) may seed it first, making our
-        // `init_ssh_nat` a no-op. Read the addresses the NAT actually holds and
-        // build the packet from those, so the test is independent of run order.
-        init_ssh_nat(Ipv4Addr::new(100, 88, 0, 1), Ipv6Addr::LOCALHOST, 41384);
-        set_ssh_nat_active(true);
-        let (our_v4, listen_port) = {
-            let nat = ssh_nat().expect("nat active");
-            (nat.v4, nat.listen_port)
-        };
-
-        // v4 TCP packet from a peer to our mesh :22, with a correct checksum.
-        let mut pkt = vec![0u8; 40];
-        pkt[0] = 0x45;
-        pkt[9] = 6; // TCP
-        pkt[12..16].copy_from_slice(&[100, 88, 0, 9]); // src (peer)
-        pkt[16..20].copy_from_slice(&our_v4.octets()); // dst (us)
-        pkt[20..22].copy_from_slice(&5000u16.to_be_bytes()); // src port
-        pkt[22..24].copy_from_slice(&22u16.to_be_bytes()); // dst port 22
-        pkt[32] = 0x50; // data offset = 5 (20-byte TCP header)
-        let ck = tcp_csum_v4(&pkt);
-        pkt[36..38].copy_from_slice(&ck.to_be_bytes());
-
-        let info = firewall::parse_packet_info(&pkt).unwrap();
-        assert!(rewrite_ssh_port(&mut pkt, &info, true));
-        let info2 = firewall::parse_packet_info(&pkt).unwrap();
-        assert_eq!(
-            info2.dst_port, listen_port,
-            "dest port rewritten 22 -> listen"
-        );
-        // The incrementally-updated checksum must equal a freshly computed one.
-        let field = u16::from_be_bytes([pkt[36], pkt[37]]);
-        assert_eq!(
-            field,
-            tcp_csum_v4(&pkt),
-            "checksum stays valid after rewrite"
-        );
-
-        // Inactive -> no rewrite.
-        set_ssh_nat_active(false);
-        let mut pkt2 = pkt.clone();
-        let info3 = firewall::parse_packet_info(&pkt2).unwrap();
-        assert!(!rewrite_ssh_port(&mut pkt2, &info3, true));
-    }
-
-    #[test]
-    fn csum_replace2_round_trips() {
-        // Swapping a field value and swapping it back restores the checksum.
-        let c = 0x1234u16;
-        assert_eq!(csum_replace2(csum_replace2(c, 22, 41384), 41384, 22), c);
     }
 
     #[test]

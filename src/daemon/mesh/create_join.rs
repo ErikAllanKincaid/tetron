@@ -347,7 +347,6 @@ impl MeshManager {
             auto_accept_files: false,
             admins: vec![],
             direct,
-            ssh_allow: vec![],
             aliases: BTreeMap::new(),
             ephemeral_ttl_secs: None,
         })?;
