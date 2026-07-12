@@ -112,8 +112,6 @@ pub(crate) use dns_manager::DnsManager;
 mod file_service;
 pub(crate) use file_service::FileService;
 
-mod connect_service;
-pub(crate) use connect_service::ConnectService;
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -389,9 +387,6 @@ pub struct MeshManager {
     /// File-transfer + pairing state and ALPN accept arms (see [`FileService`]).
     /// Shared with [`ProtocolRouter`], which runs the accept arms.
     files: Arc<FileService>,
-    /// `torpedo connect` state + ALPN accept arm (see [`ConnectService`]). Shared with
-    /// [`ProtocolRouter`], which runs the accept arm.
-    connect: Arc<ConnectService>,
     device_cert: Option<control::DeviceCert>,
     device_user_map: peers::DeviceUserMap,
     /// Device-cert revocation cache (`torpedo unpair`); see [`MeshCtx::revocation`].
@@ -399,11 +394,6 @@ pub struct MeshManager {
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
-    /// This node's contact id (`torpedo connect`): the public half of the rotatable
-    /// contact key. The secret lives in config (read fresh by the publisher and
-    /// `rotate_contact` so rotation needs no restart); only the public id is
-    /// surfaced here for `torpedo status` / `torpedo contact id`.
-    contact_public: EndpointId,
     /// Whether the VPN is currently active (TUN up, networks connected) or on
     /// standby. Toggled by the `Up`/`Down` IPC commands.
     active: Arc<AtomicBool>,
@@ -693,8 +683,6 @@ impl MeshManager {
                 | IpcMessage::FirewallSuggestions { .. }
                 | IpcMessage::FirewallPending { .. }
                 | IpcMessage::ListFiles
-                | IpcMessage::Connections
-                | IpcMessage::ContactId
                 | IpcMessage::AliasList { .. }
                 | IpcMessage::GetEphemeral { .. }
                 | IpcMessage::ListPairedDevices
@@ -906,16 +894,6 @@ impl MeshManager {
             IpcMessage::DenyRequest { network, id } => self.deny_request(&network, &id),
             IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
-            IpcMessage::Connect {
-                contact_id,
-                hostname,
-            } => self.connect(&contact_id, hostname).await,
-            IpcMessage::Connections => self.list_connections(),
-            IpcMessage::ApproveConnection { id } => self.approve_connection(&id).await,
-            IpcMessage::ContactId => IpcMessage::ContactIdResponse {
-                contact_id: self.contact_public.to_string(),
-            },
-            IpcMessage::RotateContact => self.rotate_contact().await,
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },

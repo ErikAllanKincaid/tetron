@@ -1,5 +1,5 @@
 //! DHT publishers for the mesh core: the notify-driven network-record
-//! publisher, the contact-record publisher (`torpedo connect`), the lazy
+//! publisher, the lazy
 //! co-coordinator publisher, and the shared snapshot-refresh + publish step.
 
 use super::super::*;
@@ -50,36 +50,6 @@ pub(crate) fn spawn_network_publisher(
                 _ = token.cancelled() => break,
                 _ = notify.notified() => {},
                 _ = tokio::time::sleep(Duration::from_secs(300)) => {},
-            }
-        }
-    })
-}
-
-/// Publish this node's contact record (`torpedo connect`).
-/// Publishes the `contact_key -> current endpoint` pkarr record on a TTL/2
-/// interval (record TTL is 300s). Runs for the lifetime of the daemon (control
-/// plane), not gated by the data-plane `active` flag, so standby nodes stay
-/// reachable for `torpedo connect` requests. Reads `contact_secret` fresh from
-/// config each cycle so a `RotateContact` takes effect without a restart.
-pub(crate) fn spawn_contact_publisher(
-    client: PkarrRelayClient,
-    endpoint_id: EndpointId,
-    token: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let secret = config::load().ok().and_then(|c| c.contact_secret_key);
-            if let Some(secret) = secret {
-                match dht::publish_contact(&client, &secret, endpoint_id).await {
-                    Ok(()) => {
-                        tracing::debug!(contact = %secret.public().fmt_short(), "published contact record")
-                    }
-                    Err(e) => tracing::warn!(error = %e, "failed to publish contact record"),
-                }
-            }
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(150)) => {},
             }
         }
     })
@@ -244,5 +214,42 @@ pub(crate) async fn update_snapshot_and_publish(
     }
     if let Some(notify) = dht_notify {
         notify.notify_one();
+    }
+}
+
+impl MeshManager {
+    /// Store the current group snapshot as a blob and re-publish the pkarr record
+    /// so members reconcile the new membership (used after `torpedo accept`).
+    pub(crate) async fn store_and_publish_group(&self, network: &str) {
+        let (hash, net_key, snap_bytes) = {
+            let Some(handle) = self.networks.get(network) else {
+                return;
+            };
+            let s = handle.state.read().unwrap();
+            (
+                s.snapshot.as_ref().map(|x| x.hash),
+                s.network_secret_key.clone(),
+                s.snapshot.as_ref().map(|x| x.msgpack_bytes.clone()),
+            )
+        };
+        if let Some(bytes) = snap_bytes {
+            let _ = self.blob_store.blobs().add_slice(&bytes).await;
+        }
+        if let (Some(hash), Some(key)) = (hash, net_key)
+            && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
+        {
+            let mut seed_peers: Vec<EndpointId> = self
+                .peers
+                .peers_for_network(network)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            seed_peers.push(self.endpoint.id());
+            seed_peers.sort_by_key(|id| id.to_string());
+            seed_peers.dedup();
+            if let Err(e) = dht::publish_network(&client, &key, &hash, &seed_peers).await {
+                tracing::warn!(error = %e, "failed to publish network record after accept");
+            }
+        }
     }
 }

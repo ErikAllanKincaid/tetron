@@ -134,7 +134,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
         ipc::IpcMessage::StatusResponse {
             endpoint_id,
             active,
-            contact_id,
             daemon_version,
             networks,
             packets_rx,
@@ -142,14 +141,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
             bytes_rx,
             bytes_tx,
             pending_files,
-            pending_connects,
             ..
         } => {
             if json_enabled() {
                 print_json(&serde_json::json!({
                     "endpoint": endpoint_id.to_string(),
                     "active": active,
-                    "contact_id": contact_id,
                     "daemon_version": daemon_version,
                     "networks": networks,
                     "traffic": {
@@ -158,7 +155,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
                     },
                     "pending": {
                         "files": pending_files,
-                        "connects": pending_connects,
                     },
                 }));
                 return Ok(());
@@ -180,9 +176,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
             );
             if !active {
                 println!("  {}", style::faint("run `torpedo up` to activate"));
-            }
-            if let Some(ref cid) = contact_id {
-                println!("  {} {}", style::label("contact"), style::rose(cid),);
             }
 
             if networks.is_empty() {
@@ -213,7 +206,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 }
             }
 
-            print_pending_summary(&networks, pending_files, pending_connects);
+            print_pending_summary(&networks, pending_files);
 
             // Daemon/CLI version skew: after a manual binary upgrade the CLI is
             // new but the long-running daemon may still be the old one (e.g. it
@@ -416,12 +409,8 @@ fn render_peer_row(
 
 /// Render the trailing "pending" summary: things waiting on the user, each with
 /// the command that clears it. Per-network items (firewall suggestions, join
-/// requests) name their network; file/connect offers are global.
-fn print_pending_summary(
-    networks: &[ipc::NetworkStatus],
-    pending_files: usize,
-    pending_connects: usize,
-) {
+/// requests) name their network; file offers are global.
+fn print_pending_summary(networks: &[ipc::NetworkStatus], pending_files: usize) {
     let mut pending: Vec<(usize, String, String)> = Vec::new();
     for net in networks {
         if net.pending_suggestions > 0 {
@@ -444,13 +433,6 @@ fn print_pending_summary(
             pending_files,
             pluralize(pending_files, "file offer"),
             "torpedo files".to_string(),
-        ));
-    }
-    if pending_connects > 0 {
-        pending.push((
-            pending_connects,
-            pluralize(pending_connects, "connection request"),
-            "torpedo connections".to_string(),
         ));
     }
     if pending.is_empty() {

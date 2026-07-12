@@ -599,20 +599,6 @@ impl MeshManager {
             });
         }
 
-        // Publish the contact record immediately so `torpedo connect` works right
-        // away, rather than waiting up to one publisher interval (the active-gated
-        // `spawn_contact_publisher` only re-checks every TTL/2).
-        if let Some(secret) = app_config.contact_secret_key.clone()
-            && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
-        {
-            let endpoint_id = self.endpoint.id();
-            tokio::spawn(async move {
-                if let Err(e) = dht::publish_contact(&client, &secret, endpoint_id).await {
-                    tracing::warn!(error = %e, "failed to publish contact record on connect");
-                }
-            });
-        }
-
         tracing::info!(networks = count, "control plane connected");
     }
 

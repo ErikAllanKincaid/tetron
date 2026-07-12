@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Direct connect (MINIMAL-005)**: `torpedo connect`, `torpedo connections`,
+  and `torpedo contact` (the contact-id friend-request flow) are gone, along
+  with the `_torpedo_contact` DHT record and the connect ALPN. A private
+  2-peer link is a normal 2-member network: create it and approve the join.
 - **Observability export (MINIMAL-009)**: the Prometheus metrics endpoint on
   `:9090` and the `torpedo report` diagnostic-bundle command are gone. The
   daemon still logs to rolling files under the log directory, and traffic

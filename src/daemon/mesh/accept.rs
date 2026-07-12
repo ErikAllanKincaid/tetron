@@ -4,7 +4,7 @@
 //! queues joiners; `MemberAcceptState` welcomes approved members), the
 //! `AcceptHandler` enum the router dispatches through, and the `ProtocolRouter`
 //! that fans incoming connections out by ALPN (mesh handlers plus the
-//! `blobs`/`files`/`pair`/`connect` arms). `MeshCtx` and the roster-projection
+//! `blobs`/`files`/`pair` arms). `MeshCtx` and the roster-projection
 //! helpers stay in `daemon/mod.rs` since they are shared infrastructure.
 
 use super::super::*;
@@ -816,10 +816,6 @@ pub(crate) struct ProtocolRouter {
     /// delegates the `FILES_ALPN`/`PAIR_ALPN` arms to this; `MeshManager` holds
     /// the same handle for the IPC-side file/pairing commands.
     files: Arc<FileService>,
-    /// `torpedo connect` state (pending/approved/outgoing maps) and the `CONNECT_ALPN`
-    /// accept arm. The accept loop delegates to this; `MeshManager` holds the same
-    /// handle for the IPC-side connect commands.
-    connect: Arc<ConnectService>,
     /// In-flight `torpedo ping` probes, keyed by nonce. The control reader fires the
     /// oneshot when the matching `Pong` arrives so the ping handler can measure
     /// round-trip time. Cloned into both control readers.
@@ -827,16 +823,11 @@ pub(crate) struct ProtocolRouter {
 }
 
 impl ProtocolRouter {
-    pub(crate) fn new(
-        blobs: BlobsProtocol,
-        files: Arc<FileService>,
-        connect: Arc<ConnectService>,
-    ) -> Self {
+    pub(crate) fn new(blobs: BlobsProtocol, files: Arc<FileService>) -> Self {
         Self {
             blobs,
             handlers: DashMap::new(),
             files,
-            connect,
             pending_pongs: Arc::new(DashMap::new()),
         }
     }
@@ -855,7 +846,6 @@ impl ProtocolRouter {
         alpns.push(iroh_blobs::protocol::ALPN.to_vec());
         alpns.push(transport::FILES_ALPN.to_vec());
         alpns.push(PAIR_ALPN.to_vec());
-        alpns.push(transport::CONNECT_ALPN.to_vec());
         alpns
     }
 
@@ -887,7 +877,6 @@ impl ProtocolRouter {
                                 }
                                 a if a == transport::FILES_ALPN => router.files.accept_file_offer(conn).await,
                                 a if a == PAIR_ALPN => router.files.accept_pair_request(conn).await,
-                                a if a == transport::CONNECT_ALPN => router.connect.accept_connect_request(conn).await,
                                 _ => {
                                     if let Some(handler) = router.handlers.get(&alpn).map(|r| r.clone()) {
                                         let _ = handler.accept(conn).await;

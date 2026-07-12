@@ -465,12 +465,6 @@ pub struct AppConfig {
         with = "crate::membership::cidr_opt"
     )]
     pub subnet: Option<crate::membership::Subnet>,
-    /// Per-user "contact key" used by `torpedo connect`: a standing, rotatable
-    /// identity (distinct from the transport key and per-network keys) published
-    /// to pkarr so others can request a direct connection without a room id or
-    /// invite code. Lazily generated on first use via [`contact_secret`].
-    #[serde(default, with = "option_secret_key_hex")]
-    pub contact_secret_key: Option<SecretKey>,
     /// Custom iroh transport relay servers (NAT-traversal fallback).
     #[serde(default)]
     pub relay: ServerOverride,
@@ -517,18 +511,6 @@ pub struct AppConfig {
 
 
 
-/// Return this node's contact key, generating and persisting it on first use.
-/// The caller is responsible for `save`-ing the config afterwards (the returned
-/// secret is also written into `config.contact_secret_key`).
-pub fn contact_secret(config: &mut AppConfig) -> SecretKey {
-    if let Some(k) = &config.contact_secret_key {
-        return k.clone();
-    }
-    let secret = SecretKey::generate();
-    config.contact_secret_key = Some(secret.clone());
-    secret
-}
-
 /// Parse the persisted revoked device keys (`revoked_devices`) into
 /// `EndpointId`s, skipping any malformed entry.
 pub fn revoked_device_ids(config: &AppConfig) -> Vec<EndpointId> {
@@ -539,21 +521,12 @@ pub fn revoked_device_ids(config: &AppConfig) -> Vec<EndpointId> {
         .collect()
 }
 
-/// Rotate this node's contact key, replacing it with a fresh one. The old
-/// contact id stops resolving once its pkarr record TTLs out. The caller must
-/// `save` the config afterwards.
-pub fn rotate_contact_secret(config: &mut AppConfig) -> SecretKey {
-    let secret = SecretKey::generate();
-    config.contact_secret_key = Some(secret.clone());
-    secret
-}
-
 // ---- Storage layout -------------------------------------------------------
 //
 // Config is sharded so a write to one network can never clobber another:
 //
 //   <config_dir>/settings.toml          globals (operator, default
-//                                        hostname, contact key) — secret-bearing
+//                                        hostname) — secret-bearing
 //   <config_dir>/networks/<name>.toml   one NetworkConfig each — secret-bearing
 //
 // All writes go through `write_atomic` (temp file in the same dir + rename), so
@@ -583,8 +556,6 @@ struct Settings {
         with = "crate::membership::cidr_opt"
     )]
     subnet: Option<crate::membership::Subnet>,
-    #[serde(default, with = "option_secret_key_hex")]
-    contact_secret_key: Option<SecretKey>,
     #[serde(default)]
     relay: ServerOverride,
     #[serde(default)]
@@ -841,7 +812,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             operator_uid: None,
             default_hostname: None,
             subnet: None,
-            contact_secret_key: None,
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
             dns_upstreams: ServerOverride::default(),
@@ -882,7 +852,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         operator_uid: settings.operator_uid,
         default_hostname: settings.default_hostname,
         subnet: settings.subnet,
-        contact_secret_key: settings.contact_secret_key,
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
         dns_upstreams: settings.dns_upstreams,
@@ -928,7 +897,6 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         operator_uid: config.operator_uid,
         default_hostname: config.default_hostname.clone(),
         subnet: config.subnet,
-        contact_secret_key: config.contact_secret_key.clone(),
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
         dns_upstreams: config.dns_upstreams.clone(),
@@ -941,7 +909,6 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
-    // Secret-bearing: holds the contact key.
     write_atomic(&path, &contents, true)
 }
 
@@ -1337,25 +1304,6 @@ mod tests {
         assert!(parsed.networks[0].network_secret_key.is_some());
     }
 
-    #[test]
-    fn test_contact_secret_generate_and_persist() {
-        let mut config = AppConfig::default();
-        assert!(config.contact_secret_key.is_none());
-        let first = contact_secret(&mut config);
-        // Stable across calls once generated.
-        let second = contact_secret(&mut config);
-        assert_eq!(first.public(), second.public());
-        // Survives a serialize roundtrip.
-        let toml_str = toml::to_string_pretty(&config).unwrap();
-        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(
-            parsed.contact_secret_key.map(|k| k.public()),
-            Some(first.public())
-        );
-        // Rotation yields a different key.
-        let rotated = rotate_contact_secret(&mut config);
-        assert_ne!(rotated.public(), first.public());
-    }
 
     #[test]
     fn test_direct_flag_default_false() {

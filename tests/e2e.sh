@@ -5,7 +5,6 @@
 #
 # Scenarios:
 #   device-cert   3-peer device-cert / pairing test   (tests/e2e/device-cert)
-#   connect       2-peer `torpedo connect` direct test     (tests/e2e/connect)
 #   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
 #   apply         3-peer declarative `torpedo apply` deploy       (tests/e2e/apply)
@@ -37,9 +36,6 @@ scenario_meta(){
     device-cert) DIR="$ROOT/tests/e2e/device-cert"
                  NAMES=(rayfish-e2e-a rayfish-e2e-b rayfish-e2e-c)
                  LABELS=(srv-a srv-b srv-c) ;;
-    connect)     DIR="$ROOT/tests/e2e/connect"
-                 NAMES=(rayfish-connect-a rayfish-connect-b)
-                 LABELS=(srv-a srv-b) ;;
     firewall)    DIR="$ROOT/tests/e2e/firewall"
                  NAMES=(rayfish-fw-a rayfish-fw-b rayfish-fw-c)
                  LABELS=(srv-a srv-b srv-c) ;;

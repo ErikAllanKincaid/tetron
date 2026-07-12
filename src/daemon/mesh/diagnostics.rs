@@ -40,7 +40,6 @@ impl MeshManager {
         IpcMessage::StatusResponse {
             endpoint_id: self.endpoint.id(),
             active: self.active.load(Ordering::SeqCst),
-            contact_id: Some(self.contact_public.to_string()),
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
             networks: statuses,
             packets_rx: self.stats.packets_rx.get(),
@@ -48,7 +47,6 @@ impl MeshManager {
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
             pending_files: self.files.pending_files.lock().unwrap().len(),
-            pending_connects: self.connect.pending_connects.len(),
             pending_networks,
         }
     }

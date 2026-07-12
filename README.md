@@ -101,10 +101,6 @@ The **room id** is a discovery key, never an admission credential. On a **closed
 
 An **open** network (`torpedo create --open`) lets anyone with the room id join directly. By default the inbound firewall is default-deny (see `torpedo firewall show`), so ports must be opened explicitly. To let a peer reach a web server on your machine: `torpedo firewall add in allow -p tcp -P 80 --peer <PEERNAME>`.
 
-### Direct 2-peer connections
-
-Skip room ids entirely: everyone has a rotatable **contact id** (`torpedo contact`, also shown atop `torpedo status`) you can share like a phone number. `torpedo connect <contact-id>` asks to link up; `torpedo connections approve <id>` on the other side creates a private 2-peer network.
-
 ### DNS on hosts without a resolver manager
 
 Magic DNS works by pointing the OS resolver at torpedo's in-process resolver on `<subnet>.100.53` (e.g. `10.88.100.53`). To do that, torpedo detects the host's DNS stack and picks the least invasive integration it can, in order: systemd-resolved (D-Bus) → NetworkManager (D-Bus) → `resolvectl` → `resolvconf` → as a last resort, **directly rewriting `/etc/resolv.conf`**.

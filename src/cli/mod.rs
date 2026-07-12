@@ -11,7 +11,7 @@
 //! aliases in the crate root.
 
 mod alias;
-mod connect;
+mod admin;
 mod files;
 mod firewall;
 mod invite;
@@ -21,7 +21,7 @@ mod service;
 mod status;
 
 pub(crate) use alias::*;
-pub(crate) use connect::*;
+pub(crate) use admin::*;
 pub(crate) use files::*;
 pub(crate) use firewall::*;
 pub(crate) use invite::*;

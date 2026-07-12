@@ -185,26 +185,6 @@ pub(crate) enum Command {
         /// Short id of the pending peer (from `torpedo requests`)
         id: String,
     },
-    /// Request a direct 2-peer connection to someone by their contact id. They
-    /// approve it with `torpedo connections approve`, forming a private 2-peer
-    /// network — no room id or invite code needed.
-    Connect {
-        /// The peer's contact id (from their `torpedo contact id` / `torpedo status`)
-        contact_id: String,
-        /// Your hostname on the resulting network (defaults to your set name)
-        #[arg(long)]
-        hostname: Option<String>,
-    },
-    /// Review and approve incoming direct-connection requests (`torpedo connect`)
-    Connections {
-        #[command(subcommand)]
-        action: Option<ConnectionsAction>,
-    },
-    /// Show or rotate your contact id (shared so others can `torpedo connect` you)
-    Contact {
-        #[command(subcommand)]
-        action: Option<ContactAction>,
-    },
     /// Grant the network key to a member (coordinator only). The grantee becomes
     /// a co-coordinator: it can publish the signed blob and suggest firewall
     /// rules. Trusted-network multi-admin.
@@ -413,19 +393,6 @@ pub(crate) enum AliasAction {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum ConnectionsAction {
-    /// List pending incoming connection requests (default)
-    #[command(visible_alias = "ls")]
-    List,
-    /// Approve a pending request, forming the direct 2-peer network
-    #[command(visible_alias = "ok")]
-    Approve {
-        /// Short id of the requester (from `torpedo connections`)
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum ConfigAction {
     /// Show settings (all, or one key)
     #[command(visible_alias = "ls")]
@@ -453,14 +420,6 @@ pub(crate) enum ConfigAction {
         /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
         key: String,
     },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum ContactAction {
-    /// Print your contact id (default)
-    Id,
-    /// Rotate your contact key (invalidates the old contact id)
-    Rotate,
 }
 
 #[derive(Subcommand)]
@@ -854,12 +813,6 @@ async fn main() -> Result<()> {
         Command::Requests { network } => ipc_requests(&network).await,
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,
-        Command::Connect {
-            contact_id,
-            hostname,
-        } => ipc_connect(&contact_id, hostname).await,
-        Command::Connections { action } => ipc_connections(action).await,
-        Command::Contact { action } => ipc_contact(action).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
         Command::Firewall { action } => ipc_firewall(action).await,
         Command::Apply {

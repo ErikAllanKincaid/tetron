@@ -89,33 +89,6 @@ pub enum PairMsg {
     },
 }
 
-/// Messages for the `torpedo connect` friend-request handshake (ALPN
-/// `torpedo/connect/1`). The initiator (A) dials the recipient's (B) contact
-/// key, sends `Request`, and polls until `Approved`. Approval is recipient-only:
-/// only B acts, A just waits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConnectMsg {
-    /// A → B: request a direct connection. `from_endpoint` is A's transport id
-    /// (the key B pre-approves into the minted network); `from_contact_id` is
-    /// A's own contact key (for display/dedupe on B).
-    Request {
-        from_contact_id: EndpointId,
-        from_endpoint: EndpointId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hostname: Option<String>,
-    },
-    /// B → A: queued, not yet approved. A retries with backoff.
-    Pending,
-    /// B → A: approved. Carries the minted 2-peer network's room id and B as the
-    /// pinned coordinator, so A joins it like an invite-pinned join.
-    Approved {
-        room_id: EndpointId,
-        coordinator: EndpointId,
-    },
-    /// B → A: request rejected.
-    Denied { reason: String },
-}
-
 /// Control messages exchanged between peers over QUIC bidirectional streams.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMsg {
@@ -260,8 +233,7 @@ pub async fn recv_msg(stream: &mut RecvStream) -> Result<ControlMsg> {
 }
 
 /// Send any serializable message as a length-prefixed msgpack frame, then finish
-/// the stream (same one-message-per-stream contract as [`send_msg`]). Used by
-/// the `torpedo connect` handshake (`ConnectMsg`).
+/// the stream (same one-message-per-stream contract as [`send_msg`]).
 pub async fn send_framed<T: Serialize>(stream: &mut SendStream, msg: &T) -> Result<()> {
     let body = rmp_serde::to_vec_named(msg).context("serialize framed message")?;
     let len = (body.len() as u32).to_be_bytes();
@@ -388,30 +360,6 @@ mod tests {
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
         assert_eq!(msg, decoded);
-    }
-
-    #[test]
-    fn test_roundtrip_connect_msg() {
-        let msgs = vec![
-            ConnectMsg::Request {
-                from_contact_id: test_id(1),
-                from_endpoint: test_id(2),
-                hostname: Some("dario".to_string()),
-            },
-            ConnectMsg::Pending,
-            ConnectMsg::Approved {
-                room_id: test_id(3),
-                coordinator: test_id(4),
-            },
-            ConnectMsg::Denied {
-                reason: "no".to_string(),
-            },
-        ];
-        for msg in msgs {
-            let body = rmp_serde::to_vec_named(&msg).unwrap();
-            let decoded: ConnectMsg = rmp_serde::from_slice(&body).unwrap();
-            assert_eq!(msg, decoded);
-        }
     }
 
     #[test]

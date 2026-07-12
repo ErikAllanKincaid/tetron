@@ -268,25 +268,6 @@ pub enum IpcMessage {
     AdminList {
         network: String,
     },
-    /// `ray connect <contact-id>`: request a direct 2-peer connection by the
-    /// recipient's contact id. Resolves the contact id to an endpoint, dials the
-    /// connect ALPN, and waits (recipient-only approval).
-    Connect {
-        contact_id: String,
-        hostname: Option<String>,
-    },
-    /// `ray connections`: list pending incoming connect requests. Open read.
-    Connections,
-    /// `ray connections approve <id>`: approve a pending connect request by short
-    /// id, minting a 2-peer network with the requester pre-approved.
-    ApproveConnection {
-        id: String,
-    },
-    /// `ray contact id`: print this node's contact id. Open read.
-    ContactId,
-    /// `ray contact rotate`: rotate this node's contact key (old id stops
-    /// resolving once its pkarr record expires).
-    RotateContact,
 
     // Responses
     Ok {
@@ -316,10 +297,6 @@ pub enum IpcMessage {
         endpoint_id: EndpointId,
         /// Whether the VPN is active (TUN up, networks connected) or on standby.
         active: bool,
-        /// This node's contact id (`ray connect`), shown at the top of status.
-        /// `None` if the daemon has not generated one yet.
-        #[serde(default)]
-        contact_id: Option<String>,
         /// The running daemon's compiled version (`CARGO_PKG_VERSION`). The CLI
         /// compares it to its own version and hints a restart on a mismatch
         /// — e.g. after a manual binary upgrade where the daemon never
@@ -336,10 +313,6 @@ pub enum IpcMessage {
         /// per-network). Shown in the status "pending" summary.
         #[serde(default)]
         pending_files: usize,
-        /// Incoming `ray connect` requests awaiting `ray connections approve`
-        /// (global). Shown in the status "pending" summary.
-        #[serde(default)]
-        pending_connects: usize,
         /// Networks this node has asked to join but has not yet been admitted
         /// to (persisted `AppConfig.pending_joins`), minus any that are now
         /// active. Shown in the UI as "waiting for approval".
@@ -408,10 +381,6 @@ pub enum IpcMessage {
     /// plus every identity it has granted the key to.
     AdminListResponse {
         admins: Vec<AdminInfo>,
-    },
-    /// This node's contact id (reply to `ContactId`/`RotateContact`).
-    ContactIdResponse {
-        contact_id: String,
     },
 }
 
@@ -848,46 +817,12 @@ mod tests {
     }
 
     #[test]
-    fn test_connect_roundtrip() {
-        let req = IpcMessage::Connect {
-            contact_id: "contactabc".to_string(),
-            hostname: Some("dario".to_string()),
-        };
-        let bytes = rmp_serde::to_vec_named(&req).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::Connect {
-                contact_id,
-                hostname,
-            } => {
-                assert_eq!(contact_id, "contactabc");
-                assert_eq!(hostname.as_deref(), Some("dario"));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_contact_id_response_roundtrip() {
-        let resp = IpcMessage::ContactIdResponse {
-            contact_id: "abc123".to_string(),
-        };
-        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::ContactIdResponse { contact_id } => assert_eq!(contact_id, "abc123"),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_status_response_roundtrip() {
         let ep_id = iroh::SecretKey::generate().public();
         let peer_id = iroh::SecretKey::generate().public();
         let resp = IpcMessage::StatusResponse {
             endpoint_id: ep_id,
             active: true,
-            contact_id: Some("contact123".to_string()),
             daemon_version: "0.1.0".to_string(),
             networks: vec![NetworkStatus {
                 name: "gaming".to_string(),
@@ -916,7 +851,6 @@ mod tests {
             bytes_rx: 0,
             bytes_tx: 0,
             pending_files: 0,
-            pending_connects: 0,
         };
         let bytes = rmp_serde::to_vec(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();

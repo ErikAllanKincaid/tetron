@@ -76,9 +76,9 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 /// standby, so the caller is expected to run [`MeshManager::activate`] — and the
 /// metrics-server guard, which must outlive the process.
 /// The ALPNs the endpoint advertises at boot: one per saved network plus the
-/// network-independent blobs / file-transfer / pairing / connect ALPNs. A
+/// network-independent blobs / file-transfer / pairing ALPNs. A
 /// freshly-started daemon with no active network must still accept `torpedo pair` /
-/// `torpedo send` / `torpedo connect`, otherwise the initial handshake fails with "peer
+/// `torpedo send`, otherwise the initial handshake fails with "peer
 /// doesn't support any known protocol" until the first create/join triggers
 /// `refresh_alpns()`. Mirrors `ProtocolRouter::alpns()`.
 fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
@@ -90,7 +90,6 @@ fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
     alpns.push(iroh_blobs::protocol::ALPN.to_vec());
     alpns.push(transport::FILES_ALPN.to_vec());
     alpns.push(PAIR_ALPN.to_vec());
-    alpns.push(transport::CONNECT_ALPN.to_vec());
     alpns
 }
 
@@ -140,16 +139,10 @@ async fn build_daemon(
     let my_ip = identity.local_ip();
 
     // --- iroh endpoint (one ALPN per saved network + the blobs ALPN) ---
-    let mut app_config = config::load()?;
+    let app_config = config::load()?;
     // Point the pkarr client at the configured discovery-DNS server (if any)
     // before any record publish/resolve happens.
     dht::set_discovery_override(&app_config.discovery_dns);
-    // Lazily generate + persist this node's contact key (`torpedo connect`). The
-    // secret stays in config; only its public id is held in `MeshManager`.
-    let contact_public = config::contact_secret(&mut app_config).public();
-    if let Err(e) = config::save_settings(&app_config) {
-        tracing::warn!(error = %e, "failed to persist contact key");
-    }
     let alpns = initial_alpns(&app_config);
     let use_tor = app_config
         .networks
@@ -208,12 +201,7 @@ async fn build_daemon(
     // queued offer id; the worker (spawned once the daemon exists) evaluates it.
     let (new_file_tx, new_file_rx) = mpsc::unbounded_channel::<u64>();
     let files = Arc::new(FileService::new(key.clone(), new_file_tx));
-    let connect = Arc::new(ConnectService::new());
-    let protocol_router = Arc::new(ProtocolRouter::new(
-        blobs_proto,
-        files.clone(),
-        connect.clone(),
-    ));
+    let protocol_router = Arc::new(ProtocolRouter::new(blobs_proto, files.clone()));
     // Promotion channel: a co-coordinator's control reader signals the main
     // daemon loop to swap in the coordinator accept handler on `AdminGrant`.
     let (promote_tx, promote_rx) = mpsc::channel::<String>(16);
@@ -233,12 +221,10 @@ async fn build_daemon(
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         files,
-        connect,
         device_cert,
         device_user_map,
         revocation: crate::revocation::RevocationCache::new(),
         pruned_peers: Arc::new(DashSet::new()),
-        contact_public,
         active: active.clone(),
 
         promote_tx,
@@ -251,11 +237,6 @@ async fn build_daemon(
     // auto-accept (no-op unless the sender is our own paired device on an
     // opted-in network).
     spawn_file_auto_accept(daemon.clone(), new_file_rx, token.clone());
-
-    // --- Contact record publisher (torpedo connect) ---
-    if let Ok(pkarr_client) = dht::create_pkarr_client(&daemon.endpoint) {
-        spawn_contact_publisher(pkarr_client, daemon.endpoint.id(), token.clone());
-    }
 
     // --- Device-cert revocation (torpedo unpair) ---
     // Seed the floor cache from this user's persisted generation so it is

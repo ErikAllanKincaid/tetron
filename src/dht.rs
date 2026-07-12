@@ -40,10 +40,6 @@ pub fn effective_pkarr_url() -> String {
         .unwrap_or_else(|| PKARR_RELAY_URL.to_string())
 }
 
-/// pkarr record name for a user's contact key (`torpedo connect`). Published under
-/// the contact key, it maps the contact id to the user's current transport
-/// EndpointId so a peer can dial them without knowing the transport id.
-const CONTACT_RECORD_NAME: &str = "_torpedo_contact";
 
 /// pkarr record name for a user's device-cert **generation floor** (`torpedo unpair`
 /// / rotation). Published under the user's own key (the identity that signs
@@ -139,41 +135,6 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
 }
 
 // ---------------------------------------------------------------------------
-// Contact record encoding / decoding (torpedo connect)
-// ---------------------------------------------------------------------------
-
-/// Encode a contact record: maps the contact key to the user's current
-/// transport EndpointId. Signed by (and published under) the contact key, so
-/// only its holder can publish it. Carries nothing else — no roster, hostname,
-/// or member identities.
-pub fn encode_contact_record(
-    contact_key: &SecretKey,
-    endpoint: EndpointId,
-) -> Result<SignedPacket> {
-    let values = vec![RECORD_VERSION.to_string(), format!("e,{endpoint}")];
-    SignedPacket::from_txt_strings(contact_key, CONTACT_RECORD_NAME, values, RECORD_TTL)
-        .map_err(|e| anyhow::anyhow!("failed to build contact record: {e}"))
-}
-
-pub fn decode_contact_record(packet: &SignedPacket) -> Result<EndpointId> {
-    let records = packet.txt_records(CONTACT_RECORD_NAME);
-    ensure!(!records.is_empty(), "no contact records found");
-    ensure!(
-        records[0] == RECORD_VERSION,
-        "unsupported record version: {}",
-        records[0]
-    );
-    for record in &records[1..] {
-        if let Some(id_str) = record.strip_prefix("e,") {
-            return id_str
-                .parse::<EndpointId>()
-                .context("invalid contact endpoint ID");
-        }
-    }
-    anyhow::bail!("missing contact endpoint (e,)")
-}
-
-// ---------------------------------------------------------------------------
 // Cert-generation floor encoding / decoding (torpedo unpair / rotation)
 // ---------------------------------------------------------------------------
 
@@ -242,30 +203,6 @@ pub async fn resolve_network(
     decode_network_record(&packet)
 }
 
-/// Publish this user's contact record (`contact_key -> current endpoint`).
-pub async fn publish_contact(
-    client: &PkarrRelayClient,
-    contact_key: &SecretKey,
-    endpoint: EndpointId,
-) -> Result<()> {
-    let packet = encode_contact_record(contact_key, endpoint)?;
-    client
-        .publish(&packet)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to publish contact record: {e}"))
-}
-
-/// Resolve a contact id to the holder's current transport EndpointId.
-pub async fn resolve_contact(
-    client: &PkarrRelayClient,
-    contact_pubkey: EndpointId,
-) -> Result<EndpointId> {
-    let packet = client
-        .resolve(contact_pubkey)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to resolve contact record: {e}"))?;
-    decode_contact_record(&packet)
-}
 
 /// Publish this user's cert-generation floor (`user_key -> generation`).
 /// Republished on a TTL/2 cadence by `spawn_revocation_publisher` so the floor
@@ -394,47 +331,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn contact_record_roundtrip() {
-        let contact = SecretKey::generate();
-        let endpoint = SecretKey::generate().public();
-        let packet = encode_contact_record(&contact, endpoint).unwrap();
-        let decoded = decode_contact_record(&packet).unwrap();
-        assert_eq!(decoded, endpoint);
-    }
-
-    #[test]
-    fn contact_record_rejects_unknown_version() {
-        let key = SecretKey::generate();
-        let endpoint = SecretKey::generate().public();
-        let values = vec!["v99".to_string(), format!("e,{endpoint}")];
-        let packet =
-            SignedPacket::from_txt_strings(&key, CONTACT_RECORD_NAME, values, 300).unwrap();
-        let result = decode_contact_record(&packet);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("unsupported record version")
-        );
-    }
-
-    #[test]
-    fn contact_record_rejects_missing_endpoint() {
-        let key = SecretKey::generate();
-        let values = vec!["v1".to_string()];
-        let packet =
-            SignedPacket::from_txt_strings(&key, CONTACT_RECORD_NAME, values, 300).unwrap();
-        let result = decode_contact_record(&packet);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("missing contact endpoint")
-        );
-    }
 
     #[test]
     fn cert_floor_record_roundtrip() {
