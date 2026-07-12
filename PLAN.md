@@ -21,7 +21,7 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 | 4 | MINIMAL-005 | Direct connect: daemon/connect_service.rs, daemon/mesh/connect.rs, cli/connect.rs, CONNECT_ALPN, _torpedo_contact publisher, contact_secret_key. |
 | 5 | MINIMAL-006 | Diagnostics: `torpedo ping`/`netcheck` CLI + daemon/mesh/diagnostics.rs. Keep a passive Pong reply to ControlMsg::Ping for wire compat (D1). |
 | 6 | MINIMAL-007 | mDNS: spawn_mdns_discovery, `torpedo mdns` CLI, mdns_enabled config, iroh-mdns-address-lookup dep. |
-| 7 | MINIMAL-008 | Peripherals: tor + otel cargo features, deeplink.rs + cli/open.rs, audit.rs. |
+| 7 | MINIMAL-008 | Peripherals: otel cargo feature, deeplink.rs + cli/open.rs, audit.rs. The `tor` feature and the per-network `--tor` flag are KEPT unchanged (D7/TOR-M01: QUIC/UDP can not ride Tor externally, the in-endpoint glue is the only integration; off by default, zero cost in default builds). |
 | 8 | MINIMAL-009 | Observability: stats.rs Prometheus export, `torpedo report` + build_report, cli/update-style presentation of metrics. Keep the plain drop counters forward.rs needs for logs, or inline them. |
 
 ## Phase 2: firewall (the big cut)
@@ -58,6 +58,13 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 - Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two min nodes.
 - Interop run (success criterion 3): one full-torpedo node and one torpedo-min node on the same network passing traffic. Use two LAN test machines; full torpedo deploys by its existing release path, torpedo-min by `just deploy-dev`.
 - Line-count and dependency audit against the success criteria in PROPOSAL.md.
+
+## Phase 7: post-MINIMAL, on demand
+
+Not part of the MINIMAL milestone; each item is its own decision after Phase 6 is green.
+
+- TOR-M01: flexible per-network Tor policy (`any` / `tor` / `tor-isolated`). Tiers 1-2 already work via the kept `--tor` flag; the new work is tier 3, a second Tor-only endpoint with its own key, relays disabled, onion-only discovery (the only leak-free tier). Node-local routing only; never a blob or protocol change (CON-M02 holds).
+- RENAME-M01 / RENAME-M02: the deferred crate and product identity renames (see PROPOSAL.md, Naming and crate identity).
 
 ## Standing rules
 

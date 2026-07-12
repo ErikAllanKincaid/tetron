@@ -1622,9 +1622,20 @@ class RemoveMdns(Requirement):
 class RemovePeripherals(Requirement):
     """REQUIREMENT-ID: MINIMAL-008
 
-    Remove peripheral surfaces: the `tor` and `otel` cargo features and
-    their optional deps, deep links (deeplink.rs, cli/open.rs, the
-    torpedo:// scheme), and the audit log (audit.rs).
+    Remove peripheral surfaces: the `otel` cargo feature and its optional
+    deps, deep links (deeplink.rs, cli/open.rs, the torpedo:// scheme), and
+    the audit log (audit.rs).
+
+    The `tor` cargo feature is explicitly KEPT (see TOR-M01 for why and for
+    the flexible per-network policy roadmap): Tor carries only TCP streams,
+    so an iroh QUIC/UDP mesh can not be torified externally (torsocks,
+    TransPort redirection, and gateway setups all drop UDP); the in-endpoint
+    iroh-tor-transport glue is the only working integration, and it already
+    delegates onion routing to the system Tor daemon (ControlPort 9051).
+    It stays compile-time gated and off by default, so default builds carry
+    zero Tor code. The existing per-network `--tor` flag and its semantics
+    (endpoint-wide additive transport, effective after daemon restart) are
+    kept unchanged through the MINIMAL phases.
     """
     req_id = "MINIMAL-008"
 
@@ -1736,6 +1747,39 @@ class WorkspaceTrim(Requirement):
     req_id = "MINIMAL-016"
 
 
+class TorPerNetworkPolicy(Requirement):
+    """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
+
+    Flexible per-network Tor routing, as a per-network transport policy in
+    networks/<name>.toml with three tiers of increasing isolation and cost:
+
+    - `any` (default): clearnet UDP with relay fallback; current behavior.
+    - `tor` (what `--tor` maps to today): the shared endpoint gains the Tor
+      custom transport and dials for this network prefer onion addresses.
+      Traffic-level Tor only: the shared endpoint still publishes clearnet
+      addresses under the same endpoint id for its other networks, so a peer
+      in the tor network can resolve our id to a real IP. This tier is
+      censorship resistance / reachability, NOT anonymity, and the docs must
+      say so.
+    - `tor-isolated` (the new work): networks with this policy live on a
+      SECOND iroh endpoint owned by the same daemon, with its own secret key
+      (hence its own mesh identity and derived IPs), RelayMode disabled, no
+      UDP address publishing, and onion-only discovery via the tor
+      transport's address lookup. No clearnet address is ever published for
+      that identity; this is the only leak-free per-network Tor. All
+      tor-isolated networks share the one tor endpoint/identity (linkage
+      among them is accepted and documented). MeshManager routes per-network
+      ALPNs to the owning endpoint; the TUN stays shared.
+
+    Deferred until after Phase 6: tier 3 touches bootstrap, MeshManager,
+    create/join, and status, and must not ride along with the removal
+    phases. Tiers 1-2 already exist upstream and are kept by MINIMAL-008.
+    Implementation must keep CON-M02 wire compat: policy is node-local
+    routing, never a blob/protocol change.
+    """
+    req_id = "TOR-M01"
+
+
 # --------------------------------------------------------------------------
 # Constraints: torpedo-min gates (CON-M*)
 # --------------------------------------------------------------------------
@@ -1747,9 +1791,11 @@ class DependencyAbsenceGate(Constraint):
     dependency sections must not name any dep owned by a removed subsystem:
     reqwest, rustls, self-replace, sha2, semver, russh, pty-process, uzers,
     zbus, inotify, iroh-mdns-address-lookup, indicatif, crossterm,
-    unicode-width, humansize, mime_guess, opentelemetry*,
-    iroh-tor-transport. (iroh and iroh-blobs are core and exempt.) Added to
-    reconcile.py once phases 1-2 of PLAN.md create the condition it gates.
+    unicode-width, humansize, mime_guess, opentelemetry*. (iroh and
+    iroh-blobs are core and exempt; iroh-tor-transport is exempt while it
+    stays `optional = true` behind the off-by-default `tor` feature, per
+    MINIMAL-008/TOR-M01.) Added to reconcile.py once phases 1-2 of PLAN.md
+    create the condition it gates.
 
     ENFORCEMENT (reconcile.py): dependency_absence.unexpected_count equals 0.
     """

@@ -20,8 +20,8 @@ Identity (Ed25519 key) -> signed pkarr record -> signed GroupBlob roster -> iroh
 The complete CLI surface:
 
 ```
-torpedo create [--name n] [--hostname h] [--subnet CIDR]   # closed network, prints room id
-torpedo join <room-id-or-invite> [--name alias] [--hostname h]
+torpedo create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # closed network, prints room id
+torpedo join <room-id-or-invite> [--name alias] [--hostname h] [--tor]
 torpedo leave <net>  |  nuke <net>
 torpedo requests <net>  |  accept <net> <id>  |  deny <net> <id>
 torpedo admin <net> add <id> | list
@@ -33,7 +33,7 @@ torpedo completions <shell>  |  version
 sudo torpedo install | restart | uninstall | start | stop | set-operator <user>
 ```
 
-Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery), dht, membership, control (rate-limited), peers, tun, forward (with the upstream anti-spoof ingress check), config (trimmed), ipc, daemon core (create/join/accept/bootstrap/publish/reconverge/coordinator/select/runtime), shutdown, logdir, hostname and network-name generation, the operator privilege model, and the panic-fail-fast convention.
+Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery), dht, membership, control (rate-limited), peers, tun, forward (with the upstream anti-spoof ingress check), config (trimmed), ipc, daemon core (create/join/accept/bootstrap/publish/reconverge/coordinator/select/runtime), shutdown, logdir, hostname and network-name generation, the operator privilege model, the panic-fail-fast convention, and the compile-time `tor` feature (off by default, see D7).
 
 ## What is removed
 
@@ -46,7 +46,7 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 | Direct connect (contact ids, friend requests) | create a 2-member network |
 | ping / netcheck diagnostics | ping/mtr against mesh IPs |
 | mDNS local discovery | relays + pkarr discovery |
-| Tor transport, OTLP export, deep links, audit log, metrics export, report bundles | none (out of scope) |
+| OTLP export, deep links, audit log, metrics export, report bundles | none (out of scope) |
 | Userspace firewall, REJECT mode, coordinator rule suggestions | nftables/ufw on the TUN interface |
 | Declarative apply, aliases, groups, identityof | scripts over `status --json` |
 | Magic DNS (.ray), OS DNS configuration | /etc/hosts, or scripts over `status --json` |
@@ -68,6 +68,8 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 **D5: Same binary name, no host coexistence with full torpedo.** The binary, service, paths, and ALPNs keep the torpedo identity, so torpedo-min and full torpedo can not be installed on the same host; a host runs one or the other. They *can* share a network (D1). All KEEP-ON-PURPOSE rules from torpedo (crate name `rayfish`, relay preset, upstream REPO_SLUG references that survive, author attribution) carry over unchanged.
 
 **D6: Spec-first workflow carries over.** Same libspec + reconcile.py discipline: one requirement per commit, reconcile.py green, `libspec link` after each commit. New requirements are MINIMAL-*; new constraints are CON-M* (a separate constraint namespace so future torpedo CON-0xx numbers never collide when cherry-picking). Inherited SUBNET-*/RENAME-*/CON-* specs remain valid until a removal commit retires them explicitly.
+
+**D7: Tor stays, as compile-time-gated glue, with a flexible per-network policy as the post-MINIMAL roadmap.** Tor carries only TCP streams, so an iroh QUIC/UDP mesh can not be torified externally (torsocks, TransPort redirection, and gateway setups all drop UDP); the in-endpoint iroh-tor-transport integration is the only way, and it already delegates the actual onion routing to the system Tor daemon. The `tor` cargo feature and the per-network `--tor` flag therefore survive MINIMAL-008 unchanged; default builds carry zero Tor code. The flexible target is TOR-M01 (deferred until after Phase 6): a per-network transport policy `any` / `tor` (dial-preference over the shared endpoint; censorship resistance, not anonymity, since the shared endpoint id still resolves to clearnet addresses) / `tor-isolated` (a second, Tor-only endpoint with its own key, no relays, onion-only discovery; the only leak-free per-network tier). Policy is node-local routing and never touches the blob or protocol, preserving D1.
 
 ## Costs and risks
 
