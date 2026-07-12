@@ -84,6 +84,21 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 4. Two torpedo-min nodes: create, approve, join, ping over mesh IPs, kick, leave, all green in the trimmed e2e harness.
 5. reconcile.py green on every commit; libspec ledger continuous from torpedo's history.
 
-## Naming
+## Naming and crate identity
 
-Directory and working name: torpedo-min. The binary stays `torpedo` (D5). If the project later wants a distinct install identity so both variants can coexist on one host, that is a RENAME-style follow-up project, not part of MINIMAL.
+Directory and working name: torpedo-min. The binary stays `torpedo` (D5). The Cargo package/library stays `rayfish` for now, exactly as in full torpedo.
+
+### Deferred decision: the crate rename (and possibly a full product rename)
+
+**Decision:** the crate name `rayfish`, the `use rayfish::…` paths, the `info,rayfish=debug` log filter, and the `ray-proto` helper crate are NOT renamed during the MINIMAL phases. No agent working in this repository may "finish the rename" of these. The reason is the cherry-pick channel: during phases 1-6 fixes flow from full torpedo, and a crate rename would make every one of them conflict on import lines for zero functional gain. The crate name is not wire-visible and not published, so nothing is lost by waiting.
+
+**Trigger:** torpedo-min becomes a standalone public project with its own name, repository, and releases. If it stays a private lean build synced from torpedo, the rename never happens.
+
+**When:** only after Phase 6 verification is green and any pending torpedo cherry-picks have landed. Expect cherry-picks after the rename to need manual import fixups; do it in a quiet window and accept that cost consciously.
+
+**How, in two separately-staged commits, because they differ in blast radius:**
+
+1. **RENAME-M01, the crate rename (internal only, preserves D1 wire compat).** Pick the final product name (NAME). It must not collide with `torpedo` or `rayfish` as a binary name and should be free on crates.io if publishing. Then in one commit: `[package] name = "NAME"` in Cargo.toml; `ray-proto` becomes `NAME-proto` (workspace member plus path dep); mechanical `use rayfish::` to `use NAME::` sweep across src/main.rs, src/cli/, benches/, tests/ (library internals use `crate::` and are untouched); the tracing filter target in `main::init_tracing` becomes `info,NAME=debug`; AGENTS.md updated. Add constraint CON-M03: a reconcile.py grep gate allowing the token `rayfish` only in the relay preset (src/config.rs, CON-001), Cargo.toml author attribution, and LICENSE/attribution docs; count elsewhere must be 0.
+2. **RENAME-M02, the product identity rename (optional, BREAKS D1).** Binary name, service unit, config/log/socket paths (`/etc/NAME`, `/var/run/NAME`, `/var/log/NAME`), and the ALPN prefixes (`torpedo/net/…` to `NAME/net/…`). This is a full RENAME-006-style host-artifact pass; it lets NAME coexist with torpedo and rayfish on one host, but changing the ALPNs severs wire compatibility with full torpedo, so it retires CON-M02 and design decision D1 in the same commit, deliberately and loudly. Do not fold this into RENAME-M01; going public does not require it on day one, and D1 (min nodes on full-torpedo networks) may be worth keeping until the standalone network effect exists.
+
+**Never renamed under any outcome:** the relay preset keyword `"rayfish"` and its URLs (CON-001; that is the name of upstream's hosted relay/DNS service, not our identity) and the MPL-2.0 lineage (LICENSE, upstream author attribution in Cargo.toml). This project is and remains a derivative of rayfish; separation is identity separation, never attribution removal.
