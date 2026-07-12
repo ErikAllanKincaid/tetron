@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Peripheral surfaces (MINIMAL-008)**: the `otel` cargo feature (OTLP span
+  export), `torpedo open` deep links (the `torpedo://` scheme), and the
+  append-only peer audit log (`audit.log`) are gone.
 - **`torpedo ping` and `torpedo netcheck` (MINIMAL-006)**: the mesh echo-probe
   and endpoint-diagnostics commands are gone. Probe reachability with the
   system `ping` against a peer's mesh IP from `torpedo status`. Nodes still

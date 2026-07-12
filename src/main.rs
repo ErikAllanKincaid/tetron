@@ -303,11 +303,6 @@ pub(crate) enum Command {
         /// (see `torpedo pair list`)
         device: String,
     },
-    /// Handle a torpedo:// deep link (join or pair)
-    Open {
-        /// The torpedo:// URI, e.g. torpedo://join/<code> or torpedo://pair/<ticket>
-        uri: String,
-    },
     /// Print the torpedo version
     #[command(visible_alias = "ver")]
     Version,
@@ -628,29 +623,16 @@ fn check_root() {
     }
 }
 
-/// Guards that must outlive the process: the file appender's `WorkerGuard`
-/// (flushes buffered log lines) and, under the `otel` feature, the OpenTelemetry
-/// tracer provider (flushed on drop so in-flight spans are exported).
+/// Guard that must outlive the process: the file appender's `WorkerGuard`
+/// (flushes buffered log lines).
 #[derive(Default)]
 struct LogGuard {
     _appender: Option<tracing_appender::non_blocking::WorkerGuard>,
-    #[cfg(feature = "otel")]
-    otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
-}
-
-impl Drop for LogGuard {
-    fn drop(&mut self) {
-        #[cfg(feature = "otel")]
-        if let Some(provider) = self.otel_provider.take() {
-            let _ = provider.shutdown();
-        }
-    }
 }
 
 /// Build the tracing subscriber. The console layer (stdout) is always present;
 /// the daemon additionally gets a rolling daily file layer under [`logdir::log_dir`]
-/// so that `torpedo report` has on-disk logs to bundle. With the `otel` feature and an
-/// OTLP endpoint configured, spans are also exported to an OpenTelemetry collector.
+/// so that `torpedo report` has on-disk logs to bundle.
 /// The returned [`LogGuard`] must be kept alive for the lifetime of the process.
 fn init_tracing(to_file: bool) -> LogGuard {
     use tracing_subscriber::prelude::*;
@@ -708,78 +690,22 @@ fn init_tracing(to_file: bool) -> LogGuard {
         (None, None)
     };
 
-    let mut guard = LogGuard {
+    let guard = LogGuard {
         _appender: appender_guard,
-        #[cfg(feature = "otel")]
-        otel_provider: None,
     };
-
-    // OTLP span export layer — only built when the feature is on AND an endpoint
-    // is configured. Type-erased to `Box<dyn Layer>` so the `None` case has a
-    // concrete type; the daemon flushes the provider on shutdown via `LogGuard`.
-    let otel_layer = build_otel_layer(&mut guard);
 
     tracing_subscriber::registry()
         .with(global_filter)
         .with(console_layer)
         .with(file_layer)
-        .with(otel_layer)
         .init();
     guard
-}
-
-#[cfg(feature = "otel")]
-fn build_otel_layer<S>(
-    guard: &mut LogGuard,
-) -> Option<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> + Send + Sync,
-{
-    use opentelemetry::trace::TracerProvider as _;
-    use tracing_subscriber::Layer as _;
-
-    // Respect the standard OTLP env vars: do nothing unless an endpoint is set.
-    if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none()
-        && std::env::var_os("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_none()
-    {
-        return None;
-    }
-
-    let exporter = match opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .build()
-    {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("otel: failed to build OTLP exporter: {e}");
-            return None;
-        }
-    };
-
-    let resource = opentelemetry_sdk::Resource::builder()
-        .with_service_name("torpedo")
-        .build();
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(resource)
-        .build();
-    let tracer = provider.tracer("torpedo");
-    guard.otel_provider = Some(provider);
-
-    tracing::info!("OpenTelemetry OTLP span export enabled");
-    Some(tracing_opentelemetry::layer().with_tracer(tracer).boxed())
-}
-
-/// No-op when the `otel` feature is disabled; the registry sees an inert layer.
-#[cfg(not(feature = "otel"))]
-fn build_otel_layer(_guard: &mut LogGuard) -> Option<tracing_subscriber::layer::Identity> {
-    None
 }
 
 /// Install a fail-fast panic hook (daemon only). On any panic — including in a
 /// spawned tokio task, which the runtime would otherwise swallow — it records the
 /// crash (message, location, thread, backtrace) via `tracing::error!` (rolling file
-/// log + any OTLP exporter) and synchronously appends it to `panic.log` in the log
+/// log) and synchronously appends it to `panic.log` in the log
 /// dir, then **aborts the process**.
 ///
 /// Rationale: a panic is an invariant violation. For a VPN daemon, limping on with
@@ -957,7 +883,6 @@ async fn main() -> Result<()> {
         Command::Files { action } => ipc_files(action).await,
         Command::Pair { action, ticket } => cmd_pair(action, ticket).await,
         Command::Unpair { device } => ipc_unpair(&device).await,
-        Command::Open { uri } => cmd_open(&uri).await,
         Command::Version => {
             println!("torpedo {FULL_VERSION}");
             Ok(())

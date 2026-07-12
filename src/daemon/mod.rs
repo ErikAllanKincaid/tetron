@@ -60,7 +60,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::audit;
 use crate::config;
 use crate::control::{self, ControlMsg};
 use crate::dht;

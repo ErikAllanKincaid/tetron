@@ -40,7 +40,7 @@ P2P mesh VPN powered by [iroh](https://iroh.computer). Connects peers by cryptog
 ## Build
 
 ```bash
-cargo -q build                 # add --features tor for Tor transport, --features otel for OTLP span export
+cargo -q build                 # add --features tor for Tor transport
 cargo -q check
 cargo -q test
 cargo -q clippy
@@ -144,8 +144,7 @@ One iroh Endpoint and TUN device are shared across all networks. Each network ge
 - **CLI presentation** (gated on `style::is_enabled()` = TTY + not `NO_COLOR`/`--json`): `src/style.rs` (ANSI palette + glyphs), `src/layout.rs` (width-aware column aligner; `main::table()`), `src/progress.rs` (`indicatif` spinners), `src/picker.rs` (`crossterm` inline picker for `firewall pending`). Firewall rules cross IPC as `ray_proto::ipc::FirewallRuleView`.
 - `src/logdir.rs` — daemon log directory (`/var/log/torpedo` on Linux, `/Library/Logs/torpedo` on macOS). Rolling daily files via `tracing-appender` (7 most recent retained); `torpedo report` bundles them.
 - `src/ratelimit.rs` — `ControlGate`: per-connection token-bucket guard + strike counter over inbound control messages. `check()` returns `Verdict::Allow`/`Drop`/`Close`. One per control-listener task.
-- `src/deeplink.rs` — deep-link parsing for the **`torpedo://` scheme** (RENAME-007): `TorpedoLink` enum + `parse_torpedo_uri`. Backs `torpedo open <uri>` (`src/cli/open.rs`).
-- `src/shutdown.rs` — SIGINT/SIGTERM via `CancellationToken`. `src/audit.rs` — append-only audit log (`<config_dir>/audit.log`, TSV); `AuditLog` held by `PeerTable`.
+- `src/shutdown.rs` — SIGINT/SIGTERM via `CancellationToken`.
 
 ### Key flows
 
@@ -176,7 +175,6 @@ One iroh Endpoint and TUN device are shared across all networks. Each network ge
 
 - Use `cargo -q` for all cargo commands; `tracing` for logging. `main::init_tracing` composes layers (console + file + optional OTLP) with **split filters**: console/CLI stays at `info`, rolling daily files under `logdir::log_dir()` capture our crate at `debug` (`info,rayfish=debug` — the crate name `rayfish` is kept, so the filter target is too; dependencies stay at `info`). `RUST_LOG` overrides both. Returns a `LogGuard` that must stay alive for the process.
 - Tracing carries spans: network lifecycle handlers use `#[tracing::instrument]`; the per-peer reader + reconnect loop wrap tasks in `info_span!("peer"/"reconnect", …)` so report-bundle logs are correlatable.
-- `otel` feature (off by default): a `tracing-opentelemetry` layer exporting spans over OTLP/HTTP, active only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; flushed on shutdown via `LogGuard::drop`.
 - Panics are fail-fast in the daemon: `main::install_panic_hook` (set only for `torpedo daemon`) records the panic, appends it to `panic.log`, restores DNS via `dns_config::emergency_restore_resolv_conf()`, then `std::process::abort()`. The service unit restarts it; `panic.log` is bundled by `torpedo report`.
 - Never share I/O resources (TUN, sockets, streams) behind a Mutex — split into read/write halves. Avoid Mutex generally: prefer channels, atomics, or `RwLock`/`ArcSwap`.
 - CLI subcommands carry short `visible_alias`es (clap): `create`→`new`, `leave`→`rm`, `status`→`st`/`ls`, `version`→`ver`; action verbs `list`→`ls`, `remove`→`rm`/`del`, `show`→`ls`/`list`, `add`→`a`, `revoke`→`rm`, `approve`→`ok`. Aliases must be unique within each `#[derive(Subcommand)]` enum.

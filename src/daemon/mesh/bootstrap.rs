@@ -178,15 +178,7 @@ async fn build_daemon(
     // `VpnService` fd is attached the same way. `tun_name` starts as a placeholder
     // and is overwritten when a real interface is attached.
     let tun_name = String::from("torpedo");
-    // Append-only audit log of peer connect/disconnect events. If it can't be
-    // opened (e.g. unwritable config dir) the daemon still runs without auditing.
-    let peers = match audit::AuditLog::open() {
-        Ok(log) => PeerTable::with_audit(Arc::new(log)),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to open audit log; peer events will not be audited");
-            PeerTable::new()
-        }
-    };
+    let peers = PeerTable::new();
     let fw_config = firewall::load_firewall().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "failed to load firewall config, using defaults");
         firewall::FirewallConfig::default()
