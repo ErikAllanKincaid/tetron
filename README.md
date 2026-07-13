@@ -100,7 +100,7 @@ tetron has **no userspace firewall** (MINIMAL-010): within a shared network ever
 
 ### Naming peers (Magic DNS removed)
 
-tetron removed Magic DNS and all OS DNS mutation (MINIMAL-012), so the daemon never touches `/etc/resolv.conf`, systemd-resolved, or NetworkManager. Reach peers by their **mesh IP**, listed with their hostnames in `torpedo status` (`torpedo status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). Hostnames still ride the signed roster, so `torpedo hostname` changes and `torpedo kick <hostname>` continue to work.
+tetron removed Magic DNS and all OS DNS mutation (MINIMAL-012), so the daemon never touches `/etc/resolv.conf`, systemd-resolved, or NetworkManager. Reach peers by their **mesh IP**, listed with their hostnames in `torpedo status` (`torpedo status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). A hostname is set once at join (`--hostname`, collision-resolved by the coordinator) and is fixed after that — MINIMAL-014 removed `torpedo hostname` rename; hostnames still ride the signed roster, so `torpedo kick <hostname>` continues to work.
 
 ## Development
 
@@ -110,13 +110,15 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 
 - 🔒 **Closed networks with live approval** — a joiner queues on the room id and a coordinator (or co-coordinator) admits it with `torpedo accept`.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `requests`/`accept`/`deny`, `admin`, `kick`, `ephemeral`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `requests`/`accept`/`deny`, `admin`, `kick`, and more.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 >
 > **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `torpedo apply`, `torpedo alias`, or `torpedo identityof`. Reconcile a fleet with a script over `torpedo status --json`.
 >
 > **tetron admits by approval only** (MINIMAL-013). `torpedo create` always makes a closed network (`--open` is gone) and there is no `torpedo invite` — joiners are admitted with `torpedo requests`/`accept`. A tetron node can still *join* a full-torpedo network by invite code, and it validates reusable keys presented against a full-torpedo roster, but it mints none itself.
+>
+> **tetron fixes the hostname at join** (MINIMAL-014). There is no `torpedo hostname` rename or `torpedo ephemeral` auto-kick. A member's name is set once at join (the coordinator still resolves collisions), and `torpedo kick` remains for removing a member.
 >
 > **tetron removes Magic DNS and all OS DNS mutation** (MINIMAL-012). There is no `.ray` resolver and the daemon never touches system DNS. Reach peers by mesh IP from `torpedo status`; name them via `/etc/hosts` if you like. Hostnames still ride the roster and show in `status`.
 >

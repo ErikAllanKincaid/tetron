@@ -64,11 +64,6 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        // Per-network config read for the ephemeral TTL; status is not a hot
-        // path, so a per-network read is fine.
-        let net_cfg = config::load_network(&h.name).ok().flatten();
-        let ephemeral_ttl_secs = net_cfg.as_ref().and_then(|n| n.ephemeral_ttl_secs);
-
         let (members, member_count, pending_requests) = {
             let s = match h.state.read() {
                 Ok(s) => s,
@@ -83,7 +78,6 @@ impl MeshManager {
                         member_count: 0,
                         peers: vec![],
                         pending_requests: 0,
-                        ephemeral_ttl_secs,
                     };
                 }
             };
@@ -126,7 +120,6 @@ impl MeshManager {
             member_count,
             peers,
             pending_requests,
-            ephemeral_ttl_secs,
         }
     }
 

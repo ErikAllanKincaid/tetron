@@ -202,10 +202,19 @@ pub(crate) async fn join_mesh_shared(
     Ok(JoinResult::Joined(live_state))
 }
 
+/// The hostname this node should announce to peers for `network_name`: its
+/// persisted (join-fixed) name, read fresh from config. Hostname rename was
+/// removed (MINIMAL-014), so this is simply `my_hostname`.
+pub(crate) fn outgoing_hostname(network_name: &str) -> Option<String> {
+    match config::load_network(network_name) {
+        Ok(Some(net)) => net.my_hostname,
+        _ => None,
+    }
+}
+
 /// Persist this network's membership to config after a successful handshake.
-/// Preserves the `direct` flag and any queued `pending_hostname` rename intent
-/// from the existing config (the freshly fetched blob won't carry the rename yet,
-/// so keeping it alive lets the drain re-send until a coordinator confirms it).
+/// Preserves the `direct` flag from the existing config (the freshly fetched
+/// blob doesn't carry it).
 #[allow(clippy::too_many_arguments)]
 fn persist_join_config(
     network_name: &str,
@@ -221,17 +230,14 @@ fn persist_join_config(
         .find(|m| m.identity == my_identity)
         .and_then(|m| m.hostname.clone())
         .or(my_hostname.clone());
-    // Preserve across reconnects/restores state the just-fetched blob doesn't
-    // carry: the direct-connection flag and a queued rename intent.
-    let (direct, pending_hostname) = config::load_network(network_name)?
-        .map(|n| (n.direct, n.pending_hostname))
-        .unwrap_or((false, None));
+    let direct = config::load_network(network_name)?
+        .map(|n| n.direct)
+        .unwrap_or(false);
     config::save_network(&config::NetworkConfig {
         name: network_name.to_string(),
         group_mode: GroupMode::Restricted,
         my_ip: Some(my_ip),
         my_hostname: persisted_hostname,
-        pending_hostname,
         members: to_member_entries(members.iter()),
         approved: to_approved_entries(approved.iter()),
         network_secret_key: None,
@@ -239,13 +245,12 @@ fn persist_join_config(
         transport: None,
         admins: vec![],
         direct,
-        ephemeral_ttl_secs: None,
     })
 }
 
 /// Send a `MeshHello` to the coordinator on reconnect/restore (a fresh join
 /// already conveyed the hostname in its `JoinRequest`). Reads the hostname fresh
-/// from config so a rename done since startup is announced now, not a stale name.
+/// from config (its join-fixed name).
 async fn send_reconnect_hello(
     conn: &Connection,
     my_identity: EndpointId,
@@ -488,11 +493,11 @@ async fn perform_join_handshake(
 }
 
 /// Debounced reconverge worker for a joined member. `MemberSync`/`BlobUpdated`
-/// triggers (and a 30s backstop tick while a rename is outstanding) fan into this
-/// single task instead of each driving a reconverge inline: a burst of triggers
-/// collapses into one pkarr resolve + reconverge, and a slow reconverge never
-/// blocks the control listener's accept loop. The network-key-signed record stays
-/// the source of truth, so converging once per burst suffices.
+/// triggers fan into this single task instead of each driving a reconverge
+/// inline: a burst of triggers collapses into one pkarr resolve + reconverge,
+/// and a slow reconverge never blocks the control listener's accept loop. The
+/// network-key-signed record stays the source of truth, so converging once per
+/// burst suffices.
 #[allow(clippy::too_many_arguments)]
 fn spawn_reconverge_worker(
     notify: Arc<tokio::sync::Notify>,
@@ -507,27 +512,10 @@ fn spawn_reconverge_worker(
     my_ip_w: Ipv4Addr,
 ) {
     tokio::spawn(async move {
-        // Backstop tick so a queued rename is retried even on a quiet
-        // network that sends no `MemberSync`/`BlobUpdated` triggers. It does
-        // a reconverge only while a rename is outstanding, so steady state
-        // stays trigger-driven (no extra pkarr traffic).
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = token.cancelled() => return,
                 _ = notify.notified() => {}
-                _ = tick.tick() => {
-                    // Only the pending-rename backstop wants the periodic
-                    // wake; otherwise idle until the next real trigger.
-                    if !has_pending_hostname(&network_name) {
-                        continue;
-                    }
-                    tracing::debug!(
-                        network = %network_name,
-                        "backstop tick: pending rename outstanding, reconverging to retry delivery"
-                    );
-                }
             }
             // Debounce: absorb a burst of triggers into a single reconverge.
             // A trigger that arrives during the sleep or the reconverge is

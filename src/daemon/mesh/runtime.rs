@@ -177,7 +177,6 @@ impl MeshManager {
             my_hostname: persisted_hostname.clone(),
             // Coordinators publish renames directly, so they never carry a
             // pending intent.
-            pending_hostname: None,
             members: member_entries,
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
@@ -187,7 +186,6 @@ impl MeshManager {
             // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
-            ephemeral_ttl_secs: None,
         })?;
 
         let cancel = self.shutdown_token.child_token();
@@ -440,56 +438,6 @@ impl MeshManager {
             message: format!("kicked '{display}' from '{network}'"),
         }
     }
-
-    /// Set or clear the per-network ephemeral policy (coordinator-local). A
-    /// `None` TTL disables it. Persisted to the network's config; the pruner
-    /// re-reads it each tick, so no restart is needed.
-    pub(crate) async fn set_ephemeral(&self, network: &str, ttl_secs: Option<u64>) -> IpcMessage {
-        let mut cfg = match config::load_network(network) {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                return IpcMessage::Error {
-                    message: format!("network '{network}' not found"),
-                };
-            }
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: format!("failed to load network '{network}': {e}"),
-                };
-            }
-        };
-        cfg.ephemeral_ttl_secs = ttl_secs;
-        if let Err(e) = config::save_network(&cfg) {
-            return IpcMessage::Error {
-                message: format!("failed to save network '{network}': {e}"),
-            };
-        }
-        match ttl_secs {
-            Some(s) => IpcMessage::Ok {
-                message: format!("ephemeral policy on '{network}' set to {s}s"),
-            },
-            None => IpcMessage::Ok {
-                message: format!("ephemeral policy on '{network}' disabled"),
-            },
-        }
-    }
-
-    /// Read the per-network ephemeral TTL (open read).
-    pub(crate) fn get_ephemeral(&self, network: &str) -> IpcMessage {
-        match config::load_network(network) {
-            Ok(Some(c)) => IpcMessage::EphemeralStatus {
-                network: network.to_string(),
-                ttl_secs: c.ephemeral_ttl_secs,
-            },
-            Ok(None) => IpcMessage::Error {
-                message: format!("network '{network}' not found"),
-            },
-            Err(e) => IpcMessage::Error {
-                message: format!("failed to load network '{network}': {e}"),
-            },
-        }
-    }
-
 
     /// Connect to every saved network (control plane). Run once at daemon
     /// startup so mesh connections follow the daemon lifecycle, not the data

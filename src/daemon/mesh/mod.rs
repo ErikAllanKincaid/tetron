@@ -19,21 +19,19 @@ mod invite;
 mod join;
 mod publish;
 mod reconverge;
-mod rename;
 mod runtime;
 mod select;
 
 // The join handshake (`join`) and the background-task / reconvergence modules
 // (split out of the former `background.rs`: `publish`, `reconverge`,
-// `coordinator`, `select`, `rename`) moved here from `daemon/mod.rs`; re-export
-// their names so the rest of the daemon reaches them (via the daemon-level
+// `coordinator`, `select`) moved here from `daemon/mod.rs`; re-export their
+// names so the rest of the daemon reaches them (via the daemon-level
 // `pub(crate) use mesh::*`).
 pub(crate) use accept::*;
 pub(crate) use coordinator::*;
 pub(crate) use join::*;
 pub(crate) use publish::*;
 pub(crate) use reconverge::*;
-pub(crate) use rename::*;
 pub(crate) use select::*;
 // `run_daemon` is the public process entry point (called by `torpedo daemon`).
 pub use bootstrap::run_daemon;

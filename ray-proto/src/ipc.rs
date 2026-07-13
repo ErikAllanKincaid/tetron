@@ -53,23 +53,6 @@ pub enum IpcMessage {
         network: String,
         peer: String,
     },
-    /// Coordinator-local: set (or clear) the per-network ephemeral policy — the
-    /// TTL after which an offline member is auto-removed. `ttl_secs = None`
-    /// disables it. Mutation (root/operator).
-    SetEphemeral {
-        network: String,
-        ttl_secs: Option<u64>,
-    },
-    /// Read the per-network ephemeral TTL (open read). Answered with
-    /// `EphemeralStatus`.
-    GetEphemeral {
-        network: String,
-    },
-    /// Response to `GetEphemeral`: the network's current TTL (`None` = off).
-    EphemeralStatus {
-        network: String,
-        ttl_secs: Option<u64>,
-    },
     Status,
     Shutdown,
     /// Activate the VPN: bring the TUN interface up, configure system DNS, and
@@ -84,10 +67,6 @@ pub enum IpcMessage {
     /// system DNS, and bring the TUN interface down. The daemon process keeps
     /// running so it can be reactivated with `Up`.
     Down,
-    SetHostname {
-        network: String,
-        hostname: String,
-    },
     /// Authorize a local user (by UID) to control the daemon without root, the
     /// way `tailscale up --operator` does. Root-only.
     SetOperator {
@@ -205,10 +184,6 @@ pub struct NetworkStatus {
     /// (`ray requests <net>` / `ray accept`). Surfaced in the status summary.
     #[serde(default)]
     pub pending_requests: usize,
-    /// Per-network ephemeral auto-kick TTL in seconds, if the policy is on
-    /// (`ray ephemeral <net> <dur>`). `None` = off. Shown on the network line.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ephemeral_ttl_secs: Option<u64>,
 }
 
 #[derive(
@@ -456,7 +431,6 @@ mod tests {
                     connection: None,
                 }],
                 pending_requests: 0,
-                ephemeral_ttl_secs: None,
             }],
             packets_rx: 0,
             packets_tx: 0,

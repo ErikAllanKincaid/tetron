@@ -76,7 +76,6 @@ impl CoordinatorAcceptState {
         let disconnect_tx = self.disconnect_tx.clone();
         let network = self.network_name.clone();
         let state = self.state.clone();
-        let dht_notify = self.dht_notify.clone();
         let pending_pongs = self.pending_pongs.clone();
         let ctx = self.ctx.clone();
         tokio::spawn(async move {
@@ -87,8 +86,6 @@ impl CoordinatorAcceptState {
                 peer_ip,
                 network.clone(),
                 state,
-                ctx.clone(),
-                dht_notify,
                 token.clone(),
                 pending_pongs,
             );
@@ -489,8 +486,6 @@ impl CoordinatorAcceptState {
             peer_ip,
             self.network_name.clone(),
             self.state.clone(),
-            self.ctx.clone(),
-            self.dht_notify.clone(),
             self.token.clone(),
             self.pending_pongs.clone(),
         );

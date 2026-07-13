@@ -116,16 +116,6 @@ impl MeshManager {
             }),
         ));
 
-        // Ephemeral policy pruner (coordinator-only): auto-remove members
-        // offline longer than the network's configured TTL. No-op while unset.
-        tasks.push(spawn_stale_member_pruner(
-            self.mesh_ctx(),
-            name.to_string(),
-            state.clone(),
-            Some(dht_notify.clone()),
-            cancel.clone(),
-        ));
-
         (tasks, disconnect_tx)
     }
 
@@ -317,7 +307,6 @@ impl MeshManager {
             group_mode: mode,
             my_ip: Some(my_ip),
             my_hostname: Some(my_hostname.clone()),
-            pending_hostname: None,
             members: member_entries,
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
@@ -325,7 +314,6 @@ impl MeshManager {
             transport: None,
             admins: vec![],
             direct,
-            ephemeral_ttl_secs: None,
         })?;
 
         let cancel = self.shutdown_token.child_token();

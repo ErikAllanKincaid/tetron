@@ -103,16 +103,10 @@ pub struct NetworkConfig {
     /// Our assigned IP in this network (None if coordinator, Some if member).
     pub my_ip: Option<Ipv4Addr>,
     /// Our hostname in this network (persisted so it survives daemon restarts).
+    /// Fixed at join (MINIMAL-014 removed rename); a member adopts the
+    /// coordinator's authoritative (collision-resolved) name on reconverge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub my_hostname: Option<String>,
-    /// A locally-requested rename not yet confirmed by the signed blob. Set by
-    /// `torpedo hostname` on a member; the durable "deliver this rename to the
-    /// coordinator" intent. Survives daemon restarts and is *not* clobbered when
-    /// a reconverge applies a stale blob (unlike `my_hostname`), so the rename
-    /// keeps being re-sent until the coordinator publishes it. Cleared once the
-    /// blob reflects the new name (`rename_satisfied`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_hostname: Option<String>,
     /// Known members in this network.
     #[serde(default)]
     pub members: Vec<MemberEntry>,
@@ -136,12 +130,6 @@ pub struct NetworkConfig {
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
-    /// Coordinator-local ephemeral policy: auto-remove a member offline
-    /// longer than this many seconds. `None` = off (default). A 1-hour floor
-    /// is enforced at the CLI. Local only (only the coordinator enforces);
-    /// never rides the signed blob.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ephemeral_ttl_secs: Option<u64>,
 }
 
 /// In-memory aggregate of the on-disk config. Reads assemble this from
@@ -876,11 +864,9 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
-                    pending_hostname: None,
                     transport: None,
                     admins: vec![],
                     direct: false,
-                    ephemeral_ttl_secs: None,
                 },
                 NetworkConfig {
                     name: "work".to_string(),
@@ -891,11 +877,9 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
-                    pending_hostname: None,
                     transport: None,
                     admins: vec![],
                     direct: false,
-                    ephemeral_ttl_secs: None,
                 },
             ],
             ..Default::default()
@@ -927,11 +911,9 @@ mod tests {
             network_secret_key: None,
             network_public_key: None,
             my_hostname: None,
-            pending_hostname: None,
             transport: None,
             admins: vec![],
             direct: false,
-            ephemeral_ttl_secs: None,
         };
         upsert_network(&mut config, net);
         assert_eq!(config.networks.len(), 1);
@@ -951,11 +933,9 @@ mod tests {
                 network_secret_key: None,
                 network_public_key: None,
                 my_hostname: None,
-                pending_hostname: None,
                 transport: None,
                 admins: vec![],
                 direct: false,
-                ephemeral_ttl_secs: None,
             }],
             ..Default::default()
         };
@@ -968,11 +948,9 @@ mod tests {
             network_secret_key: None,
             network_public_key: None,
             my_hostname: None,
-            pending_hostname: None,
             transport: None,
             admins: vec![],
             direct: false,
-            ephemeral_ttl_secs: None,
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
@@ -996,11 +974,9 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
-                    pending_hostname: None,
                     transport: None,
                     admins: vec![],
                     direct: false,
-                    ephemeral_ttl_secs: None,
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
@@ -1011,11 +987,9 @@ mod tests {
                     network_secret_key: None,
                     network_public_key: None,
                     my_hostname: None,
-                    pending_hostname: None,
                     transport: None,
                     admins: vec![],
                     direct: false,
-                    ephemeral_ttl_secs: None,
                 },
             ],
             ..Default::default()
@@ -1054,11 +1028,9 @@ mod tests {
                 network_secret_key: None,
                 network_public_key: None,
                 my_hostname: None,
-                pending_hostname: None,
                 transport: None,
                 admins: vec![],
                 direct: false,
-                ephemeral_ttl_secs: None,
             }],
             ..Default::default()
         };
@@ -1082,11 +1054,9 @@ mod tests {
                 network_secret_key: Some(secret.clone()),
                 network_public_key: Some(public),
                 my_hostname: None,
-                pending_hostname: None,
                 transport: None,
                 admins: vec![],
                 direct: false,
-                ephemeral_ttl_secs: None,
             }],
             ..Default::default()
         };
@@ -1123,25 +1093,12 @@ name = "test"
         assert!(config.networks[0].network_public_key.is_none());
     }
 
-    #[test]
-    fn ephemeral_ttl_roundtrips_and_defaults_none() {
-        let mut n = net("eph");
-        n.ephemeral_ttl_secs = Some(3600);
-        let text = toml::to_string(&n).unwrap();
-        let back: NetworkConfig = toml::from_str(&text).unwrap();
-        assert_eq!(back.ephemeral_ttl_secs, Some(3600));
-        // A config written before the field existed omits the key -> None.
-        let minimal: NetworkConfig = toml::from_str("name = \"x\"").unwrap();
-        assert_eq!(minimal.ephemeral_ttl_secs, None);
-    }
-
     fn net(name: &str) -> NetworkConfig {
         NetworkConfig {
             name: name.to_string(),
             group_mode: GroupMode::Restricted,
             my_ip: None,
             my_hostname: None,
-            pending_hostname: None,
             members: vec![],
             approved: vec![],
             network_secret_key: Some(SecretKey::generate()),
@@ -1149,7 +1106,6 @@ name = "test"
             transport: None,
             admins: vec![],
             direct: false,
-            ephemeral_ttl_secs: None,
         }
     }
 

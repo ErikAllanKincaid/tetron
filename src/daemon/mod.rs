@@ -285,7 +285,7 @@ pub struct NetworkHandle {
     my_ip: Ipv4Addr,
     state: SharedNetworkState,
     /// DHT republish trigger; `Some` only on the coordinator (the sole publisher).
-    /// Lets `set_hostname` re-publish the group blob on a coordinator self-rename.
+    /// Lets admission/kick re-publish the group blob.
     dht_notify: Option<Arc<Notify>>,
     /// Child of the daemon `shutdown_token`. Cancelling it stops this network's
     /// background tasks (reconnect loop, group poller, publisher, peer readers)
@@ -596,10 +596,7 @@ impl MeshManager {
         peer_cred: Option<(u32, u32)>,
     ) -> Option<IpcMessage> {
         // Reads are available to everyone.
-        if matches!(
-            req,
-            IpcMessage::Status | IpcMessage::GetEphemeral { .. }
-        ) {
+        if matches!(req, IpcMessage::Status) {
             return None;
         }
 
@@ -700,10 +697,6 @@ impl MeshManager {
             IpcMessage::Leave { name } => self.leave_network(&name).await,
             IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
             IpcMessage::Kick { network, peer } => self.kick_member(&network, &peer).await,
-            IpcMessage::SetEphemeral { network, ttl_secs } => {
-                self.set_ephemeral(&network, ttl_secs).await
-            }
-            IpcMessage::GetEphemeral { network } => self.get_ephemeral(&network),
             IpcMessage::Status => self.status(),
             IpcMessage::Up { hostname } => self.activate(hostname).await,
             IpcMessage::Down => self.deactivate().await,
@@ -712,9 +705,6 @@ impl MeshManager {
                 IpcMessage::Ok {
                     message: "shutting down".to_string(),
                 }
-            }
-            IpcMessage::SetHostname { network, hostname } => {
-                self.set_hostname(&network, &hostname).await
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
             IpcMessage::Requests { network } => self.list_requests(&network),
@@ -726,129 +716,6 @@ impl MeshManager {
                 message: format!("unexpected message: {:?}", other),
             },
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Hostname
-    // -----------------------------------------------------------------------
-
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    pub async fn set_hostname(&self, network: &str, hostname: &str) -> IpcMessage {
-        use crate::hostname;
-
-        if !hostname::is_valid_hostname(hostname) {
-            return IpcMessage::Error {
-                message: "invalid hostname (lowercase ASCII, 1-63 chars)".to_string(),
-            };
-        }
-
-        let (my_ip, is_coord, state, dht_notify) = match self.networks.get(network) {
-            Some(h) => (
-                h.my_ip,
-                h.role.is_coordinator(),
-                h.state.clone(),
-                h.dht_notify.clone(),
-            ),
-            None => {
-                return IpcMessage::Error {
-                    message: format!("network '{}' not found", network),
-                };
-            }
-        };
-
-        let my_identity = self.endpoint.id();
-
-        // The coordinator is authoritative, so it resolves collisions against the
-        // roster up front. A member applies its requested name optimistically and
-        // lets the coordinator correct it via the authoritative MemberSync.
-        let new_hostname = if is_coord {
-            let taken = state.read().unwrap().taken_hostnames(my_identity);
-            let taken_refs: Vec<&str> = taken.iter().map(|s| s.as_str()).collect();
-            hostname::resolve_collision(hostname, &taken_refs)
-        } else {
-            hostname.to_string()
-        };
-
-        // Update our own member entry.
-        if let Ok(mut s) = state.write()
-            && let Some(me) = s.members.get_mut(&my_identity)
-        {
-            me.hostname = Some(new_hostname.clone());
-        }
-
-        // Persist to config. A member also records the rename as a durable
-        // pending intent so it keeps being delivered to a coordinator across
-        // reconnects/restarts until the signed blob confirms it; a coordinator
-        // publishes authoritatively, so it clears any pending intent.
-        if let Ok(Some(mut net)) = config::load_network(network) {
-            net.my_hostname = Some(new_hostname.clone());
-            net.pending_hostname = if is_coord {
-                None
-            } else {
-                Some(new_hostname.clone())
-            };
-            let _ = config::save_network(&net);
-        }
-
-        if is_coord {
-            // Authoritative: republish the group blob and push the new roster to
-            // every peer immediately.
-            tracing::info!(
-                network = %network,
-                hostname = %new_hostname,
-                "coordinator renamed self; republishing blob + broadcasting MemberSync"
-            );
-            update_snapshot_and_publish(&state, &self.blob_store, &dht_notify).await;
-            broadcast_member_sync(&self.peers, None).await;
-        } else {
-            self.announce_rename_to_peers(network, my_identity, my_ip, &new_hostname)
-                .await;
-        }
-
-        IpcMessage::Ok {
-            message: format!("hostname set to {new_hostname} on '{network}'"),
-        }
-    }
-
-    /// Fast-path a member's rename to its connected peers via `MeshHello` (only
-    /// the coordinator's continuous control reader acts on it — resolving
-    /// collisions and broadcasting the authoritative `MemberSync`). The durable
-    /// `pending_hostname` intent + reconverge drain backstop the rest.
-    async fn announce_rename_to_peers(
-        &self,
-        network: &str,
-        my_identity: EndpointId,
-        my_ip: Ipv4Addr,
-        new_hostname: &str,
-    ) {
-        let peers = self.peers.peers_for_network_with_conn(network);
-        tracing::info!(
-            network = %network,
-            hostname = %new_hostname,
-            connected_peers = peers.len(),
-            "member rename queued as pending intent; sending MeshHello to connected peers"
-        );
-        let mut sent = 0usize;
-        for (_peer_id, _peer_ip, conn) in &peers {
-            if let Ok((mut send, _recv)) = conn.open_bi().await {
-                let msg = ControlMsg::MeshHello {
-                    identity: my_identity,
-                    ip: my_ip,
-                    hostname: Some(new_hostname.to_string()),
-                    device_cert: None,
-                };
-                if control::send_msg(&mut send, &msg).await.is_ok() {
-                    sent += 1;
-                }
-            }
-        }
-        tracing::debug!(
-            network = %network,
-            hostname = %new_hostname,
-            sent,
-            connected_peers = peers.len(),
-            "fast-path rename MeshHello delivered; drain backstop covers the rest"
-        );
     }
 
     pub(crate) fn resolve_short_id_any_network(&self, short: &str) -> Option<EndpointId> {
@@ -1049,23 +916,6 @@ mod accept_handler_tests {
     #[test]
     fn choose_path_empty_is_none() {
         assert_eq!(super::choose_path_index(&[]), None);
-    }
-
-    #[test]
-    fn rename_satisfied_exact_and_collision_forms() {
-        // Exact match confirms the rename.
-        assert!(super::rename_satisfied("scw-iroh", Some("scw-iroh")));
-        // Coordinator-assigned collision suffix still confirms it.
-        assert!(super::rename_satisfied("alice", Some("alice-1")));
-        assert!(super::rename_satisfied("alice", Some("alice-42")));
-        // A different name (still the old one, or someone else's) does not.
-        assert!(!super::rename_satisfied("scw-iroh", Some("bell")));
-        // A look-alike that isn't `name-<digits>` does not.
-        assert!(!super::rename_satisfied("alice", Some("alice-bob")));
-        assert!(!super::rename_satisfied("alice", Some("alicex")));
-        assert!(!super::rename_satisfied("alice", Some("alice-")));
-        // No blob entry yet: not satisfied.
-        assert!(!super::rename_satisfied("alice", None));
     }
 
     #[test]

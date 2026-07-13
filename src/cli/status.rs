@@ -254,13 +254,6 @@ fn print_network(net: &ipc::NetworkStatus) {
         style::label("members"),
         style::value(&format!("{online}/{}", net.peers.len())),
     );
-    if let Some(ttl) = net.ephemeral_ttl_secs {
-        print!(
-            "   {} {}",
-            style::label("ephemeral"),
-            style::value(&format_ttl(ttl)),
-        );
-    }
     println!();
 
     // Peer rows as aligned columns: glyph · host · ipv4 · via · rtt · ↑tx · ↓rx.
@@ -386,26 +379,6 @@ fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
 pub(crate) async fn ipc_down() -> Result<()> {
     let mut stream = ipc::connect().await?;
     ipc::send(&mut stream, ipc::IpcMessage::Down).await?;
-    let resp = ipc::recv(&mut stream).await?;
-    match resp {
-        ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
-        other => eprintln!("Unexpected response: {:?}", other),
-    }
-    Ok(())
-}
-
-
-pub(crate) async fn ipc_set_hostname(network: &str, hostname: &str) -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    ipc::send(
-        &mut stream,
-        ipc::IpcMessage::SetHostname {
-            network: network.to_string(),
-            hostname: hostname.to_string(),
-        },
-    )
-    .await?;
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),

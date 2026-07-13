@@ -12,7 +12,7 @@
 #   - co-coordinator grant (`admin add` / `admin list`) + gatekeeper resilience:
 #     a fresh join is admitted by the co-coordinator (via live approval) while
 #     the original coordinator is offline
-#   - hostname change propagation (`torpedo hostname`) via the roster
+#   - peers reach each other by mesh IP (hostname is fixed at join)
 #   - graceful leave + nuke (`torpedo leave` / `torpedo nuke`)
 #
 # Reads tests/e2e/closed-net/.servers (written by provision.sh). Does NOT modify
@@ -112,22 +112,15 @@ wait_roster "$B" srv-c
 on "$A" 'torpedo up' >/dev/null 2>&1 || true     # bring the coordinator back
 
 # ---------------------------------------------------------------------------
-step "6. hostname change propagates to roster (Magic DNS removed in tetron)"
-on "$B" "torpedo hostname $NET srv-bb" 2>&1 | strip | sed 's/^/   b| /'
-# srv-a learns the new name on reconverge (MemberSync trigger or 60s poller).
-if retry_until 90 "[[ -n \"\$(peer_ip4 '$A' srv-bb '$NET')\" ]]"; then
-  pass "rename propagated — srv-a's roster shows srv-bb"
+step "6. peers reach each other by mesh IP (hostname is fixed at join in tetron)"
+# tetron removed hostname rename (MINIMAL-014) and Magic DNS (MINIMAL-012), so
+# peers are addressed by their mesh IP from the roster. srv-c reaches srv-b by
+# its mesh IP (ICMP is allowed by default, so a successful ping proves it).
+B_IP="$(peer_ip4 "$C" srv-b "$NET" 2>/dev/null)"
+if [[ -n "$B_IP" ]] && retry_until 60 "[[ \"\$(on '$C' 'ping -c1 -W2 $B_IP >/dev/null 2>&1 && echo ok || echo no')\" == ok ]]"; then
+  pass "srv-b ($B_IP) answers from srv-c by mesh IP"
 else
-  fail "rename did not propagate to srv-a's roster"
-fi
-# srv-c reaches srv-bb by its mesh IP from the roster (ICMP is allowed by
-# default, so a successful ping proves reachability). No .ray resolution — tetron
-# removed Magic DNS (MINIMAL-012); peers are addressed by mesh IP from status.
-BB_IP="$(peer_ip4 "$C" srv-bb "$NET" 2>/dev/null)"
-if [[ -n "$BB_IP" ]] && retry_until 60 "[[ \"\$(on '$C' 'ping -c1 -W2 $BB_IP >/dev/null 2>&1 && echo ok || echo no')\" == ok ]]"; then
-  pass "srv-bb ($BB_IP) answers from srv-c by mesh IP"
-else
-  fail "srv-bb did not answer from srv-c by mesh IP (ip=$BB_IP)"
+  fail "srv-b did not answer from srv-c by mesh IP (ip=$B_IP)"
 fi
 
 # ---------------------------------------------------------------------------

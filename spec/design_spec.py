@@ -1682,11 +1682,28 @@ class ApprovalOnlyAdmission(Requirement):
 class FixedHostnameNoEphemeral(Requirement):
     """REQUIREMENT-ID: MINIMAL-014
 
-    Remove hostname rename propagation (`torpedo hostname`,
-    daemon/mesh/rename.rs, pending_hostname) and the ephemeral auto-kick TTL
-    (`torpedo ephemeral`, spawn_stale_member_pruner). Hostname is fixed at
-    join; the coordinator still resolves collisions at admission. Manual
-    `kick` remains the remediation tool.
+    Remove hostname rename propagation and the ephemeral auto-kick TTL.
+    Deleted: the `torpedo hostname`/`torpedo ephemeral` CLI, the
+    `SetHostname`/`SetEphemeral`/`GetEphemeral`(+`EphemeralStatus`) IPC ops,
+    `MeshManager::set_hostname`/`announce_rename_to_peers`/`set_ephemeral`/
+    `get_ephemeral`, the whole `src/daemon/mesh/rename.rs` (`pending_hostname`
+    drain, `rename_satisfied`, `has_pending_hostname`),
+    `spawn_stale_member_pruner`/`should_prune`, the `pending_hostname` and
+    `ephemeral_ttl_secs` `NetworkConfig` fields, the status `ephemeral_ttl_secs`
+    field + its status-line render, and the reconverge worker's 30s
+    rename-backstop tick (now purely trigger-driven).
+
+    Hostname is fixed at join: it is set once from the joiner's
+    `JoinRequest`/`MeshHello`, the coordinator still resolves collisions
+    authoritatively at admission (`admit_peer` -> `resolve_collision`), and a
+    member adopts that authoritative name from the signed roster on reconverge
+    via the trimmed `reconcile_local_hostname` (now adopt-blob-name only). The
+    coordinator control reader no longer acts on a `MeshHello` hostname but
+    still captures a full-torpedo peer's `device_cert` off it (D1).
+    `outgoing_hostname` (announce the fixed name on reconnect) survives, moved
+    from the deleted rename.rs into join.rs. `reconverge_and_apply` keeps its
+    now-unused `alpn`/`my_ip` params (prefixed `_`) for call-site stability with
+    torpedo. Manual `kick` remains the remediation tool for stale members.
     """
     req_id = "MINIMAL-014"
 

@@ -9,7 +9,7 @@ failure). The shared SSH/deploy/reset/assert plumbing lives in
 
 | Dir | Hosts | What it proves |
 |-----|-------|----------------|
-| [`closed-net/`](closed-net) | 3 | Closed-net admission + lifecycle commands: live approval (`requests`/`accept`/`deny`), co-coordinator (`admin add`) gatekeeper resilience (the co-coordinator admits by approval while the coordinator is offline), `torpedo hostname` propagation, and `torpedo leave`/`nuke`. |
+| [`closed-net/`](closed-net) | 3 | Closed-net admission + lifecycle commands: live approval (`requests`/`accept`/`deny`), co-coordinator (`admin add`) gatekeeper resilience (the co-coordinator admits by approval while the coordinator is offline), mesh-IP reachability, and `torpedo leave`/`nuke`. |
 | [`reliability/`](reliability) | 4 | Full-mesh packet-loss test: every pair probed both ways with `ping -c 1000 -i 0.01`, ICMP flood, and iperf3 UDP, over the torpedo tunnel vs the direct public-IP baseline. Fails when torpedo adds loss over the raw link. |
 | [`restore-offline/`](restore-offline) | 3 | A member restores and reconnects while the coordinator is offline, proving member reconnect survives a single coordinator being down. |
 

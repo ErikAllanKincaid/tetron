@@ -69,8 +69,10 @@ pub(crate) async fn reconverge_and_apply(
     network_name: &str,
     state: &SharedNetworkState,
     my_identity: EndpointId,
-    alpn: &[u8],
-    my_ip: Ipv4Addr,
+    // Retained for call-site stability with torpedo (the rename drain that used
+    // these was removed in MINIMAL-014).
+    _alpn: &[u8],
+    _my_ip: Ipv4Addr,
 ) {
     let MeshCtx {
         peers,
@@ -84,12 +86,7 @@ pub(crate) async fn reconverge_and_apply(
         return;
     };
     if crate::membership::trusted_reconverge_hash(current, signed).is_none() {
-        // Already converged on the signed hash — but a local rename can still be
-        // unconfirmed precisely *because* the coordinator hasn't republished, so
-        // the hash never changes. Keep driving the rename to the coordinator
-        // (the drain no-ops unless `pending_hostname` is set).
-        let roster = state.read().unwrap().roster();
-        drain_pending_rename(endpoint, &roster, alpn, network_name, my_identity, my_ip).await;
+        // Already converged on the signed hash; nothing to apply.
         return;
     }
     let Some(data) =
@@ -125,9 +122,6 @@ pub(crate) async fn reconverge_and_apply(
     // `pruned_peers` first: closing wakes our own reconnect loop, which would
     // otherwise re-dial the peer (it still lists us) and re-form the link.
     prune_departed_peers(peers, pruned_peers, state, network_name, my_identity);
-    // If a local rename is still unconfirmed by this just-applied blob, keep
-    // delivering it to the coordinator set until it lands.
-    drain_pending_rename(endpoint, &roster, alpn, network_name, my_identity, my_ip).await;
     tracing::info!(network = %network_name, "reconverged from signed record");
 }
 
@@ -171,12 +165,11 @@ pub(crate) fn prune_departed_peers(
     }
 }
 
-/// Reconcile this node's persisted hostname for `network_name` against the
-/// freshly-verified roster: clear a `pending_hostname` intent once the signed
-/// blob confirms it, and otherwise adopt the blob's authoritative name. Formerly
-/// also rebuilt the Magic-DNS tables; that responsibility is gone (MINIMAL-012),
-/// so this now only keeps `config.my_hostname`/`pending_hostname` in sync (they
-/// still back `torpedo status` and the rename-delivery drain).
+/// Adopt this node's coordinator-assigned hostname for `network_name` from the
+/// freshly-verified roster. Hostname is fixed at join (MINIMAL-014 removed
+/// rename), but the coordinator may have collision-resolved it at admission
+/// (e.g. `alice` → `alice-1`), so keep `config.my_hostname` in sync with the
+/// signed blob's authoritative name (it backs `torpedo status`).
 pub(crate) fn reconcile_local_hostname(
     members: &[Member],
     network_name: &str,
@@ -188,48 +181,11 @@ pub(crate) fn reconcile_local_hostname(
         .find(|m| m.identity == my_identity)
         .and_then(|m| m.hostname.clone());
 
-    if let Ok(Some(mut net)) = config::load_network(network_name) {
-        match net.pending_hostname.clone() {
-            // A locally-requested rename is in flight. Until the blob confirms
-            // it, keep showing/persisting the requested name and don't let a
-            // stale blob clobber it back to the old one.
-            Some(pending) if !rename_satisfied(&pending, blob_self.as_deref()) => {
-                tracing::info!(
-                    network = %network_name,
-                    pending = %pending,
-                    blob = blob_self.as_deref().unwrap_or("<none>"),
-                    "rename still unconfirmed by signed blob; holding local name and keeping it queued for delivery"
-                );
-                if net.my_hostname.as_deref() != Some(pending.as_str()) {
-                    net.my_hostname = Some(pending);
-                    let _ = config::save_network(&net);
-                }
-            }
-            // Either the rename landed, or there was none: follow the blob and
-            // clear any (now-confirmed) pending intent.
-            pending => {
-                let mut dirty = false;
-                if let Some(p) = &pending {
-                    tracing::info!(
-                        network = %network_name,
-                        requested = %p,
-                        confirmed = blob_self.as_deref().unwrap_or("<none>"),
-                        "rename confirmed by signed blob; clearing pending intent"
-                    );
-                    net.pending_hostname = None;
-                    dirty = true;
-                }
-                if let Some(mine) = blob_self.clone()
-                    && net.my_hostname.as_deref() != Some(mine.as_str())
-                {
-                    net.my_hostname = Some(mine);
-                    dirty = true;
-                }
-                if dirty {
-                    let _ = config::save_network(&net);
-                }
-            }
-        }
+    if let (Some(mine), Ok(Some(mut net))) = (blob_self, config::load_network(network_name))
+        && net.my_hostname.as_deref() != Some(mine.as_str())
+    {
+        net.my_hostname = Some(mine);
+        let _ = config::save_network(&net);
     }
 }
 

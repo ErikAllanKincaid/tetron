@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Hostname is fixed at join (MINIMAL-014)**: a member's hostname is set once
+  when it joins (the coordinator still resolves collisions by appending
+  `-1`/`-2`/…), and a member adopts that authoritative name from the signed
+  roster. There is no longer a way to rename a member after join.
 - **Admission is approval-only (MINIMAL-013)**: `torpedo create` always makes a
   closed network — the `--open` (and explicit `--closed`) flag is gone. A
   joiner dials the room id, lands in the pending queue, and a coordinator (or
@@ -17,6 +21,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **`torpedo hostname` and `torpedo ephemeral` (MINIMAL-014)**: hostname rename
+  propagation (the durable pending-rename intent and its redelivery) and the
+  per-network ephemeral auto-kick TTL (auto-removing members offline longer than
+  a configured duration) are gone. Remove a stale member manually with
+  `torpedo kick`.
 - **Invite minting (MINIMAL-013)**: `torpedo invite` and all its subcommands
   (`create`/`list`/`revoke`, `--reusable`/`--hostname`/`--expires`/`--qr`) are
   gone, along with the single-use invite ledger (`invites/<network>.toml`) and
