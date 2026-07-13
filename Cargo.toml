@@ -82,7 +82,6 @@ toml = "1.1"
 config = { version = "0.15", default-features = false, features = ["yaml", "toml"] }
 url = "2"
 hex = "0.4.3"
-simple-dns = "0.11"
 smol_str = { version = "0.3.6", features = ["serde"] }
 arc-swap = "1.9.1"
 qr2term = "0.3.3"
@@ -114,15 +113,6 @@ tun = { version = "0.8.13", features = ["async"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.21.0"
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-# Watch /etc/resolv.conf for trampling (NetworkManager/dhclient) in direct mode
-# so we re-assert in ~ms instead of polling. `stream` gives a tokio-driven
-# EventStream we can select! on alongside the cancellation token.
-inotify = { version = "0.11", default-features = false, features = ["stream"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-system-configuration = "0.7"
-core-foundation = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 # Enables ANSI escape processing on legacy Windows consoles (no-op on modern terminals).

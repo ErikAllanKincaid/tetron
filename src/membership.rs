@@ -445,10 +445,25 @@ pub fn derive_ip_with_index(identity: &EndpointId, index: u32, subnet: Subnet) -
     Ipv4Addr::from(base | host_bits)
 }
 
+/// The reserved virtual IPv4 at a fixed host offset within `subnet`. Full
+/// torpedo runs its Magic DNS resolver here; tetron removed Magic DNS
+/// (MINIMAL-012) but keeps the address reserved for **wire compatibility (D1)**:
+/// a full-torpedo node on a shared network routes this address to its own
+/// resolver, so it must never be handed to a member. The `0x0064_6435` offset
+/// reproduces the historical resolver address for the default subnet and yields
+/// a stable, distinct in-subnet address for any /24-or-larger custom subnet.
+pub fn magic_dns_v4(subnet: Subnet) -> Ipv4Addr {
+    let (base_addr, prefix) = subnet;
+    let host_mask = subnet_host_mask(prefix);
+    let base = u32::from(base_addr) & !host_mask;
+    let host = 0x0064_6435 & host_mask;
+    Ipv4Addr::from(base | host)
+}
+
 /// True if `ip` is reserved and must never be assigned to a member
-/// (currently the Magic DNS resolver address, which is subnet-relative).
+/// (currently the reserved resolver address, which is subnet-relative).
 fn is_reserved_ipv4(ip: Ipv4Addr, subnet: Subnet) -> bool {
-    ip == crate::dns::magic_dns_v4(subnet)
+    ip == magic_dns_v4(subnet)
 }
 
 /// Finds the lowest collision index whose derived IPv4 is free in `members`.
@@ -2051,7 +2066,7 @@ mod tests {
     fn is_reserved_ipv4_covers_magic_dns() {
         // The predicate test isolates the guard: it fails if anyone removes the
         // magic DNS IP from the reserved set, independent of IP-derivation.
-        assert!(is_reserved_ipv4(crate::dns::magic_dns_v4_node(), default_subnet()));
+        assert!(is_reserved_ipv4(magic_dns_v4(default_subnet()), default_subnet()));
         assert!(!is_reserved_ipv4(Ipv4Addr::new(100, 64, 0, 7), default_subnet()));
     }
 
@@ -2063,7 +2078,7 @@ mod tests {
         let id = iroh::SecretKey::from(kb).public();
         let m = Member {
             identity: id,
-            ip: crate::dns::magic_dns_v4_node(),
+            ip: magic_dns_v4(default_subnet()),
             collision_index: 0,
             is_coordinator: false,
             hostname: None,
@@ -2144,11 +2159,11 @@ mod tests {
         // For 100.64.0.0/10 the offset reproduces the historical 100.100.100.53
         // resolver address — a property of that range, not of the default.
         assert_eq!(
-            crate::dns::magic_dns_v4((Ipv4Addr::new(100, 64, 0, 0), 10)),
+            magic_dns_v4((Ipv4Addr::new(100, 64, 0, 0), 10)),
             Ipv4Addr::new(100, 100, 100, 53)
         );
         // For any subnet it stays inside the range.
-        assert!(ip_in_subnet(crate::dns::magic_dns_v4(CUSTOM), CUSTOM));
+        assert!(ip_in_subnet(magic_dns_v4(CUSTOM), CUSTOM));
     }
 
     #[test]

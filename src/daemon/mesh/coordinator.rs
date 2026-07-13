@@ -11,8 +11,6 @@ pub(crate) struct CoordinatorCleanup {
     pub(crate) state: SharedNetworkState,
     pub(crate) blob_store: FsStore,
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
-    pub(crate) hostname_table: dns::HostnameTable,
-    pub(crate) reverse_table: dns::ReverseLookupTable,
     pub(crate) network_name: String,
 }
 
@@ -68,15 +66,6 @@ pub(crate) fn spawn_peer_cleanup(
                                         changed = true;
                                     }
                                 }
-                                if ev.intentional {
-                                    dns::remove_hostname_by_ip(
-                                        &c.hostname_table,
-                                        &c.reverse_table,
-                                        &c.network_name,
-                                        ev.ip,
-                                    )
-                                    .await;
-                                }
                                 if changed {
                                     update_snapshot_and_publish(&c.state, &c.blob_store, &c.dht_notify).await;
                                     broadcast_member_sync(&peers, None).await;
@@ -108,7 +97,7 @@ pub(crate) fn spawn_peer_cleanup(
 pub(crate) fn spawn_coordinator_control_reader(
     conn: Connection,
     remote_id: EndpointId,
-    peer_ip: Ipv4Addr,
+    _peer_ip: Ipv4Addr,
     network_name: String,
     state: SharedNetworkState,
     ctx: MeshCtx,
@@ -120,11 +109,7 @@ pub(crate) fn spawn_coordinator_control_reader(
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
     let MeshCtx {
-        peers,
-        blob_store,
-        hostname_table,
-        reverse_table,
-        ..
+        peers, blob_store, ..
     } = ctx;
     tokio::spawn(async move {
         let mut gate = crate::ratelimit::ControlGate::new();
@@ -266,21 +251,6 @@ pub(crate) fn spawn_coordinator_control_reader(
                 }
             }
 
-            // Re-assert this peer's DNS entry (idempotent; clears any stale name
-            // sharing its IP before inserting the current one).
-            dns::remove_hostname_by_ip(&hostname_table, &reverse_table, &network_name, peer_ip)
-                .await;
-            let ipv6 = derive_ipv6(&remote_id);
-            dns::update_hostname(
-                &hostname_table,
-                &reverse_table,
-                &network_name,
-                &final_hostname,
-                peer_ip,
-                ipv6,
-            )
-            .await;
-
             if changed {
                 tracing::info!(peer = %remote_id.fmt_short(), network = %network_name, hostname = %final_hostname, "peer hostname changed; republishing blob + broadcasting MemberSync");
                 update_snapshot_and_publish(&state, &blob_store, &dht_notify).await;
@@ -353,23 +323,14 @@ pub(crate) fn should_prune(
 /// member that crosses the threshold is evicted within one interval.
 const PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// Remove one identity from the roster + approved list and drop its DNS
-/// entries. Does NOT publish or broadcast; the caller batches that via
-/// [`finalize_removal`] so several removals collapse into one publish. Shared by
-/// the manual kick handler and the ephemeral pruner.
-pub(crate) async fn remove_member_roster_only(
-    ctx: &MeshCtx,
-    network: &str,
-    state: &SharedNetworkState,
-    member_id: EndpointId,
-    member_ip: Ipv4Addr,
-) {
-    {
-        let mut s = state.write().unwrap();
-        s.members.remove(&member_id);
-        s.approved.remove(&member_id);
-    }
-    dns::remove_hostname_by_ip(&ctx.hostname_table, &ctx.reverse_table, network, member_ip).await;
+/// Remove one identity from the roster + approved list. Does NOT publish or
+/// broadcast; the caller batches that via [`finalize_removal`] so several
+/// removals collapse into one publish. Shared by the manual kick handler and the
+/// ephemeral pruner.
+pub(crate) fn remove_member_roster_only(state: &SharedNetworkState, member_id: EndpointId) {
+    let mut s = state.write().unwrap();
+    s.members.remove(&member_id);
+    s.approved.remove(&member_id);
 }
 
 /// Republish the signed blob, broadcast a payload-free `MemberSync`, and sever
@@ -446,8 +407,8 @@ pub(crate) fn spawn_stale_member_pruner(
             if victims.is_empty() {
                 continue;
             }
-            for (id, ip) in &victims {
-                remove_member_roster_only(&ctx, &network, &state, *id, *ip).await;
+            for (id, _ip) in &victims {
+                remove_member_roster_only(&state, *id);
                 tracing::info!(peer = %id.fmt_short(), network = %network, ttl_secs = ttl, "auto-kicked stale member (ephemeral TTL)");
             }
             let ids: Vec<EndpointId> = victims.iter().map(|(id, _)| *id).collect();

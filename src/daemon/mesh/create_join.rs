@@ -113,8 +113,6 @@ impl MeshManager {
                 state: state.clone(),
                 blob_store: self.blob_store.clone(),
                 dht_notify: Some(dht_notify.clone()),
-                hostname_table: self.dns.hostname_table.clone(),
-                reverse_table: self.dns.reverse_table.clone(),
                 network_name: name.to_string(),
             }),
         ));
@@ -309,17 +307,6 @@ impl MeshManager {
             subnet,
             pre_approve,
         )?;
-
-        // Register in DNS hostname table
-        dns::update_hostname(
-            &self.dns.hostname_table,
-            &self.dns.reverse_table,
-            &name,
-            &my_hostname,
-            my_ip,
-            derive_ipv6(&self.identity.local_identity()),
-        )
-        .await;
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
 
@@ -554,7 +541,7 @@ impl MeshManager {
             return Ok(TryJoin::Pending);
         };
 
-        self.finalize_join(ctx, &data, mesh).await
+        self.finalize_join(ctx, mesh).await
     }
 
     /// Resolve a network's signed pkarr record, gate on mesh-protocol version,
@@ -874,12 +861,11 @@ impl MeshManager {
     }
 
     /// Register the accept handler, persist the network public key, seed the blob
-    /// store, spawn the membership poller, install the `NetworkHandle`, and sync
-    /// DNS. Runs once the dial phase produced a live mesh connection.
+    /// store, spawn the membership poller, and install the `NetworkHandle`. Runs
+    /// once the dial phase produced a live mesh connection.
     async fn finalize_join(
         self: &Arc<Self>,
         ctx: JoinContext<'_>,
-        data: &crate::membership::GroupBlob,
         mesh: EstablishedMesh,
     ) -> Result<TryJoin> {
         let EstablishedMesh {
@@ -890,7 +876,6 @@ impl MeshManager {
         } = mesh;
         let JoinContext {
             display_name,
-            my_hostname,
             alpn,
             my_ip,
             net_pubkey,
@@ -981,30 +966,6 @@ impl MeshManager {
         };
         self.networks.insert(display_name.to_string(), handle);
         self.refresh_alpns().await;
-
-        // Register hostnames in DNS table
-        dns::update_hostname(
-            &self.dns.hostname_table,
-            &self.dns.reverse_table,
-            display_name,
-            my_hostname,
-            my_ip,
-            derive_ipv6(&self.identity.local_identity()),
-        )
-        .await;
-        for member in &data.members {
-            if let Some(ref h) = member.hostname {
-                dns::update_hostname(
-                    &self.dns.hostname_table,
-                    &self.dns.reverse_table,
-                    display_name,
-                    h,
-                    member.ip,
-                    derive_ipv6(&member.identity),
-                )
-                .await;
-            }
-        }
 
         tracing::info!(network = %display_name, key = %net_pubkey, ip = %my_ip, "joined network");
 

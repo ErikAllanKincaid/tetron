@@ -433,18 +433,6 @@ impl CoordinatorAcceptState {
             let _ = self.ctx.blob_store.blobs().add_slice(&bytes).await;
         }
 
-        if let Some(ref h) = final_hostname {
-            dns::update_hostname(
-                &self.ctx.hostname_table,
-                &self.ctx.reverse_table,
-                &self.network_name,
-                h,
-                peer_ip,
-                derive_ipv6(&remote_id),
-            )
-            .await;
-        }
-
         broadcast_control_msg(
             &self.ctx.peers,
             &ControlMsg::MemberApproved {
@@ -656,19 +644,6 @@ impl MemberAcceptState {
         } else {
             None
         };
-        // Update DNS table
-        if let Some(ref h) = final_hostname {
-            let ipv6 = derive_ipv6(&peer_identity);
-            dns::update_hostname(
-                &self.ctx.hostname_table,
-                &self.ctx.reverse_table,
-                &self.network_name,
-                h,
-                ip,
-                ipv6,
-            )
-            .await;
-        }
         if is_approved {
             self.admit_approved_member(conn, peer_identity, ip, final_hostname, device_cert)
                 .await;

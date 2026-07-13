@@ -11,7 +11,7 @@
 #   - co-coordinator grant (`admin add` / `admin list`) + gatekeeper resilience:
 #     a fresh join is admitted by the co-coordinator while the original
 #     coordinator is offline, using a reusable key (`invite --reusable`)
-#   - hostname change propagation (`torpedo hostname`) + magic-DNS `*.ray` update
+#   - hostname change propagation (`torpedo hostname`) via the roster
 #   - graceful leave + nuke (`torpedo leave` / `torpedo nuke`)
 #   - `torpedo apply` smoke (`--example` / `--dry-run`, no mutation)
 #
@@ -107,7 +107,7 @@ wait_roster "$B" srv-c
 on "$A" 'torpedo up' >/dev/null 2>&1 || true     # bring the coordinator back
 
 # ---------------------------------------------------------------------------
-step "6. hostname change propagates to roster + magic DNS"
+step "6. hostname change propagates to roster (Magic DNS removed in tetron)"
 on "$B" "torpedo hostname $NET srv-bb" 2>&1 | strip | sed 's/^/   b| /'
 # srv-a learns the new name on reconverge (MemberSync trigger or 60s poller).
 if retry_until 90 "[[ -n \"\$(peer_ip4 '$A' srv-bb '$NET')\" ]]"; then
@@ -115,12 +115,14 @@ if retry_until 90 "[[ -n \"\$(peer_ip4 '$A' srv-bb '$NET')\" ]]"; then
 else
   fail "rename did not propagate to srv-a's roster"
 fi
-# And the magic-DNS name must resolve + be reachable from srv-c (ICMP is allowed
-# by default, so a successful ping proves both DNS resolution and reachability).
-if retry_until 60 "[[ \"\$(on '$C' 'ping -c1 -W2 srv-bb.$NET.ray >/dev/null 2>&1 && echo ok || echo no')\" == ok ]]"; then
-  pass "srv-bb.$NET.ray resolves + answers from srv-c"
+# srv-c reaches srv-bb by its mesh IP from the roster (ICMP is allowed by
+# default, so a successful ping proves reachability). No .ray resolution — tetron
+# removed Magic DNS (MINIMAL-012); peers are addressed by mesh IP from status.
+BB_IP="$(peer_ip4 "$C" srv-bb "$NET" 2>/dev/null)"
+if [[ -n "$BB_IP" ]] && retry_until 60 "[[ \"\$(on '$C' 'ping -c1 -W2 $BB_IP >/dev/null 2>&1 && echo ok || echo no')\" == ok ]]"; then
+  pass "srv-bb ($BB_IP) answers from srv-c by mesh IP"
 else
-  fail "srv-bb.$NET.ray did not resolve/answer from srv-c (ip=$(peer_ip4 "$C" srv-bb "$NET" 2>/dev/null))"
+  fail "srv-bb did not answer from srv-c by mesh IP (ip=$BB_IP)"
 fi
 
 # ---------------------------------------------------------------------------

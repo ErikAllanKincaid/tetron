@@ -7,7 +7,6 @@ impl MeshManager {
     /// Part of the embedding API (used by `ray-mobile` and future embedders):
     /// snapshot the daemon's status (identity, networks, peers).
     pub fn status(&self) -> IpcMessage {
-        let hostname_snapshot = self.dns.hostname_table.try_read().ok();
         let my_id = self.endpoint.id();
         // Direct-connection networks are flagged in config; collect their names
         // so each NetworkStatus can be tagged `[direct]` in the CLI.
@@ -23,7 +22,7 @@ impl MeshManager {
         let statuses: Vec<NetworkStatus> = self
             .networks
             .iter()
-            .map(|h| self.network_status(&h, my_id, hostname_snapshot.as_deref(), &direct_names))
+            .map(|h| self.network_status(&h, my_id, &direct_names))
             .collect();
         // Persisted pending-join markers, minus any network that has since
         // become active (admitted while we were retrying in the background).
@@ -57,7 +56,6 @@ impl MeshManager {
         &self,
         h: &NetworkHandle,
         my_id: EndpointId,
-        hostname_snapshot: Option<&HashMap<String, HashMap<String, dns::HostnameEntry>>>,
         direct_names: &HashSet<String>,
     ) -> NetworkStatus {
         // Direct-connection networks are tagged `[direct]` regardless of role.
@@ -70,17 +68,6 @@ impl MeshManager {
         // path, so a per-network read is fine.
         let net_cfg = config::load_network(&h.name).ok().flatten();
         let ephemeral_ttl_secs = net_cfg.as_ref().and_then(|n| n.ephemeral_ttl_secs);
-        // Resolve a mesh IPv4 back to its `.ray` hostname via the DNS snapshot.
-        let lookup_hostname = |ip| {
-            hostname_snapshot.and_then(|table| {
-                table.get(&h.name).and_then(|hosts| {
-                    hosts
-                        .iter()
-                        .find(|(_, v)| v.0 == ip)
-                        .map(|(k, _)| k.clone())
-                })
-            })
-        };
 
         let (members, member_count, pending_requests) = {
             let s = match h.state.read() {
@@ -114,23 +101,27 @@ impl MeshManager {
             .iter()
             .filter(|m| m.identity != my_id)
             .map(|m| {
-                let hostname = m.hostname.clone().or_else(|| lookup_hostname(m.ip));
                 let connection = connected.get(&m.identity).map(Self::gather_conn_info);
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
                     ipv6: Some(derive_ipv6(&m.identity)),
-                    hostname,
+                    hostname: m.hostname.clone(),
                     connection,
                 }
             })
             .collect();
+        // Our own hostname comes from the signed roster (Magic DNS removed).
+        let my_hostname = members
+            .iter()
+            .find(|m| m.identity == my_id)
+            .and_then(|m| m.hostname.clone());
         NetworkStatus {
             name: h.name.clone(),
             role,
             my_ip: h.my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
-            my_hostname: lookup_hostname(h.my_ip),
+            my_hostname,
             network_key: Some(h.network_key.to_string()),
             member_count,
             peers,

@@ -75,8 +75,6 @@ pub(crate) async fn reconverge_and_apply(
     let MeshCtx {
         peers,
         blob_store,
-        hostname_table,
-        reverse_table,
         pruned_peers,
         ..
     } = ctx;
@@ -119,14 +117,7 @@ pub(crate) async fn reconverge_and_apply(
         s.refresh_snapshot();
         s.roster()
     };
-    apply_roster_to_dns(
-        &roster,
-        network_name,
-        my_identity,
-        hostname_table,
-        reverse_table,
-    )
-    .await;
+    reconcile_local_hostname(&roster, network_name, my_identity);
     // Drop any live connection to a peer the signed roster no longer lists (it was
     // kicked, or left while we were offline). Removing it from the roster alone
     // stops us *routing* to it, but the peer reader keeps injecting its inbound
@@ -180,22 +171,17 @@ pub(crate) fn prune_departed_peers(
     }
 }
 
-pub(crate) async fn apply_roster_to_dns(
+/// Reconcile this node's persisted hostname for `network_name` against the
+/// freshly-verified roster: clear a `pending_hostname` intent once the signed
+/// blob confirms it, and otherwise adopt the blob's authoritative name. Formerly
+/// also rebuilt the Magic-DNS tables; that responsibility is gone (MINIMAL-012),
+/// so this now only keeps `config.my_hostname`/`pending_hostname` in sync (they
+/// still back `torpedo status` and the rename-delivery drain).
+pub(crate) fn reconcile_local_hostname(
     members: &[Member],
     network_name: &str,
     my_identity: EndpointId,
-    hostname_table: &dns::HostnameTable,
-    reverse_table: &dns::ReverseLookupTable,
 ) {
-    let mut entries: Vec<(String, Ipv4Addr, std::net::Ipv6Addr)> = members
-        .iter()
-        .filter_map(|m| {
-            m.hostname
-                .as_ref()
-                .map(|h| (h.clone(), m.ip, derive_ipv6(&m.identity)))
-        })
-        .collect();
-
     // Our own name in the freshly-fetched (authoritative) blob.
     let blob_self = members
         .iter()
@@ -214,13 +200,6 @@ pub(crate) async fn apply_roster_to_dns(
                     blob = blob_self.as_deref().unwrap_or("<none>"),
                     "rename still unconfirmed by signed blob; holding local name and keeping it queued for delivery"
                 );
-                if let Some(me) = members.iter().find(|m| m.identity == my_identity) {
-                    // Override our own DNS entry so `.ray` resolution and
-                    // `torpedo status` reflect the pending name immediately.
-                    let v6 = derive_ipv6(&my_identity);
-                    entries.retain(|(_, v4, _)| *v4 != me.ip);
-                    entries.push((pending.clone(), me.ip, v6));
-                }
                 if net.my_hostname.as_deref() != Some(pending.as_str()) {
                     net.my_hostname = Some(pending);
                     let _ = config::save_network(&net);
@@ -252,8 +231,6 @@ pub(crate) async fn apply_roster_to_dns(
             }
         }
     }
-
-    dns::sync_network_hostnames(hostname_table, reverse_table, network_name, &entries).await;
 }
 
 pub(crate) fn spawn_group_poller(

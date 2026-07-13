@@ -212,33 +212,6 @@ impl MeshManager {
             cancel.clone(),
         );
 
-        // Register hostnames in DNS table
-        {
-            let members_snapshot: Vec<_> = {
-                let s = state.read().unwrap();
-                s.members
-                    .all()
-                    .into_iter()
-                    .filter_map(|m| {
-                        m.hostname
-                            .as_ref()
-                            .map(|h| (h.clone(), m.ip, derive_ipv6(&m.identity)))
-                    })
-                    .collect()
-            };
-            for (hostname, ip, ipv6) in members_snapshot {
-                dns::update_hostname(
-                    &self.dns.hostname_table,
-                    &self.dns.reverse_table,
-                    name,
-                    &hostname,
-                    ip,
-                    ipv6,
-                )
-                .await;
-            }
-        }
-
         // Full mesh: proactively dial every known member so a restarting
         // coordinator/co-coordinator reconnects to peers that haven't (yet)
         // dialed in. Without this, a co-coordinator that comes back up only
@@ -365,28 +338,22 @@ impl MeshManager {
     /// closes its own link to the target immediately. Refused on open networks
     /// (the target would auto-re-join) and against coordinators / self.
     /// Resolve a peer argument (hostname — bare or `host.net.ray` — or a
-    /// short-id / endpoint-id prefix) to its endpoint id. Moved here from the
-    /// removed file-sharing module; backs `torpedo kick`.
+    /// short-id / endpoint-id prefix) to its endpoint id. Backs `torpedo kick`.
+    /// Resolves hostnames directly against the signed roster (Magic DNS was
+    /// removed in MINIMAL-012), then falls back to a short-id match.
     pub(crate) async fn resolve_peer_name(&self, name: &str) -> Option<EndpointId> {
-        let suffix = format!(".{}", crate::DNS_DOMAIN);
-        let qualified = if name.ends_with(&suffix) {
-            name.to_string()
-        } else {
-            format!("{name}{suffix}")
-        };
-        if let Some((ip, _)) =
-            dns::resolve_name(&qualified, &suffix, &self.dns.hostname_table).await
-        {
-            // Try connected peers first
-            if let Some(route) = self.peers.lookup_v4(&ip) {
-                return Some(route.endpoint_id);
-            }
-            // Fall back to member list (peer may be offline or it's us)
-            for entry in self.networks.iter() {
-                let state = entry.value().state.read().unwrap();
-                if let Some(m) = state.members.all().iter().find(|m| m.ip == ip) {
-                    return Some(m.identity);
-                }
+        // Accept a bare `alice` or a qualified `alice.net.ray`; the roster stores
+        // bare hostnames, so match on the first DNS label.
+        let candidate = name.split('.').next().unwrap_or(name);
+        for entry in self.networks.iter() {
+            let state = entry.value().state.read().unwrap();
+            if let Some(m) = state
+                .members
+                .all()
+                .iter()
+                .find(|m| m.hostname.as_deref() == Some(candidate))
+            {
+                return Some(m.identity);
             }
         }
         self.resolve_short_id_any_network(name)
@@ -430,7 +397,7 @@ impl MeshManager {
                 };
             }
         };
-        let (member_id, member_ip, is_coord, display) = {
+        let (member_id, is_coord, display) = {
             let s = state.read().unwrap();
             match s
                 .members
@@ -440,7 +407,6 @@ impl MeshManager {
             {
                 Some(m) => (
                     m.identity,
-                    m.ip,
                     m.is_coordinator,
                     m.hostname
                         .clone()
@@ -467,9 +433,9 @@ impl MeshManager {
             };
         }
 
-        // Prune the roster + DNS, then publish + broadcast + sever the link.
+        // Prune the roster, then publish + broadcast + sever the link.
         let ctx = self.mesh_ctx();
-        remove_member_roster_only(&ctx, network, &state, member_id, member_ip).await;
+        remove_member_roster_only(&state, member_id);
         finalize_removal(&ctx, network, &state, &dht_notify, &[member_id]).await;
 
         tracing::info!(peer = %member_id.fmt_short(), network = %network, "kicked member");
@@ -680,12 +646,8 @@ impl MeshManager {
                 warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
             }
 
-            if let Err(e) = tun::route_magic_dns(&tun_name).await {
-                tracing::warn!(error = %e, "failed to route magic DNS IP into TUN");
-            }
-
             // Loop our own addresses back through lo0 so self-traffic (e.g.
-            // pinging our own hostname) is answered locally instead of leaving via
+            // pinging our own mesh IP) is answered locally instead of leaving via
             // the TUN, where the forwarding loop would drop it as "no peer for
             // dst". No-op on Linux (kernel installs the `local` route
             // automatically).
@@ -696,12 +658,6 @@ impl MeshManager {
                 warnings.push(format!("failed to install loopback self-route: {e}"));
             }
         }
-
-        // Clone the TUN name out of the lock before awaiting: the embedder
-        // (mobile) stores it behind a mutex, and a std guard can't be held across
-        // an await point.
-        let dns_tun_name = self.tun_name.lock().unwrap().clone();
-        self.dns.configure(&dns_tun_name, &mut warnings).await;
 
         tracing::info!("data plane activated");
         if warnings.is_empty() {
@@ -718,11 +674,11 @@ impl MeshManager {
         }
     }
 
-    /// Put the daemon on standby: take the data plane offline (revert system
-    /// DNS, bring the TUN link down, stop forwarding) while keeping the control
-    /// plane connected. Network connections, control readers, and pollers stay
-    /// live so the node remains online to peers and keeps receiving roster/blob
-    /// updates. Connections are dropped only on leave/nuke/shutdown. Idempotent.
+    /// Put the daemon on standby: take the data plane offline (bring the TUN
+    /// link down, stop forwarding) while keeping the control plane connected.
+    /// Network connections, control readers, and pollers stay live so the node
+    /// remains online to peers and keeps receiving roster/blob updates.
+    /// Connections are dropped only on leave/nuke/shutdown. Idempotent.
     pub(crate) async fn deactivate(&self) -> IpcMessage {
         if !self.active.swap(false, Ordering::SeqCst) {
             return IpcMessage::Ok {
@@ -730,10 +686,7 @@ impl MeshManager {
             };
         }
 
-        // Clone the TUN name out of the lock before awaiting (see `activate`);
-        // the DnsManager reverts system DNS and clears the TUN search domains.
         let tun_name = self.tun_name.lock().unwrap().clone();
-        self.dns.revert(&tun_name).await;
 
         #[cfg(not(target_os = "android"))]
         if let Err(e) = tun::set_link_down(&tun_name) {
@@ -746,10 +699,10 @@ impl MeshManager {
         }
     }
 
-    /// Tear down a network's runtime state (connections, ALPN, DNS entries,
-    /// background tasks) without touching its persisted config. Returns whether
-    /// the network was active. Used by `leave_network` (which also forgets the
-    /// config); standby (`deactivate`) no longer tears connections down.
+    /// Tear down a network's runtime state (connections, ALPN, background tasks)
+    /// without touching its persisted config. Returns whether the network was
+    /// active. Used by `leave_network` (which also forgets the config); standby
+    /// (`deactivate`) no longer tears connections down.
     pub(crate) async fn teardown_network_runtime(&self, name: &str) -> bool {
         let Some(handle) = self.networks.remove(name).map(|(_, v)| v) else {
             return false;
@@ -760,7 +713,6 @@ impl MeshManager {
         }
 
         self.peers.remove_by_network(name);
-        dns::remove_network(&self.dns.hostname_table, &self.dns.reverse_table, name).await;
         self.protocol_router
             .unregister(&transport::network_alpn(&handle.network_key));
         self.refresh_alpns().await;

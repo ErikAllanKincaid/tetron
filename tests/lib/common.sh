@@ -34,8 +34,6 @@ strip(){ sed -r 's/\x1B\[[0-9;]*[mGKH]//g'; }
 # own_ip <status-text> : extract a node's own VPN IPv4 (10.88.0.0/16 CGNAT range).
 own_ip(){ echo "$1" | grep -oE '10\.88\.[0-9]+\.[0-9]+' | head -1; }
 
-# peer_host <status-text> : first peer row's `<host>.<net>.ray` hostname label.
-peer_host(){ echo "$1" | grep -E '●|○' | grep -oE '[a-z0-9-]+\.[a-z0-9-]+\.ray' | head -1 | cut -d. -f1; }
 
 # ping_loss <from-ip> <target-ip> : echo the packet-loss percentage (number only).
 ping_loss(){ on "$1" "ping -c 3 -W 2 $2" 2>&1 | grep -oE '[0-9]+% packet loss' | grep -oE '^[0-9]+'; }

@@ -101,18 +101,9 @@ The **room id** is a discovery key, never an admission credential. On a **closed
 
 An **open** network (`torpedo create --open`) lets anyone with the room id join directly. tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface — e.g. `nft add rule inet filter input iifname "torpedo" tcp dport != 22 drop`.
 
-### DNS on hosts without a resolver manager
+### Naming peers (Magic DNS removed)
 
-Magic DNS works by pointing the OS resolver at torpedo's in-process resolver on `<subnet>.100.53` (e.g. `10.88.100.53`). To do that, torpedo detects the host's DNS stack and picks the least invasive integration it can, in order: systemd-resolved (D-Bus) → NetworkManager (D-Bus) → `resolvectl` → `resolvconf` → as a last resort, **directly rewriting `/etc/resolv.conf`**.
-
-That last path is not hypothetical: a minimal **Debian trixie** install (no desktop task, no systemd-resolved, no NetworkManager, no resolvconf — a common default-server profile) lands there, and it is the scenario a field report was filed against upstream for. When it happens, torpedo:
-
-- backs up the original file to `/etc/resolv.conf.before-torpedo` before touching it,
-- writes its own file (marked `# Added by torpedo`), pointing at the subnet-derived resolver, with your original nameservers kept as upstream fallback for non-`.ray` queries,
-- prints a visible warning at `sudo torpedo up` naming the backup path and the restore command, so the takeover is never silent,
-- restores the original file automatically on `torpedo down` / `sudo torpedo uninstall`, and also after a crash or hard kill (the panic hook and the next daemon start both run the restore).
-
-On hosts with systemd-resolved or NetworkManager (most desktop Linux, and where Tailscale runs its own split-DNS), none of this applies — torpedo registers a scoped `.ray` resolver alongside your existing DNS instead of touching `/etc/resolv.conf` at all.
+tetron removed Magic DNS and all OS DNS mutation (MINIMAL-012), so the daemon never touches `/etc/resolv.conf`, systemd-resolved, or NetworkManager. Reach peers by their **mesh IP**, listed with their hostnames in `torpedo status` (`torpedo status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). Hostnames still ride the signed roster, so `torpedo hostname` changes and `torpedo kick <hostname>` continue to work.
 
 ## Development
 
@@ -121,13 +112,14 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 ## Features (inherited from rayfish)
 
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
-- 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename.
 
 Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `kick`, `ephemeral`, and more.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 >
 > **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `torpedo apply`, `torpedo alias`, or `torpedo identityof`. Reconcile a fleet with a script over `torpedo status --json`.
+>
+> **tetron removes Magic DNS and all OS DNS mutation** (MINIMAL-012). There is no `.ray` resolver and the daemon never touches system DNS. Reach peers by mesh IP from `torpedo status`; name them via `/etc/hosts` if you like. Hostnames still ride the roster and show in `status`.
 >
 > **tetron removes the userspace firewall** (MINIMAL-010). There is no `torpedo firewall`. Within a shared network every peer reaches every port a local service binds — mesh membership gates *who* can connect, and restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface. The only in-daemon ingress check is anti-spoofing (a peer may only source packets from its own mesh IP).
 

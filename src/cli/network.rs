@@ -124,7 +124,6 @@ pub(crate) async fn ipc_join(
             warning,
         } => {
             let _ = my_ipv6;
-            let dns = format!("{name}.{DNS_DOMAIN}");
             println!();
             println!(
                 "  {} {} {}",
@@ -133,11 +132,9 @@ pub(crate) async fn ipc_join(
                 style::bold(&name)
             );
             println!(
-                "    {}   {}   {}  {}",
+                "    {}   {}",
                 style::label("address"),
                 style::value(&my_ip.to_string()),
-                style::faint("·"),
-                style::value(&dns),
             );
             print_next(&[
                 ("torpedo status", "see who's online"),

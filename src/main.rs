@@ -2,8 +2,7 @@
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
 use rayfish::{
-    DNS_DOMAIN, config, daemon, invite, ipc, layout, logdir, membership, progress, shutdown, stats,
-    style,
+    config, daemon, invite, ipc, layout, logdir, membership, progress, shutdown, stats, style,
 };
 
 use std::sync::{Arc, atomic};
@@ -191,7 +190,7 @@ pub(crate) enum Command {
         /// New hostname (e.g. "alice" → alice.network.ray)
         name: String,
     },
-    /// View or change global daemon settings (relay, discovery-dns, dns-upstreams, subnet, magic-dns)
+    /// View or change global daemon settings (relay, discovery-dns, subnet)
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -258,27 +257,25 @@ pub(crate) enum ConfigAction {
     /// Show settings (all, or one key)
     #[command(visible_alias = "ls")]
     Get {
-        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns (omit for all)
+        /// relay, discovery-dns, or subnet (omit for all)
         key: Option<String>,
     },
     /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs;
-    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16); `magic-dns` takes
-    /// off|auto|direct (auto = never seize /etc/resolv.conf). Applies on restart.
+    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16). Applies on restart.
     Set {
-        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
+        /// relay, discovery-dns, or subnet
         key: String,
         /// Server keys: comma list of presets/URLs/IPv4s. subnet: a CIDR.
-        /// magic-dns: off|auto|direct. Empty resets to the default.
+        /// Empty resets to the default.
         value: String,
         /// Replace the defaults instead of augmenting them (server keys only)
         #[arg(long)]
         replace: bool,
     },
-    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/16;
-    /// magic-dns -> auto)
+    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/16)
     #[command(visible_alias = "rm")]
     Unset {
-        /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
+        /// relay, discovery-dns, or subnet
         key: String,
     },
 }
@@ -410,12 +407,6 @@ fn install_panic_hook() {
             eprintln!("failed to write panic log: {e}");
         }
 
-        // Hand DNS back to the OS before we abort: restore the backed-up
-        // resolv.conf and drop the NetworkManager `dns=none` snippet, so a crash
-        // can't leave the host pointing at our dead resolver (it would otherwise
-        // blackhole all DNS until the service restarts). Synchronous, best-effort.
-        rayfish::dns_config::emergency_restore_resolv_conf();
-
         // Print the standard panic message to stderr (journal), then fail fast so
         // the service manager restarts the daemon cleanly.
         default_hook(info);
@@ -528,9 +519,9 @@ async fn main() -> Result<()> {
 
 
 /// `torpedo config get/set/unset`: view or change global daemon settings. Writes
-/// `settings.toml` directly; relay/discovery/dns-upstreams all
-/// take effect on the next daemon restart. On Linux the config tree is root-
-/// owned, so a write naturally requires sudo.
+/// `settings.toml` directly; relay/discovery/subnet all take effect on the next
+/// daemon restart. On Linux the config tree is root-owned, so a write naturally
+/// requires sudo.
 fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
     match action.unwrap_or(ConfigAction::Get { key: None }) {
         ConfigAction::Get { key } => {

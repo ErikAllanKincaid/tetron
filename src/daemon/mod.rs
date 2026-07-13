@@ -62,8 +62,6 @@ use tokio_util::sync::CancellationToken;
 use crate::config;
 use crate::control::{self, ControlMsg};
 use crate::dht;
-use crate::dns;
-use crate::dns_config;
 use crate::forward;
 use crate::identity;
 use crate::ipc::{self, IpcMessage, NetworkRole, NetworkStatus, PeerStatus};
@@ -85,7 +83,7 @@ use ray_proto::SuggestedFirewall;
 // `MeshManager`'s IPC operations are split by domain into the `mesh/` submodule;
 // see `mesh/mod.rs`. Each holds an additional `impl MeshManager` block. Nested a
 // level down so the module names can be the clean domain names without colliding
-// with the `use crate::{dns, …}` aliases above.
+// with the `use crate::{config, …}` aliases above.
 mod mesh;
 // The mesh core's join handshake and background-task/reconvergence helpers were
 // moved into `mesh/{join,background}.rs`; re-export them at the daemon level so
@@ -100,11 +98,6 @@ pub use mesh::build_headless;
 /// Legacy name for [`MeshManager`], kept so embedders (`ray-mobile`) that were
 /// written against `DaemonState` compile unchanged after the daemon refactor.
 pub type DaemonState = MeshManager;
-
-// Domain satellites with their own owned state (and ALPN accept arms), held by
-// `MeshManager` as fields rather than loose on the core. See each module.
-mod dns_manager;
-pub(crate) use dns_manager::DnsManager;
 
 
 
@@ -124,8 +117,6 @@ pub(crate) struct MeshCtx {
     tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     stats: Arc<ForwardMetrics>,
     blob_store: FsStore,
-    hostname_table: dns::HostnameTable,
-    reverse_table: dns::ReverseLookupTable,
     /// Peers removed from a network's roster (via `torpedo kick` or a stale-entry
     /// prune during reconverge), keyed by `(network, transport id)`. A member
     /// closes such a peer's connection but can't see its own close code, so its
@@ -347,8 +338,6 @@ pub struct MeshManager {
     shutdown_token: CancellationToken,
     blob_store: FsStore,
     protocol_router: Arc<ProtocolRouter>,
-    /// Magic DNS naming tables, resolver, and OS-DNS configurator (see [`DnsManager`]).
-    dns: DnsManager,
     /// Name of the OS TUN device (desktop) or a placeholder until a packet
     /// interface is attached. Interior-mutable because on embedders (mobile) the
     /// interface is attached after construction via [`MeshManager::attach_tun`],
@@ -435,8 +424,6 @@ impl MeshManager {
             tun_tx: self.tun_tx.clone(),
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
-            hostname_table: self.dns.hostname_table.clone(),
-            reverse_table: self.dns.reverse_table.clone(),
             pruned_peers: self.pruned_peers.clone(),
         }
     }
@@ -449,20 +436,16 @@ impl MeshManager {
             .collect();
         tracing::info!(alpns = ?alpn_strs, "refreshing ALPNs");
         self.endpoint.set_alpns(alpns);
-
-        let network_names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
-        let tun_name = self.tun_name.lock().unwrap().clone();
-        dns_config::update_search_domains(&network_names, &tun_name).await;
     }
 
     /// Attach a packet interface to a headless [`DaemonState`] and start the data
     /// plane's forwarding tasks: the TUN writer (`spawn_tun_writer`) and the mesh
     /// forwarding loop (`run_mesh`, reading `reader` and using the state's
-    /// peers/stats/resolver).
+    /// peers/stats).
     ///
     /// A fresh `tun_tx`/`tun_rx` channel is created on every call: the new
     /// receiver feeds the writer, and the new sender is stored in the `tun_tx`
-    /// cell so incoming send-sites (peer readers, DNS injection) resolve the live
+    /// cell so incoming send-sites (peer readers) resolve the live
     /// writer via `tun_tx.load()`. This makes re-attach work: after a
     /// [`detach_tun`] the next `attach_tun` swaps in a new sender and a new writer,
     /// so forwarding resumes. This is the exact VPN off/on toggle path on Android.
@@ -491,11 +474,8 @@ impl MeshManager {
             let peers = self.peers.clone();
             let cancel = cancel.clone();
             let stats = self.stats.clone();
-            let resolver = self.dns.resolver.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    forward::run_mesh(reader, peers, cancel, stats, resolver, new_tx).await
-                {
+                if let Err(e) = forward::run_mesh(reader, peers, cancel, stats).await {
                     tracing::warn!(error = %e, "mesh forwarding loop exited with error");
                 }
             })
@@ -536,14 +516,6 @@ impl MeshManager {
             tasks.writer.abort();
             tasks.mesh.abort();
         }
-    }
-
-    /// Point the Magic DNS resolver at the given upstream servers so non-`.ray`
-    /// queries are forwarded there instead of refused. The desktop path captures
-    /// upstreams from the system resolver config; Android has none to capture, so
-    /// the platform reads the underlying network's DNS servers and passes them in.
-    pub fn set_dns_upstreams(&self, servers: Vec<Ipv4Addr>) {
-        self.dns.resolver.set_upstreams(servers);
     }
 
     /// Register a [`CoordinatorAcceptState`] handler for `network` and update
@@ -822,24 +794,6 @@ impl MeshManager {
             me.hostname = Some(new_hostname.clone());
         }
 
-        // Update DNS table: remove old entry for our IP, insert new one.
-        dns::remove_hostname_by_ip(
-            &self.dns.hostname_table,
-            &self.dns.reverse_table,
-            network,
-            my_ip,
-        )
-        .await;
-        dns::update_hostname(
-            &self.dns.hostname_table,
-            &self.dns.reverse_table,
-            network,
-            &new_hostname,
-            my_ip,
-            derive_ipv6(&self.identity.local_identity()),
-        )
-        .await;
-
         // Persist to config. A member also records the rename as a durable
         // pending intent so it keeps being delivered to a coordinator across
         // reconnects/restarts until the signed blob confirms it; a coordinator
@@ -869,9 +823,8 @@ impl MeshManager {
                 .await;
         }
 
-        let dns_name = format!("{}.{}.{}", new_hostname, network, crate::DNS_DOMAIN);
         IpcMessage::Ok {
-            message: format!("hostname set to {} ({})", new_hostname, dns_name),
+            message: format!("hostname set to {new_hostname} on '{network}'"),
         }
     }
 
@@ -1037,8 +990,6 @@ mod accept_handler_tests {
             tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(tun_tx)),
             stats: Arc::new(ForwardMetrics::default()),
             blob_store,
-            hostname_table: dns::new_hostname_table(),
-            reverse_table: dns::new_reverse_table(),
             pruned_peers: Arc::new(DashSet::new()),
         }
     }

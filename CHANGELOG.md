@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Magic DNS and all OS DNS mutation (MINIMAL-012)**: the `.ray` name
+  resolver, the in-daemon DNS responder + port-53 intercept, and every OS-DNS
+  integration (systemd-resolved / NetworkManager / resolvconf / the
+  `/etc/resolv.conf` takeover, its inotify re-assert, and the panic-hook
+  restore) are gone, along with the `magic-dns` and `dns-upstreams` config
+  keys. **Reach peers by mesh IP** from `torpedo status` (or `--json`); host
+  naming is `/etc/hosts`' job. Hostnames still ride the roster and show in
+  `torpedo status`. The daemon's host footprint shrinks to: TUN device, routes,
+  config dir, log dir, unix socket. The `.100.53` resolver address stays
+  reserved (never assigned to a member) for wire compatibility with a
+  full-torpedo node on a shared network.
 - **Userspace firewall (MINIMAL-010)**: the entire `torpedo firewall` command
   (add/remove/show/default/reject/on/off, coordinator `suggest`, and the
   `pending`/`accept`/`deny`/`auto-accept` review flow), the per-device

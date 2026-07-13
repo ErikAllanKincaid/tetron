@@ -266,20 +266,6 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 };
             }
         }
-        "dns-upstreams" => {
-            if entries.is_empty() {
-                cfg.dns_upstreams = ServerOverride::default();
-            } else {
-                for e in &entries {
-                    e.parse::<Ipv4Addr>()
-                        .with_context(|| format!("invalid IPv4 address: {e}"))?;
-                }
-                cfg.dns_upstreams = ServerOverride {
-                    servers: entries,
-                    replace,
-                };
-            }
-        }
         "subnet" => {
             // A single CIDR overlay subnet, not a URL list. Empty (or `n0`)
             // resets to the built-in default; `replace` is ignored here.
@@ -293,21 +279,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 cfg.subnet = Some(crate::membership::parse_cidr(&entries[0])?);
             }
         }
-        "magic-dns" => {
-            // A single mode keyword (off/auto/direct). Empty resets to the
-            // default (auto); `replace` is meaningless here.
-            if reset {
-                cfg.magic_dns = MagicDnsMode::default();
-            } else {
-                anyhow::ensure!(
-                    entries.len() == 1,
-                    "magic-dns takes a single mode: off, auto, or direct"
-                );
-                cfg.magic_dns = MagicDnsMode::parse(&entries[0])?;
-            }
-        }
         other => anyhow::bail!(
-            "unknown config key: {other} (expected relay, discovery-dns, dns-upstreams, subnet, or magic-dns)"
+            "unknown config key: {other} (expected relay, discovery-dns, or subnet)"
         ),
     }
     Ok(())
@@ -333,28 +306,18 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                 .unwrap_or_else(|| "<default>".to_string());
             return Ok((k.to_string(), val));
         }
-        if k == "magic-dns" {
-            return Ok((k.to_string(), cfg.magic_dns.as_str().to_string()));
-        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
-            "dns-upstreams" => &cfg.dns_upstreams,
             other => anyhow::bail!(
-                "unknown config key: {other} (expected relay, discovery-dns, dns-upstreams, subnet, or magic-dns)"
+                "unknown config key: {other} (expected relay, discovery-dns, or subnet)"
             ),
         };
         Ok((k.to_string(), render_override(o)))
     };
     match key {
         Some(k) => Ok(vec![row(k)?]),
-        None => Ok(vec![
-            row("relay")?,
-            row("discovery-dns")?,
-            row("dns-upstreams")?,
-            row("subnet")?,
-            row("magic-dns")?,
-        ]),
+        None => Ok(vec![row("relay")?, row("discovery-dns")?, row("subnet")?]),
     }
 }
 
@@ -367,60 +330,6 @@ pub struct PendingJoinEntry {
     /// The local display name to use once admitted, if the user gave one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}
-
-/// How torpedo manages the host's OS DNS to make `.ray` names resolve.
-///
-/// Magic DNS is a convenience, not a requirement — the mesh itself never touches
-/// system DNS, and `torpedo status` lists every peer's mesh IP (reach peers by
-/// IP directly). So the default is deliberately hands-off on hosts that lack a clean
-/// split-DNS backend, rather than seizing `/etc/resolv.conf` (which collides with
-/// another VPN like Tailscale that also manages that file — see the mutual DNS
-/// forwarding loop diagnosed as DNS-003).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MagicDnsMode {
-    /// Never configure system DNS at all. Reach peers purely by mesh IP.
-    Off,
-    /// Use a clean split-DNS backend if one exists (systemd-resolved,
-    /// NetworkManager dnsmasq, resolvconf); otherwise leave `/etc/resolv.conf`
-    /// untouched and print how to enable `.ray` here. Default.
-    #[default]
-    Auto,
-    /// Additionally seize `/etc/resolv.conf` as a last resort when no clean
-    /// backend exists (the only way to get `.ray` on a minimal host). Guarded
-    /// against foreign-VPN DNS forwarding loops. Opt-in.
-    Direct,
-}
-
-impl MagicDnsMode {
-    /// Parse the `torpedo config set magic-dns <mode>` value.
-    pub fn parse(s: &str) -> Result<Self> {
-        match s.trim().to_lowercase().as_str() {
-            "off" => Ok(Self::Off),
-            "auto" | "" => Ok(Self::Auto),
-            "direct" => Ok(Self::Direct),
-            other => anyhow::bail!("invalid magic-dns mode: {other} (expected off, auto, or direct)"),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Auto => "auto",
-            Self::Direct => "direct",
-        }
-    }
-
-    /// True only for `direct`: permit the `/etc/resolv.conf` takeover fallback.
-    pub fn allows_direct(self) -> bool {
-        matches!(self, Self::Direct)
-    }
-
-    /// True only for `off`: skip OS-DNS configuration entirely.
-    pub fn is_off(self) -> bool {
-        matches!(self, Self::Off)
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -453,14 +362,6 @@ pub struct AppConfig {
     /// publish). Also redirects the `dht.rs` pkarr client.
     #[serde(default)]
     pub discovery_dns: ServerOverride,
-    /// Custom Magic DNS upstream forwarders for non-`.ray` queries (IPv4 only).
-    #[serde(default)]
-    pub dns_upstreams: ServerOverride,
-    /// How torpedo manages OS DNS for `.ray` resolution. Default [`MagicDnsMode::Auto`]
-    /// never seizes `/etc/resolv.conf`; `direct` opts into the takeover fallback.
-    /// Set via `torpedo config set magic-dns off|auto|direct`.
-    #[serde(default)]
-    pub magic_dns: MagicDnsMode,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
     /// Closed-network joins queued for coordinator approval, awaiting
@@ -508,10 +409,6 @@ struct Settings {
     relay: ServerOverride,
     #[serde(default)]
     discovery_dns: ServerOverride,
-    #[serde(default)]
-    dns_upstreams: ServerOverride,
-    #[serde(default)]
-    magic_dns: MagicDnsMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_joins: Vec<PendingJoinEntry>,
 }
@@ -754,8 +651,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             subnet: None,
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
-            dns_upstreams: ServerOverride::default(),
-            magic_dns: MagicDnsMode::default(),
             pending_joins: Vec::new(),
         }
     };
@@ -790,8 +685,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         subnet: settings.subnet,
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
-        dns_upstreams: settings.dns_upstreams,
-        magic_dns: settings.magic_dns,
         networks,
         pending_joins: settings.pending_joins,
     })
@@ -831,8 +724,6 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         subnet: config.subnet,
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
-        dns_upstreams: config.dns_upstreams.clone(),
-        magic_dns: config.magic_dns,
         pending_joins: config.pending_joins.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
@@ -1303,16 +1194,11 @@ name = "test"
         let fresh = load_in(dir).unwrap();
         assert!(fresh.relay.is_unset());
         assert!(fresh.discovery_dns.is_unset());
-        assert!(fresh.dns_upstreams.is_unset());
 
         let cfg = AppConfig {
             relay: ServerOverride {
                 servers: vec!["http://r:1".into()],
                 replace: true,
-            },
-            dns_upstreams: ServerOverride {
-                servers: vec!["1.1.1.1".into()],
-                replace: false,
             },
             ..Default::default()
         };
@@ -1320,51 +1206,7 @@ name = "test"
 
         let loaded = load_in(dir).unwrap();
         assert_eq!(loaded.relay, cfg.relay);
-        assert_eq!(loaded.dns_upstreams, cfg.dns_upstreams);
         assert!(loaded.discovery_dns.is_unset());
-    }
-
-    #[test]
-    fn magic_dns_default_is_auto_and_hands_off() {
-        // The default posture never seizes /etc/resolv.conf.
-        let m = MagicDnsMode::default();
-        assert_eq!(m, MagicDnsMode::Auto);
-        assert!(!m.allows_direct());
-        assert!(!m.is_off());
-        // A fresh config (no settings.toml) also defaults to auto.
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(load_in(tmp.path()).unwrap().magic_dns, MagicDnsMode::Auto);
-    }
-
-    #[test]
-    fn magic_dns_parse_set_get_roundtrip() {
-        assert_eq!(MagicDnsMode::parse("off").unwrap(), MagicDnsMode::Off);
-        assert_eq!(MagicDnsMode::parse("AUTO").unwrap(), MagicDnsMode::Auto);
-        assert_eq!(MagicDnsMode::parse(" direct ").unwrap(), MagicDnsMode::Direct);
-        assert!(MagicDnsMode::parse("bogus").is_err());
-
-        // Only `direct` unlocks the takeover; only `off` skips OS DNS.
-        assert!(MagicDnsMode::Direct.allows_direct());
-        assert!(!MagicDnsMode::Auto.allows_direct());
-        assert!(MagicDnsMode::Off.is_off());
-
-        let mut cfg = AppConfig::default();
-        config_set(&mut cfg, "magic-dns", "direct", false).unwrap();
-        assert_eq!(cfg.magic_dns, MagicDnsMode::Direct);
-        // Empty value resets to the default (auto).
-        config_set(&mut cfg, "magic-dns", "", false).unwrap();
-        assert_eq!(cfg.magic_dns, MagicDnsMode::Auto);
-        // A bad mode is rejected before mutating.
-        assert!(config_set(&mut cfg, "magic-dns", "loud", false).is_err());
-
-        config_set(&mut cfg, "magic-dns", "off", false).unwrap();
-        let got = config_get(&cfg, Some("magic-dns")).unwrap();
-        assert_eq!(got, vec![("magic-dns".to_string(), "off".to_string())]);
-
-        // Persists across save/load.
-        let tmp = tempfile::tempdir().unwrap();
-        save_settings_in(tmp.path(), &cfg).unwrap();
-        assert_eq!(load_in(tmp.path()).unwrap().magic_dns, MagicDnsMode::Off);
     }
 
     #[test]
@@ -1454,15 +1296,6 @@ name = "test"
         assert!(!cfg.relay.is_unset());
         config_set(&mut cfg, "relay", "n0", false).unwrap();
         assert!(cfg.relay.is_unset());
-    }
-
-    #[test]
-    fn config_set_dns_upstreams_rejects_non_ip() {
-        let mut cfg = AppConfig::default();
-        assert!(config_set(&mut cfg, "dns-upstreams", "1.1.1.1", false).is_ok());
-        assert!(config_set(&mut cfg, "dns-upstreams", "not-an-ip", false).is_err());
-        // rayfish is not a valid upstream keyword.
-        assert!(config_set(&mut cfg, "dns-upstreams", "rayfish", false).is_err());
     }
 
     #[test]

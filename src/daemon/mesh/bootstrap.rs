@@ -124,7 +124,6 @@ async fn build_daemon(
     // (cache of the active network's signed GroupBlob value) so the identity and
     // TUN are built in the right range at bootstrap, before any network is up.
     let node_subnet = config::node_subnet();
-    crate::dns::init_node_overlay(node_subnet);
     let identity = IrohIdentityProvider::new(public_key, collision_index, node_subnet);
     let my_ip = identity.local_ip();
 
@@ -171,13 +170,6 @@ async fn build_daemon(
         let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
         Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx))
     };
-    // --- Magic DNS resolver ---
-    let hostname_table = dns::new_hostname_table();
-    let reverse_table = dns::new_reverse_table();
-    let dns_resolver = std::sync::Arc::new(crate::dns_resolver::Resolver::new(
-        hostname_table.clone(),
-        reverse_table.clone(),
-    ));
     // --- Protocol router + the shared MeshManager ---
     let protocol_router = Arc::new(ProtocolRouter::new(blobs_proto));
     // Promotion channel: a co-coordinator's control reader signals the main
@@ -193,8 +185,7 @@ async fn build_daemon(
         shutdown_token: token.clone(),
         blob_store,
         protocol_router: protocol_router.clone(),
-        dns: DnsManager::new(hostname_table, reverse_table, dns_resolver.clone()),
-                tun_name: std::sync::Mutex::new(tun_name),
+        tun_name: std::sync::Mutex::new(tun_name),
         tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         pruned_peers: Arc::new(DashSet::new()),

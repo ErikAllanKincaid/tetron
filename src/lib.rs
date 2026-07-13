@@ -8,7 +8,6 @@
 #![doc(hidden)]
 
 pub const APP_NAME: &str = "torpedo";
-pub const DNS_DOMAIN: &str = "ray";
 
 use futures::StreamExt;
 use iroh::endpoint::{Connection as IrohConnection, PathEvent};
@@ -52,10 +51,6 @@ pub mod config;
 pub mod control;
 pub mod daemon;
 pub mod dht;
-pub mod dns;
-pub mod dns_config;
-pub mod dns_packet;
-pub mod dns_resolver;
 pub mod forward;
 pub mod hostname;
 pub mod identity;

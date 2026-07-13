@@ -9,8 +9,7 @@ failure). The shared SSH/deploy/reset/assert plumbing lives in
 
 | Dir | Hosts | What it proves |
 |-----|-------|----------------|
-| [`closed-net/`](closed-net) | 3 | Closed-net admission + lifecycle commands: live approval (`requests`/`accept`/`deny`), co-coordinator (`admin add`) gatekeeper resilience with a reusable key, `torpedo hostname` + magic-DNS, and `torpedo leave`/`nuke`. |
-| [`dns/`](dns) | 2 | Magic DNS resolution over a real TUN: `<host>.<net>.ray` resolves via the system resolver, drives reachability, no host `:53` bind, non-`.ray` passthrough, and `torpedo down` revert. |
+| [`closed-net/`](closed-net) | 3 | Closed-net admission + lifecycle commands: live approval (`requests`/`accept`/`deny`), co-coordinator (`admin add`) gatekeeper resilience with a reusable key, `torpedo hostname` propagation, and `torpedo leave`/`nuke`. |
 | [`reliability/`](reliability) | 4 | Full-mesh packet-loss test: every pair probed both ways with `ping -c 1000 -i 0.01`, ICMP flood, and iperf3 UDP, over the torpedo tunnel vs the direct public-IP baseline. Fails when torpedo adds loss over the raw link. |
 | [`restore-offline/`](restore-offline) | 3 | A member restores and reconnects while the coordinator is offline, proving member reconnect survives a single coordinator being down. |
 
@@ -22,7 +21,7 @@ tests/e2e.sh <scenario> provision   # just spin up instances -> <dir>/.servers
 tests/e2e.sh <scenario> teardown    # destroy the instances (manual)
 ```
 
-where `<scenario>` is `closed-net`, `dns`, `reliability`,
+where `<scenario>` is `closed-net`, `reliability`,
 `restore-offline`, or `bench` (run `tests/e2e.sh` with no scenario for usage). The per-scenario run steps live in `<dir>/run.sh`
 (still runnable directly once `.servers` exists); the fleet definitions and the
 provision/teardown/assert bodies are shared in [`../lib/`](../lib).

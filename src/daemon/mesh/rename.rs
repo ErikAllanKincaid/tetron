@@ -55,8 +55,8 @@ pub(crate) async fn drain_pending_rename(
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
 ) {
-    // `apply_roster_to_dns` already cleared the intent if the blob confirmed it,
-    // so a value here means it's genuinely still outstanding.
+    // `reconcile_local_hostname` already cleared the intent if the blob confirmed
+    // it, so a value here means it's genuinely still outstanding.
     let Some(pending) = (match config::load_network(network_name) {
         Ok(Some(net)) => net.pending_hostname,
         _ => None,
