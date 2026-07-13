@@ -1,7 +1,7 @@
 //! Internal library crate for the `ray` binary. **Not a stable public API** —
 //! exposed only so Criterion benchmarks (see `benches/`) and integration tests
-//! can exercise the internal data path (the hot forwarding loop, firewall
-//! evaluation, packet parsing) without going through the binary. No semver
+//! can exercise the internal data path (the hot forwarding loop, packet
+//! parsing) without going through the binary. No semver
 //! guarantees on any of these modules; depend on the `ray` binary, not this
 //! crate. `src/main.rs` is a thin clap CLI + IPC client built on top, importing
 //! these modules via `use rayfish::…`.
@@ -56,7 +56,6 @@ pub mod dns;
 pub mod dns_config;
 pub mod dns_packet;
 pub mod dns_resolver;
-pub mod firewall;
 pub mod forward;
 pub mod hostname;
 pub mod identity;
@@ -66,11 +65,10 @@ pub mod layout;
 pub mod logdir;
 pub mod membership;
 pub mod network_name;
+pub mod packet;
 pub mod peers;
-pub mod picker;
 pub mod progress;
 pub mod ratelimit;
-pub mod reject;
 pub mod shutdown;
 pub mod stats;
 pub mod style;

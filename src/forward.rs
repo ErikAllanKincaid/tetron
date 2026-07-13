@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::firewall::{self, Direction, SharedFirewall};
+use crate::packet;
 use crate::peers::PeerTable;
 use crate::stats::{DropReason, ForwardMetrics};
 
@@ -35,11 +35,8 @@ const TX_POOL_CHUNK: usize = 64 * 1024;
 
 /// Decision returned by [`evaluate_inbound`] for a datagram received from a peer.
 pub(crate) enum InboundDecision {
-    /// Packet passed the firewall check and may be written to the TUN.
+    /// Packet passed validation and may be written to the TUN.
     Accept,
-    /// Dropped by the local firewall. Carries the parsed packet so a fail-fast
-    /// REJECT reply can be built without re-parsing.
-    DropFirewall(firewall::PacketInfo),
     /// Dropped: too large or not a parseable IP packet.
     DropMalformed,
     /// Dropped: the packet's source IP is not the sending peer's assigned mesh
@@ -48,28 +45,28 @@ pub(crate) enum InboundDecision {
     DropSpoof,
 }
 
-/// Pure evaluation of an inbound peer datagram against the firewall and basic
-/// packet validity. Extracted from [`spawn_peer_reader`] so it can be unit-tested.
+/// Pure evaluation of an inbound peer datagram against basic packet validity and
+/// the ingress anti-spoof check. Extracted from [`spawn_peer_reader`] so it can
+/// be unit-tested.
 ///
 /// Non-IP / truncated / oversized packets are rejected (`DropMalformed`) rather
-/// than passed through — previously such packets bypassed the firewall entirely.
+/// than passed through. Packet *filtering* is the host firewall's job
+/// (nftables/ufw on the TUN interface); the mesh no longer runs a userspace
+/// firewall (MINIMAL-010).
 pub(crate) fn evaluate_inbound(
-    packet: &[u8],
-    firewall: &SharedFirewall,
-    peer_id: &EndpointId,
+    datagram: &[u8],
     peer_ip: Ipv4Addr,
     peer_ipv6: Ipv6Addr,
-    network: &str,
 ) -> InboundDecision {
-    if packet.len() > MAX_PEER_DATAGRAM {
+    if datagram.len() > MAX_PEER_DATAGRAM {
         return InboundDecision::DropMalformed;
     }
-    let Some(info) = firewall::parse_packet_info(packet) else {
+    let Some(info) = packet::parse_packet_info(datagram) else {
         return InboundDecision::DropMalformed;
     };
     // Ingress anti-spoofing: a peer may only inject packets sourced from its own
     // assigned mesh address. Anything else (e.g. one peer forging another's mesh
-    // IP) is dropped before the firewall or any in-daemon listener sees it, so
+    // IP) is dropped before any in-daemon listener sees it, so
     // identity-from-source-IP stays trustworthy.
     let src_ok = match info.src_ip {
         IpAddr::V4(v4) => v4 == peer_ip,
@@ -77,12 +74,6 @@ pub(crate) fn evaluate_inbound(
     };
     if !src_ok {
         return InboundDecision::DropSpoof;
-    }
-    if firewall
-        .evaluate_packet(Direction::In, &info, peer_id, Some(network))
-        .is_deny()
-    {
-        return InboundDecision::DropFirewall(info);
     }
     InboundDecision::Accept
 }
@@ -136,7 +127,6 @@ pub struct DisconnectEvent {
 /// single bundle instead of six separate arguments. Built per spawn from the
 /// daemon's `MeshCtx` via `MeshCtx::forward_ctx`.
 pub struct ForwardCtx {
-    pub firewall: SharedFirewall,
     /// Swappable sender cell for the TUN writer. Peer readers outlive TUN
     /// attach/detach cycles (the control plane stays up across a VPN toggle), so
     /// they resolve the current writer per packet via `tun_tx.load_full()` rather
@@ -150,7 +140,7 @@ pub struct ForwardCtx {
 }
 
 /// True when a parsed packet is a DNS query addressed to the magic resolver IP.
-pub(crate) fn is_magic_dns(info: &firewall::PacketInfo) -> bool {
+pub(crate) fn is_magic_dns(info: &packet::PacketInfo) -> bool {
     info.dst_port == 53 && info.dst_ip == IpAddr::V4(crate::dns::magic_dns_v4_node())
 }
 
@@ -161,7 +151,6 @@ pub(crate) fn is_magic_dns(info: &firewall::PacketInfo) -> bool {
 pub async fn run_mesh<R: crate::tun::TunRead>(
     mut tun: R,
     peers: PeerTable,
-    firewall: SharedFirewall,
     token: CancellationToken,
     stats: Arc<ForwardMetrics>,
     resolver: Arc<crate::dns_resolver::Resolver>,
@@ -189,7 +178,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
         // `Bytes` sharing the chunk's allocation — no copy, no per-packet malloc.
         let pkt = pool.split_to(n).freeze();
         tracing::debug!(len = n, first_byte = pkt[0], "TUN read");
-        let Some(info) = firewall::parse_packet_info(&pkt) else {
+        let Some(info) = packet::parse_packet_info(&pkt) else {
             tracing::debug!(len = n, "not IP, dropping");
             continue;
         };
@@ -212,28 +201,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             continue;
         };
         // Reachability is "we share a network" — enforced by connection
-        // existence. The per-host firewall is the fine-grained gate.
-        if firewall
-            .evaluate_packet(
-                Direction::Out,
-                &info,
-                &route.endpoint_id,
-                Some(&route.network),
-            )
-            .is_deny()
-        {
-            tracing::debug!(dst = %info.dst_ip, port = info.dst_port, "firewall denied outbound");
-            stats.record_drop(DropReason::Firewall);
-            // Fail fast (opt-in): inject a RST / ICMP-unreachable back into our own
-            // TUN so the local app's socket fails immediately instead of hanging.
-            if firewall.reject_enabled()
-                && let Some(reply) = crate::reject::build_reject(&pkt, &info)
-            {
-                stats.record_reject();
-                let _ = tun_tx.send(reply).await;
-            }
-            continue;
-        }
+        // existence. Packet filtering is the host firewall's job.
         tracing::debug!(dst = %info.dst_ip, "routing to peer");
         // Drop-newest at the application boundary: if the peer's QUIC datagram send
         // buffer is too full to accept this packet without evicting an already-queued
@@ -275,7 +243,6 @@ pub fn spawn_peer_reader(
     ctx: ForwardCtx,
 ) -> JoinHandle<()> {
     let ForwardCtx {
-        firewall,
         tun_tx,
         disconnect_tx,
         token,
@@ -317,10 +284,7 @@ pub fn spawn_peer_reader(
                 },
             };
 
-            let peer_user = peer_id;
-            match evaluate_inbound(
-                &datagram, &firewall, &peer_user, peer_ip, peer_ipv6, &network,
-            ) {
+            match evaluate_inbound(&datagram, peer_ip, peer_ipv6) {
                 InboundDecision::Accept => {
                     stats.record_rx(datagram.len());
                     // Resolve the live writer for each packet: the sender is
@@ -329,20 +293,6 @@ pub fn spawn_peer_reader(
                     // detach and the next attach); drop the packet and keep the
                     // reader alive so it forwards again once a new TUN attaches.
                     let _ = tun_tx.load_full().send(datagram).await;
-                }
-                InboundDecision::DropFirewall(info) => {
-                    stats.record_drop(DropReason::Firewall);
-                    // Fail fast (opt-in): send a RST / ICMP-unreachable back over
-                    // this connection so the initiator on the other host fails
-                    // immediately. Its conntrack admits the reply (a RST matches
-                    // its outbound flow; the seeded `allow in icmp` rule admits an
-                    // ICMP error), so the initiator's app sees "connection refused".
-                    if firewall.reject_enabled()
-                        && let Some(reply) = crate::reject::build_reject(&datagram, &info)
-                    {
-                        stats.record_reject();
-                        let _ = conn.send_datagram(reply);
-                    }
                 }
                 InboundDecision::DropMalformed => stats.record_drop(DropReason::Malformed),
                 InboundDecision::DropSpoof => {
@@ -386,7 +336,6 @@ pub fn spawn_tun_writer<W: crate::tun::TunWrite>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::firewall::Action;
 
     #[derive(Default)]
     struct FakeTunWriter {
@@ -429,37 +378,6 @@ mod tests {
         assert!(sink.lock().await.is_empty());
     }
 
-    #[test]
-    fn test_parse_packet_valid_ipv4() {
-        let mut packet = vec![0u8; 24];
-        packet[0] = 0x45;
-        packet[9] = 6; // TCP
-        packet[16] = 100;
-        packet[17] = 64;
-        packet[18] = 0;
-        packet[19] = 3;
-        let info = firewall::parse_packet_info(&packet).unwrap();
-        assert_eq!(info.dst_ip, Ipv4Addr::new(100, 64, 0, 3));
-        assert_eq!(info.protocol, 6);
-    }
-
-    #[test]
-    fn test_parse_packet_too_short() {
-        assert!(firewall::parse_packet_info(&[0x45; 10]).is_none());
-    }
-
-    #[test]
-    fn test_parse_packet_ipv6() {
-        let mut packet = vec![0u8; 40];
-        packet[0] = 0x60; // IPv6
-        packet[6] = 6; // TCP next header
-        // dst at bytes 24-39
-        packet[24] = 0x02;
-        packet[25] = 0x01;
-        let info = firewall::parse_packet_info(&packet).unwrap();
-        assert!(info.dst_ip.is_ipv6());
-    }
-
     /// Mesh address the test packets are sourced from; passed to
     /// `evaluate_inbound` as the sending peer's assigned IP so the ingress
     /// anti-spoof check passes.
@@ -479,93 +397,21 @@ mod tests {
         p
     }
 
-    fn inbound_fw(default: Action, rules: Vec<firewall::FirewallRule>) -> SharedFirewall {
-        SharedFirewall::new(firewall::FirewallConfig {
-            default_inbound: default,
-            default_outbound: Action::Allow,
-            reject: false,
-            disabled: false,
-            rules,
-        })
-    }
-
     #[test]
     fn inbound_oversized_datagram_dropped_as_malformed() {
-        let fw = SharedFirewall::new(firewall::FirewallConfig::default());
-        let peer = iroh::SecretKey::generate().public();
         let huge = vec![0u8; MAX_PEER_DATAGRAM + 1];
         assert!(matches!(
-            evaluate_inbound(&huge, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
+            evaluate_inbound(&huge, TEST_V4, TEST_V6),
             InboundDecision::DropMalformed
         ));
     }
 
     #[test]
-    fn inbound_ipv6_evaluated_by_firewall() {
-        let fw = inbound_fw(Action::Deny, vec![]);
-        let peer = iroh::SecretKey::generate().public();
-        let mut pkt = vec![0u8; 40];
-        pkt[0] = 0x60; // IPv6
-        pkt[6] = 6; // TCP
+    fn inbound_well_formed_packet_accepted() {
+        // With the userspace firewall removed, a well-formed packet sourced from
+        // the peer's own mesh IP is accepted; filtering is the host firewall's job.
         assert!(matches!(
-            evaluate_inbound(&pkt, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
-            InboundDecision::DropFirewall(_)
-        ));
-    }
-
-    #[test]
-    fn inbound_firewall_denied_port() {
-        let peer = iroh::SecretKey::generate().public();
-        let fw = inbound_fw(
-            Action::Allow,
-            vec![firewall::FirewallRule {
-                direction: Direction::In,
-                action: Action::Deny,
-                protocol: firewall::Protocol::Tcp,
-                port: Some(firewall::PortRange { start: 22, end: 22 }),
-                peer: firewall::PeerFilter::Any,
-                network: None,
-                origin: firewall::RuleOrigin::Local,
-            }],
-        );
-        let blocked = make_tcp_packet(22);
-        let allowed = make_tcp_packet(80);
-        assert!(matches!(
-            evaluate_inbound(&blocked, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
-            InboundDecision::DropFirewall(_)
-        ));
-        assert!(matches!(
-            evaluate_inbound(&allowed, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
-            InboundDecision::Accept
-        ));
-    }
-
-    #[test]
-    fn inbound_clean_tcp_denied_by_secure_default() {
-        // The built-in default denies unsolicited inbound TCP (no service port is
-        // exposed out of the box).
-        let peer = iroh::SecretKey::generate().public();
-        let fw = SharedFirewall::new(firewall::FirewallConfig::default());
-        let pkt = make_tcp_packet(443);
-        assert!(matches!(
-            evaluate_inbound(&pkt, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
-            InboundDecision::DropFirewall(_)
-        ));
-    }
-
-    #[test]
-    fn inbound_icmp_accepted_by_default() {
-        // Inbound ICMP is allowed-by-default so ping/reachability works out of the
-        // box even under the deny-inbound default.
-        let peer = iroh::SecretKey::generate().public();
-        let fw = SharedFirewall::new(firewall::FirewallConfig::default());
-        let mut pkt = vec![0u8; 28];
-        pkt[0] = 0x45; // IPv4, IHL=5
-        pkt[9] = 1; // ICMP
-        pkt[12..16].copy_from_slice(&[100, 64, 0, 5]); // src ip (TEST_V4)
-        pkt[16..20].copy_from_slice(&[100, 64, 0, 3]); // dst ip
-        assert!(matches!(
-            evaluate_inbound(&pkt, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
+            evaluate_inbound(&make_tcp_packet(443), TEST_V4, TEST_V6),
             InboundDecision::Accept
         ));
     }
@@ -573,33 +419,23 @@ mod tests {
     #[test]
     fn inbound_spoofed_source_ip_dropped() {
         // A packet whose source IP isn't the sending peer's assigned mesh IP is
-        // dropped as spoofed, before the firewall or any in-daemon listener sees
-        // it — even when the firewall would otherwise allow it.
-        let peer = iroh::SecretKey::generate().public();
-        let fw = inbound_fw(Action::Allow, vec![]);
+        // dropped as spoofed, before any in-daemon listener sees it.
         let pkt = make_tcp_packet(80); // sourced from TEST_V4 (100.64.0.5)
         // Same packet, but the peer is supposedly assigned a different IP.
         assert!(matches!(
-            evaluate_inbound(
-                &pkt,
-                &fw,
-                &peer,
-                Ipv4Addr::new(100, 64, 0, 9),
-                TEST_V6,
-                "test-net"
-            ),
+            evaluate_inbound(&pkt, Ipv4Addr::new(100, 64, 0, 9), TEST_V6),
             InboundDecision::DropSpoof
         ));
         // With the matching peer IP it passes.
         assert!(matches!(
-            evaluate_inbound(&pkt, &fw, &peer, TEST_V4, TEST_V6, "test-net"),
+            evaluate_inbound(&pkt, TEST_V4, TEST_V6),
             InboundDecision::Accept
         ));
     }
 
     #[test]
     fn magic_dns_predicate_matches_only_magic_ip_port_53() {
-        let mk = |ip: IpAddr, port: u16| firewall::PacketInfo {
+        let mk = |ip: IpAddr, port: u16| packet::PacketInfo {
             src_ip: "100.64.0.5".parse().unwrap(),
             dst_ip: ip,
             protocol: 17,
@@ -613,48 +449,5 @@ mod tests {
         assert!(!is_magic_dns(&mk(IpAddr::V4(crate::dns::magic_dns_v4_node()), 80)));
         assert!(!is_magic_dns(&mk("100.64.0.9".parse().unwrap(), 53)));
     }
-
-    #[test]
-    fn inbound_tcp_accepted_when_port_explicitly_opened() {
-        // An explicit allow rule opens a port under the deny-inbound default.
-        let peer = iroh::SecretKey::generate().public();
-        let fw = inbound_fw(
-            Action::Deny,
-            vec![firewall::FirewallRule {
-                direction: Direction::In,
-                action: Action::Allow,
-                protocol: firewall::Protocol::Tcp,
-                port: Some(firewall::PortRange {
-                    start: 8080,
-                    end: 8080,
-                }),
-                peer: firewall::PeerFilter::Any,
-                network: None,
-                origin: firewall::RuleOrigin::Local,
-            }],
-        );
-        assert!(matches!(
-            evaluate_inbound(
-                &make_tcp_packet(8080),
-                &fw,
-                &peer,
-                TEST_V4,
-                TEST_V6,
-                "test-net"
-            ),
-            InboundDecision::Accept
-        ));
-        // A different port stays denied.
-        assert!(matches!(
-            evaluate_inbound(
-                &make_tcp_packet(9090),
-                &fw,
-                &peer,
-                TEST_V4,
-                TEST_V6,
-                "test-net"
-            ),
-            InboundDecision::DropFirewall(_)
-        ));
-    }
 }
+

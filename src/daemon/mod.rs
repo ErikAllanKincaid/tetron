@@ -64,10 +64,9 @@ use crate::control::{self, ControlMsg};
 use crate::dht;
 use crate::dns;
 use crate::dns_config;
-use crate::firewall::{self, SharedFirewall};
 use crate::forward;
 use crate::identity;
-use crate::ipc::{self, FirewallRuleView, IpcMessage, NetworkRole, NetworkStatus, PeerStatus};
+use crate::ipc::{self, IpcMessage, NetworkRole, NetworkStatus, PeerStatus};
 use crate::membership::{
     ApprovedEntry, ApprovedList, GroupMode, IdentityProvider, IrohIdentityProvider, Member,
     MemberList, Subnet, canonical_group_bytes, default_subnet, derive_ipv6, group_blob_hash,
@@ -86,7 +85,7 @@ use ray_proto::SuggestedFirewall;
 // `MeshManager`'s IPC operations are split by domain into the `mesh/` submodule;
 // see `mesh/mod.rs`. Each holds an additional `impl MeshManager` block. Nested a
 // level down so the module names can be the clean domain names without colliding
-// with the `use crate::{firewall, dns, …}` aliases above.
+// with the `use crate::{dns, …}` aliases above.
 mod mesh;
 // The mesh core's join handshake and background-task/reconvergence helpers were
 // moved into `mesh/{join,background}.rs`; re-export them at the daemon level so
@@ -125,7 +124,6 @@ pub(crate) struct MeshCtx {
     tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     stats: Arc<ForwardMetrics>,
     blob_store: FsStore,
-    firewall: SharedFirewall,
     hostname_table: dns::HostnameTable,
     reverse_table: dns::ReverseLookupTable,
     /// Peers removed from a network's roster (via `torpedo kick` or a stale-entry
@@ -147,7 +145,6 @@ impl MeshCtx {
         token: CancellationToken,
     ) -> forward::ForwardCtx {
         forward::ForwardCtx {
-            firewall: self.firewall.clone(),
             tun_tx: self.tun_tx.clone(),
             disconnect_tx,
             token,
@@ -207,9 +204,9 @@ pub(crate) struct NetworkState {
     /// coordinator's accept path consults this; members default to `Restricted`.
     mode: GroupMode,
     /// Coordinator-suggested firewall rules carried in the blob (keyed by subject
-    /// hostname; the `*` subject targets every node). On a coordinator this is
-    /// what it publishes; on a member it is what it last received and
-    /// materializes rules from.
+    /// hostname). Retained for wire compatibility with full torpedo (D1): the
+    /// field is carried through the `GroupBlob` verbatim on republish but is not
+    /// acted on — the userspace firewall was removed (MINIMAL-010).
     suggested_firewall: SuggestedFirewall,
     /// Reusable join keys carried in the signed blob (keyed by hex
     /// `blake3(secret)`). On a network-key holder this is what it publishes and
@@ -221,10 +218,6 @@ pub(crate) struct NetworkState {
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
     subnet: Subnet,
-    /// Materialized suggested rules awaiting manual `torpedo firewall accept` on a
-    /// node that did not opt into `--auto-accept-firewall`. Empty when
-    /// auto-accepting.
-    pending_suggestions: Vec<firewall::FirewallRule>,
     /// Peers awaiting live operator approval on a closed network (coordinator
     /// only, in-memory, never persisted or published).
     pending: HashMap<EndpointId, PendingJoin>,
@@ -353,7 +346,6 @@ pub struct MeshManager {
     networks: Arc<DashMap<String, NetworkHandle>>,
     shutdown_token: CancellationToken,
     blob_store: FsStore,
-    firewall: SharedFirewall,
     protocol_router: Arc<ProtocolRouter>,
     /// Magic DNS naming tables, resolver, and OS-DNS configurator (see [`DnsManager`]).
     dns: DnsManager,
@@ -443,7 +435,6 @@ impl MeshManager {
             tun_tx: self.tun_tx.clone(),
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
-            firewall: self.firewall.clone(),
             hostname_table: self.dns.hostname_table.clone(),
             reverse_table: self.dns.reverse_table.clone(),
             pruned_peers: self.pruned_peers.clone(),
@@ -467,7 +458,7 @@ impl MeshManager {
     /// Attach a packet interface to a headless [`DaemonState`] and start the data
     /// plane's forwarding tasks: the TUN writer (`spawn_tun_writer`) and the mesh
     /// forwarding loop (`run_mesh`, reading `reader` and using the state's
-    /// peers/firewall/stats/resolver).
+    /// peers/stats/resolver).
     ///
     /// A fresh `tun_tx`/`tun_rx` channel is created on every call: the new
     /// receiver feeds the writer, and the new sender is stored in the `tun_tx`
@@ -498,14 +489,12 @@ impl MeshManager {
         let writer_handle = forward::spawn_tun_writer(writer, new_rx, self.active.clone());
         let mesh_handle = {
             let peers = self.peers.clone();
-            let firewall = self.firewall.clone();
             let cancel = cancel.clone();
             let stats = self.stats.clone();
             let resolver = self.dns.resolver.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    forward::run_mesh(reader, peers, firewall, cancel, stats, resolver, new_tx)
-                        .await
+                    forward::run_mesh(reader, peers, cancel, stats, resolver, new_tx).await
                 {
                     tracing::warn!(error = %e, "mesh forwarding loop exited with error");
                 }
@@ -644,11 +633,7 @@ impl MeshManager {
         // Reads are available to everyone.
         if matches!(
             req,
-            IpcMessage::Status
-                | IpcMessage::FirewallShow
-                | IpcMessage::FirewallSuggestions { .. }
-                | IpcMessage::FirewallPending { .. }
-                | IpcMessage::GetEphemeral { .. }
+            IpcMessage::Status | IpcMessage::GetEphemeral { .. }
         ) {
             return None;
         }
@@ -737,28 +722,15 @@ impl MeshManager {
                 transport: _,
                 invite,
                 coordinator,
-                auto_accept_firewall,
             } => {
-                let had_invite = invite.is_some();
-                let resp = self
-                    .join_network(
-                        &network_key,
-                        name.as_deref(),
-                        hostname,
-                        invite,
-                        coordinator,
-                        auto_accept_firewall,
-                    )
-                    .await;
-                // FW-001: a successful invite/reusable-key join proves a trusted
-                // (closed) network → default-allow inbound for it.
-                if had_invite
-                    && let IpcMessage::Joined { name: net_name, .. } = &resp
-                {
-                    let cfg = self.firewall.set_closed_default(net_name, true);
-                    let _ = crate::firewall::save_firewall(&cfg);
-                }
-                resp
+                self.join_network(
+                    &network_key,
+                    name.as_deref(),
+                    hostname,
+                    invite,
+                    coordinator,
+                )
+                .await
             }
             IpcMessage::Leave { name } => self.leave_network(&name).await,
             IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
@@ -775,45 +747,6 @@ impl MeshManager {
                 IpcMessage::Ok {
                     message: "shutting down".to_string(),
                 }
-            }
-            IpcMessage::FirewallAdd {
-                direction,
-                action,
-                protocol,
-                port,
-                peer,
-                network,
-            } => {
-                self.firewall_add(
-                    direction,
-                    action,
-                    protocol,
-                    port.as_deref(),
-                    peer.as_deref(),
-                    network.as_deref(),
-                )
-                .await
-            }
-            IpcMessage::FirewallRemove { index } => self.firewall_remove(index),
-            IpcMessage::FirewallShow => self.firewall_show(),
-            IpcMessage::FirewallDefault { action } => self.firewall_default(action),
-            IpcMessage::FirewallReject { enabled } => self.firewall_reject(enabled),
-            IpcMessage::FirewallSetEnabled { enabled } => self.firewall_set_enabled(enabled),
-            IpcMessage::FirewallSuggest {
-                network,
-                suggestions,
-            } => self.firewall_suggest(&network, suggestions).await,
-            IpcMessage::FirewallSuggestions { network } => self.firewall_suggestions(&network),
-            IpcMessage::FirewallPending { network } => self.firewall_pending(&network),
-            IpcMessage::FirewallAccept { network } => self.firewall_accept(&network),
-            IpcMessage::FirewallDeny { network } => self.firewall_deny(&network),
-            IpcMessage::FirewallResolveSuggestions {
-                network,
-                accept,
-                deny,
-            } => self.firewall_resolve_suggestions(&network, &accept, &deny),
-            IpcMessage::FirewallAutoAccept { network, enabled } => {
-                self.firewall_auto_accept(&network, enabled)
             }
             IpcMessage::SetHostname { network, hostname } => {
                 self.set_hostname(&network, &hostname).await
@@ -1090,7 +1023,6 @@ mod accept_handler_tests {
             suggested_firewall: SuggestedFirewall::default(),
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
-            pending_suggestions: Vec::new(),
             pending: HashMap::new(),
         }))
     }
@@ -1105,7 +1037,6 @@ mod accept_handler_tests {
             tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(tun_tx)),
             stats: Arc::new(ForwardMetrics::default()),
             blob_store,
-            firewall: SharedFirewall::new(crate::firewall::FirewallConfig::default()),
             hostname_table: dns::new_hostname_table(),
             reverse_table: dns::new_reverse_table(),
             pruned_peers: Arc::new(DashSet::new()),

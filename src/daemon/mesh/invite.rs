@@ -77,7 +77,7 @@ impl MeshManager {
 
     /// Mint a reusable join key: insert its hash into the signed blob and
     /// republish, so any network-key holder can admit. Authority is holding the
-    /// network secret key (like firewall suggestions), not the `is_coordinator`
+    /// network secret key (the ability to sign the blob), not the `is_coordinator`
     /// flag. A reusable key cannot bind an authoritative hostname.
     pub(crate) async fn reusable_key_create(
         &self,

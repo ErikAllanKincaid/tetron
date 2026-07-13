@@ -162,12 +162,6 @@ async fn build_daemon(
     // and is overwritten when a real interface is attached.
     let tun_name = String::from("torpedo");
     let peers = PeerTable::new();
-    let fw_config = firewall::load_firewall().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load firewall config, using defaults");
-        firewall::FirewallConfig::default()
-    });
-    let shared_firewall = SharedFirewall::new(fw_config);
-    shared_firewall.clone().spawn_evictor(token.clone());
     let active = Arc::new(AtomicBool::new(false));
     // Placeholder sender whose receiver is dropped immediately: no real channel
     // exists until `attach_tun` creates one and swaps it in. `attach_tun`
@@ -198,7 +192,6 @@ async fn build_daemon(
         networks: Arc::new(DashMap::new()),
         shutdown_token: token.clone(),
         blob_store,
-        firewall: shared_firewall,
         protocol_router: protocol_router.clone(),
         dns: DnsManager::new(hostname_table, reverse_table, dns_resolver.clone()),
                 tun_name: std::sync::Mutex::new(tun_name),

@@ -2,8 +2,8 @@
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
 use rayfish::{
-    DNS_DOMAIN, config, daemon, firewall, invite, ipc, layout, logdir, membership, picker, progress,
-    shutdown, stats, style,
+    DNS_DOMAIN, config, daemon, invite, ipc, layout, logdir, membership, progress, shutdown, stats,
+    style,
 };
 
 use std::sync::{Arc, atomic};
@@ -33,8 +33,8 @@ const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GI
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of styled text (disables color and
-    /// spinners). Supported by `status`, `firewall show`, and other list
-    /// commands.
+    /// spinners). Supported by `status`, `invite list`, `requests`, and other
+    /// list commands.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -88,11 +88,6 @@ pub(crate) enum Command {
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long)]
         tor: bool,
-        /// Auto-install coordinator-suggested firewall rules on this network
-        /// without a manual review queue (managed node, e.g. a server). Without
-        /// it, suggestions queue for `torpedo firewall accept`.
-        #[arg(long)]
-        auto_accept_firewall: bool,
     },
     /// Leave a network (remove from saved config)
     #[command(visible_alias = "rm")]
@@ -181,18 +176,13 @@ pub(crate) enum Command {
         id: String,
     },
     /// Grant the network key to a member (coordinator only). The grantee becomes
-    /// a co-coordinator: it can publish the signed blob and suggest firewall
-    /// rules. Trusted-network multi-admin.
+    /// a co-coordinator: it can publish the signed blob and admit fresh joiners.
+    /// Trusted-network multi-admin.
     Admin {
         /// Network name
         network: String,
         #[command(subcommand)]
         action: AdminAction,
-    },
-    /// Manage local device firewall rules
-    Firewall {
-        #[command(subcommand)]
-        action: FirewallAction,
     },
     /// Change your hostname on a network
     Hostname {
@@ -231,7 +221,7 @@ pub(crate) enum InviteAction {
         hostname: Option<String>,
         /// Mint a reusable (multi-use, expiring) key that rides the signed blob,
         /// so any network-key holder can admit. Ideal for `torpedo join <key>
-        /// --hostname <h> --auto-accept-firewall` in deploy scripts. Revoke with
+        /// --hostname <h>` in deploy scripts. Revoke with
         /// `torpedo invite <net> revoke <id>`.
         #[arg(long)]
         reusable: bool,
@@ -290,118 +280,6 @@ pub(crate) enum ConfigAction {
     Unset {
         /// relay, discovery-dns, dns-upstreams, subnet, or magic-dns
         key: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum FirewallAction {
-    /// Add a firewall rule. A new rule is inserted at the front, so it
-    /// supersedes any contradicting rule under first-match — e.g. `deny in icmp`
-    /// overrides the seeded `allow in icmp` (and re-adding `allow` flips it back).
-    /// A rule with the same selector (direction/proto/port/peer/network) replaces
-    /// the old one rather than stacking, so toggling never accumulates dead rules.
-    #[command(visible_alias = "a")]
-    Add {
-        /// Direction: in or out
-        direction: String,
-        /// Action: allow or deny
-        action: String,
-        /// Protocol: tcp, udp, icmp, any
-        #[arg(long, short = 'p', default_value = "any")]
-        proto: String,
-        /// Port, range, or comma list (e.g. 22, 80-443, 80,443, or * for all).
-        /// A comma list adds one rule per item.
-        #[arg(long, short = 'P')]
-        port: Option<String>,
-        /// Peer: hostname, mesh IP, short id, endpoint id, or user identity
-        /// (omit for any peer)
-        #[arg(long)]
-        peer: Option<String>,
-        /// Restrict to a network (omit to match any network the peer is reached through)
-        #[arg(long)]
-        network: Option<String>,
-    },
-    /// Remove a rule by index
-    #[command(visible_aliases = ["rm", "del"])]
-    Remove {
-        /// Rule index (from 'firewall show')
-        index: usize,
-    },
-    /// Show current firewall rules
-    #[command(visible_aliases = ["ls", "list"])]
-    Show,
-    /// Set the inbound default policy (allow or deny). `deny` (the secure
-    /// built-in default) blocks unsolicited inbound TCP/UDP; `allow` restores the
-    /// old permissive behaviour. Inbound ICMP is always allowed by default (use an
-    /// explicit `deny in icmp` rule to block it); the outbound default is always
-    /// allow and is unaffected.
-    Default {
-        /// Default inbound action: allow or deny
-        action: String,
-    },
-    /// Toggle "fail fast" REJECT mode (opt-in, default off). When `on`, a denied
-    /// packet gets a TCP RST / ICMP-unreachable reply so the initiator fails
-    /// immediately ("connection refused") instead of hanging to a timeout. When
-    /// `off`, denied packets are silently dropped (stealthy, the default).
-    Reject {
-        /// on or off
-        state: String,
-    },
-    /// Turn the firewall back on (resume enforcing rules and defaults). Undoes
-    /// `torpedo firewall off`.
-    #[command(visible_alias = "enable")]
-    On,
-    /// Disable the firewall entirely on this device: every packet is allowed,
-    /// bypassing all rules and defaults (mesh membership still gates who can reach
-    /// you; the anti-spoof check still runs). For simple setups that don't want a
-    /// second firewall on top of the host/kernel one. Re-enable with
-    /// `torpedo firewall on`.
-    #[command(visible_alias = "disable")]
-    Off,
-    /// Coordinator-only: suggest firewall rules for a subject host on a network.
-    /// Distributed in the signed blob; each node takes them per its own consent.
-    Suggest {
-        /// Network name
-        network: String,
-        /// Subject host (the hostname the rules protect). Use `*` to target every
-        /// node on the network (e.g. "everyone opens this port").
-        #[arg(long)]
-        subject: String,
-        /// Allow inbound traffic, e.g. `--allow tcp:22` (any peer) or
-        /// `--allow earn01:tcp:9000,tcp:8123` (repeatable). The `PEER:` prefix is
-        /// optional — omit it (start with a protocol) to mean "any peer".
-        /// Spec grammar: `proto:ports` or bare proto (`icmp`, `any`, `tcp`).
-        #[arg(long, value_name = "[PEER:]SPEC")]
-        allow: Vec<String>,
-        /// Deny inbound traffic, e.g. `--deny udp:53` (any peer) or
-        /// `--deny earn01:tcp:443` (repeatable). Same grammar as `--allow`; the
-        /// `PEER:` prefix is optional.
-        #[arg(long, value_name = "[PEER:]SPEC")]
-        deny: Vec<String>,
-    },
-    /// Show suggested rules queued for manual review on a network
-    /// (a node that did not join with `--auto-accept-firewall`).
-    Pending {
-        /// Network name
-        network: String,
-    },
-    /// Accept and install a network's queued suggested rules
-    Accept {
-        /// Network name
-        network: String,
-    },
-    /// Discard a network's queued suggested rules without installing them
-    Deny {
-        /// Network name
-        network: String,
-    },
-    /// Toggle auto-accepting this network's suggested firewall rules on this node
-    /// (`on` installs the current queue; `off` stops future auto-install).
-    AutoAccept {
-        /// Network name
-        network: String,
-        /// `on` or `off`
-        state: String,
     },
 }
 
@@ -605,8 +483,7 @@ async fn main() -> Result<()> {
             name,
             hostname,
             tor,
-            auto_accept_firewall,
-        } => ipc_join(&network_key, name.as_deref(), hostname, tor, auto_accept_firewall).await,
+        } => ipc_join(&network_key, name.as_deref(), hostname, tor).await,
         Command::Nuke { name, force } => ipc_nuke(&name, force).await,
         Command::Kick { network, peer } => ipc_kick(&network, &peer).await,
         Command::Ephemeral { network, arg } => ipc_ephemeral(&network, &arg).await,
@@ -635,7 +512,6 @@ async fn main() -> Result<()> {
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
-        Command::Firewall { action } => ipc_firewall(action).await,
         Command::Hostname { network, name } => ipc_set_hostname(&network, &name).await,
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
@@ -750,7 +626,6 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ipc::FirewallRuleView;
 
     #[test]
     fn strip_deleted_suffix_sanitizes_replaced_binary_path() {
@@ -771,136 +646,5 @@ mod tests {
             strip_deleted_suffix("/opt/torpedo (deleted)/torpedo"),
             "/opt/torpedo (deleted)/torpedo"
         );
-    }
-
-    #[test]
-    fn parse_suggest_token_defaults_peer_to_any_for_bare_proto() {
-        // A leading protocol keyword ⇒ peer defaults to `*` (any).
-        assert_eq!(
-            parse_suggest_token("tcp:22", "--allow").unwrap(),
-            ("*".to_string(), "tcp:22".to_string())
-        );
-        assert_eq!(
-            parse_suggest_token("udp:53", "--allow").unwrap(),
-            ("*".to_string(), "udp:53".to_string())
-        );
-        // Bare port-less protocols too.
-        assert_eq!(
-            parse_suggest_token("icmp", "--allow").unwrap(),
-            ("*".to_string(), "icmp".to_string())
-        );
-        assert_eq!(
-            parse_suggest_token("any:*", "--allow").unwrap(),
-            ("*".to_string(), "any:*".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_suggest_token_keeps_explicit_peer() {
-        // A non-protocol first segment is a peer hostname.
-        assert_eq!(
-            parse_suggest_token("earn01:tcp:9000,tcp:8123", "--allow").unwrap(),
-            ("earn01".to_string(), "tcp:9000,tcp:8123".to_string())
-        );
-        // Explicit `*` peer still works.
-        assert_eq!(
-            parse_suggest_token("*:tcp:22", "--allow").unwrap(),
-            ("*".to_string(), "tcp:22".to_string())
-        );
-        // Hostname with a bare proto spec.
-        assert_eq!(
-            parse_suggest_token("alice:icmp", "--deny").unwrap(),
-            ("alice".to_string(), "icmp".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_suggest_token_rejects_empty() {
-        assert!(parse_suggest_token("", "--allow").is_err());
-        assert!(parse_suggest_token("alice", "--allow").is_err());
-    }
-
-    fn view(
-        dir: &str,
-        action: &str,
-        proto: &str,
-        port: &str,
-        peer: &str,
-        net: &str,
-        sugg: Option<&str>,
-    ) -> FirewallRuleView {
-        FirewallRuleView {
-            direction: dir.parse().unwrap(),
-            action: action.parse().unwrap(),
-            protocol: proto.parse().unwrap(),
-            port: port.into(),
-            peer: peer.into(),
-            network: net.into(),
-            suggested_by: sugg.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn firewall_table_aligns_without_color() {
-        style::set_plain(true);
-        let rules = vec![
-            view("in", "allow", "tcp", "443", "any", "any", None),
-            view(
-                "out",
-                "deny",
-                "udp",
-                "53",
-                "abc1",
-                "homelab",
-                Some("homelab"),
-            ),
-        ];
-        let out = render_firewall_rules(
-            Some((firewall::Action::Allow, firewall::Action::Allow)),
-            false,
-            false,
-            &rules,
-        );
-        assert!(out.contains("default in   allow"));
-        assert!(out.contains("default out  allow"));
-        // Header present, columns aligned: the "action" column header and the
-        // two action values start at the same offset on their lines.
-        let lines: Vec<&str> = out
-            .lines()
-            .filter(|l| l.contains("allow") || l.contains("deny"))
-            .collect();
-        assert!(out.contains("·suggested by homelab·"));
-        // No ANSI escapes in plain mode.
-        assert!(!out.contains('\u{1b}'));
-        assert!(lines.iter().any(|l| l.contains("443")));
-    }
-
-    #[test]
-    fn empty_firewall_says_no_rules() {
-        style::set_plain(true);
-        let out = render_firewall_rules(
-            Some((firewall::Action::Deny, firewall::Action::Allow)),
-            false,
-            false,
-            &[],
-        );
-        assert!(out.contains("default in   deny"));
-        assert!(out.contains("default out  allow"));
-        assert!(out.contains("(no rules)"));
-        // The posture header notes the firewall is separate from the host one.
-        assert!(out.contains("separate from your host/kernel firewall"));
-    }
-
-    #[test]
-    fn disabled_firewall_shows_banner() {
-        style::set_plain(true);
-        let out = render_firewall_rules(
-            Some((firewall::Action::Deny, firewall::Action::Allow)),
-            false,
-            true,
-            &[],
-        );
-        assert!(out.contains("disabled"));
-        assert!(out.contains("all packets allowed"));
     }
 }

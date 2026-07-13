@@ -13,17 +13,14 @@
 //!   touched. `copy` reproduces the old allocate-and-copy (`Bytes::copy_from_slice`
 //!   on TX, `Vec::to_vec` on RX); `zerocopy` is the current pooled
 //!   `split_to(n).freeze()` (TX) and `Bytes` clone (RX). The delta is the saving.
-//! - `firewall` — `parse_packet_info` + `evaluate_packet`, the unavoidable
-//!   per-packet work run once per direction on every packet. A regression guard.
+//! - `parse` — `parse_packet_info`, the unavoidable per-packet parse run on
+//!   every forwarded packet (peer routing, anti-spoof, magic-DNS). A regression guard.
 
 use bytes::{Bytes, BytesMut};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use rayfish::firewall::{
-    self, Action, Direction, FirewallConfig, FirewallRule, PeerFilter, PortRange, Protocol,
-    RuleOrigin, SharedFirewall,
-};
+use rayfish::packet;
 
 /// Datagram sizes spanning the MTU: a 64-byte control/ACK-ish packet and a
 /// full 1280-byte (TUN MTU) data packet. The copy cost scales with size; the
@@ -106,79 +103,20 @@ fn bench_handoff(c: &mut Criterion) {
     group.finish();
 }
 
-/// `parse_packet_info` + `evaluate_packet`: the per-packet work that runs
-/// regardless of the hand-off strategy, once per direction on every packet.
-fn bench_firewall(c: &mut Criterion) {
-    let peer = iroh::SecretKey::generate().public();
-    let net = "bench-net";
-
-    // Default config, no rules: the cheapest path (parse + default action +
-    // conntrack insert on the outbound). Outbound defaults to allow, so the
-    // outbound benchmark below still exercises the track-and-allow path.
-    let allow_all = SharedFirewall::new(FirewallConfig::default());
-
-    // A small whitelist ending in a catch-all deny — the shape `materialize_
-    // suggestions` produces. Forces the rule scan to walk several entries.
-    let whitelist = SharedFirewall::new(FirewallConfig {
-        default_inbound: Action::Allow,
-        default_outbound: Action::Allow,
-        reject: false,
-        disabled: false,
-        rules: vec![
-            rule(Direction::In, Action::Allow, Protocol::Tcp, Some((22, 22))),
-            rule(Direction::In, Action::Allow, Protocol::Tcp, Some((80, 80))),
-            rule(
-                Direction::In,
-                Action::Allow,
-                Protocol::Tcp,
-                Some((443, 443)),
-            ),
-            rule(Direction::In, Action::Deny, Protocol::Any, None),
-        ],
-    });
-
+/// `parse_packet_info`: the per-packet header parse run on every forwarded
+/// packet, regardless of the hand-off strategy.
+fn bench_parse(c: &mut Criterion) {
     let packet = ipv4_tcp_packet(1280, 443);
 
-    let mut group = c.benchmark_group("firewall");
+    let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("parse_only", |b| {
-        b.iter(|| black_box(firewall::parse_packet_info(black_box(&packet))));
-    });
-
-    group.bench_function("parse_eval_out_allow", |b| {
-        b.iter(|| {
-            let info = firewall::parse_packet_info(black_box(&packet)).unwrap();
-            black_box(allow_all.evaluate_packet(Direction::Out, &info, &peer, Some(net)))
-        });
-    });
-
-    group.bench_function("parse_eval_in_whitelist", |b| {
-        b.iter(|| {
-            let info = firewall::parse_packet_info(black_box(&packet)).unwrap();
-            black_box(whitelist.evaluate_packet(Direction::In, &info, &peer, Some(net)))
-        });
+        b.iter(|| black_box(packet::parse_packet_info(black_box(&packet))));
     });
 
     group.finish();
 }
 
-fn rule(
-    direction: Direction,
-    action: Action,
-    protocol: Protocol,
-    port: Option<(u16, u16)>,
-) -> FirewallRule {
-    FirewallRule {
-        direction,
-        action,
-        protocol,
-        port: port.map(|(start, end)| PortRange { start, end }),
-        peer: PeerFilter::Any,
-        network: None,
-        origin: RuleOrigin::Local,
-    }
-}
-
-criterion_group!(benches, bench_handoff, bench_firewall);
+criterion_group!(benches, bench_handoff, bench_parse);
 criterion_main!(benches);

@@ -97,7 +97,7 @@ bytesize = "2.4.0"
 tempfile = "3"
 criterion = "0.5"
 
-# Microbenchmarks for the per-packet data path (firewall eval + the zero-copy
+# Microbenchmarks for the per-packet data path (header parse + the zero-copy
 # Bytes hand-off). Run with `cargo bench`. `harness = false` lets Criterion own
 # `fn main`.
 [[bench]]

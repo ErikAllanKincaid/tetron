@@ -94,12 +94,12 @@ Each machine runs the `torpedo` daemon, which creates a TUN device, captures IP 
 The **room id** is a discovery key, never an admission credential. On a **closed** network (the default) there are three ways in:
 
 - **Invite code** — `torpedo invite <network>` mints a single-use, expiring code; the holder runs `torpedo join <code>`.
-- **Reusable key** — `torpedo invite <network> --reusable` mints a multi-use, revocable key for unattended fleets (`torpedo join <key> --hostname web --auto-accept-firewall`).
+- **Reusable key** — `torpedo invite <network> --reusable` mints a multi-use, revocable key for unattended fleets (`torpedo join <key> --hostname web`).
 - **Live approval** — the holder of just the room id runs `torpedo join <room-id>` and lands in a queue; the coordinator runs `torpedo requests` then `torpedo accept`/`deny`.
 
 ##### Open network
 
-An **open** network (`torpedo create --open`) lets anyone with the room id join directly. By default the inbound firewall is default-deny (see `torpedo firewall show`), so ports must be opened explicitly. To let a peer reach a web server on your machine: `torpedo firewall add in allow -p tcp -P 80 --peer <PEERNAME>`.
+An **open** network (`torpedo create --open`) lets anyone with the room id join directly. tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface — e.g. `nft add rule inet filter input iifname "torpedo" tcp dport != 22 drop`.
 
 ### DNS on hosts without a resolver manager
 
@@ -122,13 +122,14 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 
 - 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
 - 🌐 **Magic DNS** — `name.network.ray`, updated live as peers join, leave, or rename.
-- 🧱 **Per-device firewall** — a userspace firewall for mesh traffic, layered on top of your host/kernel firewall. Directional, per-port, per-network rules, secure by default. `torpedo firewall --help`.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `firewall`, `kick`, `ephemeral`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `kick`, `ephemeral`, and more.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 >
 > **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `torpedo apply`, `torpedo alias`, or `torpedo identityof`. Reconcile a fleet with a script over `torpedo status --json`.
+>
+> **tetron removes the userspace firewall** (MINIMAL-010). There is no `torpedo firewall`. Within a shared network every peer reaches every port a local service binds — mesh membership gates *who* can connect, and restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface. The only in-daemon ingress check is anti-spoofing (a peer may only source packets from its own mesh IP).
 
 ## Permissions
 
@@ -179,7 +180,7 @@ Torpedo (via rayfish) is one of a family of "identity-based" mesh VPNs — the s
 
 ### iroh and n0
 
-Torpedo does not implement its own peer-to-peer networking. It is built on [iroh](https://www.iroh.computer), a Rust library for direct connections between nodes identified by a public key ([source](https://github.com/n0-computer/iroh), [docs](https://www.iroh.computer/docs)). iroh handles the parts that are genuinely hard: discovering where a peer currently is on the internet, punching through NATs so two home machines can talk directly, and falling back to an encrypted relay when a direct path cannot be established. Torpedo uses iroh's QUIC datagrams as the tunnel and layers the mesh, addressing, and firewall on top.
+Torpedo does not implement its own peer-to-peer networking. It is built on [iroh](https://www.iroh.computer), a Rust library for direct connections between nodes identified by a public key ([source](https://github.com/n0-computer/iroh), [docs](https://www.iroh.computer/docs)). iroh handles the parts that are genuinely hard: discovering where a peer currently is on the internet, punching through NATs so two home machines can talk directly, and falling back to an encrypted relay when a direct path cannot be established. Torpedo uses iroh's QUIC datagrams as the tunnel and layers the mesh and addressing on top.
 
 **n0** (the team, also written "number 0", at [n0.computer](https://n0.computer)) is the group that builds iroh and operates the default public infrastructure it uses: the relay servers that bounce traffic when a direct connection fails, and the discovery service (pkarr over `dns.iroh.link`) that maps a public key to a node's current address. These are the "n0 defaults" referred to elsewhere in this README. They are a convenience, not a dependency on a central authority: no n0 server can read your traffic (it is end-to-end encrypted), the relay only ever sees ciphertext, and you can point torpedo at your own relay and discovery servers with `torpedo config set`. For how discovery and hole-punching actually work, the iroh blog is the best source ([iroh blog](https://www.iroh.computer/blog)); the general problem of NAT traversal is explained very well in Tailscale's writeup, which applies equally here ([How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)).
 

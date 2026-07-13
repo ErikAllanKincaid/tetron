@@ -53,7 +53,7 @@ pub struct PeerEntry {
 }
 
 /// Result of a routing lookup: a connection to send over and the network it
-/// belongs to (used as firewall context on the forwarding path).
+/// belongs to.
 pub struct PeerRoute {
     pub conn: Connection,
     pub endpoint_id: EndpointId,

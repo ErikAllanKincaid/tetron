@@ -78,8 +78,7 @@ pub fn red(s: &str) -> String {
 }
 
 /// Whether colorized/styled output is active (TTY + not `NO_COLOR`). Exposed so
-/// callers can gate interactive UI (spinners, the firewall picker) on the same
-/// signal as coloring.
+/// callers can gate interactive UI (spinners) on the same signal as coloring.
 pub fn is_enabled() -> bool {
     enabled()
 }

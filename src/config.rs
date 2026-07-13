@@ -125,11 +125,6 @@ pub struct NetworkConfig {
     pub network_public_key: Option<EndpointId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportMode>,
-    /// This node auto-installs coordinator-suggested firewall rules without a
-    /// manual review queue. Set per-network by `torpedo join --auto-accept-firewall`
-    /// or toggled later with `torpedo firewall auto-accept <net> on|off`.
-    #[serde(default, alias = "allow_trusted")]
-    pub auto_accept_firewall: bool,
     /// Identities this coordinator has granted the per-network secret key to
     /// (`torpedo admin add`). Local tracking only — the key is shared and not
     /// attributable, so this is the coordinator's record of grants, not a
@@ -376,9 +371,9 @@ pub struct PendingJoinEntry {
 
 /// How torpedo manages the host's OS DNS to make `.ray` names resolve.
 ///
-/// Magic DNS is a convenience, not a requirement — the mesh, firewall, SSH, and
-/// file transfer never touch system DNS, and `torpedo status` lists every peer's
-/// mesh IP. So the default is deliberately hands-off on hosts that lack a clean
+/// Magic DNS is a convenience, not a requirement — the mesh itself never touches
+/// system DNS, and `torpedo status` lists every peer's mesh IP (reach peers by
+/// IP directly). So the default is deliberately hands-off on hosts that lack a clean
 /// split-DNS backend, rather than seizing `/etc/resolv.conf` (which collides with
 /// another VPN like Tailscale that also manages that file — see the mutual DNS
 /// forwarding loop diagnosed as DNS-003).
@@ -662,7 +657,7 @@ pub fn restrict_perms(path: &Path, secret: bool) {
 /// Linux-only: relocate a pre-`/etc` config tree into `/etc/torpedo` on first
 /// start after the upgrade that moved the location. Earlier Linux builds stored
 /// everything under the daemon's `~/.config/torpedo` (i.e. `/root/.config`); this
-/// moves `secret_key`, `networks.toml`, `firewall.toml`, `invites/`, etc. over so
+/// moves `secret_key`, `networks.toml`, `invites/`, etc. over so
 /// the node keeps its identity and networks. No-op on macOS (location unchanged)
 /// and once `/etc/torpedo` is populated. Must run before any config/identity read
 /// (called at the top of `build_daemon`).
@@ -992,7 +987,6 @@ mod tests {
                     my_hostname: None,
                     pending_hostname: None,
                     transport: None,
-                    auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
                     ephemeral_ttl_secs: None,
@@ -1008,7 +1002,6 @@ mod tests {
                     my_hostname: None,
                     pending_hostname: None,
                     transport: None,
-                    auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
                     ephemeral_ttl_secs: None,
@@ -1045,7 +1038,6 @@ mod tests {
             my_hostname: None,
             pending_hostname: None,
             transport: None,
-            auto_accept_firewall: false,
             admins: vec![],
             direct: false,
             ephemeral_ttl_secs: None,
@@ -1070,7 +1062,6 @@ mod tests {
                 my_hostname: None,
                 pending_hostname: None,
                 transport: None,
-                auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
                 ephemeral_ttl_secs: None,
@@ -1088,7 +1079,6 @@ mod tests {
             my_hostname: None,
             pending_hostname: None,
             transport: None,
-            auto_accept_firewall: false,
             admins: vec![],
             direct: false,
             ephemeral_ttl_secs: None,
@@ -1117,7 +1107,6 @@ mod tests {
                     my_hostname: None,
                     pending_hostname: None,
                     transport: None,
-                    auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
                     ephemeral_ttl_secs: None,
@@ -1133,7 +1122,6 @@ mod tests {
                     my_hostname: None,
                     pending_hostname: None,
                     transport: None,
-                    auto_accept_firewall: false,
                     admins: vec![],
                     direct: false,
                     ephemeral_ttl_secs: None,
@@ -1177,7 +1165,6 @@ mod tests {
                 my_hostname: None,
                 pending_hostname: None,
                 transport: None,
-                auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
                 ephemeral_ttl_secs: None,
@@ -1206,7 +1193,6 @@ mod tests {
                 my_hostname: None,
                 pending_hostname: None,
                 transport: None,
-                auto_accept_firewall: false,
                 admins: vec![],
                 direct: false,
                 ephemeral_ttl_secs: None,
@@ -1270,7 +1256,6 @@ name = "test"
             network_secret_key: Some(SecretKey::generate()),
             network_public_key: None,
             transport: None,
-            auto_accept_firewall: false,
             admins: vec![],
             direct: false,
             ephemeral_ttl_secs: None,

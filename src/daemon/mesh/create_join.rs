@@ -15,7 +15,6 @@ struct JoinContext<'a> {
     /// Single-use invite secret to redeem at admission, if any. Cloned per dial
     /// attempt (a fresh join may try several coordinators).
     invite: Option<Vec<u8>>,
-    auto_accept_firewall: bool,
     invite_lock: Arc<tokio::sync::Mutex<()>>,
     /// Pinned coordinator to dial first (the invite minter), if known.
     coordinator: Option<EndpointId>,
@@ -221,7 +220,6 @@ impl MeshManager {
             suggested_firewall: SuggestedFirewall::default(),
             subnet,
             reusable_keys: BTreeMap::new(),
-            pending_suggestions: Vec::new(),
             pending: HashMap::new(),
         })
     }
@@ -339,7 +337,6 @@ impl MeshManager {
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
             transport: None,
-            auto_accept_firewall: false,
             admins: vec![],
             direct,
             ephemeral_ttl_secs: None,
@@ -386,14 +383,6 @@ impl MeshManager {
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network created");
 
-        // FW-001: a closed network this node created is trusted (invite-gated), so
-        // inbound from it defaults to allow — the mesh behaves like a normal LAN and
-        // host-service auth is the gate. Open networks keep the deny-inbound default.
-        if mode == GroupMode::Restricted {
-            let cfg = self.firewall.set_closed_default(&name, true);
-            let _ = crate::firewall::save_firewall(&cfg);
-        }
-
         Ok(IpcMessage::Created {
             name,
             network_key: net_public_key,
@@ -414,7 +403,6 @@ impl MeshManager {
         hostname: Option<String>,
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
-        auto_accept_firewall: bool,
     ) -> IpcMessage {
         match self
             .join_network_inner(
@@ -423,7 +411,6 @@ impl MeshManager {
                 hostname.clone(),
                 invite.clone(),
                 coordinator,
-                auto_accept_firewall,
                 true,
             )
             .await
@@ -458,7 +445,6 @@ impl MeshManager {
                                 hostname.clone(),
                                 invite.clone(),
                                 coordinator,
-                                auto_accept_firewall,
                                 true,
                             )
                             .await
@@ -494,9 +480,6 @@ impl MeshManager {
         hostname: Option<String>,
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
-        // Auto-install coordinator-suggested firewall rules on this network
-        // (`--auto-accept-firewall`); persisted so it survives restarts.
-        auto_accept_firewall: bool,
         // True for a fresh join (we send a JoinRequest first); false when
         // restoring a network we're already a member of (legacy handshake where
         // the coordinator speaks first).
@@ -553,7 +536,6 @@ impl MeshManager {
             my_ip,
             net_pubkey,
             invite,
-            auto_accept_firewall,
             invite_lock: invite_lock.clone(),
             coordinator,
         };
@@ -745,7 +727,6 @@ impl MeshManager {
                 suggested_firewall: data.suggested_firewall.clone(),
                 subnet: crate::membership::resolve_subnet(data.subnet),
                 reusable_keys: data.reusable_keys.clone(),
-                pending_suggestions: Vec::new(),
                 pending: HashMap::new(),
             };
             ns.refresh_snapshot();
@@ -881,7 +862,6 @@ impl MeshManager {
                 invite_secret,
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
-                auto_accept_firewall: ctx.auto_accept_firewall,
                 initial,
             },
             disconnect_tx.clone(),
@@ -1225,7 +1205,6 @@ impl MeshManager {
                 suggested_firewall: SuggestedFirewall::default(),
                 subnet: joined_subnet,
                 reusable_keys: data.reusable_keys.clone(),
-                pending_suggestions: Vec::new(),
                 pending: HashMap::new(),
             };
             ns.refresh_snapshot();
@@ -1315,7 +1294,6 @@ impl MeshManager {
                         derive_ipv6(&m.identity),
                         network_name.to_string(),
                         forward::ForwardCtx {
-                            firewall: self.firewall.clone(),
                             tun_tx: self.tun_tx.clone(),
                             disconnect_tx: disconnect_tx.clone(),
                             token: cancel.clone(),

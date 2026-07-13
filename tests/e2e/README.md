@@ -9,7 +9,6 @@ failure). The shared SSH/deploy/reset/assert plumbing lives in
 
 | Dir | Hosts | What it proves |
 |-----|-------|----------------|
-| [`firewall/`](firewall) | 3 | The coordinator suggested-firewall pipeline (`suggest` → `pending`/`accept`, `auto-accept`, additive whitelist vs blacklist) and the per-packet rule matrix (UDP, port ranges, same-selector replace, `--network` scoping) over a real TUN. |
 | [`closed-net/`](closed-net) | 3 | Closed-net admission + lifecycle commands: live approval (`requests`/`accept`/`deny`), co-coordinator (`admin add`) gatekeeper resilience with a reusable key, `torpedo hostname` + magic-DNS, and `torpedo leave`/`nuke`. |
 | [`dns/`](dns) | 2 | Magic DNS resolution over a real TUN: `<host>.<net>.ray` resolves via the system resolver, drives reachability, no host `:53` bind, non-`.ray` passthrough, and `torpedo down` revert. |
 | [`reliability/`](reliability) | 4 | Full-mesh packet-loss test: every pair probed both ways with `ping -c 1000 -i 0.01`, ICMP flood, and iperf3 UDP, over the torpedo tunnel vs the direct public-IP baseline. Fails when torpedo adds loss over the raw link. |
@@ -23,7 +22,7 @@ tests/e2e.sh <scenario> provision   # just spin up instances -> <dir>/.servers
 tests/e2e.sh <scenario> teardown    # destroy the instances (manual)
 ```
 
-where `<scenario>` is `firewall`, `closed-net`, `dns`, `reliability`,
+where `<scenario>` is `closed-net`, `dns`, `reliability`,
 `restore-offline`, or `bench` (run `tests/e2e.sh` with no scenario for usage). The per-scenario run steps live in `<dir>/run.sh`
 (still runnable directly once `.servers` exists); the fleet definitions and the
 provision/teardown/assert bodies are shared in [`../lib/`](../lib).

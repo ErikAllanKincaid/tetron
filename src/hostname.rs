@@ -24,9 +24,9 @@ pub fn is_valid_hostname(name: &str) -> bool {
 ///
 /// `authoritative` names come from an invite binding (`torpedo invite --hostname`):
 /// they are assigned verbatim, and a clash with a *different* identity is
-/// rejected — no silent rename — so no peer can claim another's name to inherit
-/// its suggested firewall rules. A joiner-chosen (non-authoritative) name keeps
-/// collision-resolution (`alice` → `alice-1` → …).
+/// rejected — no silent rename — so no peer can claim another's name (and the
+/// Magic-DNS entry that resolves to it). A joiner-chosen (non-authoritative)
+/// name keeps collision-resolution (`alice` → `alice-1` → …).
 ///
 /// `taken` must already exclude the joining identity's own current name.
 /// Returns `Ok(assigned)` or `Err(conflicting_name)` when an authoritative name

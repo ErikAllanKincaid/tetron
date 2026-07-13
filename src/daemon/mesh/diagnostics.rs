@@ -82,7 +82,7 @@ impl MeshManager {
             })
         };
 
-        let (members, member_count, pending_suggestions, pending_requests) = {
+        let (members, member_count, pending_requests) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -95,19 +95,13 @@ impl MeshManager {
                         network_key: Some(h.network_key.to_string()),
                         member_count: 0,
                         peers: vec![],
-                        pending_suggestions: 0,
                         pending_requests: 0,
                         ephemeral_ttl_secs,
                     };
                 }
             };
             let count = s.members.all().len();
-            (
-                s.roster(),
-                count,
-                s.pending_suggestions.len(),
-                s.pending.len(),
-            )
+            (s.roster(), count, s.pending.len())
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = self
@@ -140,7 +134,6 @@ impl MeshManager {
             network_key: Some(h.network_key.to_string()),
             member_count,
             peers,
-            pending_suggestions,
             pending_requests,
             ephemeral_ttl_secs,
         }

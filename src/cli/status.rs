@@ -26,6 +26,11 @@ pub(crate) fn print_error(title: &str, detail: &str, hint: Option<&str>) {
     }
 }
 
+/// Print a JSON value to stdout (used by `--json` on every list command).
+pub(crate) fn print_json(value: &serde_json::Value) {
+    println!("{value}");
+}
+
 /// Map a daemon error message to an actionable hint, best-effort.
 pub(crate) fn infer_hint(message: &str) -> Option<String> {
     let m = message.to_lowercase();
@@ -343,18 +348,11 @@ fn render_peer_row(peer: &ipc::PeerStatus, up_w: usize, down_w: usize) -> Vec<la
 }
 
 /// Render the trailing "pending" summary: things waiting on the user, each with
-/// the command that clears it. Per-network items (firewall suggestions, join
-/// requests) name their network.
+/// the command that clears it. Per-network items (join requests) name their
+/// network.
 fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
     let mut pending: Vec<(usize, String, String)> = Vec::new();
     for net in networks {
-        if net.pending_suggestions > 0 {
-            pending.push((
-                net.pending_suggestions,
-                pluralize(net.pending_suggestions, "firewall suggestion"),
-                format!("torpedo firewall pending {}", net.name),
-            ));
-        }
         if net.pending_requests > 0 {
             pending.push((
                 net.pending_requests,

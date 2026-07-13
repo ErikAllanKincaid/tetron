@@ -8,12 +8,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Userspace firewall (MINIMAL-010)**: the entire `torpedo firewall` command
+  (add/remove/show/default/reject/on/off, coordinator `suggest`, and the
+  `pending`/`accept`/`deny`/`auto-accept` review flow), the per-device
+  `firewall.toml`, the `auto_accept_firewall` per-network setting, and the
+  `--auto-accept-firewall` join flag are gone. **Packet filtering is now the
+  host firewall's job**: within a shared network every peer reaches every port
+  a local service binds (mesh membership still gates *who* can connect).
+  Restrict ports with nftables/ufw on the `torpedo` TUN interface — e.g.
+  `nft add rule inet filter input iifname "torpedo" tcp dport != 22 drop`. The
+  daemon still drops inbound packets whose source IP is not the sending peer's
+  assigned mesh address (anti-spoofing). A coordinator running full torpedo can
+  still ship firewall suggestions in the signed group blob; a tetron node
+  carries them through on republish but does not act on them.
 - **Declarative apply layer and local aliases (MINIMAL-011)**: `torpedo apply`
   (with `--example`/`--dry-run`/`--prune`/`--invite-missing`), `torpedo alias`,
   and `torpedo identityof` are gone, along with the per-network `aliases`
   setting shown inline in `torpedo status`. Reconcile a fleet with a script
-  over `torpedo status --json`. The firewall and its coordinator suggestions
-  are untouched by this change (they are removed separately in MINIMAL-010).
+  over `torpedo status --json`.
 - **File sharing and device pairing (MINIMAL-004)**: `torpedo send`/`files`
   (and file auto-accept + download-dir/download-user settings) and
   `torpedo pair`/`unpair` (multi-device identity, encrypted key backup, and

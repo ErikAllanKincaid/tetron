@@ -397,7 +397,7 @@ impl CoordinatorAcceptState {
         was_approved: bool,
         // The hostname is coordinator-authoritative (came from an invite binding).
         // Authoritative names are rejected on collision (no silent rename), so no
-        // peer can claim another's name to take its suggested firewall rules.
+        // peer can claim another's name (and its Magic-DNS entry).
         authoritative: bool,
     ) -> bool {
         let (peer_ip, collision_index, final_hostname) =

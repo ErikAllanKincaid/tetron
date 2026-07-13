@@ -4,7 +4,6 @@
 #   ./tests/e2e.sh <scenario> [action]
 #
 # Scenarios:
-#   firewall      3-peer suggested-firewall + rule matrix (tests/e2e/firewall)
 #   closed-net    3-peer admission + lifecycle commands (tests/e2e/closed-net)
 #   dns           2-peer Magic DNS resolution + resolv.conf takeover (tests/e2e/dns)
 #   reliability   4-peer full-mesh packet-loss test (ping + iperf3 UDP) (tests/e2e/reliability)
@@ -25,14 +24,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-usage(){ sed -n '2,23p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
+usage(){ sed -n '2,22p' "$0" | sed 's/^#\( \|$\)//'; exit "${1:-0}"; }
 
 # scenario_meta <scenario> : set DIR / NAMES / LABELS for a scenario, or return 1.
 scenario_meta(){
   case "$1" in
-    firewall)    DIR="$ROOT/tests/e2e/firewall"
-                 NAMES=(rayfish-fw-a rayfish-fw-b rayfish-fw-c)
-                 LABELS=(srv-a srv-b srv-c) ;;
     closed-net)  DIR="$ROOT/tests/e2e/closed-net"
                  NAMES=(rayfish-closednet-a rayfish-closednet-b rayfish-closednet-c)
                  LABELS=(srv-a srv-b srv-c) ;;

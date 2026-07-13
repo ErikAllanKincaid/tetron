@@ -5,8 +5,8 @@ use super::super::*;
 
 impl MeshManager {
     /// Coordinator-only: grant the per-network secret key to a member over an
-    /// authenticated mesh stream, making it a co-coordinator (can publish /
-    /// suggest firewall rules). The key is shared (shared-key model), so this is
+    /// authenticated mesh stream, making it a co-coordinator (can publish the
+    /// signed blob / admit joiners). The key is shared (shared-key model), so this is
     /// a transfer of publish capability, not an attributable delegation. The
     /// grant is recorded locally for `torpedo admin list`.
     pub(crate) async fn admin_add(&self, network: &str, identity_str: &str) -> IpcMessage {

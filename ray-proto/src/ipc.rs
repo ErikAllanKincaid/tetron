@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::net::UnixStream;
 use tokio_util::codec::{Decoder, Encoder, Framed, LengthDelimitedCodec};
 
-use crate::{Action, Direction, GroupMode, Protocol, SuggestedFirewall, TransportMode};
+use crate::{GroupMode, TransportMode};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcMessage {
@@ -38,10 +38,6 @@ pub enum IpcMessage {
         /// Coordinator endpoint id to dial directly when joining via an invite.
         #[serde(default)]
         coordinator: Option<EndpointId>,
-        /// Auto-install coordinator-suggested firewall rules on this network
-        /// without a manual review queue (`--auto-accept-firewall`).
-        #[serde(default, alias = "allow_trusted")]
-        auto_accept_firewall: bool,
     },
     Leave {
         name: String,
@@ -88,72 +84,6 @@ pub enum IpcMessage {
     /// system DNS, and bring the TUN interface down. The daemon process keeps
     /// running so it can be reactivated with `Up`.
     Down,
-    FirewallAdd {
-        direction: Direction,
-        action: Action,
-        protocol: Protocol,
-        port: Option<String>,
-        peer: Option<String>,
-        #[serde(default)]
-        network: Option<String>,
-    },
-    FirewallRemove {
-        index: usize,
-    },
-    FirewallShow,
-    FirewallDefault {
-        action: Action,
-    },
-    /// Toggle "fail fast" REJECT mode (opt-in, default off): when on, a denied
-    /// packet gets a TCP RST / ICMP-unreachable reply instead of a silent drop.
-    FirewallReject {
-        enabled: bool,
-    },
-    /// Global firewall kill switch (`ray firewall on|off`). When `enabled` is
-    /// false the firewall stops enforcing and allows every packet.
-    FirewallSetEnabled {
-        enabled: bool,
-    },
-    /// Coordinator-only: replace the network's suggested firewall rules and
-    /// republish the signed blob. Authority comes from holding the network's
-    /// secret key; works on any network (suggestions are advisory).
-    FirewallSuggest {
-        network: String,
-        suggestions: SuggestedFirewall,
-    },
-    /// Read the current suggested firewall rules for a network (open, like other
-    /// reads). Used by `ray firewall suggest` (read-modify-write) and `ray apply`.
-    FirewallSuggestions {
-        network: String,
-    },
-    /// Read the suggested rules queued for manual review on a network (a node that
-    /// did not opt into `--auto-accept-firewall`). Open read, like `FirewallShow`.
-    FirewallPending {
-        network: String,
-    },
-    /// Toggle per-network auto-accept of coordinator-suggested firewall rules.
-    /// `on` immediately installs the queued set; `off` stops future auto-install.
-    FirewallAutoAccept {
-        network: String,
-        enabled: bool,
-    },
-    /// Accept the queued suggested rules for a network: install them (replacing
-    /// the prior `Network(net)` set) and clear the queue.
-    FirewallAccept {
-        network: String,
-    },
-    /// Discard the queued suggested rules for a network without installing them.
-    FirewallDeny {
-        network: String,
-    },
-    /// Resolve individual queued suggestions (from the interactive picker):
-    /// install the `accept` views and drop both `accept`+`deny` from the queue.
-    /// Matching is by view value, so it's robust to queue reordering.
-    FirewallResolveSuggestions {
-        network: String,
-        accept: Vec<FirewallRuleView>,
-        deny: Vec<FirewallRuleView>,
-    },
     SetHostname {
         network: String,
         hostname: String,
@@ -257,37 +187,6 @@ pub enum IpcMessage {
         #[serde(default)]
         pending_networks: Vec<String>,
     },
-    /// The device's local firewall (reply to `FirewallShow`). Structured so the
-    /// CLI renders it with color on the *user's* TTY and serializes it for
-    /// `--json`.
-    FirewallState {
-        /// Default action for inbound traffic that matches no explicit rule.
-        /// (Inbound ICMP is always allowed-by-default regardless of this.)
-        default_inbound: Action,
-        /// Default action for outbound traffic that matches no explicit rule.
-        default_outbound: Action,
-        /// "Fail fast" REJECT mode (opt-in, default off): when on, denied packets
-        /// get a TCP RST / ICMP-unreachable reply instead of a silent drop.
-        #[serde(default)]
-        reject: bool,
-        /// Global kill switch (`ray firewall off`). When true the firewall is not
-        /// enforcing: every packet is allowed regardless of rules/defaults.
-        #[serde(default)]
-        disabled: bool,
-        rules: Vec<FirewallRuleView>,
-    },
-    /// Current suggested firewall rules for a network (reply to
-    /// `FirewallSuggestions`).
-    FirewallSuggestionsResponse {
-        suggestions: SuggestedFirewall,
-    },
-    /// Materialized suggested rules queued for manual review on a network (reply
-    /// to `FirewallPending`). The CLI renders these as an interactive picker on a
-    /// TTY, or a static table otherwise.
-    FirewallPendingResponse {
-        network: String,
-        rules: Vec<FirewallRuleView>,
-    },
     /// An invite was minted; `code` is the shareable invite string.
     InviteCreated {
         code: String,
@@ -308,27 +207,6 @@ pub enum IpcMessage {
         admins: Vec<AdminInfo>,
     },
 }
-
-/// A display-oriented view of one firewall rule, sent over IPC so the CLI can
-/// render (with color) and serialize (`--json`) without depending on the
-/// daemon-side `firewall::FirewallRule` type. All fields are pre-stringified;
-/// `PartialEq`/`Eq`/`Hash` let the daemon value-match views back to queued rules.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FirewallRuleView {
-    pub direction: Direction,
-    pub action: Action,
-    pub protocol: Protocol,
-    /// Port or range: `"443"`, `"8000-9000"`, or `"*"`.
-    pub port: String,
-    /// `"any"` or a peer's short id.
-    pub peer: String,
-    /// `"any"` or a network name.
-    pub network: String,
-    /// `Some(net)` if this rule was suggested by network `net`; `None` if local.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<String>,
-}
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminInfo {
@@ -371,10 +249,6 @@ pub struct NetworkStatus {
     pub network_key: Option<String>,
     pub member_count: usize,
     pub peers: Vec<PeerStatus>,
-    /// Suggested firewall rules queued for review on this node for this network
-    /// (`ray firewall pending <net>`). Surfaced in the status summary.
-    #[serde(default)]
-    pub pending_suggestions: usize,
     /// Peers awaiting live approval on this network — coordinator-only
     /// (`ray requests <net>` / `ray accept`). Surfaced in the status summary.
     #[serde(default)]
@@ -553,33 +427,17 @@ mod tests {
     }
 
     #[test]
-    fn firewall_suggest_roundtrips_through_named_codec() {
-        // Regression: with positional-array (`to_vec`) serialization, a
-        // `HostSuggestions` whose `default` is `None` (skipped) but whose
-        // `allows` is non-empty misaligns on decode and fails with
-        // "invalid type: map, expected a string". The codec must serialize
-        // structs as named maps so `skip_serializing_if` is safe.
-        use crate::policy::HostSuggestions;
-        use std::collections::BTreeMap;
-
-        let mut fw: SuggestedFirewall = BTreeMap::new();
-        fw.insert(
-            "alpha".to_string(),
-            HostSuggestions {
-                allows: [("beta".to_string(), "22".to_string())].into(),
-                denies: BTreeMap::new(),
-            },
-        );
-        fw.insert(
-            "gamma".to_string(),
-            HostSuggestions {
-                allows: [("alpha".to_string(), "8080".to_string())].into(),
-                denies: BTreeMap::new(),
-            },
-        );
-        let msg = IpcMessage::FirewallSuggest {
+    fn skip_serializing_if_field_roundtrips_through_named_codec() {
+        // Regression: with positional-array (`to_vec`) serialization, a struct
+        // whose field is skipped via `skip_serializing_if` (here `hostname:
+        // None`) followed by a later field (`reusable`) misaligns on decode. The
+        // codec must serialize structs as named maps so `skip_serializing_if` is
+        // safe over the full encode/decode path.
+        let msg = IpcMessage::InviteCreate {
             network: "net1".to_string(),
-            suggestions: fw,
+            expires_secs: 1000,
+            hostname: None,
+            reusable: true,
         };
 
         let mut codec = MsgpackCodec::<IpcMessage>::new();
@@ -588,14 +446,11 @@ mod tests {
 
         let decoded = codec.decode(&mut buf).unwrap().expect("frame not complete");
         match decoded {
-            IpcMessage::FirewallSuggest {
-                network,
-                suggestions,
+            IpcMessage::InviteCreate {
+                network, reusable, ..
             } => {
                 assert_eq!(network, "net1");
-                assert_eq!(suggestions.len(), 2);
-                let gamma = suggestions.get("gamma").unwrap();
-                assert_eq!(gamma.allows.get("alpha").map(|s| s.as_str()), Some("8080"));
+                assert!(reusable);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -690,7 +545,6 @@ mod tests {
             transport: None,
             invite: Some(vec![1, 2, 3]),
             coordinator: Some(coord),
-            auto_accept_firewall: false,
         };
         let bytes = rmp_serde::to_vec(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -730,7 +584,6 @@ mod tests {
                     hostname: None,
                     connection: None,
                 }],
-                pending_suggestions: 0,
                 pending_requests: 0,
                 ephemeral_ttl_secs: None,
             }],

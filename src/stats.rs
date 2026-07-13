@@ -13,7 +13,6 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelValue)]
 pub enum DropReason {
-    Firewall,
     SendFailure,
     NoPeer,
     Malformed,
@@ -31,8 +30,7 @@ pub enum DropReason {
 }
 
 impl DropReason {
-    const ALL: [DropReason; 6] = [
-        DropReason::Firewall,
+    const ALL: [DropReason; 5] = [
         DropReason::SendFailure,
         DropReason::NoPeer,
         DropReason::Malformed,
@@ -60,8 +58,6 @@ pub struct ForwardMetrics {
     pub bytes_tx: Counter,
     /// Dropped packets by reason
     pub drops: Family<DropLabels, Counter>,
-    /// REJECT replies sent (TCP RST / ICMP unreachable) when fail-fast mode is on
-    pub rejects_sent: Counter,
 }
 
 impl ForwardMetrics {
@@ -77,10 +73,6 @@ impl ForwardMetrics {
 
     pub fn record_drop(&self, reason: DropReason) {
         self.drops.get_or_create(&DropLabels { reason }).inc();
-    }
-
-    pub fn record_reject(&self) {
-        self.rejects_sent.inc();
     }
 
     fn drop_count(&self, reason: DropReason) -> u64 {
@@ -174,14 +166,14 @@ mod tests {
     #[test]
     fn test_record_drop() {
         let stats = ForwardMetrics::default();
-        stats.record_drop(DropReason::Firewall);
+        stats.record_drop(DropReason::Malformed);
         stats.record_drop(DropReason::NoPeer);
-        stats.record_drop(DropReason::Firewall);
+        stats.record_drop(DropReason::Malformed);
         assert_eq!(
             stats
                 .drops
                 .get(&DropLabels {
-                    reason: DropReason::Firewall
+                    reason: DropReason::Malformed
                 })
                 .unwrap()
                 .get(),

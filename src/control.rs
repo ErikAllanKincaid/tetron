@@ -143,7 +143,7 @@ pub enum ControlMsg {
     /// record, never from any peer-supplied hash.
     BlobUpdated,
     /// Coordinator grants the per-network secret key to another member, making it
-    /// a co-coordinator (can publish the signed blob / suggest firewall rules).
+    /// a co-coordinator (can publish the signed blob / admit fresh joiners).
     /// Sent over the network's authenticated mesh ALPN, so only the targeted peer
     /// receives it. The recipient stores the key and spawns a publisher.
     AdminGrant {

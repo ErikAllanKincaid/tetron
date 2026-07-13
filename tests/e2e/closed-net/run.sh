@@ -102,7 +102,7 @@ KEY="$(mint_reusable "$B" "$NET")"   # srv-b (now a co-coordinator) mints a reus
 on "$A" 'torpedo down' >/dev/null 2>&1 || true   # original coordinator goes offline
 sleep 3
 # srv-c joins unattended; only srv-b is online to admit it.
-on "$C" "torpedo join $KEY --hostname srv-c --auto-accept-firewall" 2>&1 | strip | sed 's/^/   c| /'
+on "$C" "torpedo join $KEY --hostname srv-c" 2>&1 | strip | sed 's/^/   c| /'
 wait_roster "$B" srv-c
 on "$A" 'torpedo up' >/dev/null 2>&1 || true     # bring the coordinator back
 

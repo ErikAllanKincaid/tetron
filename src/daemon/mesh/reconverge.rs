@@ -1,94 +1,16 @@
 //! Verified-blob reconvergence: resolve the network-key-signed pkarr record,
 //! fetch + verify the `GroupBlob`, re-seat IP collisions, then apply the roster
-//! to DNS and re-materialize suggested firewall rules. The 60s group poller and
-//! the peer-cleanup-adjacent helpers that drive reconvergence live here.
+//! to DNS. The 60s group poller and the peer-cleanup-adjacent helpers that drive
+//! reconvergence live here.
+//!
+//! The blob's `suggested_firewall` field is carried through verbatim for wire
+//! compatibility with full torpedo (D1) but is not acted on — the userspace
+//! firewall was removed (MINIMAL-010); packet filtering is the host firewall's job.
 
 use super::super::*;
 
-/// Materialize this node's suggested firewall rules for `network` from the
-/// verified blob state, then either install them (replacing the prior
-/// `Network(net)` set, leaving `Local` rules untouched) when the node opted into
-/// `--auto-accept-firewall`, or queue them for manual `torpedo firewall accept`. A
-/// node with no assigned hostname is a no-op. Peer hostnames are resolved against
-/// the blob's member list, so a rule for a not-yet-joined peer appears once it
-/// joins and the roster updates.
-pub(crate) fn apply_suggested_firewall(
-    firewall: &SharedFirewall,
-    my_identity: EndpointId,
-    network_name: &str,
-    state: &std::sync::RwLock<NetworkState>,
-) {
-    let (suggestions, members): (SuggestedFirewall, Vec<Member>) = {
-        let s = state.read().unwrap();
-        (s.suggested_firewall.clone(), s.roster())
-    };
-    // Derive my hostname from the member roster (the authoritative source) rather
-    // than the join-time claim.
-    let my_hostname = members
-        .iter()
-        .find(|m| m.identity == my_identity)
-        .and_then(|m| m.hostname.clone());
-    let Some(my_hostname) = my_hostname else {
-        return;
-    };
-    let map: HashMap<&str, EndpointId> = members
-        .iter()
-        .filter_map(|m| m.hostname.as_deref().map(|h| (h, m.identity)))
-        .collect();
-    let resolve = |h: &str| map.get(h).copied();
-    let rules =
-        firewall::materialize_suggestions(network_name, &my_hostname, &suggestions, &resolve);
-
-    // Auto-install only if this node opted into `--auto-accept-firewall` for the
-    // network; otherwise queue the materialized rules for `torpedo firewall accept`.
-    let auto_accept = config::load()
-        .ok()
-        .and_then(|c| {
-            c.networks
-                .into_iter()
-                .find(|n| n.name == network_name)
-                .map(|n| n.auto_accept_firewall)
-        })
-        .unwrap_or(false);
-    if auto_accept {
-        let config = firewall.replace_network_rules(network_name, rules);
-        if let Err(e) = firewall::save_firewall(&config) {
-            tracing::warn!(error = %e, network = network_name, "failed to persist firewall config");
-        }
-        state.write().unwrap().pending_suggestions.clear();
-        tracing::info!(
-            network = network_name,
-            "auto-accepted suggested firewall rules"
-        );
-    } else {
-        // Don't re-queue suggestions this node already installed: an accepted
-        // rule is re-materialized on every blob reconverge, so without this it
-        // reappears in the pending queue indefinitely and re-accepting it stacks
-        // a duplicate. Compare the full rule (selector + action) so a coordinator
-        // flipping a rule's action still surfaces for review.
-        let installed: Vec<firewall::FirewallRule> = firewall
-            .get_config()
-            .rules
-            .iter()
-            .filter(|r| matches!(&r.origin, firewall::RuleOrigin::Network(n) if n == network_name))
-            .cloned()
-            .collect();
-        let fresh: Vec<firewall::FirewallRule> = rules
-            .into_iter()
-            .filter(|r| !installed.iter().any(|i| i == r))
-            .collect();
-        let count = fresh.len();
-        state.write().unwrap().pending_suggestions = fresh;
-        tracing::info!(
-            network = network_name,
-            count,
-            "queued suggested firewall rules for review"
-        );
-    }
-}
-
 /// Resolve the network's *signed* group-blob hash (and seed peers) from the
-/// pkarr record. This is the sole authority for the roster/firewall.
+/// pkarr record. This is the sole authority for the roster.
 pub(crate) async fn resolve_signed(
     endpoint: &Endpoint,
     net_pubkey: EndpointId,
@@ -136,8 +58,8 @@ pub(crate) async fn fetch_verified_blob(
 }
 
 /// Reconverge the live network state from the signed pkarr record and apply it
-/// (roster + DNS + suggested firewall). Invoked when a peer sends a `MemberSync`
-/// or `BlobUpdated` *hint* — the hint is only a trigger; the roster/firewall come
+/// (roster + DNS). Invoked when a peer sends a `MemberSync`
+/// or `BlobUpdated` *hint* — the hint is only a trigger; the roster comes
 /// exclusively from the network-key-signed record, never from the peer message.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn reconverge_and_apply(
@@ -153,7 +75,6 @@ pub(crate) async fn reconverge_and_apply(
     let MeshCtx {
         peers,
         blob_store,
-        firewall,
         hostname_table,
         reverse_table,
         pruned_peers,
@@ -213,7 +134,6 @@ pub(crate) async fn reconverge_and_apply(
     // `pruned_peers` first: closing wakes our own reconnect loop, which would
     // otherwise re-dial the peer (it still lists us) and re-form the link.
     prune_departed_peers(peers, pruned_peers, state, network_name, my_identity);
-    apply_suggested_firewall(firewall, my_identity, network_name, state);
     // If a local rename is still unconfirmed by this just-applied blob, keep
     // delivering it to the coordinator set until it lands.
     drain_pending_rename(endpoint, &roster, alpn, network_name, my_identity, my_ip).await;
@@ -346,10 +266,7 @@ pub(crate) fn spawn_group_poller(
     token: CancellationToken,
 ) -> JoinHandle<()> {
     let MeshCtx {
-        peers,
-        blob_store,
-        firewall: fw,
-        ..
+        peers, blob_store, ..
     } = ctx;
     tokio::spawn(async move {
         loop {
@@ -448,9 +365,9 @@ pub(crate) fn spawn_group_poller(
                 break;
             }
 
-            // Update state and re-materialize suggested firewall rules from the
-            // freshly verified blob. Suggestions ride in the blob, so they are
-            // refreshed here.
+            // Update state from the freshly verified blob. The blob's
+            // `suggested_firewall` is carried through verbatim (D1 wire compat)
+            // but not acted on — the userspace firewall was removed (MINIMAL-010).
             {
                 let mut s = state.write().unwrap();
                 s.members = MemberList::from_members(data.members.clone());
@@ -458,7 +375,6 @@ pub(crate) fn spawn_group_poller(
                 s.suggested_firewall = data.suggested_firewall.clone();
                 s.refresh_snapshot();
             }
-            apply_suggested_firewall(&fw, endpoint.id(), &network_name, &state);
         }
     })
 }

@@ -3,7 +3,7 @@
 //! Control-plane messages (`MemberSync`/`BlobUpdated` triggers, `MeshHello`,
 //! invite gossip) are cheap to send but can be expensive to process — a single
 //! `MemberSync` drives a pkarr resolve and, on a hash change, a blob fetch + DNS
-//! rebuild + firewall re-materialize. They carry no per-message authentication,
+//! rebuild. They carry no per-message authentication,
 //! so any peer sharing a network can spam them. [`ControlGate`] guards each
 //! control-listener task with a token bucket (the `ratelimit` crate) plus a
 //! strike counter: over-budget messages are dropped, and a peer that sustains a

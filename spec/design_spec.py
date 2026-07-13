@@ -1595,12 +1595,15 @@ class RemoveFirewall(Requirement):
     daemon/mesh/firewall.rs, reject.rs, picker.rs, firewall.toml, the
     auto_accept_firewall config key, the firewall benches, and
     tests/e2e/firewall. forward.rs keeps only the upstream anti-spoof
-    ingress check. Packet filtering is nftables/ufw's job on the TUN
-    interface; README states the posture change (every mesh peer reaches
-    every port) loudly, with the nftables equivalent. Wire compat (D1):
-    GroupBlob keeps its suggested_firewall field; reconverge ignores it and
-    coordinator republish preserves it verbatim; ray-proto policy.rs types
-    stay.
+    ingress check. The IP-header parser the forwarder still needs
+    (PacketInfo/parse_packet_info, for peer routing, anti-spoof, and the
+    port-53 Magic-DNS intercept) is relocated out of firewall.rs into a new
+    neutral src/packet.rs — it is packet parsing, not firewall logic.
+    Packet filtering is nftables/ufw's job on the TUN interface; README
+    states the posture change (every mesh peer reaches every port) loudly,
+    with the nftables equivalent. Wire compat (D1): GroupBlob keeps its
+    suggested_firewall field; reconverge ignores it and coordinator republish
+    preserves it verbatim; ray-proto policy.rs/firewall.rs wire types stay.
     """
     req_id = "MINIMAL-010"
 

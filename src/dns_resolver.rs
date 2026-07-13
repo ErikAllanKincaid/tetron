@@ -59,7 +59,7 @@ impl Resolver {
     pub async fn handle_tun_query(
         &self,
         pkt: &[u8],
-        info: &crate::firewall::PacketInfo,
+        info: &crate::packet::PacketInfo,
         tun_tx: &tokio::sync::mpsc::Sender<bytes::Bytes>,
     ) {
         if info.protocol != 17 {
@@ -163,7 +163,7 @@ mod tests {
         // Build a full IPv4/UDP query packet to MAGIC_IP:53 (use build_udp_reply
         // in reverse: synthesize a query with src=app, dst=magic).
         let dns_query = build_a_query("dario.homelab.ray");
-        let app = crate::firewall::PacketInfo {
+        let app = crate::packet::PacketInfo {
             src_ip: IpAddr::V4(Ipv4Addr::new(100, 64, 0, 5)),
             dst_ip: IpAddr::V4(crate::dns::magic_dns_v4_node()),
             protocol: 17,
@@ -174,7 +174,7 @@ mod tests {
             icmp_id: 0,
         };
         let query_pkt = crate::dns_packet::build_udp_reply(
-            &crate::firewall::PacketInfo {
+            &crate::packet::PacketInfo {
                 // reuse builder: swap so the produced packet is app->magic
                 src_ip: app.dst_ip,
                 dst_ip: app.src_ip,
@@ -187,11 +187,11 @@ mod tests {
         .unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let info = crate::firewall::parse_packet_info(&query_pkt).unwrap();
+        let info = crate::packet::parse_packet_info(&query_pkt).unwrap();
         r.handle_tun_query(&query_pkt, &info, &tx).await;
 
         let reply = rx.try_recv().expect("a reply was injected");
-        let rinfo = crate::firewall::parse_packet_info(&reply).unwrap();
+        let rinfo = crate::packet::parse_packet_info(&reply).unwrap();
         assert_eq!(rinfo.src_ip, IpAddr::V4(crate::dns::magic_dns_v4_node()));
         assert_eq!(rinfo.dst_port, 50000);
         assert!(response_has_a(&reply[28..], Ipv4Addr::new(100, 64, 0, 7)));
@@ -204,7 +204,7 @@ mod tests {
             crate::dns::new_reverse_table(),
         );
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let info = crate::firewall::PacketInfo {
+        let info = crate::packet::PacketInfo {
             src_ip: "100.64.0.5".parse().unwrap(),
             dst_ip: std::net::IpAddr::V4(crate::dns::magic_dns_v4_node()),
             protocol: 6,

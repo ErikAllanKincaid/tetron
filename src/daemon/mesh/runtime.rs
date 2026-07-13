@@ -162,7 +162,6 @@ impl MeshManager {
             // (built from the persisted node cache at bootstrap).
             subnet: self.identity.subnet(),
             reusable_keys,
-            pending_suggestions: Vec::new(),
             pending: HashMap::new(),
         };
 
@@ -184,12 +183,8 @@ impl MeshManager {
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
             transport: None,
-            // Preserve the persisted consent flag + admin roster across a
-            // restart; only the roster (members/approved) is authoritative
-            // from the blob.
-            auto_accept_firewall: net_config
-                .map(|nc| nc.auto_accept_firewall)
-                .unwrap_or(false),
+            // Preserve the persisted admin roster across a restart; only the
+            // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
             ephemeral_ttl_secs: None,
@@ -397,38 +392,6 @@ impl MeshManager {
         self.resolve_short_id_any_network(name)
     }
 
-    /// Resolve a firewall `--peer` argument to a peer's endpoint id, accepting
-    /// far more forms than [`Self::resolve_peer_name`]: hostname (bare or
-    /// `host.net.ray`), mesh IPv4 (also for offline members, since the roster
-    /// stores v4), mesh IPv6 (connected peers only — the roster carries no v6),
-    /// or a short id / full endpoint id.
-    pub(crate) async fn resolve_peer_flexible(&self, name: &str) -> Option<EndpointId> {
-        // Hostname (Magic DNS) + short-id / endpoint-id-prefix fallback.
-        if let Some(id) = self.resolve_peer_name(name).await {
-            return Some(id);
-        }
-        // Mesh IP literal of a *connected* peer (fast path; also the only way to
-        // reach a peer by IPv6, since the roster carries no v6 address).
-        if let Ok(v4) = name.parse::<Ipv4Addr>()
-            && let Some(route) = self.peers.lookup_v4(&v4)
-        {
-            return Some(route.endpoint_id);
-        }
-        if let Ok(v6) = name.parse::<std::net::Ipv6Addr>()
-            && let Some(route) = self.peers.lookup_v6(&v6)
-        {
-            return Some(route.endpoint_id);
-        }
-        // Roster scan: an offline peer's mesh IPv4 or identity literal.
-        for entry in self.networks.iter() {
-            let state = entry.value().state.read().unwrap();
-            if let Some(id) = state.members.resolve_peer_literal(name) {
-                return Some(id);
-            }
-        }
-        None
-    }
-
     pub(crate) async fn kick_member(&self, network: &str, peer: &str) -> IpcMessage {
         let (state, dht_notify, has_key, mode) = match self.networks.get(network) {
             Some(h) => {
@@ -603,7 +566,6 @@ impl MeshManager {
                 // We're a member, rejoin via DHT lookup.
                 let name = net.name.clone();
                 let persisted_hostname = net.my_hostname.clone();
-                let net_auto_accept = net.auto_accept_firewall;
                 let net_pubkey = match &net.network_public_key {
                     Some(k) => k.to_string(),
                     None => {
@@ -620,7 +582,6 @@ impl MeshManager {
                             persisted_hostname,
                             None,
                             None,
-                            net_auto_accept,
                             false,
                         )
                         .await
@@ -647,7 +608,7 @@ impl MeshManager {
             let name = pending.name.clone();
             tokio::spawn(async move {
                 let _ = me
-                    .join_network(&key, name.as_deref(), None, None, None, false)
+                    .join_network(&key, name.as_deref(), None, None, None)
                     .await;
             });
         }
@@ -821,10 +782,6 @@ impl MeshManager {
 
         // Remove from config even if the network wasn't active
         let removed_from_config = config::delete_network(name).unwrap_or(false);
-
-        // FW-001: drop this network's inbound default-allow rule (if any) on leave.
-        let cfg = self.firewall.set_closed_default(name, false);
-        let _ = crate::firewall::save_firewall(&cfg);
 
         if was_active || removed_from_config {
             tracing::info!(network = %name, "left network");

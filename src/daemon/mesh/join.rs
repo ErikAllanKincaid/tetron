@@ -36,20 +36,19 @@ enum HandshakeOutcome {
 /// function's argument list stays manageable. These are all decided once, at the
 /// call site, per join: the joiner's chosen hostname, the invite secret
 /// it presents, the blob-derived `suggested_firewall`/`reusable_keys` it
-/// inherits, its firewall consent, and whether this is a fresh join or a
-/// reconnect.
+/// inherits, and whether this is a fresh join or a reconnect.
 pub(crate) struct JoinParams {
     pub(crate) my_hostname: Option<String>,
     pub(crate) net_pubkey: EndpointId,
     pub(crate) invite_secret: Option<Vec<u8>>,
-    /// From the fetched blob: the current coordinator-suggested firewall rules,
-    /// persisted so a member inherits them.
+    /// From the fetched blob: the current coordinator-suggested firewall rules.
+    /// Retained for wire compatibility with full torpedo (D1) — carried into the
+    /// member's state and republished verbatim, but not acted on (the userspace
+    /// firewall was removed, MINIMAL-010).
     pub(crate) suggested_firewall: SuggestedFirewall,
     /// From the fetched blob: reusable join keys, so this node can validate
     /// redemptions if it later holds the network key (HA admission).
     pub(crate) reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
-    /// Consent: auto-install suggested rules without a manual review queue.
-    pub(crate) auto_accept_firewall: bool,
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
     /// speaks first).
     pub(crate) initial: bool,
@@ -84,7 +83,6 @@ pub(crate) async fn join_mesh_shared(
         identity,
         peers,
         blob_store,
-        firewall,
         ..
     } = ctx;
     let JoinParams {
@@ -93,7 +91,6 @@ pub(crate) async fn join_mesh_shared(
         invite_secret,
         suggested_firewall,
         reusable_keys,
-        auto_accept_firewall,
         initial,
     } = params;
     let my_identity = identity.local_identity();
@@ -126,7 +123,6 @@ pub(crate) async fn join_mesh_shared(
         my_ip,
         net_pubkey,
         &my_hostname,
-        auto_accept_firewall,
     )?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
@@ -176,10 +172,6 @@ pub(crate) async fn join_mesh_shared(
     )
     .await;
 
-    // Materialize this node's suggested rules from the blob we just joined with.
-    // Re-runs on every roster/blob update from the control listener below.
-    apply_suggested_firewall(&firewall, my_identity, network_name, &live_state);
-
     // Reconverge worker: `MemberSync`/`BlobUpdated` triggers fan into this single
     // debounced task (see `spawn_reconverge_worker`).
     let reconverge_notify = Arc::new(tokio::sync::Notify::new());
@@ -228,7 +220,6 @@ fn persist_join_config(
     my_ip: Ipv4Addr,
     net_pubkey: EndpointId,
     my_hostname: &Option<String>,
-    auto_accept_firewall: bool,
 ) -> Result<()> {
     let persisted_hostname = members
         .iter()
@@ -251,7 +242,6 @@ fn persist_join_config(
         network_secret_key: None,
         network_public_key: Some(net_pubkey),
         transport: None,
-        auto_accept_firewall,
         admins: vec![],
         direct,
         ephemeral_ttl_secs: None,
@@ -306,7 +296,6 @@ async fn build_member_state(
         // network record.
         subnet: crate::config::node_subnet(),
         reusable_keys,
-        pending_suggestions: Vec::new(),
         pending: HashMap::new(),
     };
     ns.refresh_snapshot();
@@ -774,7 +763,6 @@ pub(crate) fn spawn_reconnect_loop(
         peers,
         tun_tx,
         stats,
-        firewall,
         pruned_peers,
         ..
     } = ctx;
@@ -840,7 +828,6 @@ pub(crate) fn spawn_reconnect_loop(
             let disconnect_tx = disconnect_tx.clone();
             let token = token.clone();
             let stats = stats.clone();
-            let firewall = firewall.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -887,7 +874,6 @@ pub(crate) fn spawn_reconnect_loop(
                                 peer_ipv6,
                                 network_name,
                                 forward::ForwardCtx {
-                                    firewall,
                                     tun_tx,
                                     disconnect_tx,
                                     token,

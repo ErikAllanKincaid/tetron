@@ -129,9 +129,7 @@ fn print_invite_created(
         println!("  reusable (multi-use), expires in {ttl}");
         println!(
             "  servers join unattended with: {}",
-            style::faint(&format!(
-                "torpedo join {code} --hostname <h> --auto-accept-firewall"
-            ))
+            style::faint(&format!("torpedo join {code} --hostname <h>"))
         );
     } else {
         println!("  single-use, expires in {ttl}");
