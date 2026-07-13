@@ -21,6 +21,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Workspace trimmed (MINIMAL-016)**: removed `ray-mobile` workspace member and
+  `android/` directory, trimmed `justfile` to the surviving deploy recipes, and
+  removed the `desktop` cargo feature (no longer needed without the Android
+  library build). Only `tor` remains as an optional feature.
 - **Plain CLI (MINIMAL-015)**: removed style.rs, layout.rs, progress.rs and the
   `indicatif`/`crossterm`/`unicode-width` dependencies. CLI output is plain text
   with no colors, spinners, or interactive pickers. `--json` output is

@@ -23,10 +23,6 @@ a second run prints `change: [...]` deltas vs the stored baseline.
   - `tx_copy` = old `Bytes::copy_from_slice` (allocate + copy) ·
     `tx_zerocopy` = pooled `BytesMut::split_to(n).freeze()`
   - `rx_copy` = old `datagram.to_vec()` · `rx_zerocopy` = `Bytes` clone (refcount)
-- **`firewall`** — `parse_packet_info` + `evaluate_packet`, the unavoidable
-  per-packet work run once per direction. A regression guard
-  (`parse_only`, `parse_eval_out_allow`, `parse_eval_in_whitelist`).
-
 The `*_copy` variants reproduce the pre-optimization code so the delta to the
 `*_zerocopy` variant is exactly the saving; they are bench-only fixtures, not
 live code paths.

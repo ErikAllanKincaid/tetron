@@ -15,7 +15,7 @@ categories = ["network-programming", "command-line-utilities"]
 # The repo root is both the `rayfish` package (binary `torpedo`) and the workspace
 # root. `ray-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
-members = ["ray-proto", "ray-mobile"]
+members = ["ray-proto"]
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add
@@ -27,20 +27,8 @@ strip = "symbols"
 [[bin]]
 name = "torpedo"
 path = "src/main.rs"
-# The `ray` CLI/daemon binary is desktop-only: it drives the TUN device and
-# 1Password backup, neither of which exists on Android. Gating it on the `desktop` feature means a
-# `--no-default-features` build (the Android library build) compiles only the
-# library and skips this target instead of failing on desktop-only code.
-required-features = ["desktop"]
 
 [features]
-default = ["desktop"]
-# Desktop-only surface: the TUN-backed daemon binary and interactive password
-# prompts (rpassword). Off for the Android library build, which reuses only the
-# mesh/forward core.
-desktop = [
-    "dep:rpassword",
-]
 tor = ["dep:iroh-tor-transport"]
 
 [dependencies]
@@ -85,7 +73,7 @@ qr2term = "0.3.3"
 bs58 = "0.5.1"
 chacha20poly1305 = "0.10.1"
 argon2 = "0.5.3"
-rpassword = { version = "7.5.4", optional = true }
+
 async-trait = "0.1"
 bytesize = "2.4.0"
 
