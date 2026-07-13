@@ -2,6 +2,7 @@
 //! handshake (`join_network*`, dial/fetch/restore-roster helpers). Split out of `daemon/mod.rs`.
 
 use super::super::*;
+use crate::config::TransportMode;
 
 /// Borrowed bundle of the per-join inputs threaded through the dial + finalize
 /// phases of `join_network_inner`, so each phase takes one argument instead of a
@@ -17,6 +18,8 @@ struct JoinContext<'a> {
     invite: Option<Vec<u8>>,
     /// Pinned coordinator to dial first (the invite minter), if known.
     coordinator: Option<EndpointId>,
+    /// Per-network transport preference (none = default, Some(Tor) = route over Tor).
+    transport: Option<TransportMode>,
 }
 
 /// A live mesh connection produced by the dial phase: the per-network state cell
@@ -127,10 +130,11 @@ impl MeshManager {
         mode: GroupMode,
         name: Option<String>,
         hostname: Option<String>,
+        transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
     ) -> IpcMessage {
         match self
-            .create_network_inner(mode, name, hostname, subnet, false, None)
+            .create_network_inner(mode, name, hostname, transport, subnet, false, None)
             .await
         {
             Ok(resp) => resp,
@@ -216,6 +220,7 @@ impl MeshManager {
         mode: GroupMode,
         custom_name: Option<String>,
         hostname: Option<String>,
+        transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
         direct: bool,
         pre_approve: Option<(EndpointId, Option<String>)>,
@@ -311,7 +316,7 @@ impl MeshManager {
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
-            transport: None,
+            transport,
             admins: vec![],
             direct,
         })?;
@@ -372,14 +377,17 @@ impl MeshManager {
         network_key: &str,
         name: Option<&str>,
         hostname: Option<String>,
+        transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
     ) -> IpcMessage {
+        let transport_captured = transport.clone();
         match self
             .join_network_inner(
                 network_key,
                 name,
                 hostname.clone(),
+                transport,
                 invite.clone(),
                 coordinator,
                 true,
@@ -414,6 +422,7 @@ impl MeshManager {
                                 &nk,
                                 nm.as_deref(),
                                 hostname.clone(),
+                                transport_captured.clone(),
                                 invite.clone(),
                                 coordinator,
                                 true,
@@ -449,6 +458,7 @@ impl MeshManager {
         network_key: &str,
         alias: Option<&str>,
         hostname: Option<String>,
+        transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
         // True for a fresh join (we send a JoinRequest first); false when
@@ -502,6 +512,7 @@ impl MeshManager {
             net_pubkey,
             invite,
             coordinator,
+            transport,
         };
 
         // Establish the mesh link. A fresh join tries each coordinator in the
@@ -826,6 +837,7 @@ impl MeshManager {
                 invite_secret,
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
+                transport: ctx.transport.clone(),
                 initial,
             },
             disconnect_tx.clone(),
@@ -855,6 +867,7 @@ impl MeshManager {
             alpn,
             my_ip,
             net_pubkey,
+            transport,
             ..
         } = ctx;
 
@@ -907,9 +920,10 @@ impl MeshManager {
             let _ = self.blob_store.blobs().add_slice(&bytes).await;
         }
 
-        // Save config with network public key (use display_name for config)
+        // Save config with network public key and transport preference
         if let Ok(Some(mut net)) = config::load_network(display_name) {
             net.network_public_key = Some(net_pubkey);
+            net.transport = transport;
             let _ = config::save_network(&net);
         }
 

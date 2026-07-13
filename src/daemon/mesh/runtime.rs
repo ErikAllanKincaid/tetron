@@ -181,7 +181,7 @@ impl MeshManager {
             approved: approved_entries,
             network_secret_key: Some(net_secret_key.clone()),
             network_public_key: Some(net_public_key),
-            transport: None,
+            transport: net_config.and_then(|nc| nc.transport.clone()),
             // Preserve the persisted admin roster across a restart; only the
             // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
@@ -484,6 +484,7 @@ impl MeshManager {
                         continue;
                     }
                 };
+                let net_transport = net.transport.clone();
                 let daemon_c = Arc::clone(self);
                 tokio::spawn(async move {
                     match daemon_c
@@ -491,6 +492,7 @@ impl MeshManager {
                             &net_pubkey,
                             Some(&name),
                             persisted_hostname,
+                            net_transport,
                             None,
                             None,
                             false,
@@ -519,7 +521,7 @@ impl MeshManager {
             let name = pending.name.clone();
             tokio::spawn(async move {
                 let _ = me
-                    .join_network(&key, name.as_deref(), None, None, None)
+                    .join_network(&key, name.as_deref(), None, None, None, None)
                     .await;
             });
         }

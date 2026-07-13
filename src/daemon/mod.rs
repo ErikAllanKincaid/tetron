@@ -664,7 +664,7 @@ impl MeshManager {
                 mode,
                 name,
                 hostname,
-                transport: _,
+                transport,
                 subnet,
             } => {
                 let parsed = match subnet.as_deref().map(crate::membership::parse_cidr).transpose() {
@@ -675,13 +675,13 @@ impl MeshManager {
                         };
                     }
                 };
-                self.create_network(mode, name, hostname, parsed).await
+                self.create_network(mode, name, hostname, transport, parsed).await
             }
             IpcMessage::Join {
                 network_key,
                 name,
                 hostname,
-                transport: _,
+                transport,
                 invite,
                 coordinator,
             } => {
@@ -689,6 +689,7 @@ impl MeshManager {
                     &network_key,
                     name.as_deref(),
                     hostname,
+                    transport,
                     invite,
                     coordinator,
                 )

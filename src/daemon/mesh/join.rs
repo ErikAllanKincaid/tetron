@@ -7,6 +7,7 @@
 //! `spawn_reconnect_loop` keeps a member's connection alive with backoff.
 
 use super::super::*;
+use crate::config::TransportMode;
 
 /// Result of the initial join handshake against the coordinator.
 pub(crate) enum JoinResult {
@@ -49,6 +50,8 @@ pub(crate) struct JoinParams {
     /// From the fetched blob: reusable join keys, so this node can validate
     /// redemptions if it later holds the network key (HA admission).
     pub(crate) reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
+    /// Per-network transport preference (None = default, Some(Tor) = Tor routed).
+    pub(crate) transport: Option<TransportMode>,
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
     /// speaks first).
     pub(crate) initial: bool,
@@ -87,6 +90,7 @@ pub(crate) async fn join_mesh_shared(
         invite_secret,
         suggested_firewall,
         reusable_keys,
+        transport,
         initial,
     } = params;
     let my_identity = identity.local_identity();
@@ -119,6 +123,7 @@ pub(crate) async fn join_mesh_shared(
         my_ip,
         net_pubkey,
         &my_hostname,
+        transport,
     )?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
@@ -224,6 +229,7 @@ fn persist_join_config(
     my_ip: Ipv4Addr,
     net_pubkey: EndpointId,
     my_hostname: &Option<String>,
+    transport: Option<TransportMode>,
 ) -> Result<()> {
     let persisted_hostname = members
         .iter()
@@ -242,7 +248,7 @@ fn persist_join_config(
         approved: to_approved_entries(approved.iter()),
         network_secret_key: None,
         network_public_key: Some(net_pubkey),
-        transport: None,
+        transport,
         admins: vec![],
         direct,
     })

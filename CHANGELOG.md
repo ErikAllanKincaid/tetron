@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the
+   `--tor` flag on `torpedo create` and `torpedo join` was accepted by the CLI but
+   silently ignored — the `transport` field was never threaded through the IPC
+   handler, create/join functions, or persisted to config. It is now threaded end
+   to end: the flag reaches `create_network`/`join_network`, is saved to the
+   per-network `networks/<name>.toml`, and is restored on daemon restart
+   (`restore_coordinator_network`) so Tor transport survives restarts as intended.
+
 ### Changed
 
 - **Crate identity renamed to tetron (RENAME-M01)**: the library crate is now
@@ -579,7 +589,7 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/rayfish/rayfish/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/torpedo/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/rayfish/rayfish/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rayfish/rayfish/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rayfish/rayfish/compare/v0.1.1...v0.1.2
