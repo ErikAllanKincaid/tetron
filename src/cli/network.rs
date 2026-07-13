@@ -48,19 +48,8 @@ pub(crate) async fn ipc_create(
             };
             let _ = my_ipv6;
             println!();
-            println!(
-                "  {} {} {}",
-                style::check(),
-                style::value("created"),
-                style::bold(&name)
-            );
-            println!(
-                "    {}   {}   {}  {}",
-                style::label("address"),
-                style::value(&my_ip.to_string()),
-                style::faint("·"),
-                style::rose(&short),
-            );
+            println!("  created {name}");
+            println!("    address  {}  ·  {}", my_ip, short);
             let join = format!("torpedo join {network_key}");
             print_next(&[
                 (&join, "share this to invite peers"),
@@ -109,10 +98,9 @@ pub(crate) async fn ipc_join(
     )
     .await?;
     // Joining dials the coordinator and runs the handshake daemon-side, so this
-    // can take a few seconds — show a spinner while we wait.
-    let spinner = progress::spinner("joining…");
+    // can take a few seconds.
+    eprintln!("joining…");
     let resp = ipc::recv(&mut stream).await?;
-    spinner.finish_and_clear();
     match resp {
         ipc::IpcMessage::Ok { message } => {
             println!("{}", message);
@@ -125,17 +113,8 @@ pub(crate) async fn ipc_join(
         } => {
             let _ = my_ipv6;
             println!();
-            println!(
-                "  {} {} {}",
-                style::check(),
-                style::value("joined"),
-                style::bold(&name)
-            );
-            println!(
-                "    {}   {}",
-                style::label("address"),
-                style::value(&my_ip.to_string()),
-            );
+            println!("  joined {name}");
+            println!("    address  {}", my_ip);
             print_next(&[
                 ("torpedo status", "see who's online"),
                 ("torpedo up", "activate the VPN"),

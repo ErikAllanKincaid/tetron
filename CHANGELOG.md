@@ -21,6 +21,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Plain CLI (MINIMAL-015)**: removed style.rs, layout.rs, progress.rs and the
+  `indicatif`/`crossterm`/`unicode-width` dependencies. CLI output is plain text
+  with no colors, spinners, or interactive pickers. `--json` output is
+  unaffected and remains on every read command.
 - **`torpedo hostname` and `torpedo ephemeral` (MINIMAL-014)**: hostname rename
   propagation (the durable pending-rename intent and its redelivery) and the
   per-network ephemeral auto-kick TTL (auto-removing members offline longer than

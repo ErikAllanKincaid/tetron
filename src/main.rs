@@ -2,7 +2,7 @@
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
 use rayfish::{
-    config, daemon, invite, ipc, layout, logdir, membership, progress, shutdown, stats, style,
+    config, daemon, invite, ipc, logdir, membership, shutdown, stats,
 };
 
 use std::sync::{Arc, atomic};
@@ -382,8 +382,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.json {
         JSON_FLAG.store(true, atomic::Ordering::Relaxed);
-        // JSON output must never be colorized or interrupted by spinners.
-        style::set_plain(true);
     }
     // Keep the appender guard alive for the whole process so file logs flush.
     let _log_guard = init_tracing(matches!(cli.command, Command::Daemon));

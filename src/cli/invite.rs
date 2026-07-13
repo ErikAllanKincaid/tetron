@@ -21,26 +21,20 @@ pub(crate) async fn ipc_requests(network: &str) -> Result<()> {
                     }))
                     .collect::<Vec<_>>()));
             } else if requests.is_empty() {
-                println!("\n  {}\n", style::faint("no pending join requests"));
+                println!("\n  (no pending join requests)\n");
             } else {
-                let rows = requests
+                let rows: Vec<Vec<String>> = requests
                     .iter()
                     .map(|r| {
                         let host = r.hostname.clone().unwrap_or_else(|| "—".to_string());
                         let wait = format!("{}s", r.waiting_secs);
-                        vec![
-                            layout::Cell::new(r.short_id.clone(), style::rose(&r.short_id)),
-                            layout::Cell::new(host.clone(), style::value(&host)),
-                            layout::Cell::right(wait.clone(), style::faint(&wait)),
-                        ]
+                        vec![r.short_id.clone(), host, wait]
                     })
                     .collect();
                 println!();
                 print!("{}", table(&["id", "host", "waiting"], rows, 2));
-                println!(
-                    "\n  {}",
-                    style::faint(&format!("admit with: torpedo accept {network} <id>"))
-                );
+                println!();
+                println!("  admit with: torpedo accept {network} <id>");
             }
         }
         ipc::IpcMessage::Error { message } => print_error("error", &message, None),

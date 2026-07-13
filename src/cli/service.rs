@@ -142,9 +142,8 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
     }
 
     // Wait for the freshly started daemon to accept IPC, then activate the VPN.
-    let spinner = progress::spinner("starting service…");
+    eprintln!("waiting for daemon…");
     let daemon = wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await;
-    spinner.finish_and_clear();
     match daemon {
         Some(mut stream) => {
             ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;

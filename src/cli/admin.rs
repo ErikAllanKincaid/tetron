@@ -25,23 +25,13 @@ pub(crate) async fn ipc_admin(network: &str, action: AdminAction) -> Result<()> 
                         .collect::<Vec<_>>()
                 ));
             } else if admins.is_empty() {
-                println!("\n  {}\n", style::faint("no admins recorded"));
+                println!("\n  (no admins recorded)\n");
             } else {
                 println!();
-                let mut rows = Vec::new();
                 for a in &admins {
-                    let (glyph, tag) = if a.self_node {
-                        (style::dot_online(), style::marker("this device"))
-                    } else {
-                        (style::dot_offline(), String::new())
-                    };
-                    rows.push(vec![
-                        layout::Cell::new("●", glyph),
-                        layout::Cell::new(a.short_id.clone(), style::value(&a.short_id)),
-                        layout::Cell::new(if a.self_node { "this device" } else { "" }, tag),
-                    ]);
+                    let tag = if a.self_node { "  ·this device·" } else { "" };
+                    println!("  {} {tag}", a.short_id);
                 }
-                print!("{}", indent(&layout::columns(&rows, 2), 2));
                 println!();
             }
         }

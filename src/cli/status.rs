@@ -8,21 +8,21 @@ pub(crate) fn format_bytes(b: u64) -> String {
     bytesize::ByteSize(b).to_string()
 }
 
-/// Render a styled error block to stderr:
+/// Render a plain error block to stderr:
 /// ```text
-///   ✗ <title>
+///   ! <title>
 ///     <detail>
 ///     hint  <hint>
 /// ```
 /// When `hint` is `None`, a hint is inferred from common daemon error strings.
 pub(crate) fn print_error(title: &str, detail: &str, hint: Option<&str>) {
-    eprintln!("  {} {}", style::cross(), style::bold(title));
+    eprintln!("  ! {title}");
     if !detail.is_empty() {
-        eprintln!("    {}", style::value(detail));
+        eprintln!("    {detail}");
     }
     let hint = hint.map(str::to_string).or_else(|| infer_hint(detail));
     if let Some(h) = hint {
-        eprintln!("    {}  {}", style::label("hint"), style::faint(&h));
+        eprintln!("    hint  {h}");
     }
 }
 
@@ -47,39 +47,30 @@ pub(crate) fn infer_hint(message: &str) -> Option<String> {
     }
 }
 
-/// Render a "next steps" footer: an aligned list of suggested commands.
-/// ```text
-///     next  torpedo status   see who's online
-///           torpedo up       activate the VPN
-/// ```
+/// Render a "next steps" footer.
 pub(crate) fn print_next(steps: &[(&str, &str)]) {
-    let rows: Vec<Vec<layout::Cell>> = steps
-        .iter()
-        .enumerate()
-        .map(|(i, (cmd, blurb))| {
-            let label = if i == 0 { "next" } else { "" };
-            vec![
-                layout::Cell::new(label, style::label(label)),
-                layout::Cell::new(*cmd, style::rose(cmd)),
-                layout::Cell::new(*blurb, style::faint(blurb)),
-            ]
-        })
-        .collect();
-    print!("{}", indent(&layout::columns(&rows, 2), 4));
+    for (i, (cmd, blurb)) in steps.iter().enumerate() {
+        if i == 0 {
+            println!("    next  {cmd}   {blurb}");
+        } else {
+            println!("          {cmd}   {blurb}");
+        }
+    }
 }
 
-/// Standard borderless table: a faint header row over `rows`, aligned via
-/// [`layout::columns`] and indented `pad` spaces. Headers are styled here (so
-/// `layout` stays presentation-free) and every list command shares this shape.
-pub(crate) fn table(headers: &[&str], rows: Vec<Vec<layout::Cell>>, pad: usize) -> String {
-    let header: Vec<layout::Cell> = headers
-        .iter()
-        .map(|h| layout::Cell::new(*h, style::faint(h)))
-        .collect();
-    let mut all = Vec::with_capacity(rows.len() + 1);
-    all.push(header);
-    all.extend(rows);
-    indent(&layout::columns(&all, 2), pad)
+/// Standard borderless table: indented `pad` spaces. No column alignment in
+/// plain mode; each row is printed as space-separated values.
+pub(crate) fn table(headers: &[&str], rows: Vec<Vec<String>>, pad: usize) -> String {
+    let mut out = String::new();
+    // Header row
+    out.push_str(&indent(&headers.join("  "), pad));
+    out.push('\n');
+    // Body rows
+    for row in &rows {
+        out.push_str(&indent(&row.join("  "), pad));
+        out.push('\n');
+    }
+    out
 }
 
 /// Prefix every line of `block` with `indent` spaces (for nested table output).
@@ -108,23 +99,23 @@ pub(crate) async fn ipc_status() -> Result<()> {
         // Daemon not running — show saved config
         let app_config = config::load()?;
         println!();
-        println!("  {}", style::red("✗ daemon not running"));
+            println!("  ! daemon not running");
         if app_config.networks.is_empty() {
-            println!("  {}", style::faint("no saved networks"));
+            println!("  (no saved networks)");
             println!();
             return Ok(());
         }
-        println!("  {}", style::faint("saved networks:"));
+        println!("  saved networks:");
         for net in &app_config.networks {
             let ip_str = net
                 .my_ip
                 .map(|ip| ip.to_string())
                 .unwrap_or_else(|| "?".to_string());
             println!(
-                "    {} {}  {}",
-                style::value(&net.name),
-                style::faint(&format!("({ip_str})")),
-                style::faint(&format!("{} members", net.members.len()))
+                "    {}  ({})  {} members",
+                net.name,
+                ip_str,
+                net.members.len()
             );
         }
         println!();
@@ -159,27 +150,20 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 return Ok(());
             }
             let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);
-            // Header: torpedo ● up    endpoint k7f2…9qx4
-            let state = if active {
-                format!("{} {}", style::dot_online(), style::value("up"))
-            } else {
-                format!("{} {}", style::dot_offline(), style::faint("standby"))
-            };
+            let state = if active { "up" } else { "standby" };
             println!();
             println!(
-                "  {}  {}      {} {}",
-                style::bold("torpedo"),
+                "  torpedo  {}      endpoint {}",
                 state,
-                style::label("endpoint"),
-                style::value(&endpoint_id.fmt_short().to_string()),
+                endpoint_id.fmt_short(),
             );
             if !active {
-                println!("  {}", style::faint("run `torpedo up` to activate"));
+                println!("  (run `torpedo up` to activate)");
             }
 
             if networks.is_empty() {
                 println!();
-                println!("  {}", style::faint("no active networks"));
+                println!("  (no active networks)");
             } else {
                 for net in &networks {
                     print_network(net);
@@ -197,11 +181,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                     .collect();
                 for net in &inactive {
                     println!();
-                    println!(
-                        "  {}  {}",
-                        style::faint(&net.name),
-                        style::marker("inactive")
-                    );
+                    println!("  {}  ·inactive·", net.name);
                 }
             }
 
@@ -215,14 +195,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
             if !daemon_version.is_empty() && daemon_version != cli_version {
                 println!();
                 println!(
-                    "  {} daemon is v{} but CLI is v{}",
-                    style::red("!"),
+                    "  ! daemon is v{} but CLI is v{}",
                     daemon_version,
                     cli_version,
                 );
                 println!(
-                    "  {}",
-                    style::faint("run `sudo torpedo restart` to restart the daemon onto the new binary"),
+                    "  (run `sudo torpedo restart` to restart the daemon onto the new binary)"
                 );
             }
             println!();
@@ -233,75 +211,45 @@ pub(crate) async fn ipc_status() -> Result<()> {
     Ok(())
 }
 
-/// Render one network block: header (name · role · dns · ip · member count),
-/// the aligned peer table, and the shareable join code (suppressed for direct
-/// `torpedo connect` networks).
+/// Render one network block: header (name, role, hostname, ip, member count),
+/// the peer list, and the shareable join code.
 fn print_network(net: &ipc::NetworkStatus) {
     let role = net.role.to_string();
-    // Just the hostname: the network name is already the block header, so the
-    // `.{network}.ray` suffix would only repeat it.
     let dns_name = net.my_hostname.clone();
-    // member count (self excluded) belongs on the network header row
     let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
     println!();
-    print!("  {}  {}", style::bold(&net.name), style::marker(&role));
+    print!("  {}  ·{role}·", net.name);
     if let Some(ref dns) = dns_name {
-        print!("   {}", style::value(dns));
+        print!("   {dns}");
     }
-    print!("   {}", style::faint(&net.my_ip.to_string()));
-    print!(
-        "   {} {}",
-        style::label("members"),
-        style::value(&format!("{online}/{}", net.peers.len())),
-    );
+    print!("   {}", net.my_ip);
+    print!("   members {online}/{}", net.peers.len());
     println!();
 
-    // Peer rows as aligned columns: glyph · host · ipv4 · via · rtt · ↑tx · ↓rx.
-    // Pre-measure the widest up/down counter so each arrow hugs its number (one
-    // space) while the digits still right-align across rows.
-    let counter_width = |pick: fn(&ipc::ConnectionInfo) -> u64| {
-        net.peers
-            .iter()
-            .filter_map(|p| p.connection.as_ref())
-            .map(|c| format_bytes(pick(c)).len())
-            .max()
-            .unwrap_or(0)
-    };
-    let up_w = counter_width(|c| c.bytes_tx);
-    let down_w = counter_width(|c| c.bytes_rx);
-    let rows: Vec<Vec<layout::Cell>> = net
-        .peers
-        .iter()
-        .map(|p| render_peer_row(p, up_w, down_w))
-        .collect();
-    if rows.is_empty() {
-        println!("    {}", style::faint("(no other members)"));
+    // Peer rows as text lines
+    if net.peers.is_empty() {
+        println!("    (no other members)");
     } else {
-        // `indent` strips the block's trailing newline, so use `println!` to
-        // terminate the last peer row — otherwise the network's `join <room-id>`
-        // line below gets glued onto it.
-        println!("{}", indent(&layout::columns(&rows, 3), 4));
+        for peer in &net.peers {
+            let line = render_peer_line(peer);
+            println!("    {line}");
+        }
     }
 
-    // join code. Direct (`torpedo connect`) networks have no shareable room id, so
-    // the join code is suppressed for them.
+    // join code
     if let Some(ref key) = net.network_key
         && !net.role.is_direct()
     {
-        println!("    {} {}", style::label("join"), style::rose(key));
+        println!("    join {key}");
     }
 }
 
-/// Build one peer's status row (glyph · host · ipv4 · via · rtt · ↑tx · ↓rx). The
-/// host is the bare hostname (no `.{network}.ray`): the network block header
-/// already names the network.
-fn render_peer_row(peer: &ipc::PeerStatus, up_w: usize, down_w: usize) -> Vec<layout::Cell> {
+/// Build one peer's status line (host, ipv4, via, rtt, tx, rx).
+fn render_peer_line(peer: &ipc::PeerStatus) -> String {
     let host = peer
         .hostname
         .clone()
         .unwrap_or_else(|| peer.ip.to_string());
-    let host_plain = host.clone();
-    let host_styled = |base_style: fn(&str) -> String| base_style(&host);
     match &peer.connection {
         Some(ci) => {
             let via = match ci.conn_type {
@@ -310,33 +258,15 @@ fn render_peer_row(peer: &ipc::PeerStatus, up_w: usize, down_w: usize) -> Vec<la
                 ipc::ConnType::Tor => "tor",
                 ipc::ConnType::Unknown => "?",
             };
-            let (rtt_plain, rtt_styled) = match ci.rtt_ms {
-                Some(ms) => (format!("{ms:.0}ms"), style::latency(ms)),
-                None => ("—".into(), style::faint("—")),
+            let rtt = match ci.rtt_ms {
+                Some(ms) => format!("{ms:.0}ms"),
+                None => "—".into(),
             };
-            // One cell per direction: the counter is right-padded to the column's
-            // widest value so the arrow hugs its number (single space) while the
-            // digits still right-align down the column.
-            let up = format!("↑ {:>up_w$}", format_bytes(ci.bytes_tx));
-            let down = format!("↓ {:>down_w$}", format_bytes(ci.bytes_rx));
-            vec![
-                layout::Cell::new("●", style::dot_online()),
-                layout::Cell::new(host_plain.clone(), host_styled(style::value)),
-                layout::Cell::new(peer.ip.to_string(), style::faint(&peer.ip.to_string())),
-                layout::Cell::new(via, style::faint(via)),
-                layout::Cell::right(rtt_plain, rtt_styled),
-                layout::Cell::new(up.clone(), style::faint(&up)),
-                layout::Cell::new(down.clone(), style::faint(&down)),
-            ]
+            let up = format_bytes(ci.bytes_tx);
+            let down = format_bytes(ci.bytes_rx);
+            format!("{host}  {}  {via}  {rtt}  ↑{up}  ↓{down}", peer.ip)
         }
-        None => vec![
-            layout::Cell::new("○", style::dot_offline()),
-            layout::Cell::new(host_plain.clone(), host_styled(style::faint)),
-            layout::Cell::new(peer.ip.to_string(), style::faint(&peer.ip.to_string())),
-            layout::Cell::new("—", style::faint("—")),
-            layout::Cell::right("offline", style::faint("offline")),
-            layout::Cell::plain(""),
-        ],
+        None => format!("{host}  {}  —  offline", peer.ip),
     }
 }
 
@@ -358,19 +288,10 @@ fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
         return;
     }
     println!();
-    println!("  {}", style::label("pending"));
-    let rows: Vec<Vec<layout::Cell>> = pending
-        .iter()
-        .map(|(n, what, cmd)| {
-            let count = format!("({n})");
-            vec![
-                layout::Cell::new(count.clone(), style::rose(&count)),
-                layout::Cell::new(what.clone(), style::value(what)),
-                layout::Cell::new(cmd.clone(), style::faint(cmd)),
-            ]
-        })
-        .collect();
-    print!("{}", indent(&layout::columns(&rows, 3), 4));
+    println!("  pending");
+    for (n, what, cmd) in &pending {
+        println!("    ({n}) {what}  {cmd}");
+    }
 }
 
 /// `torpedo down`: put the daemon on standby (tear down the TUN, revert DNS, drop
