@@ -3699,71 +3699,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ray-proto"
-version = "0.1.5"
-dependencies = [
- "anyhow",
- "bytes",
- "derive_more 2.1.1",
- "futures",
- "iroh",
- "rmp-serde",
- "serde",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "rayfish"
-version = "0.1.5"
-dependencies = [
- "ahash",
- "anyhow",
- "arc-swap",
- "argon2",
- "async-trait",
- "blake3",
- "bs58",
- "bytes",
- "bytesize",
- "chacha20poly1305",
- "clap",
- "clap_complete",
- "config",
- "criterion",
- "dashmap",
- "dirs",
- "enable-ansi-support",
- "futures",
- "hex",
- "iroh",
- "iroh-blobs",
- "iroh-dns",
- "iroh-metrics",
- "iroh-tor-transport",
- "libc",
- "qr2term",
- "rand 0.10.1",
- "ratelimit",
- "ray-proto",
- "rmp-serde",
- "rtnetlink",
- "serde",
- "serde_json",
- "serde_yml",
- "smol_str",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tun",
- "url",
-]
-
-[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4586,6 +4521,71 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tetron"
+version = "0.1.5"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "arc-swap",
+ "argon2",
+ "async-trait",
+ "blake3",
+ "bs58",
+ "bytes",
+ "bytesize",
+ "chacha20poly1305",
+ "clap",
+ "clap_complete",
+ "config",
+ "criterion",
+ "dashmap",
+ "dirs",
+ "enable-ansi-support",
+ "futures",
+ "hex",
+ "iroh",
+ "iroh-blobs",
+ "iroh-dns",
+ "iroh-metrics",
+ "iroh-tor-transport",
+ "libc",
+ "qr2term",
+ "rand 0.10.1",
+ "ratelimit",
+ "rmp-serde",
+ "rtnetlink",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "smol_str",
+ "tempfile",
+ "tetron-proto",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tun",
+ "url",
+]
+
+[[package]]
+name = "tetron-proto"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "derive_more 2.1.1",
+ "futures",
+ "iroh",
+ "rmp-serde",
+ "serde",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

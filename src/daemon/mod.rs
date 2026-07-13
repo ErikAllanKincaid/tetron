@@ -78,7 +78,7 @@ use crate::transport;
 // is a `VpnService` fd supplied from Kotlin.
 #[cfg(not(target_os = "android"))]
 use crate::tun;
-use ray_proto::SuggestedFirewall;
+use tetron_proto::SuggestedFirewall;
 
 // `MeshManager`'s IPC operations are split by domain into the `mesh/` submodule;
 // see `mesh/mod.rs`. Each holds an additional `impl MeshManager` block. Nested a

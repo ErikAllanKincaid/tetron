@@ -30,7 +30,8 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 |---|---|---|
 | 9 | MINIMAL-010 | Firewall enforcement: firewall.rs, cli/firewall.rs, daemon/mesh/firewall.rs, reject.rs, picker.rs, firewall.toml handling, auto_accept_firewall config, benches/forward.rs firewall benches. forward.rs keeps only the anti-spoof ingress check. GroupBlob keeps `suggested_firewall` (D1): reconverge ignores it, republish preserves it. ray-proto keeps policy.rs types. tests/e2e/firewall removed. |
 | 10 | MINIMAL-011 | Apply layer: apply.rs, cli/alias.rs, daemon/mesh/alias.rs, `identityof`, EXAMPLE_SPEC. Depends on commit 9. |
-| 11 | CON-M01 + CON-M02 | Add the two new reconcile.py checks: `dependency_absence` (Cargo.toml [dependencies] must not name the removed deps) and `wire_compat` (MESH_PROTOCOL_VERSION == 1; GroupBlob retains suggested_firewall/reusable_keys fields). Added here because phases 1-2 create the conditions they gate. |
+| 11 | CON-M01 + CON-M02 | Add the two new reconcile.py checks: `dependency_absence` (Cargo.toml [dependencies] must not name the removed deps) and `wire_compat` (MESH_PROTOCOL_VERSION == 1; GroupBlob retains suggested_firewall/reusable_keys fields). Added here because phases 1-2 create the conditions they gate. Added before Phase 6 verification (2026-07-13). |
+| 18 | RENAME-M01 | Crate identity rename: `rayfish` -> `tetron`, `ray-proto` -> `tetron-proto`. Add CON-M03 to reconcile.py. Internal only, D1 preserved. Done 2026-07-13. |
 
 ## Phase 3: DNS
 

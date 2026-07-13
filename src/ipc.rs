@@ -4,4 +4,4 @@
 //! frontends can speak the exact same wire protocol. Kept as `crate::ipc::*` here
 //! so the daemon/CLI continue to use their original paths unchanged.
 
-pub use ray_proto::ipc::*;
+pub use tetron_proto::ipc::*;

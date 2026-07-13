@@ -11,7 +11,7 @@ use crate::membership::GroupMode;
 
 /// Per-network transport preference. Defined in `ray-proto` (shared with GUI
 /// frontends); re-exported here so existing `crate::config::TransportMode` paths work.
-pub use ray_proto::TransportMode;
+pub use tetron_proto::TransportMode;
 
 #[allow(dead_code)]
 mod secret_key_hex {

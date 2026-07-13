@@ -65,7 +65,7 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 
 **D4: Security posture change, stated loudly.** Without the userspace firewall, every mesh peer reaches every port on the TUN interface. The README must say so and show the two-line nftables equivalent. The mesh itself remains the coarse boundary (peers must share a network), and the anti-spoof ingress check stays.
 
-**D5: Same binary name, no host coexistence with full torpedo.** The binary, service, paths, and ALPNs keep the torpedo identity, so tetron and full torpedo can not be installed on the same host; a host runs one or the other. They *can* share a network (D1). All KEEP-ON-PURPOSE rules from torpedo (crate name `rayfish`, relay preset, upstream REPO_SLUG references that survive, author attribution) carry over unchanged.
+**D5: Same binary name, no host coexistence with full torpedo.** The binary, service, paths, and ALPNs keep the torpedo identity, so tetron and full torpedo can not be installed on the same host; a host runs one or the other. They *can* share a network (D1). KEEP-ON-PURPOSE rules from torpedo (relay preset, upstream REPO_SLUG references that survive, author attribution) carry over unchanged. The crate name is `tetron` (RENAME-M01, 2026-07-13).
 
 **D6: Spec-first workflow carries over.** Same libspec + reconcile.py discipline: one requirement per commit, reconcile.py green, `libspec link` after each commit. New requirements are MINIMAL-*; new constraints are CON-M* (a separate constraint namespace so future torpedo CON-0xx numbers never collide when cherry-picking). Inherited SUBNET-*/RENAME-*/CON-* specs remain valid until a removal commit retires them explicitly.
 
@@ -88,21 +88,12 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 
 ## Naming and crate identity
 
-Directory and working name: tetron. The binary stays `torpedo` (D5). The Cargo package/library stays `rayfish` for now, exactly as in full torpedo.
+Directory and working name: tetron. The binary stays `torpedo` (D5). The Cargo package/library is `tetron` (RENAME-M01, 2026-07-13). The helper crate is `tetron-proto`.
 
-### Deferred decision: the crate rename (and possibly a full product rename)
+### Staged renames
 
-**Decision:** the crate name `rayfish`, the `use rayfish::…` paths, the `info,rayfish=debug` log filter, and the `ray-proto` helper crate are NOT renamed during the MINIMAL phases. No agent working in this repository may "finish the rename" of these. The reason is the cherry-pick channel: during phases 1-6 fixes flow from full torpedo, and a crate rename would make every one of them conflict on import lines for zero functional gain. The crate name is not wire-visible and not published, so nothing is lost by waiting.
+**RENAME-M01 — COMPLETED 2026-07-13.** Crate identity renamed: `rayfish` -> `tetron`, `ray-proto` -> `tetron-proto`. Internal only, D1 wire compat preserved. Additive config constraint CON-M03 gates against regressions. Cherry-picks from torpedo now need manual import fixups on `use rayfish::` lines.
 
-**Name: `tetron` (DECIDED 2026-07-12, availability verified by the operator).** From Tetronarce californica, the Pacific electric ray formerly classified as Torpedo californica; the genus rename mirrors this fork's own rename, and the name stays in the ray family that named rayfish. Name layering until the staged renames execute: project/repository = tetron, binary/service/paths = torpedo (until RENAME-M02), Cargo crate = rayfish (until RENAME-M01).
-
-**Trigger:** tetron becomes a standalone public project with its own name, repository, and releases. If it stays a private lean build synced from torpedo, the rename never happens.
-
-**When:** only after Phase 6 verification is green and any pending torpedo cherry-picks have landed. Expect cherry-picks after the rename to need manual import fixups; do it in a quiet window and accept that cost consciously.
-
-**How, in two separately-staged commits, because they differ in blast radius:**
-
-1. **RENAME-M01, the crate rename (internal only, preserves D1 wire compat).** The product name is `tetron` (decided, see above). In one commit: `[package] name = "tetron"` in Cargo.toml; `ray-proto` becomes `tetron-proto` (workspace member plus path dep); mechanical `use rayfish::` to `use tetron::` sweep across src/main.rs, src/cli/, benches/, tests/ (library internals use `crate::` and are untouched); the tracing filter target in `main::init_tracing` becomes `info,tetron=debug`; AGENTS.md updated. Add constraint CON-M03: a reconcile.py grep gate allowing the token `rayfish` only in the relay preset (src/config.rs, CON-001), Cargo.toml author attribution, and LICENSE/attribution docs; count elsewhere must be 0.
-2. **RENAME-M02, the product identity rename (optional, BREAKS D1).** Binary name, service unit, config/log/socket paths (`/etc/tetron`, `/var/run/tetron`, `/var/log/tetron`), and the ALPN prefixes (`torpedo/net/…` to `tetron/net/…`). This is a full RENAME-006-style host-artifact pass; it lets tetron coexist with torpedo and rayfish on one host, but changing the ALPNs severs wire compatibility with full torpedo, so it retires CON-M02 and design decision D1 in the same commit, deliberately and loudly. Do not fold this into RENAME-M01; going public does not require it on day one, and D1 (min nodes on full-torpedo networks) may be worth keeping until the standalone network effect exists.
+**RENAME-M02, the product identity rename (optional, BREAKS D1).** Not yet started. Binary name, service unit, config/log/socket paths (`/etc/tetron`, `/var/run/tetron`, `/var/log/tetron`), and the ALPN prefixes (`torpedo/net/…` to `tetron/net/…`). This is a full RENAME-006-style host-artifact pass; it lets tetron coexist with torpedo and rayfish on one host, but changing the ALPNs severs wire compatibility with full torpedo, so it retires CON-M02 and design decision D1 in the same commit, deliberately and loudly. Do not fold this into RENAME-M01; going public does not require it on day one, and D1 (min nodes on full-torpedo networks) may be worth keeping until the standalone network effect exists.
 
 **Never renamed under any outcome:** the relay preset keyword `"rayfish"` and its URLs (CON-001; that is the name of upstream's hosted relay/DNS service, not our identity) and the MPL-2.0 lineage (LICENSE, upstream author attribution in Cargo.toml). This project is and remains a derivative of rayfish; separation is identity separation, never attribution removal.

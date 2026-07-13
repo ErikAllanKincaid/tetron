@@ -1,6 +1,6 @@
 //! Microbenchmarks for the per-packet data path.
 //!
-//! These isolate the CPU/allocation work rayfish does **per forwarded packet**,
+//! These isolate the CPU/allocation work tetron does **per forwarded packet**,
 //! away from the network. The Scaleway harness (`tests/bench/`) measures
 //! end-to-end throughput, but on a shared-vCPU box single-stream TCP is
 //! loss/congestion-bound, which hides per-packet CPU savings. These benches are
@@ -20,7 +20,7 @@ use bytes::{Bytes, BytesMut};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use rayfish::packet;
+use tetron::packet;
 
 /// Datagram sizes spanning the MTU: a 64-byte control/ACK-ish packet and a
 /// full 1280-byte (TUN MTU) data packet. The copy cost scales with size; the

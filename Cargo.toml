@@ -1,5 +1,5 @@
 [package]
-name = "rayfish"
+name = "tetron"
 version = "0.1.5"
 edition = "2024"
 rust-version = "1.91"
@@ -12,10 +12,10 @@ readme = "README.md"
 keywords = ["vpn", "p2p", "mesh", "networking", "iroh"]
 categories = ["network-programming", "command-line-utilities"]
 
-# The repo root is both the `rayfish` package (binary `torpedo`) and the workspace
-# root. `ray-proto` is a member crate holding the shared IPC wire protocol.
+# The repo root is both the `tetron` package (binary `torpedo`) and the workspace
+# root. `tetron-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
-members = ["ray-proto"]
+members = ["tetron-proto"]
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add
@@ -32,7 +32,7 @@ path = "src/main.rs"
 tor = ["dep:iroh-tor-transport"]
 
 [dependencies]
-ray-proto = { path = "ray-proto", version = "0.1.5" }
+tetron-proto = { path = "tetron-proto", version = "0.1.5" }
 anyhow = "1"
 blake3 = { version = "1", features = ["serde"] }
 bytes = "1"

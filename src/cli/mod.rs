@@ -7,7 +7,7 @@
 //! `main.rs` then does `use cli::*;`, so every handler — in root or any
 //! submodule — resolves the others through the crate-root namespace. Submodules
 //! are kept private (`mod`, not `pub mod`) so only their *contents* are
-//! re-exported, avoiding a name clash with the `use rayfish::{invite, …}`
+//! re-exported, avoiding a name clash with the `use tetron::{invite, …}`
 //! aliases in the crate root.
 
 mod admin;

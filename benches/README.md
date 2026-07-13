@@ -1,6 +1,6 @@
 # Data-path microbenchmarks
 
-Criterion benchmarks that time the CPU/allocation work rayfish does **per
+Criterion benchmarks that time the CPU/allocation work tetron does **per
 forwarded packet**, in isolation from the network. They complement the Scaleway
 end-to-end harness (`tests/bench/`): on a shared-vCPU box single-stream TCP is
 loss/congestion-bound, which hides per-packet CPU savings, so these hold

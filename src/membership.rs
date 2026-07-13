@@ -11,7 +11,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, bail};
 use iroh::EndpointId;
-use ray_proto::SuggestedFirewall;
+use tetron_proto::SuggestedFirewall;
 use serde::{Deserialize, Serialize};
 
 use crate::control::DeviceCert;
@@ -54,7 +54,7 @@ pub struct Member {
 ///
 /// Defined in `ray-proto` (shared with GUI frontends); re-exported here so
 /// existing `crate::membership::GroupMode` paths keep working.
-pub use ray_proto::GroupMode;
+pub use tetron_proto::GroupMode;
 
 /// Two different identities hashed to the same virtual IP (extremely rare with 22-bit space).
 #[derive(Debug)]
@@ -1322,14 +1322,14 @@ mod tests {
         let a = canonical_group_bytes(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
         let b = canonical_group_bytes(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1345,14 +1345,14 @@ mod tests {
             canonical_group_bytes(
                 &m1,
                 &approved,
-                &ray_proto::SuggestedFirewall::default(),
+                &tetron_proto::SuggestedFirewall::default(),
                 None,
                 &BTreeMap::new(), None
             ),
             canonical_group_bytes(
                 &m2,
                 &approved,
-                &ray_proto::SuggestedFirewall::default(),
+                &tetron_proto::SuggestedFirewall::default(),
                 None,
                 &BTreeMap::new(), None
             ),
@@ -1366,7 +1366,7 @@ mod tests {
         let h1 = group_blob_hash(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1374,7 +1374,7 @@ mod tests {
         let h2 = group_blob_hash(
             &members2,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1403,7 +1403,7 @@ mod tests {
         let bytes = canonical_group_bytes(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1419,14 +1419,14 @@ mod tests {
         let bytes = canonical_group_bytes(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
         let hash = group_blob_hash(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1462,7 +1462,7 @@ mod tests {
         let bytes = canonical_group_bytes(
             &members,
             &approved,
-            &ray_proto::SuggestedFirewall::default(),
+            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(), None
         );
@@ -1489,7 +1489,7 @@ mod tests {
             })
             .unwrap();
         let approved = ApprovedList::new();
-        let sf = ray_proto::SuggestedFirewall::default();
+        let sf = tetron_proto::SuggestedFirewall::default();
         let bytes = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None);
         let hash = group_blob_hash(&members, &approved, &sf, None, &BTreeMap::new(), None);
         let data = verify_group_blob(&bytes, &hash).unwrap();
@@ -1516,7 +1516,7 @@ mod tests {
             })
             .unwrap();
         let approved = ApprovedList::new();
-        let sf = ray_proto::SuggestedFirewall::default();
+        let sf = tetron_proto::SuggestedFirewall::default();
         let bytes = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None);
         assert!(!String::from_utf8_lossy(&bytes).contains("last_seen"));
         let hash = group_blob_hash(&members, &approved, &sf, None, &BTreeMap::new(), None);
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn test_suggested_firewall_canonical_and_hashed() {
-        use ray_proto::{HostSuggestions, SuggestedFirewall};
+        use tetron_proto::{HostSuggestions, SuggestedFirewall};
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
         let mut sf = SuggestedFirewall::new();

@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Crate identity renamed to tetron (RENAME-M01)**: the library crate is now
+  `tetron` (`[package] name = "tetron"`), the helper crate is `tetron-proto`,
+  all `use rayfish::…` paths are `use tetron::…`, and the tracing filter is
+  `info,tetron=debug`. Internal only — wire format is untouched (D1 preserved,
+  mixed tetron/full-torpedo networks still work). The binary, service, and paths
+  remain `torpedo`.
 - **Hostname is fixed at join (MINIMAL-014)**: a member's hostname is set once
   when it joins (the coordinator still resolves collisions by appending
   `-1`/`-2`/…), and a member adopts that authoritative name from the signed
@@ -24,8 +30,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Phase 5 complete**: presentation and workspace cleanup. The CLI is now
   plain text (no ANSI colors or spinners; `--json` remains for machine
   output). The Android build (`ray-mobile`, `android/`) is removed, leaving
-  a single-product workspace (binary `torpedo`, library `rayfish`, helper
-  `ray-proto`). The `desktop` cargo feature is retired.
+  a single-product workspace (binary `torpedo`, library `tetron`, helper
+  `tetron-proto`). The `desktop` cargo feature is retired.
 
 ### Removed
 

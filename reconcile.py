@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M02)
+# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M02, CON-M03)
 # from spec/design_spec.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
@@ -251,6 +251,26 @@ def check_dependency_absence() -> dict:
     return {"unexpected_count": len(unexpected), "unexpected": unexpected}
 
 
+def check_crate_identity() -> dict:
+    """CON-M03: After RENAME-M01, the bare `rayfish` token must not appear in
+    .rs files outside the deliberately kept places: src/config.rs (relay preset,
+    CON-001) and src/main.rs help text documenting the relay preset keyword."""
+    leaks = 0
+    for p in list(Path("src").rglob("*.rs")) + (list(Path("benches").rglob("*.rs")) if Path("benches").is_dir() else []):
+        if str(p) == "src/config.rs":
+            continue
+        text = p.read_text()
+        if "rayfish" not in text:
+            continue
+        if str(p) == "src/main.rs":
+            for line in text.splitlines():
+                if "rayfish" in line and "presets (rayfish/n0)" not in line:
+                    leaks += line.count("rayfish")
+        else:
+            leaks += text.count("rayfish")
+    return {"leak_count": leaks}
+
+
 def check_wire_compat() -> dict:
     """CON-M02: transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob
     struct in src/membership.rs must retain its `suggested_firewall` and
@@ -288,6 +308,7 @@ if __name__ == "__main__":
         "test_subnet_identity": check_test_subnet_identity(),
         "dependency_absence": check_dependency_absence(),
         "wire_compat": check_wire_compat(),
+        "crate_identity": check_crate_identity(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -305,5 +326,6 @@ if __name__ == "__main__":
         and ctx["dependency_absence"]["unexpected_count"] == 0
         and ctx["wire_compat"]["mesh_version"] == 1
         and ctx["wire_compat"]["blob_fields_present"]
+        and ctx["crate_identity"]["leak_count"] == 0
     )
     sys.exit(0 if ok else 1)

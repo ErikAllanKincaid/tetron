@@ -4,7 +4,7 @@
 //! parsing) without going through the binary. No semver
 //! guarantees on any of these modules; depend on the `ray` binary, not this
 //! crate. `src/main.rs` is a thin clap CLI + IPC client built on top, importing
-//! these modules via `use rayfish::…`.
+//! these modules via `use tetron::…`.
 #![doc(hidden)]
 
 pub const APP_NAME: &str = "torpedo";

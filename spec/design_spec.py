@@ -1801,3 +1801,19 @@ class WireCompatWithFullTorpedo(Constraint):
     """
     constraint_id = "CON-M02"
     enforcement_logic = "{{ wire_compat.mesh_version == 1 and wire_compat.blob_fields_present }}"
+
+
+class CrateIdentityGate(Constraint):
+    """CONSTRAINT-ID: CON-M03
+
+    After RENAME-M01, the token `rayfish` is no longer the internal crate name
+    and must not appear in src/**/*.rs (or benches/ or tests/) EXCEPT in the
+    deliberately kept places: the relay preset keyword and its comments in
+    src/config.rs (CON-001/SUBNET-001), the Cargo.toml author attribution
+    `dario@rayfish.xyz`, and LICENSE. This is a curated-allowed-tokens gate, not
+    a bare `rayfish` grep, so it never trips on the KEEP-ON-PURPOSE references.
+
+    ENFORCEMENT (reconcile.py): crate_identity.leak_count equals 0.
+    """
+    constraint_id = "CON-M03"
+    enforcement_logic = "{{ crate_identity.leak_count == 0 }}"

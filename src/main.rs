@@ -1,7 +1,7 @@
-// The daemon's modules live in the `rayfish` library crate (`src/lib.rs`) so
+// The daemon's modules live in the `tetron` library crate (`src/lib.rs`) so
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
-use rayfish::{
+use tetron::{
     config, daemon, invite, ipc, logdir, membership, shutdown, stats,
 };
 
@@ -243,7 +243,7 @@ fn init_tracing(to_file: bool) -> LogGuard {
     // file), then keep the console quieter with a per-layer `info` filter below.
     // `RUST_LOG` overrides both, so an operator can still dial either up or down.
     let global_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,rayfish=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tetron=debug"));
     let console_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
