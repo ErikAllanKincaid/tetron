@@ -2,9 +2,10 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-012) from spec/design_spec.py.
-# It does NOT check the Requirement classes (SUBNET-*/RENAME-*); those are
-# structural/design requirements verified by reading the diff and code directly.
+# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M02)
+# from spec/design_spec.py. It does NOT check the Requirement classes
+# (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
+# verified by reading the diff and code directly.
 import json
 import re
 import subprocess
@@ -210,6 +211,68 @@ def check_test_subnet_identity() -> dict:
     return {"unexpected_count": n}
 
 
+def check_dependency_absence() -> dict:
+    """CON-M01: Cargo.toml's [dependencies] section must not name any dep owned
+    by a removed subsystem. iroh, iroh-blobs, and iroh-tor-transport are exempt
+    (iroh-tor-transport is optional behind the `tor` feature, per MINIMAL-008)."""
+    banned = [
+        "reqwest",
+        "rustls",
+        "self-replace",
+        "sha2",
+        "semver",
+        "russh",
+        "pty-process",
+        "uzers",
+        "zbus",
+        "inotify",
+        "iroh-mdns-address-lookup",
+        "indicatif",
+        "crossterm",
+        "unicode-width",
+        "humansize",
+        "mime_guess",
+    ]
+    p = Path("Cargo.toml")
+    text = p.read_text()
+    # Extract everything under [dependencies] — stop at the next section header.
+    # (Takes the first [dependencies] block; works for Cargo.toml with one.)
+    deps_section = text.split("[dependencies]")[1]
+    deps_section = deps_section.split("\n[")[0]
+    unexpected = []
+    for name in banned:
+        if re.search(rf"(?m)^{name}\s*=", deps_section):
+            unexpected.append(name)
+    # opentelemetry* (the base crate and all its sub-crates)
+    for m in re.finditer(r"(?m)^opentelemetry[\w-]*\s*=", deps_section):
+        name = m.group().split("=")[0].strip()
+        if name not in unexpected:
+            unexpected.append(name)
+    return {"unexpected_count": len(unexpected), "unexpected": unexpected}
+
+
+def check_wire_compat() -> dict:
+    """CON-M02: transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob
+    struct in src/membership.rs must retain its `suggested_firewall` and
+    `reusable_keys` fields (ignored/preserved, never enforced or minted)."""
+    transport = Path("src/transport.rs").read_text()
+    membership = Path("src/membership.rs").read_text()
+    mesh_version = None
+    for line in transport.splitlines():
+        # Matches `MESH_PROTOCOL_VERSION: u32 = 1` or `MESH_PROTOCOL_VERSION = 1`
+        m = re.search(r"MESH_PROTOCOL_VERSION[^;]*?=\s*(\d+)", line)
+        if m:
+            mesh_version = int(m.group(1))
+            break
+    blob_fields = (
+        "suggested_firewall" in membership and "reusable_keys" in membership
+    )
+    return {
+        "mesh_version": mesh_version,
+        "blob_fields_present": blob_fields,
+    }
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -223,6 +286,8 @@ if __name__ == "__main__":
         "cli_reference_identity": check_cli_reference_identity(),
         "test_harness_identity": check_test_harness_identity(),
         "test_subnet_identity": check_test_subnet_identity(),
+        "dependency_absence": check_dependency_absence(),
+        "wire_compat": check_wire_compat(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -237,5 +302,8 @@ if __name__ == "__main__":
         and ctx["cli_reference_identity"]["unexpected_count"] == 0
         and ctx["test_harness_identity"]["unexpected_count"] == 0
         and ctx["test_subnet_identity"]["unexpected_count"] == 0
+        and ctx["dependency_absence"]["unexpected_count"] == 0
+        and ctx["wire_compat"]["mesh_version"] == 1
+        and ctx["wire_compat"]["blob_fields_present"]
     )
     sys.exit(0 if ok else 1)
