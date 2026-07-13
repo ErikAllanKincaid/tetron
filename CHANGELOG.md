@@ -19,6 +19,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `torpedo requests` → `torpedo accept`/`deny`. This is now the only way onto a
   tetron-coordinated network.
 
+### Changed
+
+- **Phase 5 complete**: presentation and workspace cleanup. The CLI is now
+  plain text (no ANSI colors or spinners; `--json` remains for machine
+  output). The Android build (`ray-mobile`, `android/`) is removed, leaving
+  a single-product workspace (binary `torpedo`, library `rayfish`, helper
+  `ray-proto`). The `desktop` cargo feature is retired.
+
 ### Removed
 
 - **Workspace trimmed (MINIMAL-016)**: removed `ray-mobile` workspace member and
