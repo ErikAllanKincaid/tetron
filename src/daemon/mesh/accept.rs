@@ -48,8 +48,6 @@ pub(crate) struct CoordinatorAcceptState {
     pub(crate) disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     pub(crate) token: CancellationToken,
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
-    /// Shared with this network's [`NetworkHandle`]; see its `invite_lock`.
-    pub(crate) invite_lock: Arc<tokio::sync::Mutex<()>>,
     /// Shared with the router; lets the control reader resolve `torpedo ping` Pongs.
     pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 }
@@ -79,7 +77,6 @@ impl CoordinatorAcceptState {
         let network = self.network_name.clone();
         let state = self.state.clone();
         let dht_notify = self.dht_notify.clone();
-        let invite_lock = self.invite_lock.clone();
         let pending_pongs = self.pending_pongs.clone();
         let ctx = self.ctx.clone();
         tokio::spawn(async move {
@@ -93,7 +90,6 @@ impl CoordinatorAcceptState {
                 ctx.clone(),
                 dht_notify,
                 token.clone(),
-                invite_lock,
                 pending_pongs,
             );
             forward::spawn_peer_reader(
@@ -268,10 +264,12 @@ impl CoordinatorAcceptState {
     }
 
     /// Admit (or reject) an unknown peer that presented an invite `secret`.
-    /// Tries the local single-use ledger first (burns on success; un-burns if
-    /// admission is then denied by a collision, and gossips `InviteUsed` to the
-    /// other coordinators on success), then the verified blob's reusable keys
-    /// (no burn). Denies if neither matches.
+    /// tetron does not mint single-use invites (MINIMAL-013), so the only invite
+    /// a tetron coordinator can honor is a reusable key riding the verified,
+    /// network-key-signed blob (redeemable by any network-key holder, no burn).
+    /// A single-use invite minted by a full-torpedo coordinator is not in our
+    /// (non-existent) ledger and is denied here — that joiner must reach its
+    /// full-torpedo coordinator to redeem it.
     #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
         &self,
@@ -283,91 +281,34 @@ impl CoordinatorAcceptState {
         device_cert: Option<control::DeviceCert>,
         secret: Vec<u8>,
     ) {
-        let redeemed = {
-            let _guard = self.invite_lock.lock().await;
-            match crate::invite::InviteStore::load(&self.network_name) {
-                Ok(mut store) => store.redeem(&secret, remote_id),
-                Err(e) => Err(e),
-            }
+        let reusable_id = {
+            let s = self.state.read().unwrap();
+            crate::membership::validate_reusable_key(&s.reusable_keys, &secret, now_secs())
+                .map(|k| k.id.clone())
         };
-        match redeemed {
-            Ok(invite_hostname) => {
-                tracing::info!(peer = %remote_id.fmt_short(), "invite redeemed");
-                // A hostname bound to the invite is authoritative: it overrides
-                // the joiner's `--hostname` claim and is rejected on collision.
-                // A free-chosen name (no binding) keeps collision-rename.
-                let authoritative = invite_hostname.is_some();
-                let assigned = invite_hostname.or(hostname);
-                let admitted = self
-                    .admit_peer(
-                        conn,
-                        send,
-                        remote_id,
-                        peer_ip,
-                        assigned,
-                        device_cert,
-                        false,
-                        authoritative,
-                    )
-                    .await;
-                // Admission can still be denied (hostname/IP collision) after
-                // the secret was burned; un-burn so the holder can retry.
-                if !admitted {
-                    let _guard = self.invite_lock.lock().await;
-                    if let Ok(mut store) = crate::invite::InviteStore::load(&self.network_name) {
-                        let _ = store.restore(&secret);
-                    }
-                } else {
-                    // Tell the other coordinators this single-use invite is
-                    // spent so their ledgers burn it too. Hash only, no secret.
-                    let secret_hash = crate::invite::hash_secret(&secret);
-                    let members = self.state.read().unwrap().roster();
-                    gossip_to_coordinators(
-                        &self.ctx.peers,
-                        &self.network_name,
-                        &members,
-                        self.ctx.identity.local_identity(),
-                        &ControlMsg::InviteUsed {
-                            secret_hash: secret_hash.into_bytes(),
-                        },
-                    )
-                    .await;
-                }
-            }
-            Err(single_use_err) => {
-                // Not a single-use invite — it may be a reusable key, which
-                // lives in the signed blob and is redeemable by any network-key
-                // holder (no burn). The blob is the verified source of truth.
-                let reusable_id = {
-                    let s = self.state.read().unwrap();
-                    crate::membership::validate_reusable_key(&s.reusable_keys, &secret, now_secs())
-                        .map(|k| k.id.clone())
-                };
-                if let Some(key_id) = reusable_id {
-                    tracing::info!(
-                        peer = %remote_id.fmt_short(),
-                        key_id = %key_id,
-                        "reusable key redeemed"
-                    );
-                    // Reusable joins are non-authoritative: joiner-chosen name,
-                    // collision → suffix.
-                    self.admit_peer(
-                        conn,
-                        send,
-                        remote_id,
-                        peer_ip,
-                        hostname,
-                        device_cert,
-                        false,
-                        false,
-                    )
-                    .await;
-                } else {
-                    tracing::warn!(peer = %remote_id.fmt_short(), error = %single_use_err, "invite rejected");
-                    self.deny(&conn, send, format!("invite rejected: {single_use_err}"))
-                        .await;
-                }
-            }
+        if let Some(key_id) = reusable_id {
+            tracing::info!(
+                peer = %remote_id.fmt_short(),
+                key_id = %key_id,
+                "reusable key redeemed"
+            );
+            // Reusable joins are non-authoritative: joiner-chosen name,
+            // collision → suffix.
+            self.admit_peer(
+                conn,
+                send,
+                remote_id,
+                peer_ip,
+                hostname,
+                device_cert,
+                false,
+                false,
+            )
+            .await;
+        } else {
+            tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected (no matching reusable key)");
+            self.deny(&conn, send, "invite rejected".to_string())
+                .await;
         }
     }
 
@@ -551,7 +492,6 @@ impl CoordinatorAcceptState {
             self.ctx.clone(),
             self.dht_notify.clone(),
             self.token.clone(),
-            self.invite_lock.clone(),
             self.pending_pongs.clone(),
         );
         forward::spawn_peer_reader(

@@ -195,20 +195,21 @@ wait_roster(){
 
 
 # ---------------------------------------------------------------------------
-# Invite minting (coordinator side)
+# Admission (approval-only — tetron mints no invites, MINIMAL-013)
 # ---------------------------------------------------------------------------
 
-# mint_invite <coord-ip> <net> <hostname> : mint a single-use, hostname-bound
-# invite and echo its join code.
-mint_invite(){
-  on "$1" "torpedo invite $2 create --hostname $3" | strip \
-    | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
-}
-
-# mint_reusable <coord-ip> <net> : mint a reusable (multi-use) key, echo the code.
-mint_reusable(){
-  on "$1" "torpedo invite $2 create --reusable" | strip \
-    | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
+# join_approve <joiner-ip> <coord-ip> <net> <room> <hostname> : the joiner dials
+# the closed network with the bare room id (which queues it for approval), then
+# the coordinator (or any co-coordinator) waits for the request and accepts it.
+# This is the only admission path in tetron. Returns non-zero if the request
+# never appears.
+join_approve(){
+  local joiner="$1" coord="$2" net="$3" room="$4" host="$5"
+  on "$joiner" "torpedo join $room --hostname $host" 2>&1 | strip | sed "s/^/   $host| /"
+  local rid=""
+  retry_until 60 "rid=\"\$(request_id '$coord' '$net' '$host')\"; [[ -n \"\$rid\" ]]" || return 1
+  rid="$(request_id "$coord" "$net" "$host")"
+  on "$coord" "torpedo accept $net $rid" 2>&1 | strip | sed "s/^/   acc| /"
 }
 
 # request_id <coord-ip> <net> <hostname> : the short id of a queued join request

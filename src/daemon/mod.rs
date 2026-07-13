@@ -293,10 +293,6 @@ pub struct NetworkHandle {
     cancel: CancellationToken,
     /// Background tasks owned by this network, awaited on teardown.
     tasks: Vec<JoinHandle<()>>,
-    /// Serializes invite-ledger reads/writes (mint, redeem, revoke) so concurrent
-    /// joins can't double-burn a single-use invite (TOCTOU on the toml file).
-    /// Shared with this network's [`CoordinatorAcceptState`].
-    invite_lock: Arc<tokio::sync::Mutex<()>>,
     /// Disconnect channel for this network's accept handlers, kept so a member
     /// promoted to coordinator (via `AdminGrant`) can re-register a
     /// [`CoordinatorAcceptState`] on the live channel without rebuilding it.
@@ -532,7 +528,6 @@ impl MeshManager {
         &self,
         network: &str,
         state: SharedNetworkState,
-        invite_lock: Arc<tokio::sync::Mutex<()>>,
         dht_notify: Option<Arc<Notify>>,
         network_key: EndpointId,
         disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
@@ -547,7 +542,6 @@ impl MeshManager {
                 disconnect_tx,
                 token: cancel,
                 dht_notify,
-                invite_lock,
                 pending_pongs: self.protocol_router.pending_pongs.clone(),
             })),
         );
@@ -576,7 +570,6 @@ impl MeshManager {
             }
             (
                 h.state.clone(),
-                h.invite_lock.clone(),
                 h.dht_notify.clone(),
                 h.network_key,
                 h.disconnect_tx.clone(),
@@ -584,7 +577,7 @@ impl MeshManager {
             )
         }; // DashMap ref dropped before the registration below.
         self.register_coordinator_handler(
-            network, parts.0, parts.1, parts.2, parts.3, parts.4, parts.5,
+            network, parts.0, parts.1, parts.2, parts.3, parts.4,
         );
         self.refresh_alpns().await;
         tracing::info!(network, "promoted to coordinator accept handler");
@@ -724,17 +717,6 @@ impl MeshManager {
                 self.set_hostname(&network, &hostname).await
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
-            IpcMessage::InviteCreate {
-                network,
-                expires_secs,
-                hostname,
-                reusable,
-            } => {
-                self.invite_create(&network, expires_secs, hostname, reusable)
-                    .await
-            }
-            IpcMessage::InviteList { network } => self.invite_list(&network).await,
-            IpcMessage::InviteRevoke { network, id } => self.invite_revoke(&network, &id).await,
             IpcMessage::Requests { network } => self.list_requests(&network),
             IpcMessage::AcceptRequest { network, id } => self.accept_request(&network, &id).await,
             IpcMessage::DenyRequest { network, id } => self.deny_request(&network, &id),
@@ -888,16 +870,16 @@ impl MeshManager {
     }
 
     // -----------------------------------------------------------------------
-    // Invite + join-request handlers (coordinator only)
+    // Join-request handlers (coordinator only)
     // -----------------------------------------------------------------------
 
-    /// Look up an active network we coordinate, returning its public key and
-    /// invite lock, or an error response if it's absent or we're only a member.
+    /// Confirm we coordinate `network`, returning its public key, or an error
+    /// response if it's absent or we're only a member.
     #[allow(clippy::result_large_err)]
     pub(crate) fn coordinator_handle(
         &self,
         network: &str,
-    ) -> std::result::Result<(EndpointId, Arc<tokio::sync::Mutex<()>>), IpcMessage> {
+    ) -> std::result::Result<EndpointId, IpcMessage> {
         let Some(handle) = self.networks.get(network) else {
             return Err(IpcMessage::Error {
                 message: format!("network '{network}' not active"),
@@ -905,10 +887,10 @@ impl MeshManager {
         };
         if !handle.role.is_coordinator() {
             return Err(IpcMessage::Error {
-                message: format!("only the coordinator of '{network}' can manage invites/requests"),
+                message: format!("only the coordinator of '{network}' can manage join requests"),
             });
         }
-        Ok((handle.network_key, handle.invite_lock.clone()))
+        Ok(handle.network_key)
     }
 }
 
@@ -1010,7 +992,6 @@ mod accept_handler_tests {
             disconnect_tx,
             token: CancellationToken::new(),
             dht_notify: None,
-            invite_lock: Arc::new(tokio::sync::Mutex::new(())),
             pending_pongs: Arc::new(DashMap::new()),
         }))
     }
@@ -1185,42 +1166,6 @@ mod coordinator_dial_order_tests {
         assert!(!super::admin_grant_key_valid(forged.to_bytes(), net_pubkey));
     }
 
-    #[test]
-    fn gossip_targets_are_coordinator_peers_only() {
-        let (a, b, c) = (test_id(1), test_id(2), test_id(3));
-        let mk = |id, coord| Member {
-            identity: id,
-            ip: derive_ip(&id, default_subnet()),
-            is_coordinator: coord,
-            hostname: None,
-            user_identity: None,
-            device_cert: None,
-            collision_index: 0,
-            last_seen: None,
-        };
-        let members = vec![mk(a, true), mk(b, false), mk(c, true)];
-        let me = a;
-        // gossip to other coordinators only: c (not b, not me).
-        assert_eq!(super::gossip_targets(&members, me), vec![c]);
-    }
-
-    #[test]
-    fn gossip_targets_empty_when_sole_coordinator() {
-        let me = test_id(1);
-        let mk = |id, coord| Member {
-            identity: id,
-            ip: derive_ip(&id, default_subnet()),
-            is_coordinator: coord,
-            hostname: None,
-            user_identity: None,
-            device_cert: None,
-            collision_index: 0,
-            last_seen: None,
-        };
-        // Only members are us (coordinator) and a plain member: nobody to gossip to.
-        let members = vec![mk(me, true), mk(test_id(2), false)];
-        assert!(super::gossip_targets(&members, me).is_empty());
-    }
 }
 
 #[cfg(test)]

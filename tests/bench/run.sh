@@ -2,8 +2,8 @@
 # Rayfish throughput/latency benchmark: direct (public IP) vs torpedo (VPN tunnel).
 #
 # Topology:
-#   srv-a  coordinator of an OPEN network "bench"
-#   srv-b  joins it with the room id (open net = no invite needed)
+#   srv-a  coordinator of a closed network "bench"
+#   srv-b  joins it by live approval (tetron is approval-only)
 #
 # For both directions we measure, over the public IP (DIRECT) and over the
 # torpedo 10.88.x.x TUN address (TORPEDO):
@@ -44,9 +44,9 @@ done
 wait_daemons "$A" "$B"
 
 # ---------------------------------------------------------------------------
-step "2. create OPEN network on srv-a, srv-b joins"
+step "2. create closed network on srv-a, srv-b joins by approval"
 NET=bench
-CREATE="$(on "$A" "torpedo create --open --name $NET --hostname srv-a" | strip)"
+CREATE="$(on "$A" "torpedo create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   | /'
 ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
 if [[ -z "$ROOM" ]]; then
@@ -55,7 +55,8 @@ if [[ -z "$ROOM" ]]; then
 fi
 [[ -n "$ROOM" ]] && pass "network '$NET' created (room ${ROOM:0:12}…)" || { fail "no room id"; exit 1; }
 
-on "$B" "torpedo join $ROOM --name srv-b --hostname srv-b" 2>&1 | strip | sed 's/^/   b| /'
+# tetron is approval-only: srv-b dials the room id (queues) and srv-a accepts.
+join_approve "$B" "$A" "$NET" "$ROOM" srv-b || { fail "srv-b was not admitted"; exit 1; }
 
 # ---------------------------------------------------------------------------
 step "3. wait for roster convergence"

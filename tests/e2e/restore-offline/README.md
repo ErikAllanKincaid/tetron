@@ -10,8 +10,8 @@ Background: PR #60 / issue #59.
 
 ```
 srv-a  coordinator of a closed network `priv`
-srv-b  member (admitted with an invite)   <- restarted mid-test
-srv-c  member (admitted with an invite)   <- stays up, the peer srv-b must find
+srv-b  member (admitted by live approval)  <- restarted mid-test
+srv-c  member (admitted by live approval)  <- stays up, the peer srv-b must find
 ```
 
 The third host is what makes the core claim testable: with the coordinator
@@ -31,8 +31,8 @@ never lost). One member was observed stuck for ~13 hours.
 
 ## What it proves
 
-1. `srv-a` creates a closed network; `srv-b` and `srv-c` join with invites and
-   the three full-mesh.
+1. `srv-a` creates a closed network; `srv-b` and `srv-c` join by live approval
+   (`requests`/`accept`) and the three full-mesh.
 2. `srv-a`'s daemon is stopped entirely (`systemctl stop`, not `torpedo down` standby),
    so the coordinator endpoint is genuinely unreachable; `srv-b` and `srv-c` see it
    go offline but stay linked to each other.

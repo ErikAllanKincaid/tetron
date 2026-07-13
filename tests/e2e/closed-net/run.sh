@@ -4,16 +4,16 @@
 # Topology:
 #   srv-a  coordinator of a closed network `priv`
 #   srv-b  member (admitted by live approval, later promoted to co-coordinator)
-#   srv-c  member (denied once, later admitted by a reusable key from srv-b)
+#   srv-c  member (denied once, later admitted by live approval at co-coordinator srv-b)
 #
 # Exercises the command surface the other scenarios don't touch:
-#   - live approval on a closed net with NO invite (`requests` / `accept` / `deny`)
+#   - live approval on a closed net (`requests` / `accept` / `deny`) — tetron is
+#     approval-only (MINIMAL-013), there are no invites
 #   - co-coordinator grant (`admin add` / `admin list`) + gatekeeper resilience:
-#     a fresh join is admitted by the co-coordinator while the original
-#     coordinator is offline, using a reusable key (`invite --reusable`)
+#     a fresh join is admitted by the co-coordinator (via live approval) while
+#     the original coordinator is offline
 #   - hostname change propagation (`torpedo hostname`) via the roster
 #   - graceful leave + nuke (`torpedo leave` / `torpedo nuke`)
-#   - `torpedo apply` smoke (`--example` / `--dry-run`, no mutation)
 #
 # Reads tests/e2e/closed-net/.servers (written by provision.sh). Does NOT modify
 # infra. Re-runnable (resets torpedo state each run unless KEEP_STATE=1).
@@ -97,12 +97,17 @@ sleep 8
 
 # ---------------------------------------------------------------------------
 step "5. gatekeeper resilience — co-coordinator admits while srv-a is offline"
-KEY="$(mint_reusable "$B" "$NET")"   # srv-b (now a co-coordinator) mints a reusable key
-[[ -n "$KEY" ]] && pass "co-coordinator minted a reusable key (${KEY:0:12}…)" || fail "co-coordinator could not mint a key"
 on "$A" 'torpedo down' >/dev/null 2>&1 || true   # original coordinator goes offline
 sleep 3
-# srv-c joins unattended; only srv-b is online to admit it.
-on "$C" "torpedo join $KEY --hostname srv-c" 2>&1 | strip | sed 's/^/   c| /'
+# srv-c joins with the bare room id; it queues for approval. Only srv-b (the
+# co-coordinator promoted in step 4) is online to admit it — this proves any
+# network-key holder can gatekeep, so admission survives the original
+# coordinator being offline.
+if join_approve "$C" "$B" "$NET" "$ROOM" srv-c; then
+  pass "co-coordinator srv-b admitted srv-c while srv-a was offline"
+else
+  fail "srv-c was never admitted by co-coordinator srv-b"
+fi
 wait_roster "$B" srv-c
 on "$A" 'torpedo up' >/dev/null 2>&1 || true     # bring the coordinator back
 

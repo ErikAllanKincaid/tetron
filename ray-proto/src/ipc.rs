@@ -93,28 +93,6 @@ pub enum IpcMessage {
     SetOperator {
         uid: u32,
     },
-    /// Mint an invite for a closed network (coordinator / network-key holder only).
-    InviteCreate {
-        network: String,
-        expires_secs: u64,
-        /// Hostname the coordinator assigns authoritatively on redemption
-        /// (single-use only; rejected together with `reusable`).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hostname: Option<String>,
-        /// Mint a reusable (multi-use, expiring) key that rides the signed blob,
-        /// so any network-key holder can admit. Hostname is not authoritative.
-        #[serde(default)]
-        reusable: bool,
-    },
-    /// List invites for a network (coordinator-only).
-    InviteList {
-        network: String,
-    },
-    /// Revoke an unused invite by id (coordinator-only).
-    InviteRevoke {
-        network: String,
-        id: String,
-    },
     /// List peers awaiting live approval on a closed network (coordinator-only).
     Requests {
         network: String,
@@ -187,16 +165,6 @@ pub enum IpcMessage {
         #[serde(default)]
         pending_networks: Vec<String>,
     },
-    /// An invite was minted; `code` is the shareable invite string.
-    InviteCreated {
-        code: String,
-        id: String,
-        expires_secs: u64,
-    },
-    /// The list of invites for a network.
-    InviteListResponse {
-        invites: Vec<InviteInfo>,
-    },
     /// The list of peers awaiting live approval.
     PendingRequests {
         requests: Vec<PendingRequestInfo>,
@@ -214,22 +182,6 @@ pub struct AdminInfo {
     pub short_id: String,
     /// `true` if this is the local node.
     pub self_node: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InviteInfo {
-    pub id: String,
-    /// One of `pending`, `redeemed`, `revoked`, `expired`.
-    pub status: String,
-    pub created: u64,
-    pub expires: u64,
-    pub redeemer: Option<String>,
-    /// Hostname assigned authoritatively on redemption (single-use invites only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hostname: Option<String>,
-    /// True for a reusable (multi-use) key; false for a single-use invite.
-    #[serde(default)]
-    pub reusable: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -427,36 +379,6 @@ mod tests {
     }
 
     #[test]
-    fn skip_serializing_if_field_roundtrips_through_named_codec() {
-        // Regression: with positional-array (`to_vec`) serialization, a struct
-        // whose field is skipped via `skip_serializing_if` (here `hostname:
-        // None`) followed by a later field (`reusable`) misaligns on decode. The
-        // codec must serialize structs as named maps so `skip_serializing_if` is
-        // safe over the full encode/decode path.
-        let msg = IpcMessage::InviteCreate {
-            network: "net1".to_string(),
-            expires_secs: 1000,
-            hostname: None,
-            reusable: true,
-        };
-
-        let mut codec = MsgpackCodec::<IpcMessage>::new();
-        let mut buf = BytesMut::new();
-        codec.encode(msg, &mut buf).unwrap();
-
-        let decoded = codec.decode(&mut buf).unwrap().expect("frame not complete");
-        match decoded {
-            IpcMessage::InviteCreate {
-                network, reusable, ..
-            } => {
-                assert_eq!(network, "net1");
-                assert!(reusable);
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_response_roundtrip() {
         let key = iroh::SecretKey::generate().public();
         let resp = IpcMessage::Created {
@@ -483,57 +405,6 @@ mod tests {
         }
     }
 
-
-    #[test]
-    fn test_invite_create_roundtrip() {
-        let req = IpcMessage::InviteCreate {
-            network: "gaming".to_string(),
-            expires_secs: 604_800,
-            hostname: None,
-            reusable: true,
-        };
-        // The IPC codec uses `to_vec_named`; positional encoding can't survive a
-        // `skip_serializing_if` field followed by another field.
-        let bytes = rmp_serde::to_vec_named(&req).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::InviteCreate {
-                network,
-                expires_secs,
-                hostname: _,
-                reusable,
-            } => {
-                assert_eq!(network, "gaming");
-                assert_eq!(expires_secs, 604_800);
-                assert!(reusable);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_invite_list_response_roundtrip() {
-        let resp = IpcMessage::InviteListResponse {
-            invites: vec![InviteInfo {
-                id: "ab3f9c01".to_string(),
-                status: "pending".to_string(),
-                created: 1000,
-                expires: 2000,
-                redeemer: None,
-                hostname: None,
-                reusable: false,
-            }],
-        };
-        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
-        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            IpcMessage::InviteListResponse { invites } => {
-                assert_eq!(invites.len(), 1);
-                assert_eq!(invites[0].status, "pending");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
 
     #[test]
     fn test_join_with_invite_roundtrip() {

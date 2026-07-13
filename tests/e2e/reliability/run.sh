@@ -2,10 +2,10 @@
 # Rayfish reliability (packet-loss) end-to-end test.
 #
 # Topology:
-#   srv-a  coordinator of an OPEN network "reli"
-#   srv-b, srv-c, srv-d  join with the room id (open net = no invite needed)
+#   srv-a  coordinator of a closed network "reli"
+#   srv-b, srv-c, srv-d  join by live approval (tetron is approval-only)
 #
-# Open networks form a full mesh: once everyone has joined, every pair holds a
+# The network forms a full mesh: once everyone has joined, every pair holds a
 # direct QUIC connection. We then probe every unordered pair in BOTH directions,
 # over two paths:
 #   - direct   : the host's PUBLIC IP (raw Scaleway link, the baseline)
@@ -115,20 +115,22 @@ done
 wait_daemons "${PUBS[@]}"
 
 # ---------------------------------------------------------------------------
-step "1. srv-a creates OPEN network '$NET'; srv-b/c/d join"
+step "1. srv-a creates closed network '$NET'; srv-b/c/d join by approval"
 A_PUB="${PUBS[0]}"
-CREATE="$(on "$A_PUB" "torpedo create --open --name $NET --hostname srv-a" | strip)"
+CREATE="$(on "$A_PUB" "torpedo create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   a| /'
 ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
 [[ -n "$ROOM" ]] || ROOM="$(on "$A_PUB" 'torpedo status' | strip | sed -n 's/.*\([A-Za-z0-9]\{40,\}\).*/\1/p' | head -1)"
 [[ -n "$ROOM" ]] && pass "network '$NET' created (room ${ROOM:0:12}…)" || { fail "no room id"; summary; }
 
-# Join without --name so the joiner keeps the coordinator's network name
-# ($NET); --hostname sets the roster/DNS identity. (--name would locally rename
-# the network and break `my_ip4 <ip> $NET` lookups below.)
+# tetron is approval-only: each joiner dials the room id (which queues it) and
+# srv-a accepts. Join without --name so the joiner keeps the coordinator's
+# network name ($NET); --hostname sets the roster identity. (--name would locally
+# rename the network and break `my_ip4 <ip> $NET` lookups below.)
 for i in 1 2 3; do
   L="${HOSTS[$i]}"
-  on "${PUBS[$i]}" "torpedo join $ROOM --hostname $L" 2>&1 | strip | sed "s/^/   ${L#srv-}| /"
+  join_approve "${PUBS[$i]}" "$A_PUB" "$NET" "$ROOM" "$L" \
+    || { fail "$L was not admitted by approval"; summary; }
 done
 
 # ---------------------------------------------------------------------------

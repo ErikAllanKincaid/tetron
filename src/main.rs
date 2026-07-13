@@ -52,14 +52,7 @@ pub(crate) enum Command {
     /// Create a new network and wait for peers
     #[command(visible_alias = "new")]
     Create {
-        /// Make the network public: anyone with the room id can join directly.
-        /// Without this flag the network is closed (gated by approval/invites).
-        #[arg(long, conflicts_with = "closed")]
-        open: bool,
-        /// Explicitly create a closed (gated) network. This is the default.
-        #[arg(long)]
-        closed: bool,
-        /// Network name used in DNS (e.g. "gaming" → alice.gaming.ray). Random if not set
+        /// Network name (a random three-word name is generated if not set)
         #[arg(long)]
         name: Option<String>,
         /// Your hostname within the network (e.g. "alice" → alice.gaming.ray). Random if not set
@@ -148,13 +141,6 @@ pub(crate) enum Command {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
-    /// Mint and manage one-time invite codes for a network (coordinator only)
-    Invite {
-        /// Network name to issue/manage invites for
-        network: String,
-        #[command(subcommand)]
-        action: Option<InviteAction>,
-    },
     /// List peers awaiting approval on a closed network (coordinator only)
     Requests {
         /// Network name
@@ -203,41 +189,6 @@ pub(crate) enum Command {
     /// Print the torpedo version
     #[command(visible_alias = "ver")]
     Version,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum InviteAction {
-    /// Mint a new invite code (default action). Single-use by default; `--reusable`
-    /// mints a multi-use key for unattended fleets.
-    Create {
-        /// How long the invite stays valid, e.g. 24h, 7d, 30m (default 7d;
-        /// 30d for `--reusable`).
-        #[arg(long)]
-        expires: Option<String>,
-        /// Hostname the coordinator assigns authoritatively on redemption
-        /// (single-use only). The holder joins with no `--hostname`.
-        #[arg(long, conflicts_with = "reusable")]
-        hostname: Option<String>,
-        /// Mint a reusable (multi-use, expiring) key that rides the signed blob,
-        /// so any network-key holder can admit. Ideal for `torpedo join <key>
-        /// --hostname <h>` in deploy scripts. Revoke with
-        /// `torpedo invite <net> revoke <id>`.
-        #[arg(long)]
-        reusable: bool,
-        /// Also render the invite as a scannable QR code (off by default — it
-        /// takes up a lot of terminal space).
-        #[arg(long)]
-        qr: bool,
-    },
-    /// List issued invites and their status
-    #[command(visible_alias = "ls")]
-    List,
-    /// Revoke an unused invite by id
-    #[command(visible_alias = "rm")]
-    Revoke {
-        /// Invite id (from `torpedo invite <network> list`)
-        id: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -455,20 +406,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Leave { name } => ipc_leave(&name).await,
         Command::Create {
-            open,
-            closed: _,
             name,
             hostname,
             subnet,
             tor,
-        } => {
-            let mode = if open {
-                GroupMode::Open
-            } else {
-                GroupMode::Restricted
-            };
-            ipc_create(mode, name, hostname, subnet, tor).await
-        }
+        } => ipc_create(GroupMode::Restricted, name, hostname, subnet, tor).await,
         Command::Join {
             network_key,
             name,
@@ -498,7 +440,6 @@ async fn main() -> Result<()> {
             clap_complete::generate(shell, &mut Cli::command(), "torpedo", &mut std::io::stdout());
             Ok(())
         }
-        Command::Invite { network, action } => ipc_invite(&network, action).await,
         Command::Requests { network } => ipc_requests(&network).await,
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,

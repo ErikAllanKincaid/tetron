@@ -68,10 +68,6 @@ pub(crate) async fn join_mesh_shared(
     // here after persisting an `AdminGrant` key, so the daemon loop can swap in
     // the coordinator accept handler (see `MeshManager::promote_to_coordinator`).
     promote_tx: mpsc::Sender<String>,
-    // Guards the single-use invite ledger. Shared with the NetworkHandle so the
-    // control listener's `InviteShare`/`InviteUsed` handling (a co-coordinator
-    // learning of invites it didn't mint) is serialized with mint/redeem.
-    invite_lock: Arc<tokio::sync::Mutex<()>>,
     // Shared with the router; lets the member control reader resolve `torpedo ping`
     // Pongs back to the waiting handler.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
@@ -199,7 +195,6 @@ pub(crate) async fn join_mesh_shared(
         my_identity,
         net_pubkey,
         promote_tx.clone(),
-        invite_lock.clone(),
         reconverge_notify.clone(),
         pending_pongs.clone(),
     );
@@ -558,8 +553,8 @@ fn spawn_reconverge_worker(
 
 /// Per-connection control listener for a joined member: reads control messages
 /// off the coordinator connection under a [`ControlGate`] rate limit and applies
-/// each (approval, reconverge triggers, `AdminGrant` promotion, invite gossip,
-/// ping/pong). Roster/firewall state comes only from the signed pkarr record, so
+/// each (approval, reconverge triggers, `AdminGrant` promotion, ping/pong).
+/// Roster/firewall state comes only from the signed pkarr record, so
 /// `MemberSync`/`BlobUpdated` are mere triggers into the reconverge worker.
 #[allow(clippy::too_many_arguments)]
 fn spawn_member_control_listener(
@@ -573,7 +568,6 @@ fn spawn_member_control_listener(
     my_identity_c: EndpointId,
     net_pubkey_c: EndpointId,
     promote_tx: mpsc::Sender<String>,
-    invite_lock: Arc<tokio::sync::Mutex<()>>,
     reconverge_notify: Arc<tokio::sync::Notify>,
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
@@ -687,41 +681,6 @@ fn spawn_member_control_listener(
                                     // only means the daemon is shutting down.
                                     let _ = promote_tx.send(network_name.clone()).await;
                                 }
-                                ControlMsg::InviteShare { id, secret_hash, expires } => {
-                                    // Another coordinator minted a single-use
-                                    // invite; record its hash so we can redeem
-                                    // it too. Only honor it from a peer that is
-                                    // a coordinator in our verified roster.
-                                    if !sender_is_coordinator(&live_state, remote_id) {
-                                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteShare from non-coordinator");
-                                        continue;
-                                    }
-                                    let Ok(hash) = String::from_utf8(secret_hash) else {
-                                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteShare with non-utf8 hash");
-                                        continue;
-                                    };
-                                    let _guard = invite_lock.lock().await;
-                                    if let Ok(mut store) = crate::invite::InviteStore::load(&network_name) {
-                                        let _ = store.record_shared(id, hash, expires);
-                                    }
-                                }
-                                ControlMsg::InviteUsed { secret_hash } => {
-                                    // Another coordinator redeemed a single-use
-                                    // invite; burn it locally so it can't be
-                                    // reused here. Coordinator-only.
-                                    if !sender_is_coordinator(&live_state, remote_id) {
-                                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteUsed from non-coordinator");
-                                        continue;
-                                    }
-                                    let Ok(hash) = String::from_utf8(secret_hash) else {
-                                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteUsed with non-utf8 hash");
-                                        continue;
-                                    };
-                                    let _guard = invite_lock.lock().await;
-                                    if let Ok(mut store) = crate::invite::InviteStore::load(&network_name) {
-                                        let _ = store.burn_by_hash(&hash);
-                                    }
-                                }
                                 ControlMsg::Ping { nonce } => {
                                     respond_pong(&initial_conn, nonce).await;
                                 }
@@ -730,10 +689,15 @@ fn spawn_member_control_listener(
                                         let _ = tx.send(());
                                     }
                                 }
-                                // Pairing is removed; tolerate a full-torpedo
-                                // peer's pairing control messages (D1 wire
-                                // compat: decode and ignore, never error).
-                                ControlMsg::Unpaired | ControlMsg::CertRefresh { .. } => {}
+                                // Pairing (MINIMAL-004) and invite minting/gossip
+                                // (MINIMAL-013) are removed; tolerate a
+                                // full-torpedo coordinator's pairing + invite
+                                // control messages (D1 wire compat: decode and
+                                // ignore, never error).
+                                ControlMsg::Unpaired
+                                | ControlMsg::CertRefresh { .. }
+                                | ControlMsg::InviteShare { .. }
+                                | ControlMsg::InviteUsed { .. } => {}
                                 _ => {}
                             }
                         }

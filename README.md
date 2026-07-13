@@ -9,9 +9,9 @@ Electric ray *Torpedo californica*
 ```bash
 sudo torpedo up                 # start the node (installs the service)
 torpedo create --hostname alice # you're the coordinator of a private network
-torpedo invite <network>        # mint a one-time code to hand out
-torpedo join <invite-code>      # a second machine joins with the code
-ping bob.<network>.ray          # reach each other by name
+torpedo join <room-id>          # a second machine requests to join (queues for approval)
+torpedo accept <network> <id>   # you admit it (see torpedo requests)
+ping 10.88.x.y                  # reach each other by mesh IP from `torpedo status`
 ```
 
 [![License: MPL 2.0](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE)
@@ -39,17 +39,18 @@ sudo install target/release/torpedo /usr/local/bin/torpedo
 sudo torpedo up
 
 # Create a private network. The default subnet 10.88.0.0/16 coexists with Tailscale.
-torpedo create --hostname alice     # closed by default; add --open for a public one
-torpedo invite <network>            # mint a single-use, expiring invite code
+torpedo create --hostname alice     # always closed (approval-gated)
 
-# On a second machine:
+# On a second machine — request to join, then approve it back on alice:
 sudo torpedo up
-torpedo join <invite-code> --hostname bob
+torpedo join <room-id> --hostname bob   # queues for approval
+# back on alice:
+torpedo requests <network>          # shows bob's pending request + its id
+torpedo accept <network> <id>       # admit bob
 
 # From either machine:
 torpedo status                      # networks, peers, your mesh IP, traffic
-ping bob.ray                        # reach peers by name (Magic DNS)
-torpedo ping bob                    # mesh probe: RTT, loss, direct-vs-relay path
+ping 10.88.x.y                      # reach a peer by its mesh IP (from status)
 ```
 
 Tailscale keeps working throughout — torpedo's default `10.88.0.0/16` does not overlap Tailscale's `100.64.0.0/10`.
@@ -82,24 +83,20 @@ See `spec/design_spec.py` for the tracked requirements and the full rationale (t
 
 Each machine runs the `torpedo` daemon, which creates a TUN device, captures IP packets, and tunnels them over [iroh](https://iroh.computer) QUIC connections.
 
-1. **Create.** One peer starts a network and becomes its coordinator. The network's public key is its **room id**: it lets others discover the network but, on a closed network, is not enough to get in.
-2. **Join.** On a closed network a peer gets in with a one-time invite code, a reusable fleet key, or live approval. The coordinator is the gatekeeper, and admission survives any one coordinator being offline.
+1. **Create.** One peer starts a network and becomes its coordinator. The network's public key is its **room id**: it lets others discover the network but is not enough to get in.
+2. **Join.** A peer gets in by **live approval**: it dials the room id, lands in a queue, and a coordinator admits it. The coordinator is the gatekeeper, and admission survives any one coordinator being offline (grant a co-coordinator with `torpedo admin add`).
 3. **Mesh.** Every peer derives its own stable virtual IPv4 (in the configured subnet) and IPv6 (`200::/7`) from its identity, then connects directly to every other peer — hole-punched where possible, falling back to encrypted relays otherwise.
-4. **Use it.** Any TCP/UDP app works, addressed by IP or by `name.network.ray`.
+4. **Use it.** Any TCP/UDP app works, addressed by the peer's mesh IP (from `torpedo status`).
 
 ### Who can join
 
-##### Closed network
+The **room id** is a discovery key, never an admission credential. tetron networks are **always closed** (`--open` was removed in MINIMAL-013), and there is one way in:
 
-The **room id** is a discovery key, never an admission credential. On a **closed** network (the default) there are three ways in:
+- **Live approval** — the joiner runs `torpedo join <room-id>` and lands in a queue; the coordinator runs `torpedo requests` then `torpedo accept`/`deny`. Any network-key holder can approve, so admission survives the original coordinator being offline (`torpedo admin add` grants a co-coordinator).
 
-- **Invite code** — `torpedo invite <network>` mints a single-use, expiring code; the holder runs `torpedo join <code>`.
-- **Reusable key** — `torpedo invite <network> --reusable` mints a multi-use, revocable key for unattended fleets (`torpedo join <key> --hostname web`).
-- **Live approval** — the holder of just the room id runs `torpedo join <room-id>` and lands in a queue; the coordinator runs `torpedo requests` then `torpedo accept`/`deny`.
+tetron mints no invites of its own. It can still *join* a full-torpedo network by an invite code or reusable key (`torpedo join <code>`), and a tetron coordinator honors a reusable key that rides a full-torpedo signed roster — but it never creates one.
 
-##### Open network
-
-An **open** network (`torpedo create --open`) lets anyone with the room id join directly. tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface — e.g. `nft add rule inet filter input iifname "torpedo" tcp dport != 22 drop`.
+tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `torpedo` TUN interface — e.g. `nft add rule inet filter input iifname "torpedo" tcp dport != 22 drop`.
 
 ### Naming peers (Magic DNS removed)
 
@@ -111,13 +108,15 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 
 ## Features (inherited from rayfish)
 
-- 🔒 **Closed-by-default networks** with one-time invites, reusable fleet keys, or live approval (`--open` for public ones).
+- 🔒 **Closed networks with live approval** — a joiner queues on the room id and a coordinator (or co-coordinator) admits it with `torpedo accept`.
 
-Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `invite`, `requests`/`accept`/`deny`, `kick`, `ephemeral`, and more.
+Run `torpedo --help` (and `torpedo <command> --help`) for the full surface: `requests`/`accept`/`deny`, `admin`, `kick`, `ephemeral`, and more.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `torpedo send`/`files` or `torpedo pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 >
 > **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `torpedo apply`, `torpedo alias`, or `torpedo identityof`. Reconcile a fleet with a script over `torpedo status --json`.
+>
+> **tetron admits by approval only** (MINIMAL-013). `torpedo create` always makes a closed network (`--open` is gone) and there is no `torpedo invite` — joiners are admitted with `torpedo requests`/`accept`. A tetron node can still *join* a full-torpedo network by invite code, and it validates reusable keys presented against a full-torpedo roster, but it mints none itself.
 >
 > **tetron removes Magic DNS and all OS DNS mutation** (MINIMAL-012). There is no `.ray` resolver and the daemon never touches system DNS. Reach peers by mesh IP from `torpedo status`; name them via `/etc/hosts` if you like. Hostnames still ride the roster and show in `status`.
 >

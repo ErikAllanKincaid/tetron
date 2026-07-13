@@ -1650,15 +1650,31 @@ class ApprovalOnlyAdmission(Requirement):
     """REQUIREMENT-ID: MINIMAL-013
 
     One admission mode: `torpedo create` always makes a Restricted network
-    (`--open` removed); joiners land in the pending queue and are admitted
-    with `torpedo accept`. Removed: the single-use invite ledger (invite.rs,
-    cli/invite.rs, daemon/mesh/invite.rs), invite gossip sending, and
-    reusable-key minting. Kept: joiner-side invite-code redemption (a min
-    node can still join a full-torpedo network by invite), blob reusable-key
-    validation, requests/accept/deny, admin add/list (co-coordinator grant
-    is the availability story for admission), and kick. InviteShare/
-    InviteUsed from full co-coordinators are ignored on receipt, never an
-    error (D1).
+    (`--open` and `--closed` removed); joiners land in the pending queue and
+    are admitted with `torpedo accept`. Removed: the whole single-use invite
+    ledger (`InviteStore` and its toml file), the `torpedo invite`
+    create/list/revoke CLI + `InviteAction`, the `InviteCreate`/`InviteList`/
+    `InviteRevoke` IPC ops and `InviteCreated`/`InviteListResponse`/
+    `InviteInfo` responses, the `invite_create`/`reusable_key_create`/
+    `invite_list`/`invite_revoke` daemon handlers, reusable-key minting, the
+    `InviteShare`/`InviteUsed` gossip *senders* (`gossip_to_coordinators`,
+    `gossip_targets`, `sender_is_coordinator`), and the per-network
+    `invite_lock` ledger mutex threaded through the accept/join machinery.
+    The three files the PLAN names for deletion survive in trimmed form
+    because kept surface lives in them: `invite.rs` collapses to the
+    joiner-side `encode/decode_invite_code`; `cli/invite.rs` and
+    `daemon/mesh/invite.rs` keep only the requests/accept/deny handlers.
+    Kept: joiner-side invite-code redemption (a min node can still join a
+    full-torpedo network by presenting an invite secret), blob reusable-key
+    *validation* on admission (`membership::validate_reusable_key`, the only
+    invite a tetron coordinator honors), requests/accept/deny, admin add/list
+    (co-coordinator grant is the availability story for admission), and kick.
+    `GroupMode::Open` stays understood (a min node granted admin on a
+    full-torpedo open network still auto-admits per the signed blob), only
+    its *creation* is gone. `InviteShare`/`InviteUsed` from full
+    co-coordinators are decoded and ignored on receipt, never an error (D1).
+    `membership.rs` is left textually untouched (its `from_secret`/
+    `revoke_reusable` helpers are kept close to torpedo for cherry-picks).
     """
     req_id = "MINIMAL-013"
 

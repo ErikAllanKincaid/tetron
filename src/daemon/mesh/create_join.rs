@@ -12,10 +12,9 @@ struct JoinContext<'a> {
     alpn: &'a [u8],
     my_ip: Ipv4Addr,
     net_pubkey: EndpointId,
-    /// Single-use invite secret to redeem at admission, if any. Cloned per dial
-    /// attempt (a fresh join may try several coordinators).
+    /// Invite secret to redeem at admission, if any. Cloned per dial attempt (a
+    /// fresh join may try several coordinators).
     invite: Option<Vec<u8>>,
-    invite_lock: Arc<tokio::sync::Mutex<()>>,
     /// Pinned coordinator to dial first (the invite minter), if known.
     coordinator: Option<EndpointId>,
 }
@@ -331,7 +330,6 @@ impl MeshManager {
 
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(std::sync::RwLock::new(net_state));
-        let invite_lock = Arc::new(tokio::sync::Mutex::new(()));
         let dht_notify = Arc::new(tokio::sync::Notify::new());
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
@@ -351,7 +349,6 @@ impl MeshManager {
             dht_notify: Some(dht_notify.clone()),
             cancel: cancel.clone(),
             tasks,
-            invite_lock: invite_lock.clone(),
             disconnect_tx: disconnect_tx.clone(),
         };
         self.networks.insert(name.clone(), handle);
@@ -360,7 +357,6 @@ impl MeshManager {
         self.register_coordinator_handler(
             &name,
             state,
-            invite_lock,
             Some(dht_notify),
             net_public_key,
             disconnect_tx,
@@ -510,12 +506,6 @@ impl MeshManager {
                 .unwrap_or_else(crate::hostname::generate_hostname),
         };
 
-        // One invite-ledger lock for this network, shared between the join's
-        // control listener (which may handle InviteShare/InviteUsed once this
-        // node is promoted to co-coordinator) and the coordinator handler we may
-        // register below — so all ledger access stays serialized.
-        let invite_lock = Arc::new(tokio::sync::Mutex::new(()));
-
         let ctx = JoinContext {
             display_name,
             my_hostname: &my_hostname,
@@ -523,7 +513,6 @@ impl MeshManager {
             my_ip,
             net_pubkey,
             invite,
-            invite_lock: invite_lock.clone(),
             coordinator,
         };
 
@@ -854,7 +843,6 @@ impl MeshManager {
             disconnect_tx.clone(),
             cancel.clone(),
             self.promote_tx.clone(),
-            ctx.invite_lock.clone(),
             self.protocol_router.pending_pongs.clone(),
         )
         .await
@@ -879,7 +867,6 @@ impl MeshManager {
             alpn,
             my_ip,
             net_pubkey,
-            invite_lock,
             ..
         } = ctx;
 
@@ -894,7 +881,6 @@ impl MeshManager {
                 self.register_coordinator_handler(
                     display_name,
                     state.clone(),
-                    invite_lock.clone(),
                     None,
                     net_public_key,
                     disconnect_tx.clone(),
@@ -961,7 +947,6 @@ impl MeshManager {
             dht_notify: None,
             cancel,
             tasks,
-            invite_lock,
             disconnect_tx,
         };
         self.networks.insert(display_name.to_string(), handle);
@@ -1180,7 +1165,6 @@ impl MeshManager {
                 dht_notify: None,
                 cancel,
                 tasks,
-                invite_lock: Arc::new(tokio::sync::Mutex::new(())),
                 disconnect_tx,
             };
             self.networks.insert(network_name.to_string(), handle);

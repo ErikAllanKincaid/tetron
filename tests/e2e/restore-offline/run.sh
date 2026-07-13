@@ -3,8 +3,8 @@
 #
 # Topology:
 #   srv-a  coordinator of a closed network `priv`
-#   srv-b  member (admitted with an invite)  <- restarted mid-test
-#   srv-c  member (admitted with an invite)  <- stays up, the peer srv-b must find
+#   srv-b  member (admitted by live approval)  <- restarted mid-test
+#   srv-c  member (admitted by live approval)  <- stays up, the peer srv-b must find
 #
 # Regression guard for the bug where a member whose daemon restarts while its
 # coordinator is offline silently drops the network from its running state
@@ -56,18 +56,16 @@ for h in "$A" "$B" "$C"; do on "$h" 'torpedo up' >/dev/null 2>&1 || true; done
 wait_daemons "$A" "$B" "$C"
 
 # ---------------------------------------------------------------------------
-step "1. srv-a creates a closed network; srv-b and srv-c join with invites"
+step "1. srv-a creates a closed network; srv-b and srv-c join by live approval"
 CREATE="$(on "$A" "torpedo create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   a| /'
 has_net "$A" "$NET" && pass "network '$NET' created on srv-a" || { fail "create failed"; summary; }
+ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
+[[ -n "$ROOM" ]] || { fail "could not parse room id"; summary; }
 
-INV_B="$(mint_invite "$A" "$NET" srv-b)"
-INV_C="$(mint_invite "$A" "$NET" srv-c)"
-[[ -n "$INV_B" && -n "$INV_C" ]] && pass "srv-a minted invites for srv-b and srv-c" \
-  || { fail "invite mint failed"; summary; }
-
-on "$B" "torpedo join $INV_B --hostname srv-b" 2>&1 | strip | sed 's/^/   b| /'
-on "$C" "torpedo join $INV_C --hostname srv-c" 2>&1 | strip | sed 's/^/   c| /'
+# tetron is approval-only: each member dials the room id, queues, and srv-a accepts.
+join_approve "$B" "$A" "$NET" "$ROOM" srv-b && pass "srv-b admitted by approval" || { fail "srv-b not admitted"; summary; }
+join_approve "$C" "$A" "$NET" "$ROOM" srv-c && pass "srv-c admitted by approval" || { fail "srv-c not admitted"; summary; }
 
 # Full mesh: every node sees the other two online.
 wait_roster "$A" srv-b srv-c

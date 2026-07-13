@@ -6,8 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Admission is approval-only (MINIMAL-013)**: `torpedo create` always makes a
+  closed network — the `--open` (and explicit `--closed`) flag is gone. A
+  joiner dials the room id, lands in the pending queue, and a coordinator (or
+  any co-coordinator granted with `torpedo admin add`) admits it with
+  `torpedo requests` → `torpedo accept`/`deny`. This is now the only way onto a
+  tetron-coordinated network.
+
 ### Removed
 
+- **Invite minting (MINIMAL-013)**: `torpedo invite` and all its subcommands
+  (`create`/`list`/`revoke`, `--reusable`/`--hostname`/`--expires`/`--qr`) are
+  gone, along with the single-use invite ledger (`invites/<network>.toml`) and
+  reusable-key minting. A tetron node can still **join** a full-torpedo network
+  by an invite code or reusable key (`torpedo join <code>`), and a tetron
+  coordinator still validates a reusable key that rides a full-torpedo signed
+  roster — it just never mints one. Invite-share gossip from a full-torpedo
+  co-coordinator is accepted on the wire and ignored (wire compatibility).
 - **Magic DNS and all OS DNS mutation (MINIMAL-012)**: the `.ray` name
   resolver, the in-daemon DNS responder + port-53 intercept, and every OS-DNS
   integration (systemd-resolved / NetworkManager / resolvconf / the

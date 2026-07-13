@@ -103,8 +103,6 @@ pub(crate) fn spawn_coordinator_control_reader(
     ctx: MeshCtx,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
     token: CancellationToken,
-    // Serializes single-use invite ledger access for the invite-gossip arms.
-    invite_lock: Arc<tokio::sync::Mutex<()>>,
     // Fires the waiting `torpedo ping` handler when a matching `Pong` arrives.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
@@ -137,44 +135,7 @@ pub(crate) fn spawn_coordinator_control_reader(
                     return;
                 }
             }
-            // Invite gossip from another coordinator: a co-coordinator that minted
-            // or redeemed an invite tells us so our ledger stays in sync. Honor it
-            // only from a coordinator peer in our verified roster.
             match msg {
-                ControlMsg::InviteShare {
-                    id,
-                    secret_hash,
-                    expires,
-                } => {
-                    if !sender_is_coordinator(&state, remote_id) {
-                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteShare from non-coordinator");
-                        continue;
-                    }
-                    let Ok(hash) = String::from_utf8(secret_hash) else {
-                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteShare with non-utf8 hash");
-                        continue;
-                    };
-                    let _guard = invite_lock.lock().await;
-                    if let Ok(mut store) = crate::invite::InviteStore::load(&network_name) {
-                        let _ = store.record_shared(id, hash, expires);
-                    }
-                    continue;
-                }
-                ControlMsg::InviteUsed { secret_hash } => {
-                    if !sender_is_coordinator(&state, remote_id) {
-                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteUsed from non-coordinator");
-                        continue;
-                    }
-                    let Ok(hash) = String::from_utf8(secret_hash) else {
-                        tracing::warn!(peer = %remote_id.fmt_short(), "ignoring InviteUsed with non-utf8 hash");
-                        continue;
-                    };
-                    let _guard = invite_lock.lock().await;
-                    if let Ok(mut store) = crate::invite::InviteStore::load(&network_name) {
-                        let _ = store.burn_by_hash(&hash);
-                    }
-                    continue;
-                }
                 ControlMsg::Ping { nonce } => {
                     respond_pong(&conn, nonce).await;
                     continue;
@@ -185,9 +146,13 @@ pub(crate) fn spawn_coordinator_control_reader(
                     }
                     continue;
                 }
-                // Pairing was removed (MINIMAL-004); tolerate these from
-                // full-torpedo peers instead of erroring the connection.
-                ControlMsg::Unpaired | ControlMsg::CertRefresh { .. } => continue,
+                // Pairing (MINIMAL-004) and invite minting/gossip (MINIMAL-013)
+                // were removed; tolerate these from full-torpedo peers instead of
+                // erroring the connection (D1 wire compat: decode and ignore).
+                ControlMsg::Unpaired
+                | ControlMsg::CertRefresh { .. }
+                | ControlMsg::InviteShare { .. }
+                | ControlMsg::InviteUsed { .. } => continue,
                 _ => {}
             }
             let ControlMsg::MeshHello {
@@ -260,44 +225,6 @@ pub(crate) fn spawn_coordinator_control_reader(
             }
         }
     });
-}
-
-/// Send `msg` to each coordinator peer (per [`gossip_targets`]) that has a live
-/// connection on `network`. Best-effort: a target without a live connection is
-/// skipped (it will reconverge invite state from a future share/redeem or, for
-/// reusable keys, the signed blob). Never carries the raw secret — only its hash.
-pub(crate) async fn gossip_to_coordinators(
-    peers: &PeerTable,
-    network: &str,
-    members: &[Member],
-    me: EndpointId,
-    msg: &ControlMsg,
-) {
-    let targets = gossip_targets(members, me);
-    if targets.is_empty() {
-        return;
-    }
-    for (eid, _ip, conn) in peers.peers_for_network_with_conn(network) {
-        if !targets.contains(&eid) {
-            continue;
-        }
-        if let Ok((mut send, _)) = conn.open_bi().await {
-            let _ = control::send_msg(&mut send, msg).await;
-        }
-    }
-}
-
-/// Whether `peer` is a coordinator in our verified roster. Invite-gossip arms
-/// (`InviteShare`/`InviteUsed`) act only on messages from a coordinator peer, so
-/// a non-coordinator member can't inject or burn invite state.
-pub(crate) fn sender_is_coordinator(state: &SharedNetworkState, peer: EndpointId) -> bool {
-    state
-        .read()
-        .unwrap()
-        .members
-        .all()
-        .iter()
-        .any(|m| m.identity == peer && m.is_coordinator)
 }
 
 /// Pure prune decision for one member under the ephemeral policy. Never prunes

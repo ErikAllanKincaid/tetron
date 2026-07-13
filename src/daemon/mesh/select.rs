@@ -27,18 +27,6 @@ pub(crate) fn coordinator_dial_order(
     order
 }
 
-/// Pick the peers to gossip single-use invite state to: every other
-/// `is_coordinator` member, excluding ourselves. Only coordinators (network-key
-/// holders) can admit, so only they need the shared invite ledger; a
-/// non-coordinator is never a target.
-pub(crate) fn gossip_targets(members: &[Member], me: EndpointId) -> Vec<EndpointId> {
-    members
-        .iter()
-        .filter(|m| m.is_coordinator && m.identity != me)
-        .map(|m| m.identity)
-        .collect()
-}
-
 /// Outcome of a single coordinator dial attempt during the join fallback loop.
 /// Used as a unit-testable specification of the loop termination policy.
 #[derive(Clone, Copy, PartialEq, Debug)]
