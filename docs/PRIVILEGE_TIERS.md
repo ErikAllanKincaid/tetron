@@ -450,4 +450,89 @@ decision. The protocol should support any number:
 | Kick requires admin | Yes | Matching physical MAC-ban. |
 | Role encoded in invite | Yes | Coordinator vs member determined at admission, not after. |
 | Threshold kick | Unnecessary | Admin transfer / backup is simpler. |
-| Key rotation on admin kick | Deferred | Accept stale-blob risk for now; merge mitigates it.
+| Key rotation on admin kick | Deferred | Accept stale-blob risk for now; merge mitigates it. |
+
+---
+
+## Survivability assumption
+
+The central unsolved tension: **can a new member join when all
+coordinators are offline?**
+
+### What works today
+
+| Scenario | Works? | Why |
+|---|---|---|
+| Existing member reconnects after being offline | Yes | Cached blob; peer-to-peer blob exchange converges. |
+| New member joins while a coordinator is online | Yes | Coordinator validates invite, admits, publishes. |
+| New member joins while ALL coordinators are offline | **No** | No one holds the network key. Invite cannot be validated or burned. Blob cannot be published. |
+
+### The question the document does not answer
+
+Choose one:
+
+**A. Accept the freeze.** The coordinator tier is a SPOF for growth but
+not for connectivity. New members wait until a coordinator comes back.
+Matches physical networking — the new hire sits in a bare cube until the
+sysadmin activates their switch port. The invite is a pre-authorization
+(like a port reservation), not a self-service credential.
+
+**B. Pre-signed admission vouchers.** The invite is a signed statement
+from a coordinator: "bearer of secret X joins as hostname bob, role
+member." The voucher is signed by the minting coordinator's endpoint key
+(not the network key). The coordinator's public key is listed in the
+blob's `admins` field. Any online member verifies the signature and admits
+the joiner locally, propagating the updated roster to peers via gossip. No
+blob publish happens until a coordinator returns, fetches the converged
+roster, and publishes the canonical signed blob.
+
+```rust
+// The voucher payload (signed by a coordinator's endpoint key):
+struct AdmissionVoucher {
+    network_pubkey: EndpointId,
+    invite_secret: [u8; 16],
+    hostname: Option<String>,
+    role: Role,
+    expires_at: u64,
+}
+```
+
+Costs:
+- Signature verification in the admit path (~new dep: ed25519-dalek or
+  use iroh's existing signing)
+- Voucher replay protection (nonce or expiry)
+- Roster convergence by gossip (members exchange their local roster
+  versions; newest winning)
+- Blob publish by the returning coordinator (fetch from peers, merge,
+  sign, publish)
+
+**C. Give every member the network key** (the `--coordinator` default).
+If everyone is a coordinator, everyone can admit. Blast radius of a
+compromised key is limited by the admin tier (cannot kick). This is the
+laptop-fleet model from earlier in this document. Simpler than vouchers
+but trusts every member with the signing key.
+
+### Impact on the rest of the design
+
+| Feature | Needed under A? | Needed under B? | Needed under C? |
+|---|---|---|---|
+| Invite in blob | Yes (multi-coordinator validation) | Yes (members need invite table for voucher check) | Yes |
+| Fetch-before-publish merge | Yes | Yes | Yes |
+| Invite without coordinator endpoint | Yes | Yes | Yes |
+| Auto-coordinator on join | No (only admins publish) | No | Yes (default) |
+| Voucher signature verification | No | Yes (new) | No |
+| Roster gossip between members | No | Yes (new) | No |
+| Network key on all members | No | No | Yes |
+| Coordinator SPOF for growth | Yes (accepted) | No | No |
+
+### When the choice matters
+
+- **Laptop fleet (no always-on node).** A is painful — new team members
+  cannot join until a specific coordinator wakes up. B or C is better.
+- **Corporate network.** A is fine. There is always a coordinator (the
+  ops team runs one on a server). B and C add complexity for no benefit.
+- **Mixed deployment.** Some networks want the freeze, some do not. The
+  protocol could support both — the invite encoding includes a flag that
+  selects the admission mode.
+
+Not deciding this yet. Recorded for next session.
