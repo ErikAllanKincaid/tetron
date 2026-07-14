@@ -13,11 +13,13 @@
 mod admin;
 mod invite;
 mod network;
+mod requests;
 mod service;
 mod status;
 
 pub(crate) use admin::*;
 pub(crate) use invite::*;
 pub(crate) use network::*;
+pub(crate) use requests::*;
 pub(crate) use service::*;
 pub(crate) use status::*;

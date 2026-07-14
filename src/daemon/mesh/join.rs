@@ -303,6 +303,7 @@ async fn build_member_state(
         subnet: crate::config::node_subnet(),
         reusable_keys,
         pending: HashMap::new(),
+        invite_store: None,
     };
     ns.refresh_snapshot();
     if let Some(snap) = &ns.snapshot {

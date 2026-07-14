@@ -49,7 +49,7 @@ fn json_enabled() -> bool {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Create a new network and wait for peers
+    /// Create a new network and print an invite key
     #[command(visible_alias = "new")]
     Create {
         /// Network name (a random three-word name is generated if not set)
@@ -133,6 +133,13 @@ pub(crate) enum Command {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
+    /// Manage single-use invite keys (coordinator only)
+    Invite {
+        /// Network name
+        network: String,
+        #[command(subcommand)]
+        action: InviteAction,
+    },
     /// List peers awaiting approval on a closed network (coordinator only)
     Requests {
         /// Network name
@@ -186,6 +193,24 @@ pub(crate) enum AdminAction {
     /// List this network's key-holders (the local node + granted members)
     #[command(visible_alias = "ls")]
     List,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum InviteAction {
+    /// Mint a new single-use invite key
+    Create {
+        /// Expiry duration (e.g. "24h", "7d", "30m"). Omit for no expiry.
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// List outstanding invites
+    #[command(visible_alias = "ls")]
+    List,
+    /// Revoke (mark as used) an invite by its short id
+    Revoke {
+        /// Invite id shown by `tetron invite <network> list`
+        invite_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -422,6 +447,7 @@ async fn main() -> Result<()> {
             clap_complete::generate(shell, &mut Cli::command(), "tetron", &mut std::io::stdout());
             Ok(())
         }
+        Command::Invite { network, action } => ipc_invite(&network, action).await,
         Command::Requests { network } => ipc_requests(&network).await,
         Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
         Command::Deny { network, id } => ipc_deny_request(&network, &id).await,

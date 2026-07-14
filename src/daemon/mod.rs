@@ -212,6 +212,9 @@ pub(crate) struct NetworkState {
     /// Peers awaiting live operator approval on a closed network (coordinator
     /// only, in-memory, never persisted or published).
     pending: HashMap<EndpointId, PendingJoin>,
+    /// Per-network invite store for single-use invite keys. `None` on non-coordinator
+    /// members (they have no need to mint or validate invites locally).
+    pub(crate) invite_store: Option<InviteStore>,
 }
 
 /// A join request held pending live approval on a closed network.
@@ -713,6 +716,14 @@ impl MeshManager {
             IpcMessage::DenyRequest { network, id } => self.deny_request(&network, &id),
             IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
+            IpcMessage::InviteCreate { network, expires } => {
+                self.invite_create(&network, expires.as_deref())
+            }
+            IpcMessage::InviteList { network } => self.invite_list(&network),
+            IpcMessage::InviteRevoke {
+                network,
+                invite_id,
+            } => self.invite_revoke(&network, &invite_id),
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },
@@ -827,6 +838,7 @@ mod accept_handler_tests {
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
             pending: HashMap::new(),
+            invite_store: None,
         }))
     }
 

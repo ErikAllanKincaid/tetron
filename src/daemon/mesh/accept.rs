@@ -261,12 +261,11 @@ impl CoordinatorAcceptState {
     }
 
     /// Admit (or reject) an unknown peer that presented an invite `secret`.
-    /// tetron does not mint single-use invites (MINIMAL-013), so the only invite
-    /// a tetron coordinator can honor is a reusable key riding the verified,
-    /// network-key-signed blob (redeemable by any network-key holder, no burn).
-    /// A single-use invite minted by a full-tetron coordinator is not in our
-    /// (non-existent) ledger and is denied here — that joiner must reach its
-    /// full-tetron coordinator to redeem it.
+    ///
+    /// First checks the local single-use invite store (INVITE-003). If the secret
+    /// matches a stored (unused, non-expired) invite, the peer is admitted and the
+    /// invite is burned. Falls back to `GroupBlob.reusable_keys` for D1 compat
+    /// with full-tetron reusable keys.
     #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
         &self,
@@ -278,6 +277,43 @@ impl CoordinatorAcceptState {
         device_cert: Option<control::DeviceCert>,
         secret: Vec<u8>,
     ) {
+        // Phase 1: check local single-use invite store.
+        let local_store = { self.state.read().unwrap().invite_store.clone() };
+        if let Some(ref store) = local_store {
+            match store.validate_and_burn(&secret) {
+                Ok(true) => {
+                    tracing::info!(
+                        peer = %remote_id.fmt_short(),
+                        "single-use invite redeemed"
+                    );
+                    self
+                        .admit_peer(
+                            conn,
+                            send,
+                            remote_id,
+                            peer_ip,
+                            hostname,
+                            device_cert,
+                            false,
+                            false,
+                        )
+                        .await;
+                    return;
+                }
+                Ok(false) => {
+                    // Not in local store — fall through to reusable key check.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        peer = %remote_id.fmt_short(),
+                        error = %e,
+                        "invite store error"
+                    );
+                }
+            }
+        }
+
+        // Phase 2: fall back to GroupBlob reusable keys (D1 compat).
         let reusable_id = {
             let s = self.state.read().unwrap();
             crate::membership::validate_reusable_key(&s.reusable_keys, &secret, now_secs())
@@ -303,7 +339,7 @@ impl CoordinatorAcceptState {
             )
             .await;
         } else {
-            tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected (no matching reusable key)");
+            tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected");
             self.deny(&conn, send, "invite rejected".to_string())
                 .await;
         }

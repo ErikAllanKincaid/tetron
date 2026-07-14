@@ -163,6 +163,7 @@ impl MeshManager {
             subnet: self.identity.subnet(),
             reusable_keys,
             pending: HashMap::new(),
+            invite_store: InviteStore::new(name).ok(),
         };
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
@@ -262,6 +263,7 @@ impl MeshManager {
                 crate::config::node_subnet(),
                 self.identity.subnet(),
             ),
+            initial_invite_key: None,
         })
     }
 

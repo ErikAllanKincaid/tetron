@@ -16,6 +16,8 @@ mod coordinator;
 mod create_join;
 mod diagnostics;
 mod invite;
+mod invite_handler;
+mod invite_store;
 mod join;
 mod publish;
 mod reconverge;
@@ -29,6 +31,7 @@ mod select;
 // `pub(crate) use mesh::*`).
 pub(crate) use accept::*;
 pub(crate) use coordinator::*;
+pub(crate) use invite_store::InviteStore;
 pub(crate) use join::*;
 pub(crate) use publish::*;
 pub(crate) use reconverge::*;

@@ -1,77 +1,82 @@
-//! CLI join-request handlers: requests/accept/deny.
+//! CLI invite-key handlers: create/list/revoke single-use invite keys.
+//!
+//! This replaces the old `cli/invite.rs` which held join-request handlers
+//! (requests/accept/deny) — those moved to `cli/requests.rs`.
 
 use crate::*;
 
-pub(crate) async fn ipc_requests(network: &str) -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    ipc::send(
-        &mut stream,
-        ipc::IpcMessage::Requests {
+/// Dispatch the `tetron invite <network> <action>` command.
+pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()> {
+    let req = match action {
+        InviteAction::Create { expires } => ipc::IpcMessage::InviteCreate {
+            network: network.to_string(),
+            expires,
+        },
+        InviteAction::List => ipc::IpcMessage::InviteList {
             network: network.to_string(),
         },
-    )
-    .await?;
+        InviteAction::Revoke { invite_id } => ipc::IpcMessage::InviteRevoke {
+            network: network.to_string(),
+            invite_id,
+        },
+    };
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, req).await?;
     match ipc::recv(&mut stream).await? {
-        ipc::IpcMessage::PendingRequests { requests } => {
+        ipc::IpcMessage::InviteCreated {
+            invite_key,
+            invite_id,
+            expires_at,
+        } => {
             if json_enabled() {
-                print_json(&serde_json::json!(requests
+                print_json(&serde_json::json!({
+                    "invite_key": invite_key,
+                    "invite_id": invite_id,
+                    "expires_at": expires_at,
+                }));
+            } else {
+                let expiry = expires_at
+                    .map(|ts| format!("  expires  unix:{ts}"))
+                    .unwrap_or_default();
+                println!();
+                println!("  invite key  {invite_key}");
+                println!("  invite id   {invite_id}{expiry}");
+                println!();
+                println!("  share: tetron join {invite_key}");
+            }
+        }
+        ipc::IpcMessage::InviteListResponse { invites } => {
+            if json_enabled() {
+                print_json(&serde_json::json!(invites
                     .iter()
-                    .map(|r| serde_json::json!({
-                        "id": r.short_id, "hostname": r.hostname, "waiting_secs": r.waiting_secs,
+                    .map(|i| serde_json::json!({
+                        "id": i.id,
+                        "created_at": i.created_at,
+                        "expires_at": i.expires_at,
+                        "used": i.used,
                     }))
                     .collect::<Vec<_>>()));
-            } else if requests.is_empty() {
-                println!("\n  (no pending join requests)\n");
+            } else if invites.is_empty() {
+                println!("\n  (no invites)\n");
             } else {
-                let rows: Vec<Vec<String>> = requests
+                let rows: Vec<Vec<String>> = invites
                     .iter()
-                    .map(|r| {
-                        let host = r.hostname.clone().unwrap_or_else(|| "—".to_string());
-                        let wait = format!("{}s", r.waiting_secs);
-                        vec![r.short_id.clone(), host, wait]
+                    .map(|i| {
+                        let status = if i.used {
+                            "used".to_string()
+                        } else if i.expires_at > 0 && i.expires_at <= crate::membership::now_secs() {
+                            "expired".to_string()
+                        } else {
+                            "active".to_string()
+                        };
+                        vec![i.id.clone(), status, i.created_at.to_string()]
                     })
                     .collect();
                 println!();
-                print!("{}", table(&["id", "host", "waiting"], rows, 2));
+                print!("{}", table(&["id", "status", "created"], rows, 2));
                 println!();
-                println!("  admit with: tetron accept {network} <id>");
             }
         }
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
-        other => eprintln!("Unexpected response: {:?}", other),
-    }
-    Ok(())
-}
-
-pub(crate) async fn ipc_accept_request(network: &str, id: &str) -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    ipc::send(
-        &mut stream,
-        ipc::IpcMessage::AcceptRequest {
-            network: network.to_string(),
-            id: id.to_string(),
-        },
-    )
-    .await?;
-    match ipc::recv(&mut stream).await? {
-        ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
-        other => eprintln!("Unexpected response: {:?}", other),
-    }
-    Ok(())
-}
-
-pub(crate) async fn ipc_deny_request(network: &str, id: &str) -> Result<()> {
-    let mut stream = ipc::connect().await?;
-    ipc::send(
-        &mut stream,
-        ipc::IpcMessage::DenyRequest {
-            network: network.to_string(),
-            id: id.to_string(),
-        },
-    )
-    .await?;
-    match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
         ipc::IpcMessage::Error { message } => print_error("error", &message, None),
         other => eprintln!("Unexpected response: {:?}", other),

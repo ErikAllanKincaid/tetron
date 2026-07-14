@@ -39,6 +39,7 @@ pub(crate) async fn ipc_create(
             my_ip,
             my_ipv6,
             warning,
+            initial_invite_key,
         } => {
             let key_str = network_key.to_string();
             let short = if key_str.len() > 12 {
@@ -50,11 +51,23 @@ pub(crate) async fn ipc_create(
             println!();
             println!("  created {name}");
             println!("    address  {}  ·  {}", my_ip, short);
-            let join = format!("tetron join {network_key}");
-            print_next(&[
-                (&join, "share this to invite peers"),
-                ("tetron up", "activate the VPN"),
-            ]);
+            match &initial_invite_key {
+                Some(invite) => {
+                    let share = format!("tetron join {invite}");
+                    print_next(&[
+                        (&share, "single-use invite (one more available)"),
+                        ("tetron invite <net> create", "mint another invite"),
+                        ("tetron up", "activate the VPN"),
+                    ]);
+                }
+                None => {
+                    let share = format!("tetron join {network_key}");
+                    print_next(&[
+                        (&share, "share this to invite peers"),
+                        ("tetron up", "activate the VPN"),
+                    ]);
+                }
+            }
             if let Some(w) = &warning {
                 println!("  ⚠ {w}");
             }

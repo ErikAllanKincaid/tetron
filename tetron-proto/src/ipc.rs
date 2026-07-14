@@ -113,6 +113,10 @@ pub enum IpcMessage {
         /// SUBNET-014: set when the network's subnet only applies after a restart.
         #[serde(default)]
         warning: Option<String>,
+        /// A single-use invite key automatically minted for this network (Phase 4).
+        /// Present when the coordinator mints one on create.
+        #[serde(default)]
+        initial_invite_key: Option<String>,
     },
     Joined {
         name: String,
@@ -153,6 +157,42 @@ pub enum IpcMessage {
     AdminListResponse {
         admins: Vec<AdminInfo>,
     },
+    /// Coordinator-only: mint a single-use invite key for `network`.
+    /// `expires` is an optional human-readable duration (e.g. "24h", "7d")
+    /// parsed daemon-side.
+    InviteCreate {
+        network: String,
+        #[serde(default)]
+        expires: Option<String>,
+    },
+    /// Response to a successful [`InviteCreate`].
+    InviteCreated {
+        invite_key: String,
+        invite_id: String,
+        #[serde(default)]
+        expires_at: Option<u64>,
+    },
+    /// List outstanding invites for `network` (coordinator-only).
+    InviteList {
+        network: String,
+    },
+    /// Response to [`InviteList`].
+    InviteListResponse {
+        invites: Vec<InviteInfo>,
+    },
+    /// Coordinator-only: revoke (mark as used) an invite by its short id.
+    InviteRevoke {
+        network: String,
+        invite_id: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteInfo {
+    pub id: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub used: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -362,6 +402,7 @@ mod tests {
             my_ip: Ipv4Addr::new(100, 64, 10, 5),
             my_ipv6: None,
             warning: None,
+            initial_invite_key: Some("bs58key123".to_string()),
         };
         let bytes = rmp_serde::to_vec_named(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -370,11 +411,13 @@ mod tests {
                 name,
                 network_key,
                 my_ip,
+                initial_invite_key,
                 ..
             } => {
                 assert_eq!(name, "test");
                 assert_eq!(network_key, key);
                 assert_eq!(my_ip, Ipv4Addr::new(100, 64, 10, 5));
+                assert_eq!(initial_invite_key, Some("bs58key123".to_string()));
             }
             _ => panic!("wrong variant"),
         }
@@ -405,6 +448,88 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_invite_create_roundtrip() {
+        let req = IpcMessage::InviteCreate {
+            network: "my-net".to_string(),
+            expires: Some("24h".to_string()),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::InviteCreate { network, expires } => {
+                assert_eq!(network, "my-net");
+                assert_eq!(expires, Some("24h".to_string()));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_invite_created_roundtrip() {
+        let resp = IpcMessage::InviteCreated {
+            invite_key: "bs58key123".to_string(),
+            invite_id: "a1b2c3d4e5f6".to_string(),
+            expires_at: Some(1719600000),
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::InviteCreated {
+                invite_key,
+                invite_id,
+                expires_at,
+            } => {
+                assert_eq!(invite_key, "bs58key123");
+                assert_eq!(invite_id, "a1b2c3d4e5f6");
+                assert_eq!(expires_at, Some(1719600000));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_invite_list_roundtrip() {
+        let req = IpcMessage::InviteList {
+            network: "my-net".to_string(),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(decoded, IpcMessage::InviteList { .. }));
+    }
+
+    #[test]
+    fn test_invite_list_response_roundtrip() {
+        let resp = IpcMessage::InviteListResponse {
+            invites: vec![InviteInfo {
+                id: "abc".to_string(),
+                created_at: 1719000000,
+                expires_at: 0,
+                used: false,
+            }],
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::InviteListResponse { invites } => {
+                assert_eq!(invites.len(), 1);
+                assert_eq!(invites[0].id, "abc");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_invite_revoke_roundtrip() {
+        let req = IpcMessage::InviteRevoke {
+            network: "my-net".to_string(),
+            invite_id: "a1b2c3d4e5f6".to_string(),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(decoded, IpcMessage::InviteRevoke { .. }));
     }
 
     #[test]

@@ -212,6 +212,7 @@ impl MeshManager {
             subnet,
             reusable_keys: BTreeMap::new(),
             pending: HashMap::new(),
+            invite_store: crate::daemon::mesh::invite_store::InviteStore::new(name).ok(),
         })
     }
 
@@ -350,7 +351,7 @@ impl MeshManager {
         // Register protocol handler for this network
         self.register_coordinator_handler(
             &name,
-            state,
+            state.clone(),
             Some(dht_notify),
             net_public_key,
             disconnect_tx,
@@ -360,12 +361,23 @@ impl MeshManager {
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network created");
 
+        // Mint an initial invite so the creator can share it immediately.
+        let initial_invite_key = {
+            let s = state.read().unwrap();
+            s.invite_store.as_ref().and_then(|store| {
+                store.create(None).ok().map(|(_id, secret)| {
+                    crate::invite::encode_invite_code(&net_public_key, &self.endpoint.id(), &secret)
+                })
+            })
+        };
+
         Ok(IpcMessage::Created {
             name,
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
             warning: crate::membership::subnet_change_warning(subnet, self.identity.subnet()),
+            initial_invite_key,
         })
     }
 
@@ -704,6 +716,7 @@ impl MeshManager {
                 subnet: crate::membership::resolve_subnet(data.subnet),
                 reusable_keys: data.reusable_keys.clone(),
                 pending: HashMap::new(),
+                invite_store: None,
             };
             ns.refresh_snapshot();
             Arc::new(std::sync::RwLock::new(ns))
@@ -1155,6 +1168,7 @@ impl MeshManager {
                 subnet: joined_subnet,
                 reusable_keys: data.reusable_keys.clone(),
                 pending: HashMap::new(),
+                invite_store: None,
             };
             ns.refresh_snapshot();
             let live_state = Arc::new(std::sync::RwLock::new(ns));
