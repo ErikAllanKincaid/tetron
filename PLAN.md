@@ -62,8 +62,7 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 
 ## Phase 7: verification
 
-- Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two min nodes.
-- Interop run (success criterion 3): one full-torpedo node and one tetron node on the same network passing traffic. Use two LAN test machines; full torpedo deploys by its existing release path, tetron by `just deploy-dev`.
+- Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two tetron nodes.
 - Line-count and dependency audit against the success criteria in PROPOSAL.md.
 
 ## Phase 7: post-MINIMAL, on demand
