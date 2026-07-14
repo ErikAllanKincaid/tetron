@@ -1,5 +1,5 @@
 '''
-Entry point spec for the torpedo fork.
+Entry point spec for the tetron fork.
 
 libspec auto-discovery compiles spec/main_spec.py first; this Spec pulls in the
 requirement/constraint classes defined in spec/design_spec.py.

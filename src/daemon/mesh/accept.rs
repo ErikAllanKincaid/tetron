@@ -1,45 +1,13 @@
 //! Connection-accept machinery for the mesh core. Moved out of `daemon/mod.rs`.
 //!
-//! Holds the per-network accept handlers (`CoordinatorAcceptState` admits or
-//! queues joiners; `MemberAcceptState` welcomes approved members), the
-//! `AcceptHandler` enum the router dispatches through, and the `ProtocolRouter`
-//! that fans incoming connections out by ALPN (mesh handlers plus the
-//! `blobs`/`files`/`pair` arms). `MeshCtx` and the roster-projection
-//! helpers stay in `daemon/mod.rs` since they are shared infrastructure.
+//! Holds the per-network accept handlers (`CoordinatorAcceptState` admits
+//! joiners via invite keys), the `AcceptHandler` enum the router dispatches
+//! through, and the `ProtocolRouter` that fans incoming connections out by
+//! ALPN (mesh handlers plus the `blobs`/`files`/`pair` arms). `MeshCtx`
+//! and the roster-projection helpers stay in `daemon/mod.rs` since they are
+//! shared infrastructure.
 
 use super::super::*;
-
-/// Upper bound on a closed network's in-memory pending-join queue. Keyed by peer
-/// identity, so repeat requests from one peer don't grow it; this caps a flood
-/// across *distinct* identities (an attacker would need a fresh key per slot).
-/// At the cap, the oldest unanswered request is evicted to admit a newer one.
-pub(crate) const MAX_PENDING_JOINS: usize = 256;
-
-/// Make room for a join request from `incoming`: if the queue is full and this is
-/// a new identity, drop the oldest entry and return its id. A no-op (returns
-/// `None`) when `incoming` is already queued or there is spare capacity.
-pub(crate) fn evict_oldest_pending(
-    pending: &mut HashMap<EndpointId, PendingJoin>,
-    incoming: EndpointId,
-    cap: usize,
-) -> Option<EndpointId> {
-    if pending.contains_key(&incoming) || pending.len() < cap {
-        return None;
-    }
-    let oldest = pending
-        .iter()
-        .min_by_key(|(_, p)| p.requested_at)
-        .map(|(id, _)| *id)?;
-    pending.remove(&oldest);
-    Some(oldest)
-}
-
-/// A paired device is auto-admitted into a closed network only when its device
-/// cert is signed by this coordinator's own owner identity. The cert's
-/// signature is verified by the caller before this check.
-fn owner_admits(device_cert: Option<&control::DeviceCert>, own_identity: EndpointId) -> bool {
-    device_cert.map(|c| c.user_identity) == Some(own_identity)
-}
 
 pub(crate) struct CoordinatorAcceptState {
     pub(crate) ctx: MeshCtx,
@@ -157,24 +125,6 @@ impl CoordinatorAcceptState {
             return;
         }
 
-        // A peer pre-approved via `tetron accept` is admitted directly.
-        let is_approved = self.state.read().unwrap().approved.is_approved(&remote_id);
-        if is_approved {
-            // Live-approved name is joiner-chosen, not authoritative.
-            self.admit_peer(
-                conn,
-                send,
-                remote_id,
-                peer_ip,
-                hostname,
-                device_cert,
-                true,
-                false,
-            )
-            .await;
-            return;
-        }
-
         // Unknown peer presenting an invite secret: verify and burn it.
         if let Some(secret) = invite_secret {
             self.redeem_invite_and_admit(
@@ -190,73 +140,16 @@ impl CoordinatorAcceptState {
             return;
         }
 
-        // Unknown peer, no invite: open networks auto-admit; closed networks
-        // queue the request for live operator approval (`tetron accept`).
-        let mode = self.state.read().unwrap().mode;
-        match mode {
-            GroupMode::Open => {
-                // Open-mode name is joiner-chosen, not authoritative.
-                self.admit_peer(
-                    conn,
-                    send,
-                    remote_id,
-                    peer_ip,
-                    hostname,
-                    device_cert,
-                    false,
-                    false,
-                )
+        // Unknown peer, no invite: open networks auto-admit (D1 compat);
+        // closed networks (always, for tetron) deny immediately. The only
+        // enrollment method after LIVE-001 is an invite key.
+        if self.state.read().unwrap().mode == GroupMode::Open {
+            self.admit_peer(conn, send, remote_id, peer_ip, hostname, device_cert, false)
                 .await;
-            }
-            GroupMode::Restricted => {
-                // A device cert signed by this coordinator's own owner identity
-                // is one of our own paired devices: admit directly, same as an
-                // open network, with no manual approval step. Must run before
-                // `device_cert`/`hostname` are moved into the pending-join queue.
-                if owner_admits(device_cert.as_ref(), self.ctx.identity.local_identity()) {
-                    self.admit_peer(
-                        conn,
-                        send,
-                        remote_id,
-                        peer_ip,
-                        hostname,
-                        device_cert,
-                        false,
-                        false,
-                    )
-                    .await;
-                    return;
-                }
-                // Queue for live operator approval, bounded by MAX_PENDING_JOINS
-                // (oldest-evicted) so a peer churning fresh identities can't grow
-                // it without limit. Still no per-peer concurrent-stream cap — the
-                // control-flood rate limiter covers sustained message floods.
-                {
-                    let mut s = self.state.write().unwrap();
-                    if let Some(dropped) =
-                        evict_oldest_pending(&mut s.pending, remote_id, MAX_PENDING_JOINS)
-                    {
-                        tracing::warn!(
-                            evicted = %dropped.fmt_short(),
-                            "pending-join queue full; evicted oldest request"
-                        );
-                    }
-                    s.pending.insert(
-                        remote_id,
-                        PendingJoin {
-                            hostname,
-                            device_cert,
-                            requested_at: Instant::now(),
-                        },
-                    );
-                }
-                tracing::info!(peer = %remote_id.fmt_short(), ip = %peer_ip, "join queued for approval");
-                let mut send = send;
-                let _ = control::send_msg(&mut send, &ControlMsg::JoinPending).await;
-                // We return (dropping `conn`) right after; wait for the joiner
-                // to read JoinPending so the connection isn't torn down first.
-                let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            }
+        } else {
+            tracing::warn!(peer = %remote_id.fmt_short(), "no invite presented; denied");
+            self.deny(&conn, send, "a valid invite key is required to join".to_string())
+                .await;
         }
     }
 
@@ -294,7 +187,6 @@ impl CoordinatorAcceptState {
                             peer_ip,
                             hostname,
                             device_cert,
-                            false,
                             false,
                         )
                         .await;
@@ -335,7 +227,6 @@ impl CoordinatorAcceptState {
                 hostname,
                 device_cert,
                 false,
-                false,
             )
             .await;
         } else {
@@ -368,7 +259,6 @@ impl CoordinatorAcceptState {
         _suggested_ip: Ipv4Addr,
         hostname: Option<String>,
         device_cert: Option<control::DeviceCert>,
-        was_approved: bool,
         // The hostname is coordinator-authoritative (came from an invite binding).
         // Authoritative names are rejected on collision (no silent rename), so no
         // peer can claim another's name (and its Magic-DNS entry).
@@ -386,10 +276,6 @@ impl CoordinatorAcceptState {
         let user_id_opt = device_cert.as_ref().map(|c| c.user_identity);
         let snap_bytes = {
             let mut s = self.state.write().unwrap();
-            if was_approved {
-                s.approved.remove(&remote_id);
-            }
-            s.pending.remove(&remote_id);
             let _ = s.members.add(Member {
                 identity: remote_id,
                 ip: peer_ip,
@@ -799,70 +685,4 @@ impl ProtocolRouter {
     }
 }
 
-#[cfg(test)]
-mod pending_cap_tests {
-    use super::*;
 
-    fn eid(seed: u8) -> EndpointId {
-        let mut b = [0u8; 32];
-        b[0] = seed;
-        iroh::SecretKey::from(b).public()
-    }
-
-    fn pending_at(t: Instant) -> PendingJoin {
-        PendingJoin {
-            hostname: None,
-            device_cert: None,
-            requested_at: t,
-        }
-    }
-
-    #[test]
-    fn no_eviction_below_cap() {
-        let mut pending = HashMap::new();
-        pending.insert(eid(1), pending_at(Instant::now()));
-        assert_eq!(evict_oldest_pending(&mut pending, eid(2), 4), None);
-        assert_eq!(pending.len(), 1);
-    }
-
-    #[test]
-    fn owner_admits_only_matching_user_identity() {
-        let owner = iroh::SecretKey::from([7u8; 32]);
-        let owner_id = owner.public();
-        let device = iroh::SecretKey::from([9u8; 32]).public();
-        let cert = control::DeviceCert::create(&owner, &device, 0);
-
-        // Cert signed by this owner -> admit.
-        assert!(owner_admits(Some(&cert), owner_id));
-        // No cert -> do not auto-admit.
-        assert!(!owner_admits(None, owner_id));
-        // Cert signed by a different user -> do not auto-admit.
-        let other = iroh::SecretKey::from([11u8; 32]).public();
-        assert!(!owner_admits(Some(&cert), other));
-    }
-
-    #[test]
-    fn repeat_request_from_same_peer_never_evicts() {
-        let mut pending = HashMap::new();
-        for s in 0..4u8 {
-            pending.insert(eid(s), pending_at(Instant::now()));
-        }
-        // eid(1) is already queued: a re-request must not evict anyone.
-        assert_eq!(evict_oldest_pending(&mut pending, eid(1), 4), None);
-        assert_eq!(pending.len(), 4);
-    }
-
-    #[test]
-    fn full_queue_evicts_the_oldest() {
-        let base = Instant::now();
-        let mut pending = HashMap::new();
-        // eid(0) is the oldest; later ids are progressively newer.
-        for s in 0..4u8 {
-            pending.insert(eid(s), pending_at(base + Duration::from_millis(s as u64)));
-        }
-        let evicted = evict_oldest_pending(&mut pending, eid(99), 4);
-        assert_eq!(evicted, Some(eid(0)));
-        assert_eq!(pending.len(), 3);
-        assert!(!pending.contains_key(&eid(0)));
-    }
-}

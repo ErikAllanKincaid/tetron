@@ -309,17 +309,6 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
     }
 }
 
-/// A closed-network join that was queued for coordinator approval and has not
-/// yet been admitted. Persisted so the background retry survives a restart.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingJoinEntry {
-    /// The network public key (bare room id) we asked to join.
-    pub network_key: String,
-    /// The local display name to use once admitted, if the user gave one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -352,10 +341,6 @@ pub struct AppConfig {
     pub discovery_dns: ServerOverride,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
-    /// Closed-network joins queued for coordinator approval, awaiting
-    /// admission. See [`PendingJoinEntry`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_joins: Vec<PendingJoinEntry>,
 }
 
 // ---- Storage layout -------------------------------------------------------
@@ -397,8 +382,6 @@ struct Settings {
     relay: ServerOverride,
     #[serde(default)]
     discovery_dns: ServerOverride,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pending_joins: Vec<PendingJoinEntry>,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -448,15 +431,15 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 /// Linux: `/etc/tetron` (system service location, root:tetron). macOS: the
 /// daemon's `~/.config/tetron` (root-only under `/var/root`).
 pub fn config_dir() -> Result<PathBuf> {
-    // An explicit `TORPEDO_CONFIG_DIR` override (renamed from the pre-fork
-    // rayfish-prefixed name, RENAME-007, so it cannot collide with a genuine
-    // rayfish process's own override on the same host) is honored only on Android
+    // An explicit `TETRON_CONFIG_DIR` override (renamed from the torpedo-prefixed
+    // name, RENAME-M02, so it cannot collide with a genuine torpedo/rayfish
+    // process's own override on the same host) is honored only on Android
     // (`ray-mobile`'s `Node::new` points it at the app's `Context.getFilesDir()`)
     // and in `cfg(test)` (headless/test harnesses run against an isolated config
     // tree). Desktop/service production builds never check this var, so their
     // resolved path is byte-for-byte unchanged from before the override existed.
     #[cfg(any(target_os = "android", test))]
-    if let Some(dir) = std::env::var_os("TORPEDO_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("TETRON_CONFIG_DIR") {
         let dir = PathBuf::from(dir);
         ensure_dir(&dir)?;
         return Ok(dir);
@@ -639,7 +622,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             subnet: None,
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
-            pending_joins: Vec::new(),
         }
     };
 
@@ -674,7 +656,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
         networks,
-        pending_joins: settings.pending_joins,
     })
 }
 
@@ -712,47 +693,10 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         subnet: config.subnet,
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
-        pending_joins: config.pending_joins.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
     write_atomic(&path, &contents, true)
-}
-
-/// Record a queued join so its background retry survives a daemon restart.
-/// Idempotent: a second call with the same key updates the stored name but
-/// does not duplicate the entry.
-pub fn add_pending_join(entry: PendingJoinEntry) -> Result<()> {
-    add_pending_join_in(&config_dir()?, entry)
-}
-
-fn add_pending_join_in(dir: &Path, entry: PendingJoinEntry) -> Result<()> {
-    let mut cfg = load_in(dir)?;
-    if let Some(existing) = cfg
-        .pending_joins
-        .iter_mut()
-        .find(|e| e.network_key == entry.network_key)
-    {
-        existing.name = entry.name;
-    } else {
-        cfg.pending_joins.push(entry);
-    }
-    save_settings_in(dir, &cfg)
-}
-
-/// Drop a pending-join marker once the network is admitted (or abandoned).
-pub fn remove_pending_join(network_key: &str) -> Result<()> {
-    remove_pending_join_in(&config_dir()?, network_key)
-}
-
-fn remove_pending_join_in(dir: &Path, network_key: &str) -> Result<()> {
-    let mut cfg = load_in(dir)?;
-    let before = cfg.pending_joins.len();
-    cfg.pending_joins.retain(|e| e.network_key != network_key);
-    if cfg.pending_joins.len() != before {
-        save_settings_in(dir, &cfg)?;
-    }
-    Ok(())
 }
 
 /// Persist a single network to `networks/<name>.toml`. Touches only that file,
@@ -820,10 +764,10 @@ pub fn remove_network(config: &mut AppConfig, name: &str) -> bool {
     config.networks.len() < before
 }
 
-/// Process-wide lock serializing tests that mutate `TORPEDO_CONFIG_DIR` (or any
+/// Process-wide lock serializing tests that mutate `TETRON_CONFIG_DIR` (or any
 /// other env var read by [`config_dir`]), since lib tests share one process and
 /// run on parallel threads. Shared across test modules (`identity`, `daemon`)
-/// so none of them observe a `TORPEDO_CONFIG_DIR` value set by a concurrent test.
+/// so none of them observe a `TETRON_CONFIG_DIR` value set by a concurrent test.
 #[cfg(test)]
 pub(crate) static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1339,39 +1283,4 @@ name = "test"
         assert!(load_network_in(dir, "a/b").is_err());
     }
 
-    #[test]
-    fn pending_join_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-
-        // Start from an empty settings file.
-        save_settings_in(dir, &AppConfig::default()).unwrap();
-
-        add_pending_join_in(
-            dir,
-            PendingJoinEntry {
-                network_key: "abc123".to_string(),
-                name: Some("homelab".to_string()),
-            },
-        )
-        .unwrap();
-
-        let loaded = load_in(dir).unwrap();
-        assert_eq!(loaded.pending_joins.len(), 1);
-        assert_eq!(loaded.pending_joins[0].network_key, "abc123");
-
-        // Adding the same key again does not duplicate it.
-        add_pending_join_in(
-            dir,
-            PendingJoinEntry {
-                network_key: "abc123".to_string(),
-                name: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(load_in(dir).unwrap().pending_joins.len(), 1);
-
-        remove_pending_join_in(dir, "abc123").unwrap();
-        assert!(load_in(dir).unwrap().pending_joins.is_empty());
-    }
 }

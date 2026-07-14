@@ -24,17 +24,8 @@ impl MeshManager {
             .iter()
             .map(|h| self.network_status(&h, my_id, &direct_names))
             .collect();
-        // Persisted pending-join markers, minus any network that has since
-        // become active (admitted while we were retrying in the background).
-        let pending_networks: Vec<String> = config::load()
-            .map(|c| {
-                c.pending_joins
-                    .into_iter()
-                    .filter(|p| !self.networks.contains_key(&p.network_key))
-                    .map(|p| p.name.unwrap_or(p.network_key))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // LIVE-001 removed the pending-join queue; always empty.
+        let pending_networks: Vec<String> = Vec::new();
 
         IpcMessage::StatusResponse {
             endpoint_id: self.endpoint.id(),
@@ -82,7 +73,7 @@ impl MeshManager {
                 }
             };
             let count = s.members.all().len();
-            (s.roster(), count, s.pending.len())
+            (s.roster(), count, 0)
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = self

@@ -15,7 +15,6 @@ mod bootstrap;
 mod coordinator;
 mod create_join;
 mod diagnostics;
-mod invite;
 mod invite_handler;
 mod invite_store;
 mod join;

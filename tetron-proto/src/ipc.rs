@@ -72,20 +72,6 @@ pub enum IpcMessage {
     SetOperator {
         uid: u32,
     },
-    /// List peers awaiting live approval on a closed network (coordinator-only).
-    Requests {
-        network: String,
-    },
-    /// Admit a pending peer by short id (coordinator-only).
-    AcceptRequest {
-        network: String,
-        id: String,
-    },
-    /// Drop a pending peer's join request by short id (coordinator-only).
-    DenyRequest {
-        network: String,
-        id: String,
-    },
     /// Coordinator-only: grant the per-network secret key to a member, making it
     /// a co-coordinator (can publish / suggest firewall rules).
     AdminAdd {
@@ -148,10 +134,6 @@ pub enum IpcMessage {
         #[serde(default)]
         pending_networks: Vec<String>,
     },
-    /// The list of peers awaiting live approval.
-    PendingRequests {
-        requests: Vec<PendingRequestInfo>,
-    },
     /// The list of network key-holders (reply to `AdminList`): the local node
     /// plus every identity it has granted the key to.
     AdminListResponse {
@@ -204,13 +186,6 @@ pub struct AdminInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PendingRequestInfo {
-    pub short_id: String,
-    pub hostname: Option<String>,
-    pub waiting_secs: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkStatus {
     pub name: String,
     pub role: NetworkRole,
@@ -220,8 +195,8 @@ pub struct NetworkStatus {
     pub network_key: Option<String>,
     pub member_count: usize,
     pub peers: Vec<PeerStatus>,
-    /// Peers awaiting live approval on this network — coordinator-only
-    /// (`ray requests <net>` / `ray accept`). Surfaced in the status summary.
+    /// Legacy field retained for D1 compat — always 0 after LIVE-001 removed
+    /// the live-approval path. A full-tetron coordinator may still populate it.
     #[serde(default)]
     pub pending_requests: usize,
 }

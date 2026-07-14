@@ -211,7 +211,6 @@ impl MeshManager {
             suggested_firewall: SuggestedFirewall::default(),
             subnet,
             reusable_keys: BTreeMap::new(),
-            pending: HashMap::new(),
             invite_store: crate::daemon::mesh::invite_store::InviteStore::new(name).ok(),
         })
     }
@@ -394,7 +393,6 @@ impl MeshManager {
         invite: Option<Vec<u8>>,
         coordinator: Option<EndpointId>,
     ) -> IpcMessage {
-        let transport_captured = transport.clone();
         match self
             .join_network_inner(
                 network_key,
@@ -407,55 +405,14 @@ impl MeshManager {
             )
             .await
         {
-            Ok(TryJoin::Joined(resp)) => {
-                let _ = config::remove_pending_join(network_key);
-                resp
-            }
+            Ok(TryJoin::Joined(resp)) => resp,
             Ok(TryJoin::Pending) => {
-                // Persist so the retry resumes after a restart.
-                let _ = config::add_pending_join(config::PendingJoinEntry {
-                    network_key: network_key.to_string(),
-                    name: name.map(|s| s.to_string()),
-                });
-                // Closed network: queued for live approval. Retry in the
-                // background on a backoff until `tetron accept` admits us.
-                let me = Arc::clone(self);
-                let nk = network_key.to_string();
-                let nm = name.map(|s| s.to_string());
-                tokio::spawn(async move {
-                    let mut backoff = BACKOFF_INITIAL;
-                    loop {
-                        tokio::select! {
-                            _ = me.shutdown_token.cancelled() => return,
-                            _ = tokio::time::sleep(backoff) => {}
-                        }
-                        backoff = (backoff * 2).min(BACKOFF_MAX);
-                        match me
-                            .join_network_inner(
-                                &nk,
-                                nm.as_deref(),
-                                hostname.clone(),
-                                transport_captured.clone(),
-                                invite.clone(),
-                                coordinator,
-                                true,
-                            )
-                            .await
-                        {
-                            Ok(TryJoin::Joined(_)) => {
-                                let _ = config::remove_pending_join(&nk);
-                                tracing::info!(net = %nk, "approval granted - joined");
-                                return;
-                            }
-                            Ok(TryJoin::Pending) => continue,
-                            Err(e) => {
-                                tracing::warn!(net = %nk, error = %e, "join retry failed");
-                            }
-                        }
-                    }
-                });
-                IpcMessage::Ok {
-                    message: "join request sent - waiting for coordinator approval (run `tetron status` to check)"
+                // The coordinator queued us for live approval — this is a
+                // full-tetron or legacy peer that still runs live admission.
+                // tetron (LIVE-001) does not support `tetron accept`; the
+                // caller must obtain an invite key from a coordinator.
+                IpcMessage::Error {
+                    message: "this network uses live approval, which tetron does not support; "
                         .to_string(),
                 }
             }
@@ -715,7 +672,6 @@ impl MeshManager {
                 suggested_firewall: data.suggested_firewall.clone(),
                 subnet: crate::membership::resolve_subnet(data.subnet),
                 reusable_keys: data.reusable_keys.clone(),
-                pending: HashMap::new(),
                 invite_store: None,
             };
             ns.refresh_snapshot();
@@ -1167,7 +1123,6 @@ impl MeshManager {
                 suggested_firewall: SuggestedFirewall::default(),
                 subnet: joined_subnet,
                 reusable_keys: data.reusable_keys.clone(),
-                pending: HashMap::new(),
                 invite_store: None,
             };
             ns.refresh_snapshot();

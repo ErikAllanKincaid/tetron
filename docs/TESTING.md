@@ -157,6 +157,51 @@ ping -c 3 <peer-ip>
 - [ ] TUN is back up with the same IP.
 - [ ] Ping works again.
 
+## Stage 9 - Invite key admission (single-use)
+
+Requires the invite key feature (Phase 1-4). The coordinator mints invite keys;
+a joiner auto-admitted by presenting one — no approval queue.
+
+```bash
+# AORUS: mint an invite key
+tetron invite testnet create
+# prints invite_key and invite_id
+```
+
+- [ ] `tetron invite testnet create` returns an invite key and invite id.
+- [ ] `tetron invite testnet list` shows the invite as `active`.
+
+```bash
+# xps: join using invite key (replaces the old room-id + accept flow)
+tetron join <invite-key>
+```
+
+- [ ] Joiner is auto-admitted (no `tetron accept` needed).
+- [ ] `tetron status` on both sides shows 2 members.
+
+```bash
+# Verify connectivity
+ping -c 3 <peer-mesh-ip>
+```
+
+- [ ] Ping works both directions (AORUS -> xps, xps -> AORUS).
+
+```bash
+# Verify the invite was burned (single-use)
+tetron invite testnet list
+```
+
+- [ ] The used invite shows status `used`.
+- [ ] A second `tetron join` with the same key is rejected.
+
+```bash
+# Verify mint+list output with --json
+tetron invite testnet create --json
+tetron invite testnet list --json
+```
+
+- [ ] `--json` output is valid JSON with expected fields.
+
 ## Results log
 
 ### Run 2026-07-13 (Phase 6 verification)
@@ -176,3 +221,70 @@ Results:
 - [x] Stage 6 - `torpedo leave`/rejoin works.
 - [x] Stage 7 - `torpedo kick testnet xps` removes member mesh-wide.
 - [x] Stage 8 - `torpedo down`/`up` toggles data plane, ping restored.
+
+### Run 2026-07-13 (Invite key admission, Phase 1-4)
+
+- Machines: AORUS (coordinator) + xps-17-9720 (member).
+- Binary: tetron at `f8ec05f` (invite key admission Phases 1-4).
+- Subnet: default `10.88.0.0/16`.
+- Old `torpedo` stopped and removed on both machines before starting.
+
+Commands used:
+
+```bash
+# AORUS: stop/remove old torpedo
+sudo systemctl stop torpedo
+sudo systemctl disable torpedo
+sudo rm /usr/local/bin/torpedo
+sudo rm /etc/systemd/system/torpedo.service
+
+# AORUS: build release binary
+cargo build --release
+
+# AORUS: install tetron service
+sudo cp target/release/tetron /usr/local/bin/tetron
+sudo tetron install
+
+# xps: stop/remove old torpedo
+ssh xps-17-9720 "sudo systemctl stop torpedo && sudo systemctl disable torpedo && sudo rm /usr/local/bin/torpedo && sudo rm /etc/systemd/system/torpedo.service"
+
+# copy binary and install on xps
+scp target/release/tetron xps-17-9720:/tmp/tetron
+ssh xps-17-9720 "sudo cp /tmp/tetron /usr/local/bin/tetron && sudo tetron install"
+
+# AORUS: create network (auto-mints first invite)
+tetron create --name testnet
+
+# AORUS: mint another invite
+tetron invite testnet create
+
+# xps: join with invite key (extracted via --json)
+INVITE_KEY=$(tetron invite testnet create --json | python3 -c "import sys,json; print(json.load(sys.stdin)['invite_key'])")
+ssh xps-17-9720 "tetron join '$INVITE_KEY'"
+
+# verify status and connectivity
+tetron status
+ping -c 3 10.88.165.160      # AORUS -> xps
+ssh xps-17-9720 "ping -c 3 10.88.108.232"   # xps -> AORUS
+
+# verify invite was burned
+tetron invite testnet list
+```
+
+Results:
+
+- [x] Stage 9 - `tetron invite testnet create` prints invite key.
+- [x] `tetron invite testnet list` shows invites with active/used status.
+- [x] `tetron join <invite-key>` auto-admits (no accept needed).
+- [x] Ping both ways: 0% loss, ~5ms RTT.
+- [x] Used invite shows `used` in listing (single-use enforced).
+- [x] `--json` output works for create and list.
+
+### Run 2026-07-14 (3-machine invite key e2e, SB-OS as third node)
+
+- Binary: tetron at `f8ec05f`.
+- Machines: AORUS (coordinator) + xps-17-9720 (member) + SB-OS (member, remote).
+- SB-OS had stale `tun0` from old torpedo causing route conflict between two
+  `10.88.0.0/16` entries. After removing the old TUN + torpedo, ping and SSH
+  worked across all 3 nodes over direct connections.
+- SSH from SB-OS → AORUS via mesh IP: confirmed working.

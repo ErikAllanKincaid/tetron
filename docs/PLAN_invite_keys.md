@@ -227,7 +227,7 @@ Reusable keys (Phase 5) do not have this limitation — any coordinator can vali
 
 ## Future work (not in scope)
 
-- Cross-coordinator invite gossip
+- Cross-coordinator invite gossip: propagate `InviteShare`/`InviteUsed` between coordinators so any coordinator can validate a single-use invite, not just the minting one. Required for multi-coordinator networks where the minter is offline. (The wire types already exist for D1 compat.)
 - `--count N` flag to mint multiple invites at once
 - QR code output for mobile
 - `--hostname` binding on invite (coordinator-authoritative name)

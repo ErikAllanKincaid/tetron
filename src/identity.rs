@@ -92,14 +92,14 @@ mod tests {
 
     #[test]
     fn device_cert_store_then_load() {
-        // Serialize against other tests that mutate `TORPEDO_CONFIG_DIR` (see
+        // Serialize against other tests that mutate `TETRON_CONFIG_DIR` (see
         // `daemon::headless_tests`), since lib tests share one process and run
         // on parallel threads.
         let _env_lock = CONFIG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
-            std::env::set_var("TORPEDO_CONFIG_DIR", tmp.path());
+            std::env::set_var("TETRON_CONFIG_DIR", tmp.path());
         }
 
         let user = SecretKey::generate();

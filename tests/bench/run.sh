@@ -6,7 +6,7 @@
 #   srv-b  joins it by live approval (tetron is approval-only)
 #
 # For both directions we measure, over the public IP (DIRECT) and over the
-# tetron 10.88.x.x TUN address (TORPEDO):
+# tetron 10.88.x.x TUN address (TETRON):
 #   - ping RTT (latency)
 #   - iperf3 TCP throughput
 # so the delta isolates the cost tetron (iroh QUIC datagrams, MTU 1200,

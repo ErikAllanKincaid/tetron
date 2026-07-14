@@ -271,6 +271,24 @@ def check_crate_identity() -> dict:
     return {"leak_count": leaks}
 
 
+def check_live_approval_absence() -> dict:
+    """CON-M05: the live-approval tokens must not appear in src/ or tetron-proto/."""
+    tokens = [
+        "AcceptRequest",
+        "DenyRequest",
+        "PendingRequestInfo",
+        "evict_oldest_pending",
+        "MAX_PENDING_JOINS",
+    ]
+    unexpected = 0
+    for root in [Path("src"), Path("tetron-proto")]:
+        for p in root.rglob("*.rs"):
+            text = p.read_text()
+            for t in tokens:
+                unexpected += text.count(t)
+    return {"unexpected_count": unexpected}
+
+
 def check_product_identity() -> dict:
     """CON-M04: binary name is tetron, ALPN prefix starts with tetron/net/,
     config dir references /etc/tetron."""
@@ -317,6 +335,7 @@ if __name__ == "__main__":
         "dependency_absence": check_dependency_absence(),
         "crate_identity": check_crate_identity(),
         "product_identity": check_product_identity(),
+        "live_approval_absence": check_live_approval_absence(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -336,5 +355,6 @@ if __name__ == "__main__":
         and ctx["product_identity"]["binary_name"] == "tetron"
         and ctx["product_identity"]["alpn_prefix"] == "tetron/net/"
         and ctx["product_identity"]["config_dir"] == "/etc/tetron"
+        and ctx["live_approval_absence"]["unexpected_count"] == 0
     )
     sys.exit(0 if ok else 1)

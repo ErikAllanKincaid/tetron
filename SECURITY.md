@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Torpedo is a personal, pre-release fork of rayfish — no versioned releases
+Tetron is a personal, pre-release fork of rayfish — no versioned releases
 have been published yet, and there is no formal backport policy. Report
 against the current `main`.
 

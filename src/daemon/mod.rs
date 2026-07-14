@@ -42,7 +42,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
 
@@ -209,19 +209,9 @@ pub(crate) struct NetworkState {
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
     subnet: Subnet,
-    /// Peers awaiting live operator approval on a closed network (coordinator
-    /// only, in-memory, never persisted or published).
-    pending: HashMap<EndpointId, PendingJoin>,
     /// Per-network invite store for single-use invite keys. `None` on non-coordinator
     /// members (they have no need to mint or validate invites locally).
     pub(crate) invite_store: Option<InviteStore>,
-}
-
-/// A join request held pending live approval on a closed network.
-pub(crate) struct PendingJoin {
-    pub(crate) hostname: Option<String>,
-    pub(crate) device_cert: Option<control::DeviceCert>,
-    pub(crate) requested_at: Instant,
 }
 
 impl NetworkState {
@@ -711,9 +701,6 @@ impl MeshManager {
                 }
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
-            IpcMessage::Requests { network } => self.list_requests(&network),
-            IpcMessage::AcceptRequest { network, id } => self.accept_request(&network, &id).await,
-            IpcMessage::DenyRequest { network, id } => self.deny_request(&network, &id),
             IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
             IpcMessage::InviteCreate { network, expires } => {
@@ -837,7 +824,6 @@ mod accept_handler_tests {
             suggested_firewall: SuggestedFirewall::default(),
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
-            pending: HashMap::new(),
             invite_store: None,
         }))
     }
@@ -1084,11 +1070,11 @@ mod headless_tests {
     /// the builder awaits, matching the daemon binary's `#[tokio::main]` runtime.
     /// The `timeout` guard turns a future startup regression into a fast failure
     /// instead of a hung test.
-    /// Process-wide lock serializing tests that mutate `TORPEDO_CONFIG_DIR` (or
+    /// Process-wide lock serializing tests that mutate `TETRON_CONFIG_DIR` (or
     /// any other env var read by `config::config_dir()`), since lib tests share
     /// one process and run on parallel threads. Shared with `identity::tests`
     /// via `crate::config::CONFIG_ENV_LOCK` so neither module's tests observe a
-    /// `TORPEDO_CONFIG_DIR` bled through from the other.
+    /// `TETRON_CONFIG_DIR` bled through from the other.
     use crate::config::CONFIG_ENV_LOCK as ENV_LOCK;
 
     /// RAII guard that restores a previous env var value (or removes it if it
@@ -1127,14 +1113,14 @@ mod headless_tests {
     async fn build_headless_returns_usable_state_without_ipc_socket() {
         // Serialize against any other test that touches env vars read by
         // `config::config_dir()`, so no concurrent test observes a bled-through
-        // `TORPEDO_CONFIG_DIR`.
+        // `TETRON_CONFIG_DIR`.
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = tempfile::tempdir().unwrap();
         // Isolate identity/config/blobs from the system config dir. The guard
         // restores the previous value (or removes the var) on drop, including
         // on panic, so this can't poison later tests.
-        let _env_guard = EnvVarGuard::set("TORPEDO_CONFIG_DIR", tmp.path());
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
 
         let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
             .await
@@ -1204,7 +1190,7 @@ mod headless_tests {
     async fn attach_tun_is_self_healing_on_reattach_and_double_attach() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let _env_guard = EnvVarGuard::set("TORPEDO_CONFIG_DIR", tmp.path());
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
 
         let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
             .await

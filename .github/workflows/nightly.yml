@@ -76,10 +76,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            name: torpedo-linux-x86_64
+            name: tetron-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
-            name: torpedo-linux-aarch64
+            name: tetron-linux-aarch64
 
     runs-on: ${{ matrix.runner }}
 
@@ -102,7 +102,7 @@ jobs:
 
       - name: Package for release
         run: |
-          BINARY=target/${{ matrix.target }}/release/torpedo
+          BINARY=target/${{ matrix.target }}/release/tetron
           cp "$BINARY" ${{ matrix.name }}
           if command -v sha256sum &>/dev/null; then
             sha256sum ${{ matrix.name }} > ${{ matrix.name }}.sha256
@@ -133,12 +133,12 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-latest
-            name: torpedo-macos-aarch64
+            name: tetron-macos-aarch64
           - target: x86_64-apple-darwin
             # Cross-compiled on Apple Silicon (universal SDK); macos-13 Intel
             # runners are being retired and leave the job queued indefinitely.
             runner: macos-latest
-            name: torpedo-macos-x86_64
+            name: tetron-macos-x86_64
 
     runs-on: ${{ matrix.runner }}
 
@@ -161,7 +161,7 @@ jobs:
 
       - name: Package for release
         run: |
-          BINARY=target/${{ matrix.target }}/release/torpedo
+          BINARY=target/${{ matrix.target }}/release/tetron
           cp "$BINARY" ${{ matrix.name }}
           if command -v sha256sum &>/dev/null; then
             sha256sum ${{ matrix.name }} > ${{ matrix.name }}.sha256
@@ -255,8 +255,8 @@ jobs:
       # keystore yet. Swap to a signed assembleRelease once one exists.
       - name: Package APK
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk torpedo-android.apk
-          sha256sum torpedo-android.apk > torpedo-android.apk.sha256
+          cp android/app/build/outputs/apk/debug/app-debug.apk tetron-android.apk
+          sha256sum tetron-android.apk > tetron-android.apk.sha256
 
       - name: Upload nightly assets
         uses: softprops/action-gh-release@v2
@@ -265,5 +265,5 @@ jobs:
         with:
           tag_name: nightly
           files: |
-            torpedo-android.apk
-            torpedo-android.apk.sha256
+            tetron-android.apk
+            tetron-android.apk.sha256

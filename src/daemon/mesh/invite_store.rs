@@ -68,12 +68,20 @@ impl InviteStore {
     /// [`invite::encode_invite_code`] with the network pubkey and coordinator
     /// pubkey. The raw secret is 16 random bytes; only its blake3 hash is
     /// persisted.
+    ///
+    /// `None` means a 7-day default expiry (INVITE-009). `Some(0)` means
+    /// permanent (never expires). Any other `Some(secs)` sets an explicit
+    /// lifetime in seconds.
     pub(crate) fn create(&self, ttl_secs: Option<u64>) -> Result<(String, Vec<u8>)> {
         let id = random_hex(INVITE_ID_LEN);
         let secret: [u8; INVITE_SECRET_LEN] = rand::random();
         let hash = blake3::hash(&secret);
         let now = crate::daemon::mesh::reconverge::now_secs();
-        let expires_at = ttl_secs.map(|ttl| now + ttl).unwrap_or(0);
+        let expires_at = match ttl_secs {
+            None => now + 7 * 24 * 3600, // default: 7 days
+            Some(0) => 0,                 // explicit permanent
+            Some(ttl) => now + ttl,
+        };
 
         let file = InviteFile {
             id: id.clone(),
@@ -300,13 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn test_expired_invite() {
+    fn test_permanent_invite() {
         let t = test_store();
 
-        // Create with 0-second TTL — expires immediately.
+        // Some(0) means permanent (never expires) after INVITE-009.
         let (_id, secret) = t.store.create(Some(0)).unwrap();
 
-        // Should be expired (now >= created_at + 0)
-        assert!(!t.store.validate_and_burn(&secret).unwrap());
+        // Should not be expired — permanent invites are always valid.
+        assert!(t.store.validate_and_burn(&secret).unwrap());
     }
 }

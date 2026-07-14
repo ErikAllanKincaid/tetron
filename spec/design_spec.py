@@ -1279,34 +1279,38 @@ class RemoveMagicDns(Requirement):
 
 
 class ApprovalOnlyAdmission(Requirement):
-    """REQUIREMENT-ID: MINIMAL-013
+    """REQUIREMENT-ID: MINIMAL-013  [PARTIALLY SUPERSEDED]
 
-    One admission mode: `torpedo create` always makes a Restricted network
-    (`--open` and `--closed` removed); joiners land in the pending queue and
-    are admitted with `torpedo accept`. Removed: the whole single-use invite
-    ledger (`InviteStore` and its toml file), the `torpedo invite`
-    create/list/revoke CLI + `InviteAction`, the `InviteCreate`/`InviteList`/
-    `InviteRevoke` IPC ops and `InviteCreated`/`InviteListResponse`/
-    `InviteInfo` responses, the `invite_create`/`reusable_key_create`/
-    `invite_list`/`invite_revoke` daemon handlers, reusable-key minting, the
-    `InviteShare`/`InviteUsed` gossip *senders* (`gossip_to_coordinators`,
-    `gossip_targets`, `sender_is_coordinator`), and the per-network
-    `invite_lock` ledger mutex threaded through the accept/join machinery.
-    The three files the PLAN names for deletion survive in trimmed form
-    because kept surface lives in them: `invite.rs` collapses to the
-    joiner-side `encode/decode_invite_code`; `cli/invite.rs` and
-    `daemon/mesh/invite.rs` keep only the requests/accept/deny handlers.
-    Kept: joiner-side invite-code redemption (a min node can still join a
-    full-torpedo network by presenting an invite secret), blob reusable-key
-    *validation* on admission (`membership::validate_reusable_key`, the only
-    invite a tetron coordinator honors), requests/accept/deny, admin add/list
-    (co-coordinator grant is the availability story for admission), and kick.
-    `GroupMode::Open` stays understood (a min node granted admin on a
-    full-torpedo open network still auto-admits per the signed blob), only
-    its *creation* is gone. `InviteShare`/`InviteUsed` from full
-    co-coordinators are decoded and ignored on receipt, never an error (D1).
-    `membership.rs` is left textually untouched (its `from_secret`/
-    `revoke_reusable` helpers are kept close to torpedo for cherry-picks).
+    NOTE 2026-07-14: The invite-removal part of MINIMAL-013 was applied
+    (commit history shows the invite-free period) and then REVERSED when
+    invite keys were brought back as the primary enrollment method. The
+    INVITE-* requirements below document the restored invite system. The
+    parts of MINIMAL-013 that still hold:
+      - `tetron create` always makes a Restricted network
+        (`--open`/`--closed` removed from CLI).
+      - `GroupMode::Open` is still understood for D1 compat (auto-admit on
+        full-tetron open networks), but tetron never creates one.
+      - Joiner-side invite-code redemption (decoding an invite minted by a
+        full-tetron coordinator) still works unchanged.
+      - Reusable-key validation in membership.rs is kept as D1 compat.
+      - `InviteShare`/`InviteUsed` from full co-coordinators are decoded
+        and ignored on receipt (D1 compat).
+
+    What was REMOVED and stayed removed:
+      - `--open`/`--closed` flags on `tetron create`.
+      - Reusable-key minting (validation-only survives).
+
+    What was APPLIED and then REVERSED (invites are now fully present):
+      - The single-use invite store (InviteStore, TOML files).
+      - `tetron invite` create/list/revoke CLI.
+      - InviteCreate/InviteList/InviteRevoke IPC ops.
+      - `invite_create`/`invite_list`/`invite_revoke` daemon handlers.
+      - The per-network `invite_lock` mutex was restored in the accept/join
+        machinery.
+      - The `initial_invite_key` auto-mint on create.
+      - `redeem_invite_and_admit` as the primary admission gate.
+
+    See INVITE-001 through INVITE-008 for the current design.
     """
     req_id = "MINIMAL-013"
 
@@ -1439,9 +1443,17 @@ class TorPerNetworkPolicy(Requirement):
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #
-# Reverse the MINIMAL-013 direction: bring back invite minting, but make
-# single-use invite keys the PRIMARY admission mechanism instead of the
-# room-id + live approval queue. The room id becomes discovery-only.
+# MINIMAL-013 originally removed invite minting (approval-only admission).
+# That removal was applied (committed) and then REVERSED: invite keys are
+# restored as the primary enrollment method. The room id is discovery-only;
+# an invite key is required to join (with the pending-queue fallback still
+# present but secondary). See INVITE-007 for the current admission priority
+# and the planned removal of the live-approval fallback.
+#
+# Reversal history: the INVITE-* requirements were applied on top of the
+# invite-free state, restoring the InviteStore, invite CLI/IPC/daemon
+# handlers, initial_invite_key on create, and redeem_invite_and_admit.
+# The MINIMAL-013 requirement class above is marked PARTIALLY SUPERSEDED.
 # --------------------------------------------------------------------------
 
 class InviteKeyIntent(UserStory):
@@ -1584,17 +1596,27 @@ class PostCreateInitialInvite(Requirement):
 class InviteKeyPrimaryAdmission(Requirement):
     """REQUIREMENT-ID: INVITE-007
 
-    `tetron join <room-id>` without an invite key fails with a message
-    explaining that an invite key is required and instructing the user to
-    obtain one from the coordinator. The room id becomes discovery-only:
-    it identifies the network but does not suffice to join. The pending
-    queue (`tetron requests`/`accept`/`deny`) is removed entirely -- live
-    approval is no longer an admission path.
+    Invite keys are the primary enrollment method. The admission priority
+    in `CoordinatorAcceptState::handle_connection` is:
+
+      1. Invite secret presented in JoinRequest  -> redeem_and_admit
+      2. Reusable key (D1 compat)                -> admit
+      3. No invite, Restricted network           -> queue for live approval (fallback)
+
+    The room id is discovery-only: it identifies the network but does not
+    suffice to join without an invite key. `tetron join <room-id>` (no
+    invite) lands in the pending queue (step 3 above) and waits for a
+    coordinator to run `tetron accept`.
+
+    FUTURE (not yet implemented): remove the pending queue entirely so that
+    an invite key is required in all cases and `tetron join <room-id>` fails
+    with a message directing the user to obtain an invite key. For now, the
+    live-approval fallback remains so an operator can manually admit a peer
+    who has the room id but no invite.
 
     The wire protocol still accepts `JoinRequest` without `invite_secret`
     on open networks (D1 compat for full-tetron open-mode networks), but
-    tetron only creates closed networks and always requires an invite
-    secret for admission.
+    tetron only creates closed networks.
     """
     req_id = "INVITE-007"
 
@@ -1611,6 +1633,52 @@ class InviteFormatUnchanged(Requirement):
     -- no change needed on the joiner side.
     """
     req_id = "INVITE-008"
+
+
+class InviteExpiryDefault(Requirement):
+    """REQUIREMENT-ID: INVITE-009
+
+    Invite keys expire by default. `tetron invite create` without `--expires`
+    mints an invite that expires in 7 days. The `--expires` flag accepts
+    durations ("24h", "7d", "30d") to override. To create an invite that
+    never expires, pass `--expires 0` or `--expires never`.
+
+    `InviteStore::create` defaults `ttl_secs: None` to `7 * 86400` (7 days)
+    instead of no expiry. An `expires_at` of 0 means no expiry (opt-in).
+    """
+    req_id = "INVITE-009"
+
+
+class RemoveLiveApproval(Requirement):
+    """REQUIREMENT-ID: LIVE-001
+
+    Remove the live-approval admission path entirely. Invite keys are the
+    only way onto a tetron network. Removed:
+
+    - Pending join queue (`pending: HashMap<EndpointId, PendingJoin>`) and
+      `PendingJoin` struct in `NetworkState`.
+    - `evict_oldest_pending`, `MAX_PENDING_JOINS`.
+    - `ControlMsg::JoinPending` sender (decode-only kept for D1 compat).
+    - `MeshManager::list_requests`, `accept_request`, `deny_request` and
+      their IPC dispatch.
+    - IPC variants `Requests`, `AcceptRequest`, `DenyRequest`,
+      `PendingRequests`, `PendingRequestInfo`.
+    - CLI commands `tetron requests`, `tetron accept`, `tetron deny` and
+      `src/cli/requests.rs`.
+    - Daemon handler file `src/daemon/mesh/invite.rs` (entirely replaced by
+      `invite_handler.rs` for invite-key operations).
+    - Config `PendingJoinEntry`, `pending_joins` field,
+      `add_pending_join`/`remove_pending_join`.
+    - Pending-joins restart loop in `connect_all_networks`.
+    - `was_approved` parameter on `admit_peer`.
+    - `owner_admits` function in `accept.rs` (paired-device D1 shortcut).
+
+    The `approved` field in `GroupBlob` and `ApprovedList` type are
+    retained for D1 compat decode only — a full-tetron coordinator may
+    publish an approved list that tetron nodes must decode without error.
+    tetron coordinators never write to it.
+    """
+    req_id = "LIVE-001"
 
 
 # --------------------------------------------------------------------------
@@ -1681,3 +1749,20 @@ class ProductIdentityGate(Constraint):
     """
     constraint_id = "CON-M04"
     enforcement_logic = "{{ product_identity.binary_name == 'tetron' and product_identity.alpn_prefix.startswith('tetron/net/') and '/etc/tetron' in product_identity.config_dir }}"
+
+
+class LiveApprovalAbsenceGate(Constraint):
+    """CONSTRAINT-ID: CON-M05
+
+    Anti-regression gate for LIVE-001: the live-approval tokens
+    `AcceptRequest`, `DenyRequest`, `PendingJoin`, `PendingRequestInfo`,
+    `evict_oldest_pending`, and `MAX_PENDING_JOINS` must not appear in
+    src/ daemon/ or CLI code. If a cherry-pick from torpedo re-introduces
+    any of these, reconcile.py catches it.
+
+    ENFORCEMENT (reconcile.py): live_approval_absence.unexpected_count
+    equals 0.
+    """
+    constraint_id = "CON-M05"
+    enforcement_logic = "{{ live_approval_absence.unexpected_count == 0 }}"
+

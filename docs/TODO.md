@@ -1,5 +1,16 @@
 # tetron TODO
 
+## Recently completed
+
+- **Invite key admission** (Phases 1-4): invite store, IPC handlers, CLI (create/list/revoke), post-create auto-mint, e2e tested on 3 machines. Room-id joins still queue for live approval (both paths coexist).
+- **Old torpedo cleanup**: service stopped, binary/config removed on AORUS, xps-17, and SB-OS.
+- **E2E test results** logged in `docs/TESTING.md` Stage 9.
+
+## Packaging
+
+- **Build a .deb package** for tetron: systemd service file, config dir, binary, postinst/prerm scripts. Simplifies install on Debian/Ubuntu vs the current `sudo tetron install` from a loose binary.
+
 ## High priority
 
-- **Single-use invite keys as primary admission mechanism**: current model uses room id + live approval (`tetron requests`/`accept`). Intended model: coordinator mints single-use invite keys, shares them out-of-band, joiner auto-admitted on presentation (no approval queue). Room id becomes discovery-only. This reverses the MINIMAL-013 direction — invite minting should come back, but purpose-built for tetron's model (not full-tetron compat). Reusable keys for unattended fleets also needed.
+- **Reusable keys (--reusable)**: add `--reusable` flag to `tetron invite <net> create` — adds hash to `GroupBlob.reusable_keys`, signs + republishes blob. Any coordinator validates against the blob.
+- **Cross-coordinator invite gossip**: propagate `InviteShare`/`InviteUsed` between coordinators so any coordinator can validate a single-use invite, not just the minting one. Required for multi-coordinator networks where the minter may be offline.

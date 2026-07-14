@@ -302,7 +302,6 @@ async fn build_member_state(
         // network record.
         subnet: crate::config::node_subnet(),
         reusable_keys,
-        pending: HashMap::new(),
         invite_store: None,
     };
     ns.refresh_snapshot();

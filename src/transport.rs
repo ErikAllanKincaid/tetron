@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// automatic NAT traversal (UPnP/NAT-PMP/PCP), discovery, and relay fallback on
 /// top of this. If the port is already taken, the endpoint falls back to an
 /// ephemeral port (see `create_endpoint_with_alpns`).
-pub const TORPEDO_LISTEN_PORT: u16 = 43737;
+pub const TETRON_LISTEN_PORT: u16 = 43737;
 
 /// Mesh wire-protocol version, embedded in the per-network ALPN. Bump this on any
 /// breaking change to the mesh control/forwarding protocol. Because iroh negotiates
@@ -55,12 +55,12 @@ pub async fn create_endpoint_with_alpns(
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
-    let fixed = format!("0.0.0.0:{TORPEDO_LISTEN_PORT}");
+    let fixed = format!("0.0.0.0:{TETRON_LISTEN_PORT}");
     let ep = match bind_endpoint(&secret_key, &alpns, tor, &fixed, relay, discovery).await {
         Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(
-                port = TORPEDO_LISTEN_PORT,
+                port = TETRON_LISTEN_PORT,
                 error = %e,
                 "fixed UDP port unavailable; falling back to an ephemeral port"
             );

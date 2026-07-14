@@ -140,25 +140,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: InviteAction,
     },
-    /// List peers awaiting approval on a closed network (coordinator only)
-    Requests {
-        /// Network name
-        network: String,
-    },
-    /// Admit a peer waiting for approval (coordinator only)
-    Accept {
-        /// Network name
-        network: String,
-        /// Short id of the pending peer (from `tetron requests`)
-        id: String,
-    },
-    /// Reject a peer waiting for approval (coordinator only)
-    Deny {
-        /// Network name
-        network: String,
-        /// Short id of the pending peer (from `tetron requests`)
-        id: String,
-    },
     /// Grant the network key to a member (coordinator only). The grantee becomes
     /// a co-coordinator: it can publish the signed blob and admit fresh joiners.
     /// Trusted-network multi-admin.
@@ -448,9 +429,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Invite { network, action } => ipc_invite(&network, action).await,
-        Command::Requests { network } => ipc_requests(&network).await,
-        Command::Accept { network, id } => ipc_accept_request(&network, &id).await,
-        Command::Deny { network, id } => ipc_deny_request(&network, &id).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,

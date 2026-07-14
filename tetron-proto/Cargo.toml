@@ -5,10 +5,10 @@ edition = "2024"
 rust-version = "1.91"
 authors = ["Dario <dario@rayfish.xyz>"]
 license = "MPL-2.0"
-description = "Shared IPC wire protocol for the torpedo daemon/CLI and frontends"
+description = "Shared IPC wire protocol for the tetron daemon/CLI and frontends"
 repository = "https://github.com/ErikAllanKincaid/tetron"
 
-# Shared wire protocol between the `ray` daemon/CLI and GUI frontends.
+# Shared wire protocol between the `tetron` daemon/CLI and GUI frontends.
 # Holds the IPC message enum + msgpack codec and the small enums those
 # messages reference. Intentionally light on dependencies so frontends
 # (e.g. the Tauri UI) don't pull in the daemon's TUN/DNS/blob stack.

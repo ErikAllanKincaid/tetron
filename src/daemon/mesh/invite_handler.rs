@@ -32,7 +32,11 @@ impl MeshManager {
             (s.invite_store.clone().unwrap(), handle.network_key)
         };
 
-        let ttl_secs = match expires {
+        // INVITE-009: default 7-day expiry (None → store default). `--expires 0`
+        // or `--expires never` maps to Some(0) for permanent (never expires).
+        let ttl_secs: Option<u64> = match expires {
+            None => None,
+            Some(dur) if dur == "0" || dur == "never" => Some(0),
             Some(dur) => match parse_duration(dur) {
                 Ok(secs) => Some(secs),
                 Err(e) => {
@@ -41,7 +45,6 @@ impl MeshManager {
                     };
                 }
             },
-            None => None,
         };
 
         let (id, secret) = match invite_store.create(ttl_secs) {
@@ -59,7 +62,13 @@ impl MeshManager {
             &secret,
         );
 
-        let expires_at = ttl_secs.map(|ttl| crate::daemon::mesh::reconverge::now_secs() + ttl);
+        // Some(0) means permanent (never expires) at the store level. Represent
+        // that as `None` in the IPC response so the client shows "never".
+        let expires_at = match ttl_secs {
+            None => Some(crate::daemon::mesh::reconverge::now_secs() + 7 * 24 * 3600),
+            Some(0) => None,
+            Some(ttl) => Some(crate::daemon::mesh::reconverge::now_secs() + ttl),
+        };
 
         IpcMessage::InviteCreated {
             invite_key,

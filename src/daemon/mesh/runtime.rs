@@ -162,7 +162,6 @@ impl MeshManager {
             // (built from the persisted node cache at bootstrap).
             subnet: self.identity.subnet(),
             reusable_keys,
-            pending: HashMap::new(),
             invite_store: InviteStore::new(name).ok(),
         };
 
@@ -513,20 +512,7 @@ impl MeshManager {
             }
         }
 
-        // Resume closed-network joins that were still awaiting approval at shutdown.
-        for pending in &app_config.pending_joins {
-            if self.networks.contains_key(&pending.network_key) {
-                continue;
-            }
-            let me = Arc::clone(self);
-            let key = pending.network_key.clone();
-            let name = pending.name.clone();
-            tokio::spawn(async move {
-                let _ = me
-                    .join_network(&key, name.as_deref(), None, None, None, None)
-                    .await;
-            });
-        }
+        // LIVE-001 removed the pending-join queue; nothing to resume.
 
         tracing::info!(networks = count, "control plane connected");
     }
