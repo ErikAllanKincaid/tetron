@@ -1,7 +1,4 @@
 //! CLI invite-key handlers: create/list/revoke single-use invite keys.
-//!
-//! This replaces the old `cli/invite.rs` which held join-request handlers
-//! (requests/accept/deny) — those moved to `cli/requests.rs`.
 
 use crate::*;
 

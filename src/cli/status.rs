@@ -83,17 +83,6 @@ pub(crate) fn indent(block: &str, indent: usize) -> String {
         .join("\n")
 }
 
-/// Naively pluralize `noun` for a count (append `s` unless `n == 1`). The count
-/// itself is shown separately, so this returns just the noun. Good enough for
-/// the status pending summary's nouns.
-pub(crate) fn pluralize(n: usize, noun: &str) -> String {
-    if n == 1 {
-        noun.to_string()
-    } else {
-        format!("{noun}s")
-    }
-}
-
 pub(crate) async fn ipc_status() -> Result<()> {
     let Ok(mut stream) = ipc::connect().await else {
         // Daemon not running — show saved config
@@ -185,8 +174,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 }
             }
 
-            print_pending_summary(&networks);
-
             // Daemon/CLI version skew: after a manual binary upgrade the CLI is
             // new but the long-running daemon may still be the old one (e.g. it
             // was never restarted). Empty `daemon_version` means the daemon
@@ -267,30 +254,6 @@ fn render_peer_line(peer: &ipc::PeerStatus) -> String {
             format!("{host}  {}  {via}  {rtt}  ↑{up}  ↓{down}", peer.ip)
         }
         None => format!("{host}  {}  —  offline", peer.ip),
-    }
-}
-
-/// Render the trailing "pending" summary: things waiting on the user, each with
-/// the command that clears it. Per-network items (join requests) name their
-/// network.
-fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
-    let mut pending: Vec<(usize, String, String)> = Vec::new();
-    for net in networks {
-        if net.pending_requests > 0 {
-            pending.push((
-                net.pending_requests,
-                pluralize(net.pending_requests, "join request"),
-                format!("tetron requests {}", net.name),
-            ));
-        }
-    }
-    if pending.is_empty() {
-        return;
-    }
-    println!();
-    println!("  pending");
-    for (n, what, cmd) in &pending {
-        println!("    ({n}) {what}  {cmd}");
     }
 }
 

@@ -7,11 +7,10 @@ Electric ray *Tetronarce californica*
 **A standalone P2P mesh VPN.** tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish) that is stripped to a single purpose "Do one thing well.": connect machines into a private overlay with stable identity-derived addresses. It defaults to `10.88.0.0/16` (an uncommon 10.x slice that avoids Tailscale's `100.64.0.0/10`).
 
 ```bash
-sudo tetron up                 # start the node (installs the service)
-tetron create --hostname alice # you are the coordinator of a private network
-tetron join <room-id>          # a second machine requests to join (queues for approval)
-tetron accept <network> <id>   # you admit it (see tetron requests)
-ping 10.88.x.y                 # reach each other by mesh IP from `tetron status`
+sudo tetron up                        # start the node (installs the service)
+tetron create --hostname alice        # you are the coordinator; prints an invite key
+tetron join <invite-key> --hostname bob # a second machine joins using the invite key
+ping 10.88.x.y                        # reach each other by mesh IP from `tetron status`
 ```
 
 [![License: MPL 2.0](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE)
@@ -43,12 +42,9 @@ sudo tetron up
 # Create a private network. The default subnet 10.88.0.0/16 coexists with Tailscale.
 tetron create --hostname alice     # always closed (approval-gated)
 
-# On a second machine -- request to join, then approve it back on alice:
+# On a second machine -- join using the invite key from the create step:
 sudo tetron up
-tetron join <room-id> --hostname bob   # queues for approval
-# back on alice:
-tetron requests <network>          # shows bob's pending request + its id
-tetron accept <network> <id>       # admit bob
+tetron join <invite-key> --hostname bob
 
 # From either machine:
 tetron status                      # networks, peers, your mesh IP, traffic
@@ -74,7 +70,7 @@ Do the `config set subnet` + `restart` on **every** node before it creates or jo
 Each machine runs the `tetron` daemon, which creates a TUN device, captures IP packets, and tunnels them over [iroh](https://iroh.computer) QUIC connections.
 
 1. **Create.** One peer starts a network and becomes its coordinator. The network's public key is its **room id**: it lets others discover the network but is not enough to get in.
-2. **Join.** A peer gets in by **live approval**: it dials the room id, lands in a queue, and a coordinator admits it. The coordinator is the gatekeeper, and admission survives any one coordinator being offline (grant a co-coordinator with `tetron admin add`).
+2. **Join.** A peer gets in using an **invite key** minted by a coordinator. The invite encodes the network pubkey and a one-time secret; the joiner presents the secret to any online coordinator, which validates it against the invite store and admits the peer. Grant a co-coordinator with `tetron admin add` so the network can grow when the original coordinator is offline.
 3. **Mesh.** Every peer derives its own stable virtual IPv4 (in the configured subnet) and IPv6 (`200::/7`) from its identity, then connects directly to every other peer -- hole-punched where possible, falling back to encrypted relays otherwise.
 4. **Use it.** Any TCP/UDP app works, addressed by the peer's mesh IP (from `tetron status`).
 
@@ -82,9 +78,7 @@ Each machine runs the `tetron` daemon, which creates a TUN device, captures IP p
 
 The **room id** is a discovery key, never an admission credential. tetron networks are **always closed** (`--open` was removed in MINIMAL-013), and there is one way in:
 
-- **Live approval** -- the joiner runs `tetron join <room-id>` and lands in a queue; the coordinator runs `tetron requests` then `tetron accept`/`deny`. Any network-key holder can approve, so admission survives the original coordinator being offline (`tetron admin add` grants a co-coordinator).
-
-tetron mints no invites of its own (tracked in `docs/TODO.md`). It can still *join* a full-tetron network by an invite code or reusable key (`tetron join <code>`), and a tetron coordinator honors a reusable key that rides a full-tetron signed roster -- but it never creates one.
+- **Invite key** -- a coordinator mints single-use invite keys with `tetron invite <network> create`. The joiner redeems the key with `tetron join <invite-key> --hostname bob`. Any online coordinator can validate the invite. Grant a co-coordinator with `tetron admin add` so multiple members can mint and redeem invites.
 
 tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `tetron` TUN interface -- e.g. `nft add rule inet filter input iifname "tetron" tcp dport != 22 drop`.
 
@@ -102,17 +96,17 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 - **Configurable overlay subnet** -- default `10.88.0.0/16` avoids Tailscale's `100.64.0.0/10`. Override per-network with `create --subnet` or node-wide with `config set subnet`. The overlap guard refuses to start only if the chosen subnet collides with an existing local network.
 
 **Inherited from rayfish:**
-- Closed networks with **live approval** -- a joiner queues on the room id and a coordinator (or co-coordinator) admits it with `tetron accept`.
+- **Invite-key admission** -- invite-only closed networks. Coordinators mint single-use invite keys with `tetron invite <network> create`; joiners redeem them with `tetron join <invite-key>`.
 - **Dual-stack** -- stable IPv4 in the configured subnet (FNV-1a of identity) and stable IPv6 in `200::/7` (blake3 of identity, 120-bit, never rotates).
 - **NAT traversal** -- direct connections with hole-punching, relay fallback via iroh. Optional Tor transport (`--tor`).
 
-Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `requests`/`accept`/`deny`, `admin`/`kick`, `config`, `status` (`--json`), `up`/`down`, and `completions`.
+Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin`/`kick`, `config`, `status` (`--json`), `up`/`down`, and `completions`.
 
 > **tetron removes file sharing and multi-device pairing** (MINIMAL-004). There is no `tetron send`/`files` or `tetron pair`/`unpair`; the identity model is one device = one user. Copy files with `scp`/`rsync` over the mesh IPs, and back up the identity key yourself (it is one `0600` file under the config dir).
 >
 > **tetron removes the declarative apply layer and local aliases** (MINIMAL-011). There is no `tetron apply`, `tetron alias`, or `tetron identityof`. Reconcile a fleet with a script over `tetron status --json`.
 >
-> **tetron admits by approval only** (MINIMAL-013). `tetron create` always makes a closed network (`--open` is gone) and there is no `tetron invite` -- joiners are admitted with `tetron requests`/`accept`. A tetron node can still *join* a full-tetron network by invite code, and it validates reusable keys presented against a full-tetron roster, but it mints none itself.
+> **tetron admits by invite key only** (MINIMAL-013, superseded by LIVE-001 + INVITE-001..009). `tetron create` always makes a closed network (`--open` is gone). Coordinators mint invite keys with `tetron invite <network> create`; joiners redeem them with `tetron join <invite-key>`. The old live-approval path (`tetron requests`/`accept`/`deny`) was removed in LIVE-001. tetron can still *join* a full-tetron network by invite code, and it validates reusable keys presented against a full-tetron roster.
 >
 > **tetron fixes the hostname at join** (MINIMAL-014). There is no `tetron hostname` rename or `tetron ephemeral` auto-kick. A member's name is set once at join (the coordinator still resolves collisions), and `tetron kick` remains for removing a member.
 >

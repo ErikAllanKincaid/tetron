@@ -32,8 +32,7 @@ const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GI
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of styled text (disables color and
-    /// spinners). Supported by `status`, `invite list`, `requests`, and other
-    /// list commands.
+    /// spinners). Supported by `status`, `invite list`, and other list commands.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
