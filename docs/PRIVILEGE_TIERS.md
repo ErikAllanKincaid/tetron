@@ -438,6 +438,52 @@ decision. The protocol should support any number:
   laptop fleet model where any online member can admit.
 - **Mix:** some coordinators, mostly members. The normal case.
 
+## Cross-network isolation
+
+A machine is frequently a member of multiple tetron networks. Each network
+is independent — membership on one has no bearing on authority on another.
+
+### Concrete scenario
+
+Person-1:
+- Joins network-1 (via invite) as a **member** — no network key.
+- Creates network-2 (with a different subnet) as **coordinator** — holds the key.
+
+If person-2 tries to join network-1 and their connection lands on
+person-1's node, person-1 does **not** authenticate them. The
+`ProtocolRouter` dispatches by ALPN: network-1's ALPN maps to a
+`MemberAcceptState` handler, which expects existing roster members and
+does not validate invite secrets. The connection is silently dropped.
+
+If person-3 tries to join network-2 and lands on person-1's node,
+person-1 **does** authenticate them. Network-2's ALPN maps to a
+`CoordinatorAcceptState` handler, which validates the invite secret
+against the local `InviteStore` and admits on success.
+
+### Why it works this way
+
+Each network independently registers its `AcceptHandler` in the shared
+`ProtocolRouter` at join/create time. The ALPN carries the network's
+public key prefix, so the router can distinguish networks that belong to
+the same daemon. The registration decision is based on whether this node
+holds that *specific* network's secret key:
+
+- **Has the key** → registers `CoordinatorAcceptState` (can admit, validate
+  invites, publish blob).
+- **Does not have the key** → registers `MemberAcceptState` (can only
+  accept reconnecting known members, ignores strangers).
+
+### Design implication
+
+This is correct behavior — holding the key for one network must not imply
+authority on another. It is a direct consequence of the tier model:
+authority is a property of the per-network key, not of the node. A node
+can be admin on network A, coordinator on network B, and member on
+network C simultaneously, and the `ProtocolRouter` enforces the
+boundary automatically.
+
+---
+
 ### What stays from the earlier discussion
 
 | Feature | Still needed? | Why |
