@@ -50,10 +50,10 @@ pub(crate) async fn ipc_create(
             println!();
             println!("  created {name}");
             println!("    address  {}  ·  {}", my_ip, short);
-            let join = format!("torpedo join {network_key}");
+            let join = format!("tetron join {network_key}");
             print_next(&[
                 (&join, "share this to invite peers"),
-                ("torpedo up", "activate the VPN"),
+                ("tetron up", "activate the VPN"),
             ]);
             if let Some(w) = &warning {
                 println!("  ⚠ {w}");
@@ -77,7 +77,7 @@ pub(crate) async fn ipc_join(
     } else {
         None
     };
-    // `torpedo join <arg>` accepts either a bare room id (the network public key) or
+    // `tetron join <arg>` accepts either a bare room id (the network public key) or
     // a self-contained invite code. An invite decodes to the network key plus the
     // coordinator to dial and a one-time secret to present.
     let (network_key, invite, coordinator) = match invite::decode_invite_code(network_key) {
@@ -116,8 +116,8 @@ pub(crate) async fn ipc_join(
             println!("  joined {name}");
             println!("    address  {}", my_ip);
             print_next(&[
-                ("torpedo status", "see who's online"),
-                ("torpedo up", "activate the VPN"),
+                ("tetron status", "see who's online"),
+                ("tetron up", "activate the VPN"),
             ]);
             if let Some(w) = &warning {
                 println!("  ⚠ {w}");

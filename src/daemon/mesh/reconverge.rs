@@ -4,7 +4,7 @@
 //! reconvergence live here.
 //!
 //! The blob's `suggested_firewall` field is carried through verbatim for wire
-//! compatibility with full torpedo (D1) but is not acted on — the userspace
+//! compatibility with full tetron (D1) but is not acted on — the userspace
 //! firewall was removed (MINIMAL-010); packet filtering is the host firewall's job.
 
 use super::super::*;
@@ -69,7 +69,7 @@ pub(crate) async fn reconverge_and_apply(
     network_name: &str,
     state: &SharedNetworkState,
     my_identity: EndpointId,
-    // Retained for call-site stability with torpedo (the rename drain that used
+    // Retained for call-site stability with tetron (the rename drain that used
     // these was removed in MINIMAL-014).
     _alpn: &[u8],
     _my_ip: Ipv4Addr,
@@ -138,7 +138,7 @@ pub(crate) fn prune_departed_peers(
     my_identity: EndpointId,
 ) {
     for (peer_id, ip, conn) in peers.peers_for_network_with_conn(network_name) {
-        // Membership is by roster identity, which for a paired full-torpedo peer
+        // Membership is by roster identity, which for a paired full-tetron peer
         // is its user identity, not the transport id the PeerTable is keyed on.
         // We keep no device→user map, but such a roster entry carries the peer's
         // device cert, so match its `device_key` against the transport id (D1
@@ -169,7 +169,7 @@ pub(crate) fn prune_departed_peers(
 /// freshly-verified roster. Hostname is fixed at join (MINIMAL-014 removed
 /// rename), but the coordinator may have collision-resolved it at admission
 /// (e.g. `alice` → `alice-1`), so keep `config.my_hostname` in sync with the
-/// signed blob's authoritative name (it backs `torpedo status`).
+/// signed blob's authoritative name (it backs `tetron status`).
 pub(crate) fn reconcile_local_hostname(
     members: &[Member],
     network_name: &str,

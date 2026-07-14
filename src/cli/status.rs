@@ -35,11 +35,11 @@ pub(crate) fn print_json(value: &serde_json::Value) {
 pub(crate) fn infer_hint(message: &str) -> Option<String> {
     let m = message.to_lowercase();
     if m.contains("daemon") && (m.contains("not running") || m.contains("connect")) {
-        Some("start the service: sudo torpedo up".into())
+        Some("start the service: sudo tetron up".into())
     } else if m.contains("expired") || m.contains("invite") {
-        Some("ask the coordinator for a fresh code: torpedo invite <net>".into())
+        Some("ask the coordinator for a fresh code: tetron invite <net>".into())
     } else if m.contains("root") || m.contains("permission") || m.contains("operator") {
-        Some("run with sudo, or `sudo torpedo set-operator <you>` once".into())
+        Some("run with sudo, or `sudo tetron set-operator <you>` once".into())
     } else if m.contains("hostname") && m.contains("collision") {
         Some("pick another name: --hostname <name>".into())
     } else {
@@ -153,12 +153,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
             let state = if active { "up" } else { "standby" };
             println!();
             println!(
-                "  torpedo  {}      endpoint {}",
+                "  tetron  {}      endpoint {}",
                 state,
                 endpoint_id.fmt_short(),
             );
             if !active {
-                println!("  (run `torpedo up` to activate)");
+                println!("  (run `tetron up` to activate)");
             }
 
             if networks.is_empty() {
@@ -200,7 +200,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                     cli_version,
                 );
                 println!(
-                    "  (run `sudo torpedo restart` to restart the daemon onto the new binary)"
+                    "  (run `sudo tetron restart` to restart the daemon onto the new binary)"
                 );
             }
             println!();
@@ -280,7 +280,7 @@ fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
             pending.push((
                 net.pending_requests,
                 pluralize(net.pending_requests, "join request"),
-                format!("torpedo requests {}", net.name),
+                format!("tetron requests {}", net.name),
             ));
         }
     }
@@ -294,8 +294,8 @@ fn print_pending_summary(networks: &[ipc::NetworkStatus]) {
     }
 }
 
-/// `torpedo down`: put the daemon on standby (tear down the TUN, revert DNS, drop
-/// connections) while leaving the daemon process running so `torpedo up` can
+/// `tetron down`: put the daemon on standby (tear down the TUN, revert DNS, drop
+/// connections) while leaving the daemon process running so `tetron up` can
 /// reactivate it without root.
 pub(crate) async fn ipc_down() -> Result<()> {
     let mut stream = ipc::connect().await?;

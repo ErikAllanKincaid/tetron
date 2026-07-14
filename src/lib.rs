@@ -7,7 +7,7 @@
 //! these modules via `use tetron::…`.
 #![doc(hidden)]
 
-pub const APP_NAME: &str = "torpedo";
+pub const APP_NAME: &str = "tetron";
 
 use futures::StreamExt;
 use iroh::endpoint::{Connection as IrohConnection, PathEvent};

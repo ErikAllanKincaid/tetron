@@ -1,4 +1,4 @@
-//! Persistent Ed25519 identity stored at `~/.config/torpedo/secret_key`.
+//! Persistent Ed25519 identity stored at `~/.config/tetron/secret_key`.
 //!
 //! The same keypair is used across restarts, giving each node a stable
 //! [`EndpointId`](iroh::EndpointId) and deterministic virtual IP.
@@ -60,7 +60,7 @@ pub fn store_device_cert(cert: &DeviceCert) -> Result<()> {
     Ok(())
 }
 
-/// Delete this device's stored cert (`torpedo unpair` best-effort wipe on the
+/// Delete this device's stored cert (`tetron unpair` best-effort wipe on the
 /// unpaired device). Idempotent: succeeds if the file is already absent.
 pub fn delete_device_cert() -> Result<()> {
     let path = device_cert_path()?;

@@ -1,6 +1,6 @@
 //! iroh endpoint setup and peer connection management.
 //!
-//! Each network gets its own ALPN (`torpedo/net/<version>/<prefix>`) for isolation
+//! Each network gets its own ALPN (`tetron/net/<version>/<prefix>`) for isolation
 //! and mesh-protocol version gating (see `MESH_PROTOCOL_VERSION`).
 //! A single shared iroh [`Endpoint`] handles all networks, filtering by ALPN on accept.
 
@@ -38,7 +38,7 @@ pub const MESH_PROTOCOL_VERSION: u32 = 1;
 pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
     let full = network_pubkey.to_string();
     let prefix = &full[..full.len().min(16)];
-    format!("torpedo/net/{MESH_PROTOCOL_VERSION}/{prefix}").into_bytes()
+    format!("tetron/net/{MESH_PROTOCOL_VERSION}/{prefix}").into_bytes()
 }
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
@@ -140,7 +140,7 @@ async fn bind_endpoint(
     builder.bind().await.context("failed to bind iroh endpoint")
 }
 
-/// Builds the [`QuicTransportConfig`] for torpedo's data-plane shape (one stream
+/// Builds the [`QuicTransportConfig`] for tetron's data-plane shape (one stream
 /// of QUIC datagrams per peer, plus a few reliable control streams).
 ///
 /// Starts from iroh's builder defaults (which carry the multipath / NAT-traversal
@@ -224,11 +224,11 @@ pub async fn connect_to_peer_with_alpn(
         Ok(conn) => conn,
         // An ALPN mismatch fails the QUIC/TLS handshake opaquely. Map that one
         // case to an actionable hint (it's a heuristic — a peer that isn't
-        // running torpedo at all looks similar — hence "may be").
+        // running tetron at all looks similar — hence "may be").
         Err(e) if is_alpn_mismatch(&e.to_string()) => {
             return Err(e).context(
                 "no shared protocol with peer — it may be running an incompatible \
-                 torpedo version (upgrade the older node)",
+                 tetron version (upgrade the older node)",
             );
         }
         Err(e) => return Err(e).context("failed to connect to peer"),
@@ -260,7 +260,7 @@ mod tests {
         let key = SecretKey::generate().public();
         let alpn = network_alpn(&key);
         let key_str = key.to_string();
-        let expected = format!("torpedo/net/{MESH_PROTOCOL_VERSION}/{}", &key_str[..16]);
+        let expected = format!("tetron/net/{MESH_PROTOCOL_VERSION}/{}", &key_str[..16]);
         assert_eq!(alpn, expected.as_bytes());
     }
 

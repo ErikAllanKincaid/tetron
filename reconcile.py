@@ -127,7 +127,7 @@ def check_report_identity() -> dict:
     `rayfish/rayfish` has no `/compare` suffix; presets/crate/author differ) nor
     on RENAME-011's deferred `ray <verb>` comments (a different token)."""
     tokens = [
-        "rayfish-report",  # torpedo report bundle filename (diagnostics.rs)
+        "rayfish-report",  # tetron report bundle filename (diagnostics.rs)
         "root:rayfish",  # firewall.toml perms comment (firewall.rs)
         "rayfish {version}",  # report sysinfo/issue banner (diagnostics.rs)
         "/var/log/rayfish",  # bug-report template log path
@@ -154,7 +154,7 @@ def check_cli_reference_identity() -> dict:
     word only when NOT preceded by `.`, a word char, or `-`, so it never trips
     on the KEEP forms — `.ray` (Magic-DNS TLD), `ray-proto`/`ray-mobile` (crate
     names), `stingray`/`array` (substrings), or `rayfish`. Every match is a
-    stale CLI/binary reference that should read `torpedo`."""
+    stale CLI/binary reference that should read `tetron`."""
     pat = re.compile(r"(?<![.\w-])ray (?=[a-z])")
     targets = list(Path("src").rglob("*.rs"))
     if Path("tests").is_dir():
@@ -168,7 +168,7 @@ def check_cli_reference_identity() -> dict:
 def check_test_harness_identity() -> dict:
     """CON-011/RENAME-017: the e2e/bench harness under `tests/` must not carry the
     pre-fork `rayfish` service/config/marker/record identity — those references
-    are FUNCTIONAL (the scripts run against a `torpedo` binary/service), so a
+    are FUNCTIONAL (the scripts run against a `tetron` binary/service), so a
     stale token silently breaks the test rather than being cosmetic. Curated set,
     so it never trips on the KEEP `NAMES=(rayfish-*)` Scaleway instance labels
     (bare `rayfish`, deliberately retained) or the `.ray` TLD."""
@@ -289,7 +289,7 @@ def check_product_identity() -> dict:
     # ALPN prefix: look for the actual prefix string in the ALPN builder
     alpn_prefix_ok = False
     for line in transport.splitlines():
-        if '"tetron/net/"' in line or "'tetron/net/'" in line:
+        if '"tetron/net/' in line or "'tetron/net/'" in line:
             alpn_prefix_ok = True
             break
     # Config dir: /etc/tetron

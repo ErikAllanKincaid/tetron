@@ -22,7 +22,7 @@ pub fn is_valid_hostname(name: &str) -> bool {
 
 /// Decide the hostname to assign an admitted peer.
 ///
-/// `authoritative` names come from an invite binding (`torpedo invite --hostname`):
+/// `authoritative` names come from an invite binding (`tetron invite --hostname`):
 /// they are assigned verbatim, and a clash with a *different* identity is
 /// rejected — no silent rename — so no peer can claim another's name (and the
 /// Magic-DNS entry that resolves to it). A joiner-chosen (non-authoritative)

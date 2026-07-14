@@ -46,7 +46,7 @@ pub struct DropLabels {
 
 
 #[derive(Debug, MetricsGroup)]
-#[metrics(name = "torpedo", default)]
+#[metrics(name = "tetron", default)]
 pub struct ForwardMetrics {
     /// Total packets received from peers
     pub packets_rx: Counter,

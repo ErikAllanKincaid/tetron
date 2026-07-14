@@ -26,7 +26,7 @@ const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GI
 
 #[derive(Parser)]
 #[command(
-    name = "torpedo",
+    name = "tetron",
     about = "P2P mesh VPN powered by iroh",
     version = FULL_VERSION
 )]
@@ -142,14 +142,14 @@ pub(crate) enum Command {
     Accept {
         /// Network name
         network: String,
-        /// Short id of the pending peer (from `torpedo requests`)
+        /// Short id of the pending peer (from `tetron requests`)
         id: String,
     },
     /// Reject a peer waiting for approval (coordinator only)
     Deny {
         /// Network name
         network: String,
-        /// Short id of the pending peer (from `torpedo requests`)
+        /// Short id of the pending peer (from `tetron requests`)
         id: String,
     },
     /// Grant the network key to a member (coordinator only). The grantee becomes
@@ -166,12 +166,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
-    /// Authorize a user to run torpedo without sudo (requires root)
+    /// Authorize a user to run tetron without sudo (requires root)
     SetOperator {
         /// Username or numeric UID to grant operator access
         user: String,
     },
-    /// Print the torpedo version
+    /// Print the tetron version
     #[command(visible_alias = "ver")]
     Version,
 }
@@ -180,7 +180,7 @@ pub(crate) enum Command {
 pub(crate) enum AdminAction {
     /// Grant the network key to a member (coordinator only)
     Add {
-        /// Short id of the member to promote (from `torpedo status`)
+        /// Short id of the member to promote (from `tetron status`)
         identity: String,
     },
     /// List this network's key-holders (the local node + granted members)
@@ -218,7 +218,7 @@ pub(crate) enum ConfigAction {
 
 fn check_root() {
     if unsafe { libc::geteuid() } != 0 {
-        eprintln!("torpedo requires root privileges to create TUN devices. Run with sudo.");
+        eprintln!("tetron requires root privileges to create TUN devices. Run with sudo.");
         std::process::exit(1);
     }
 }
@@ -259,7 +259,7 @@ fn init_tracing(to_file: bool) -> LogGuard {
                 // than ~a week are pruned automatically (bounds disk usage).
                 match tracing_appender::rolling::Builder::new()
                     .rotation(tracing_appender::rolling::Rotation::DAILY)
-                    .filename_prefix("torpedo.log")
+                    .filename_prefix("tetron.log")
                     .max_log_files(7)
                     .build(logdir::log_dir())
                 {
@@ -419,7 +419,7 @@ async fn main() -> Result<()> {
         Command::Install => cmd_install().await,
         Command::Restart => cmd_restart().await,
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "torpedo", &mut std::io::stdout());
+            clap_complete::generate(shell, &mut Cli::command(), "tetron", &mut std::io::stdout());
             Ok(())
         }
         Command::Requests { network } => ipc_requests(&network).await,
@@ -429,7 +429,7 @@ async fn main() -> Result<()> {
         Command::Config { action } => cmd_config(action, cli.json),
         Command::SetOperator { user } => cmd_set_operator(&user).await,
         Command::Version => {
-            println!("torpedo {FULL_VERSION}");
+            println!("tetron {FULL_VERSION}");
             Ok(())
         }
     }
@@ -440,7 +440,7 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 
-/// `torpedo config get/set/unset`: view or change global daemon settings. Writes
+/// `tetron config get/set/unset`: view or change global daemon settings. Writes
 /// `settings.toml` directly; relay/discovery/subnet all take effect on the next
 /// daemon restart. On Linux the config tree is root-owned, so a write naturally
 /// requires sudo.
@@ -452,7 +452,7 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             // config::load() would silently return defaults — misreporting e.g.
             // `subnet` as <default>. Detect the unreadable file and hint to use
             // sudo instead of printing a wrong value.
-            // The config dir (0750 root:torpedo) and settings.toml (0600
+            // The config dir (0750 root:tetron) and settings.toml (0600
             // root:root) are inaccessible to a non-operator user, so opening it
             // fails with PermissionDenied — bail on that rather than let
             // config::load() fall back to a misleading default. (NotFound on a
@@ -462,7 +462,7 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
                 && e.kind() == std::io::ErrorKind::PermissionDenied
             {
                 anyhow::bail!(
-                    "config is root-only; re-run with sudo: sudo torpedo config get{}",
+                    "config is root-only; re-run with sudo: sudo tetron config get{}",
                     key.as_deref().map(|k| format!(" {k}")).unwrap_or_default()
                 );
             }
@@ -488,13 +488,13 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             let mut cfg = config::load()?;
             config::config_set(&mut cfg, &key, &value, replace)?;
             config::save_settings(&cfg)?;
-            println!("Set {key}. Run 'sudo torpedo restart' for changes to take effect.");
+            println!("Set {key}. Run 'sudo tetron restart' for changes to take effect.");
         }
         ConfigAction::Unset { key } => {
             let mut cfg = config::load()?;
             config::config_set(&mut cfg, &key, "", false)?;
             config::save_settings(&cfg)?;
-            println!("Reset {key} to default. Run 'sudo torpedo restart' for changes to take effect.");
+            println!("Reset {key} to default. Run 'sudo tetron restart' for changes to take effect.");
         }
     }
     Ok(())
@@ -511,7 +511,7 @@ pub(crate) fn uid_for_user(user: &str) -> Option<u32> {
     user.parse::<u32>().ok()
 }
 
-/// `torpedo set-operator <user>`: authorize a local user to run mutating ray
+/// `tetron set-operator <user>`: authorize a local user to run mutating ray
 /// commands without sudo (Tailscale's `--operator` model). The daemon enforces
 /// that this call itself comes from root.
 async fn cmd_set_operator(user: &str) -> Result<()> {
@@ -519,7 +519,7 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("unknown user '{user}' (pass a valid username or UID)"))?;
     let mut stream = ipc::connect()
         .await
-        .context("torpedo daemon is not running; start it with: sudo torpedo up")?;
+        .context("tetron daemon is not running; start it with: sudo tetron up")?;
     ipc::send(&mut stream, ipc::IpcMessage::SetOperator { uid }).await?;
     match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { message } => println!("{message}"),
@@ -544,20 +544,20 @@ mod tests {
     fn strip_deleted_suffix_sanitizes_replaced_binary_path() {
         // After a manual upgrade unlinks the running binary, Linux reports
         // `/proc/self/exe` with a trailing " (deleted)". The service unit must
-        // not inherit it, or the daemon crash-loops on `torpedo (deleted) daemon`.
+        // not inherit it, or the daemon crash-loops on `tetron (deleted) daemon`.
         assert_eq!(
-            strip_deleted_suffix("/usr/local/bin/torpedo (deleted)"),
-            "/usr/local/bin/torpedo"
+            strip_deleted_suffix("/usr/local/bin/tetron (deleted)"),
+            "/usr/local/bin/tetron"
         );
         // A normal path is untouched.
         assert_eq!(
-            strip_deleted_suffix("/usr/local/bin/torpedo"),
-            "/usr/local/bin/torpedo"
+            strip_deleted_suffix("/usr/local/bin/tetron"),
+            "/usr/local/bin/tetron"
         );
         // Only an exact trailing marker is stripped, not the substring mid-path.
         assert_eq!(
-            strip_deleted_suffix("/opt/torpedo (deleted)/torpedo"),
-            "/opt/torpedo (deleted)/torpedo"
+            strip_deleted_suffix("/opt/tetron (deleted)/tetron"),
+            "/opt/tetron (deleted)/tetron"
         );
     }
 }

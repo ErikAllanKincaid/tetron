@@ -1,13 +1,13 @@
 # Rayfish throughput / latency benchmark
 
 Spins up **2 Scaleway instances in the same zone** and measures, for both
-directions, the cost torpedo adds on top of the raw link:
+directions, the cost tetron adds on top of the raw link:
 
-- **latency** — `ping` mean RTT, direct (public IP) vs torpedo (`10.88.x.x` TUN)
-- **throughput** — `iperf3` TCP, direct vs torpedo, forward (`tx`) and reverse (`rx`)
+- **latency** — `ping` mean RTT, direct (public IP) vs tetron (`10.88.x.x` TUN)
+- **throughput** — `iperf3` TCP, direct vs tetron, forward (`tx`) and reverse (`rx`)
 
-`srv-a` creates a closed network (`torpedo create`) and `srv-b` joins by live
-approval (`torpedo join <room>` → `torpedo requests` → `torpedo accept`); tetron
+`srv-a` creates a closed network (`tetron create`) and `srv-b` joins by live
+approval (`tetron join <room>` → `tetron requests` → `tetron accept`); tetron
 is approval-only, there are no invites.
 
 ## Prerequisites
@@ -33,8 +33,8 @@ Results are printed and saved to `results/<stamp>.md` (+ `.raw` TSV).
 ## Caveats
 
 `DEV1-S` has a single shared/burstable vCPU, so single-stream TCP is **CPU-bound**
-— torpedo's userspace TUN + iroh QUIC datagram encryption is the bottleneck, and
+— tetron's userspace TUN + iroh QUIC datagram encryption is the bottleneck, and
 absolute numbers are noisy run-to-run. Use a larger `TYPE` (e.g. `DEV1-L`,
-`PRO2-S`) for steadier throughput; the *direct-vs-torpedo ratio* is the signal,
-not the absolute Mbit/s. torpedo also runs an MTU of 1280 (the IPv6 minimum, per
+`PRO2-S`) for steadier throughput; the *direct-vs-tetron ratio* is the signal,
+not the absolute Mbit/s. tetron also runs an MTU of 1280 (the IPv6 minimum, per
 WireGuard/Tailscale), which caps per-packet payload below the link's native MTU.

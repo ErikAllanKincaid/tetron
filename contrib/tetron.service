@@ -1,11 +1,11 @@
 [Unit]
-Description=torpedo P2P mesh VPN
+Description=tetron P2P mesh VPN
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/torpedo daemon
+ExecStart=/usr/local/bin/tetron daemon
 Restart=on-failure
 RestartSec=5
 

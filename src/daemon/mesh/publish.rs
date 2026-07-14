@@ -140,7 +140,7 @@ pub(crate) async fn update_snapshot_and_publish(
 
 impl MeshManager {
     /// Store the current group snapshot as a blob and re-publish the pkarr record
-    /// so members reconcile the new membership (used after `torpedo accept`).
+    /// so members reconcile the new membership (used after `tetron accept`).
     pub(crate) async fn store_and_publish_group(&self, network: &str) {
         let (hash, net_key, snap_bytes) = {
             let Some(handle) = self.networks.get(network) else {

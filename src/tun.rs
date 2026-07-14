@@ -82,7 +82,7 @@ pub fn check_subnet_overlap(subnet: crate::membership::Subnet) -> Result<()> {
         if crate::membership::subnets_overlap((addr, plen), subnet) {
             bail!(
                 "overlay subnet {base}/{prefix} overlaps interface {iface} ({addr}/{plen}); \
-                 pick a different range with `torpedo config set subnet <cidr>` and restart"
+                 pick a different range with `tetron config set subnet <cidr>` and restart"
             );
         }
     }

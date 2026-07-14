@@ -33,7 +33,7 @@ pub(crate) use join::*;
 pub(crate) use publish::*;
 pub(crate) use reconverge::*;
 pub(crate) use select::*;
-// `run_daemon` is the public process entry point (called by `torpedo daemon`).
+// `run_daemon` is the public process entry point (called by `tetron daemon`).
 pub use bootstrap::run_daemon;
 // `build_headless` is the embedder (mobile) construction entry point.
 pub use bootstrap::build_headless;

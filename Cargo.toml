@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["vpn", "p2p", "mesh", "networking", "iroh"]
 categories = ["network-programming", "command-line-utilities"]
 
-# The repo root is both the `tetron` package (binary `torpedo`) and the workspace
+# The repo root is both the `tetron` package (binary `tetron`) and the workspace
 # root. `tetron-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
 members = ["tetron-proto"]
@@ -25,7 +25,7 @@ members = ["tetron-proto"]
 strip = "symbols"
 
 [[bin]]
-name = "torpedo"
+name = "tetron"
 path = "src/main.rs"
 
 [features]

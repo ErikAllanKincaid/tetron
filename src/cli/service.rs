@@ -6,21 +6,21 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Create the `torpedo` system group if it doesn't already exist (Linux).
+/// Create the `tetron` system group if it doesn't already exist (Linux).
 /// Best-effort: the daemon's config writer falls back to `root:root` ownership
 /// when the group is missing, so a failure here only loosens the group-read
 /// posture, never breaks startup.
 #[cfg(target_os = "linux")]
-pub(crate) fn ensure_torpedo_group() {
-    // `getent group torpedo` exits 0 if the group exists.
+pub(crate) fn ensure_tetron_group() {
+    // `getent group tetron` exits 0 if the group exists.
     let exists = Command::new("getent")
-        .args(["group", "torpedo"])
+        .args(["group", "tetron"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !exists {
         let _ = Command::new("groupadd")
-            .args(["--system", "torpedo"])
+            .args(["--system", "tetron"])
             .status();
     }
 }
@@ -29,7 +29,7 @@ pub(crate) fn ensure_torpedo_group() {
 /// running binary's inode has been unlinked — e.g. after a manual upgrade that
 /// replaces the installed binary while the old one is still running. Without
 /// this strip a subsequent unit rewrite would get
-/// `ExecStart=/usr/local/bin/torpedo (deleted) daemon` and the service would
+/// `ExecStart=/usr/local/bin/tetron (deleted) daemon` and the service would
 /// crash-loop with `unrecognized subcommand '(deleted)'`.
 pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
     path.strip_suffix(" (deleted)").unwrap_or(path)
@@ -37,8 +37,8 @@ pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
 
 /// Write the system service unit/plist, substituting the path of the binary
 /// currently running so the service execs the same binary the user invoked
-/// (rather than a hardcoded /usr/local/bin/torpedo). Idempotent — safe to call on
-/// every `torpedo up`, keeping the exec path fresh if the binary moves.
+/// (rather than a hardcoded /usr/local/bin/tetron). Idempotent — safe to call on
+/// every `tetron up`, keeping the exec path fresh if the binary moves.
 #[allow(unused_variables)]
 pub(crate) fn ensure_service_installed() -> Result<()> {
     let exe = std::env::current_exe()
@@ -49,14 +49,14 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        // Ensure the `torpedo` system group exists before the daemon writes its
-        // config tree under /etc/torpedo (owned root:torpedo). Idempotent;
+        // Ensure the `tetron` system group exists before the daemon writes its
+        // config tree under /etc/tetron (owned root:tetron). Idempotent;
         // best-effort — the daemon falls back to root:root if the group is
         // absent (see config::set_owner).
-        ensure_torpedo_group();
-        let path = Path::new("/etc/systemd/system/torpedo.service");
+        ensure_tetron_group();
+        let path = Path::new("/etc/systemd/system/tetron.service");
         let service =
-            include_str!("../../contrib/torpedo.service").replace("/usr/local/bin/torpedo", &exe);
+            include_str!("../../contrib/tetron.service").replace("/usr/local/bin/tetron", &exe);
         std::fs::write(path, service)
             .with_context(|| format!("failed to write {}", path.display()))?;
         run_cmd("systemctl", &["daemon-reload"]);
@@ -65,12 +65,12 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let path = Path::new("/Library/LaunchDaemons/com.torpedo.vpn.plist");
-        // RENAME-008: match the plist's /usr/local/bin/torpedo placeholder (was
+        let path = Path::new("/Library/LaunchDaemons/com.tetron.vpn.plist");
+        // RENAME-008: match the plist's /usr/local/bin/tetron placeholder (was
         // the stale pre-fork /usr/local/bin/ray, which the plist no longer
         // contains — leaving the real exe path unsubstituted). Mirrors Linux.
-        let plist = include_str!("../../contrib/com.torpedo.vpn.plist")
-            .replace("/usr/local/bin/torpedo", &exe);
+        let plist = include_str!("../../contrib/com.tetron.vpn.plist")
+            .replace("/usr/local/bin/tetron", &exe);
         std::fs::write(path, plist)
             .with_context(|| format!("failed to write {}", path.display()))?;
         return Ok(());
@@ -82,7 +82,7 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
     }
 }
 
-/// `torpedo up`: activate the VPN.
+/// `tetron up`: activate the VPN.
 ///
 /// If the daemon is already running (the common case — the system service
 /// starts it at boot), this is just an unprivileged IPC call asking the daemon
@@ -103,7 +103,7 @@ pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
     // No daemon reachable — install and start the system service (needs root).
     if unsafe { libc::geteuid() } != 0 {
         eprintln!(
-            "torpedo service is not running. Start it with: sudo torpedo up\n\
+            "tetron service is not running. Start it with: sudo tetron up\n\
              (the daemon needs root to install the system service and create the TUN device)"
         );
         std::process::exit(1);
@@ -117,19 +117,19 @@ pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
 /// the daemon to actually accept an IPC connection before declaring success. If
 /// it never comes up (e.g. it crashed on a port/route conflict with another
 /// VPN), we surface the tail of its log so the user knows what went wrong
-/// instead of seeing a cheerful "started" followed by a dead `torpedo status`.
+/// instead of seeing a cheerful "started" followed by a dead `tetron status`.
 pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Result<()> {
     ensure_service_installed()?;
 
     #[cfg(target_os = "linux")]
     {
-        run_cmd("systemctl", &["enable", "torpedo"]);
-        run_cmd("systemctl", &["restart", "torpedo"]);
+        run_cmd("systemctl", &["enable", "tetron"]);
+        run_cmd("systemctl", &["restart", "tetron"]);
     }
 
     #[cfg(target_os = "macos")]
     {
-        let path = "/Library/LaunchDaemons/com.torpedo.vpn.plist";
+        let path = "/Library/LaunchDaemons/com.tetron.vpn.plist";
         // Tear down any previously loaded job (e.g. one pointing at a stale
         // binary path) before loading the freshly written plist.
         run_cmd_quiet("launchctl", &["unload", path]);
@@ -148,7 +148,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         Some(mut stream) => {
             ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
             match ipc::recv(&mut stream).await? {
-                ipc::IpcMessage::Ok { message } => println!("torpedo service started. {message}"),
+                ipc::IpcMessage::Ok { message } => println!("tetron service started. {message}"),
                 ipc::IpcMessage::Error { message } => print_error("error", &message, None),
                 other => eprintln!("Unexpected response: {other:?}"),
             }
@@ -160,9 +160,9 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         }
         None => {
             eprintln!(
-                "torpedo service was started but the daemon never became reachable.\n\
+                "tetron service was started but the daemon never became reachable.\n\
                  It likely crashed on startup — common causes are the chosen overlay subnet\n\
-                 overlapping an existing local network (see `torpedo config set subnet`),\n\
+                 overlapping an existing local network (see `tetron config set subnet`),\n\
                  DNS port 53 already in use, or a conflicting route."
             );
             print_daemon_log_tail();
@@ -187,7 +187,7 @@ pub(crate) async fn grant_operator_to_invoking_user() {
     if let Ok(mut stream) = ipc::connect().await {
         let _ = ipc::send(&mut stream, ipc::IpcMessage::SetOperator { uid }).await;
         if let Ok(ipc::IpcMessage::Ok { .. }) = ipc::recv(&mut stream).await {
-            println!("granted operator access to '{user}' — run torpedo without sudo");
+            println!("granted operator access to '{user}' — run tetron without sudo");
         }
     }
 }
@@ -198,14 +198,14 @@ pub(crate) fn require_root() -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         eprintln!(
             "this command manages the system service and needs root.\n\
-             Re-run with: sudo torpedo <command>"
+             Re-run with: sudo tetron <command>"
         );
         std::process::exit(1);
     }
     Ok(())
 }
 
-/// `torpedo install`: install the system service if needed (or refresh an existing
+/// `tetron install`: install the system service if needed (or refresh an existing
 /// install), then start it and verify the daemon comes up. Requires root.
 pub(crate) async fn cmd_install() -> Result<()> {
     require_root()?;
@@ -216,11 +216,11 @@ pub(crate) async fn cmd_install() -> Result<()> {
 pub(crate) fn service_unit_exists() -> bool {
     #[cfg(target_os = "linux")]
     {
-        return Path::new("/etc/systemd/system/torpedo.service").exists();
+        return Path::new("/etc/systemd/system/tetron.service").exists();
     }
     #[cfg(target_os = "macos")]
     {
-        return Path::new("/Library/LaunchDaemons/com.torpedo.vpn.plist").exists();
+        return Path::new("/Library/LaunchDaemons/com.tetron.vpn.plist").exists();
     }
     #[allow(unreachable_code)]
     false
@@ -228,88 +228,88 @@ pub(crate) fn service_unit_exists() -> bool {
 
 /// Restart the installed service via the OS service manager (without rewriting
 /// the unit file) and wait for the daemon to accept IPC again. Backs
-/// `torpedo restart`; mirrors the `up`/`install` diagnostics.
+/// `tetron restart`; mirrors the `up`/`install` diagnostics.
 #[allow(unreachable_code)]
 pub(crate) async fn restart_service_and_wait() -> Result<()> {
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["restart", "torpedo"]);
+    run_cmd("systemctl", &["restart", "tetron"]);
 
     #[cfg(target_os = "macos")]
-    run_cmd("launchctl", &["kickstart", "-k", "system/com.torpedo.vpn"]);
+    run_cmd("launchctl", &["kickstart", "-k", "system/com.tetron.vpn"]);
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("system service not supported on this platform");
 
     match wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await {
         Some(_) => {
-            println!("torpedo service restarted.");
+            println!("tetron service restarted.");
             Ok(())
         }
         None => {
-            eprintln!("torpedo service was restarted but the daemon never became reachable.");
+            eprintln!("tetron service was restarted but the daemon never became reachable.");
             print_daemon_log_tail();
             std::process::exit(1);
         }
     }
 }
 
-/// `torpedo restart`: restart the already-installed system service via the OS
+/// `tetron restart`: restart the already-installed system service via the OS
 /// service manager (does not rewrite the unit file). Requires root. The daemon
 /// comes back up active.
 pub(crate) async fn cmd_restart() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("torpedo service is not installed. Run: sudo torpedo up");
+        eprintln!("tetron service is not installed. Run: sudo tetron up");
         std::process::exit(1);
     }
     restart_service_and_wait().await
 }
 
-/// `torpedo stop`: stop the installed system service so the daemon exits and all
-/// peer connections close cleanly (a clean offline, distinct from `torpedo down`
+/// `tetron stop`: stop the installed system service so the daemon exits and all
+/// peer connections close cleanly (a clean offline, distinct from `tetron down`
 /// standby). Does not disable or uninstall the unit. Requires root.
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_stop() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("torpedo service is not installed. Nothing to stop.");
+        eprintln!("tetron service is not installed. Nothing to stop.");
         std::process::exit(1);
     }
 
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["stop", "torpedo"]);
+    run_cmd("systemctl", &["stop", "tetron"]);
 
     #[cfg(target_os = "macos")]
     run_cmd(
         "launchctl",
-        &["unload", "/Library/LaunchDaemons/com.torpedo.vpn.plist"],
+        &["unload", "/Library/LaunchDaemons/com.tetron.vpn.plist"],
     );
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("system service not supported on this platform");
 
-    println!("torpedo service stopped.");
+    println!("tetron service stopped.");
     Ok(())
 }
 
-/// `torpedo start`: start the already-installed system service via the OS service
+/// `tetron start`: start the already-installed system service via the OS service
 /// manager and wait for the daemon to accept IPC. The daemon comes back up with
 /// the control and data planes on. Requires root.
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_start() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("torpedo service is not installed. Run: sudo torpedo up");
+        eprintln!("tetron service is not installed. Run: sudo tetron up");
         std::process::exit(1);
     }
 
     #[cfg(target_os = "linux")]
-    run_cmd("systemctl", &["start", "torpedo"]);
+    run_cmd("systemctl", &["start", "tetron"]);
 
     #[cfg(target_os = "macos")]
     run_cmd(
         "launchctl",
-        &["load", "-w", "/Library/LaunchDaemons/com.torpedo.vpn.plist"],
+        &["load", "-w", "/Library/LaunchDaemons/com.tetron.vpn.plist"],
     );
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -317,11 +317,11 @@ pub(crate) async fn cmd_start() -> Result<()> {
 
     match wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await {
         Some(_) => {
-            println!("torpedo service started.");
+            println!("tetron service started.");
             Ok(())
         }
         None => {
-            eprintln!("torpedo service was started but the daemon never became reachable.");
+            eprintln!("tetron service was started but the daemon never became reachable.");
             print_daemon_log_tail();
             std::process::exit(1);
         }
@@ -354,7 +354,7 @@ pub(crate) async fn wait_for_daemon(timeout: Duration) -> Option<ipc::IpcFramed>
 pub(crate) fn print_daemon_log_tail() {
     #[cfg(target_os = "macos")]
     {
-        let path = "/var/log/torpedo.log";
+        let path = "/var/log/tetron.log";
         match std::fs::read_to_string(path) {
             Ok(contents) => {
                 let tail: Vec<&str> = contents.lines().rev().take(15).collect();
@@ -373,8 +373,8 @@ pub(crate) fn print_daemon_log_tail() {
 
     #[cfg(target_os = "linux")]
     {
-        eprintln!("\nRecent daemon log (journalctl -u torpedo):");
-        run_cmd("journalctl", &["-u", "torpedo", "-n", "15", "--no-pager"]);
+        eprintln!("\nRecent daemon log (journalctl -u tetron):");
+        run_cmd("journalctl", &["-u", "tetron", "-n", "15", "--no-pager"]);
     }
 }
 
@@ -400,9 +400,9 @@ pub(crate) fn run_cmd_quiet(program: &str, args: &[&str]) {
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let path = Path::new("/etc/systemd/system/torpedo.service");
+        let path = Path::new("/etc/systemd/system/tetron.service");
         if path.exists() {
-            run_cmd("systemctl", &["disable", "--now", "torpedo"]);
+            run_cmd("systemctl", &["disable", "--now", "tetron"]);
             std::fs::remove_file(path)?;
             run_cmd("systemctl", &["daemon-reload"]);
             println!("Removed systemd service.");
@@ -414,7 +414,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let path = Path::new("/Library/LaunchDaemons/com.torpedo.vpn.plist");
+        let path = Path::new("/Library/LaunchDaemons/com.tetron.vpn.plist");
         if path.exists() {
             run_cmd("launchctl", &["unload", "-w", &path.to_string_lossy()]);
             std::fs::remove_file(path)?;

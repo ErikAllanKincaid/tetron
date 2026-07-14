@@ -1,4 +1,4 @@
-//! The torpedo daemon: a long-lived, root-owned process that holds the iroh
+//! The tetron daemon: a long-lived, root-owned process that holds the iroh
 //! [`Endpoint`], the TUN device, the [`PeerTable`], and the [`ProtocolRouter`],
 //! and serves the unprivileged CLI over a Unix-socket IPC channel.
 //!
@@ -90,7 +90,7 @@ mod mesh;
 // `mod.rs` and the other `mesh/` submodules (via `use super::super::*`) call them
 // by bare name, as before the split.
 pub(crate) use mesh::*;
-// `run_daemon` (the `torpedo daemon` entry point) stays public for the binary.
+// `run_daemon` (the `tetron daemon` entry point) stays public for the binary.
 pub use mesh::run_daemon;
 // `build_headless` is the embedder (mobile) construction entry point.
 pub use mesh::build_headless;
@@ -117,7 +117,7 @@ pub(crate) struct MeshCtx {
     tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     stats: Arc<ForwardMetrics>,
     blob_store: FsStore,
-    /// Peers removed from a network's roster (via `torpedo kick` or a stale-entry
+    /// Peers removed from a network's roster (via `tetron kick` or a stale-entry
     /// prune during reconverge), keyed by `(network, transport id)`. A member
     /// closes such a peer's connection but can't see its own close code, so its
     /// reconnect loop would re-dial the removed peer (which still lists it) and
@@ -195,7 +195,7 @@ pub(crate) struct NetworkState {
     /// coordinator's accept path consults this; members default to `Restricted`.
     mode: GroupMode,
     /// Coordinator-suggested firewall rules carried in the blob (keyed by subject
-    /// hostname). Retained for wire compatibility with full torpedo (D1): the
+    /// hostname). Retained for wire compatibility with full tetron (D1): the
     /// field is carried through the `GroupBlob` verbatim on republish but is not
     /// acted on — the userspace firewall was removed (MINIMAL-010).
     suggested_firewall: SuggestedFirewall,
@@ -364,7 +364,7 @@ pub struct MeshManager {
 /// Map key-holding status to a [`NetworkRole`].
 ///
 /// A node that holds the per-network secret key (original coordinator or one
-/// promoted via `torpedo admin add`) runs as `Coordinator`; all other nodes run
+/// promoted via `tetron admin add`) runs as `Coordinator`; all other nodes run
 /// as `Member`.
 fn role_for_key_holder(holds_network_key: bool) -> NetworkRole {
     if holds_network_key {
@@ -545,7 +545,7 @@ impl MeshManager {
                 pending_pongs: self.protocol_router.pending_pongs.clone(),
             })),
         );
-        // Flip the stored role so `torpedo status` reports Coordinator immediately.
+        // Flip the stored role so `tetron status` reports Coordinator immediately.
         if let Some(mut handle) = self.networks.get_mut(network) {
             handle.role = NetworkRole::Coordinator;
         }
@@ -623,8 +623,8 @@ impl MeshManager {
         }
 
         Some(IpcMessage::Error {
-            message: "permission denied: this user is not authorized to control torpedo.\n\
-                      Grant access with: sudo torpedo set-operator <user>"
+            message: "permission denied: this user is not authorized to control tetron.\n\
+                      Grant access with: sudo tetron set-operator <user>"
                 .to_string(),
         })
     }
@@ -647,7 +647,7 @@ impl MeshManager {
             };
         }
         IpcMessage::Ok {
-            message: format!("operator set to uid {uid}; that user can now run torpedo without sudo"),
+            message: format!("operator set to uid {uid}; that user can now run tetron without sudo"),
         }
     }
 
@@ -782,7 +782,7 @@ async fn send_member_sync(conn: &Connection) {
     let _ = open_and_send(conn, &ControlMsg::MemberSync).await;
 }
 
-/// Reply to a `torpedo ping` probe by echoing `Pong{nonce}` over a fresh stream
+/// Reply to a `tetron ping` probe by echoing `Pong{nonce}` over a fresh stream
 /// (see [`open_and_send`] for why the reply can't ride the request stream back).
 async fn respond_pong(conn: &Connection, nonce: u64) {
     let _ = open_and_send(conn, &ControlMsg::Pong { nonce }).await;

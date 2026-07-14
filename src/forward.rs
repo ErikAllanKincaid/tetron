@@ -79,7 +79,7 @@ pub(crate) fn evaluate_inbound(
 }
 
 /// Application close code a peer sends when it deliberately leaves a network
-/// (`torpedo leave`). Distinguishes an intentional departure from a transient drop
+/// (`tetron leave`). Distinguishes an intentional departure from a transient drop
 /// (timeout/reset), so only deliberate leaves prune the canonical member list.
 pub const LEAVE_CODE: u32 = 0x1ea5e;
 
@@ -90,7 +90,7 @@ pub const LEAVE_CODE: u32 = 0x1ea5e;
 pub const ABUSE_CODE: u32 = 0xab05e;
 
 /// Application close code a coordinator (or any member pruning a stale roster
-/// entry) sends when it removes a peer from the network (`torpedo kick`). On the
+/// entry) sends when it removes a peer from the network (`tetron kick`). On the
 /// receiving (kicked) side it is treated like [`LEAVE_CODE`] — an intentional
 /// disconnect — so the kicked node stops reconnecting instead of churning back
 /// into the coordinator's pending queue. The pruning side does not observe its
@@ -108,7 +108,7 @@ pub struct DisconnectEvent {
     /// in the other networks; only this network's connection is torn down.
     pub network: String,
     /// True when the peer closed gracefully with [`LEAVE_CODE`] (it ran
-    /// `torpedo leave`), as opposed to a timeout/reset.
+    /// `tetron leave`), as opposed to a timeout/reset.
     pub intentional: bool,
     /// [`Connection::stable_id`] of the connection that dropped, so a consumer
     /// can tell whether the connection currently stored for this peer is still

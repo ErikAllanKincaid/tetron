@@ -8,12 +8,12 @@ scenarios don't cover.
 
 | Step | Coverage |
 |------|----------|
-| 2 | **Live approval** with no invite: `srv-b` dials the closed net → `torpedo requests` shows it → `torpedo accept` admits it. |
-| 3 | **Live denial**: `srv-c` dials → `torpedo deny` rejects it → it never becomes a member. |
-| 4 | **Co-coordinator grant**: `torpedo admin add` promotes `srv-b`; `torpedo admin list` shows two key-holders. |
-| 5 | **Gatekeeper resilience**: with `srv-a` taken offline (`torpedo down`), the co-coordinator `srv-b` admits `srv-c` by live approval (`requests`/`accept`) — proving any network-key holder can gatekeep. |
+| 2 | **Live approval** with no invite: `srv-b` dials the closed net → `tetron requests` shows it → `tetron accept` admits it. |
+| 3 | **Live denial**: `srv-c` dials → `tetron deny` rejects it → it never becomes a member. |
+| 4 | **Co-coordinator grant**: `tetron admin add` promotes `srv-b`; `tetron admin list` shows two key-holders. |
+| 5 | **Gatekeeper resilience**: with `srv-a` taken offline (`tetron down`), the co-coordinator `srv-b` admits `srv-c` by live approval (`requests`/`accept`) — proving any network-key holder can gatekeep. |
 | 6 | **Mesh-IP reachability**: srv-c reaches srv-b by its mesh IP from the roster (hostname is fixed at join, MINIMAL-014; Magic DNS removed in tetron). |
-| 7 | **Graceful leave + nuke**: `torpedo leave` prunes the member promptly; `torpedo nuke` drops the network. |
+| 7 | **Graceful leave + nuke**: `tetron leave` prunes the member promptly; `tetron nuke` drops the network. |
 
 ## Run
 

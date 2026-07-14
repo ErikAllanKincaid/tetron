@@ -40,5 +40,5 @@ A few load-bearing properties, so reports can be scoped accurately:
   root or the configured operator.
 - **Secrets at rest.** Invite ledgers are written `0600`; invite secrets are
   stored only as blake3 hashes; identity backups are encrypted (argon2 +
-  chacha20poly1305). `torpedo report` bundles a *sanitized* status with no
+  chacha20poly1305). `tetron status --json` provides the same information.
   secret keys.

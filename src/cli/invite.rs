@@ -34,7 +34,7 @@ pub(crate) async fn ipc_requests(network: &str) -> Result<()> {
                 println!();
                 print!("{}", table(&["id", "host", "waiting"], rows, 2));
                 println!();
-                println!("  admit with: torpedo accept {network} <id>");
+                println!("  admit with: tetron accept {network} <id>");
             }
         }
         ipc::IpcMessage::Error { message } => print_error("error", &message, None),

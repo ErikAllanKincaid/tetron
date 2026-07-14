@@ -1,4 +1,4 @@
-# Shared helpers for the torpedo e2e / benchmark test orchestrators.
+# Shared helpers for the tetron e2e / benchmark test orchestrators.
 # Sourced (not executed) by each scenario's run.sh after it sets DIR/ROOT/SERVERS.
 # Provides SSH plumbing, PASS/FAIL accounting, and host-lifecycle helpers
 # (wait-for-ssh, state reset, deploy, daemon-up) so the run.sh scripts contain
@@ -28,7 +28,7 @@ summary(){
 # -n: never read stdin, so calling `on` inside a `while read` loop can't eat it.
 on(){ local ip="$1"; shift; ssh -n "${SSH_OPTS[@]}" -i "$KEY" "root@$ip" "$*"; }
 
-# strip : remove ANSI colour codes from torpedo CLI output (stdin -> stdout).
+# strip : remove ANSI colour codes from tetron CLI output (stdin -> stdout).
 strip(){ sed -r 's/\x1B\[[0-9;]*[mGKH]//g'; }
 
 # own_ip <status-text> : extract a node's own VPN IPv4 (10.88.0.0/16 CGNAT range).
@@ -73,21 +73,21 @@ seed_known_hosts(){
 
 # reset_state <ip...> : clean-slate the daemon (stop + wipe the config tree) so
 # runs are reproducible on already-used servers. Set KEEP_STATE=1 to skip.
-# Linux config lives in /etc/torpedo; /root/.config/torpedo is the pre-migration
+# Linux config lives in /etc/tetron; /root/.config/tetron is the pre-migration
 # location (wiped too so an upgraded VM doesn't migrate stale state back in).
 reset_state(){
   [[ "${KEEP_STATE:-0}" == "1" ]] && return 0
-  step "reset torpedo state on all hosts (KEEP_STATE=1 to skip)"
+  step "reset tetron state on all hosts (KEEP_STATE=1 to skip)"
   local h
   for h in "$@"; do
-    on "$h" 'systemctl stop torpedo 2>/dev/null; rm -rf /etc/torpedo /root/.config/torpedo' && echo "   reset $h"
+    on "$h" 'systemctl stop tetron 2>/dev/null; rm -rf /etc/tetron /root/.config/tetron' && echo "   reset $h"
   done
 }
 
-# deploy_all <root> <ip...> : cross-build + rsync + torpedo up on each host; abort on failure.
+# deploy_all <root> <ip...> : cross-build + rsync + tetron up on each host; abort on failure.
 deploy_all(){
   local root="$1"; shift
-  step "deploy torpedo to all hosts (cross build + rsync + torpedo up)"
+  step "deploy tetron to all hosts (cross build + rsync + tetron up)"
   local ip
   for ip in "$@"; do
     echo ">> just deploy $ip"
@@ -95,12 +95,12 @@ deploy_all(){
   done
 }
 
-# wait_daemons <ip...> : give daemons a moment to settle, then confirm `torpedo status` responds.
+# wait_daemons <ip...> : give daemons a moment to settle, then confirm `tetron status` responds.
 wait_daemons(){
   sleep 5
   local ip
   for ip in "$@"; do
-    if on "$ip" 'torpedo status' >/dev/null 2>&1; then pass "daemon up on $ip"; else fail "daemon not responding on $ip"; fi
+    if on "$ip" 'tetron status' >/dev/null 2>&1; then pass "daemon up on $ip"; else fail "daemon not responding on $ip"; fi
   done
 }
 
@@ -111,8 +111,8 @@ wait_daemons(){
 # jq is already a provisioning prerequisite (see tests/e2e/README.md).
 # ---------------------------------------------------------------------------
 
-# status_json <ip> : echo `torpedo status --json` from a host (raw JSON).
-status_json(){ on "$1" 'torpedo status --json' 2>/dev/null; }
+# status_json <ip> : echo `tetron status --json` from a host (raw JSON).
+status_json(){ on "$1" 'tetron status --json' 2>/dev/null; }
 
 # my_ip4 <ip> [net] : this node's own VPN IPv4 — for the named network, or the
 # first network if omitted. Empty if none.
@@ -205,22 +205,22 @@ wait_roster(){
 # never appears.
 join_approve(){
   local joiner="$1" coord="$2" net="$3" room="$4" host="$5"
-  on "$joiner" "torpedo join $room --hostname $host" 2>&1 | strip | sed "s/^/   $host| /"
+  on "$joiner" "tetron join $room --hostname $host" 2>&1 | strip | sed "s/^/   $host| /"
   local rid=""
   retry_until 60 "rid=\"\$(request_id '$coord' '$net' '$host')\"; [[ -n \"\$rid\" ]]" || return 1
   rid="$(request_id "$coord" "$net" "$host")"
-  on "$coord" "torpedo accept $net $rid" 2>&1 | strip | sed "s/^/   acc| /"
+  on "$coord" "tetron accept $net $rid" 2>&1 | strip | sed "s/^/   acc| /"
 }
 
 # request_id <coord-ip> <net> <hostname> : the short id of a queued join request
-# matching <hostname> (from `torpedo requests <net> --json`). Empty if none.
+# matching <hostname> (from `tetron requests <net> --json`). Empty if none.
 request_id(){
-  on "$1" "torpedo requests $2 --json" 2>/dev/null \
+  on "$1" "tetron requests $2 --json" 2>/dev/null \
     | jq -r --arg h "$3" 'map(select((.hostname // "") == $h)) | .[0].id // empty'
 }
 
 # peer_endpoint <ip> <peer-hostname> [net] : a peer's full endpoint id as seen by
-# <ip> (for `torpedo admin add`, which prefix-matches). Empty if absent.
+# <ip> (for `tetron admin add`, which prefix-matches). Empty if absent.
 peer_endpoint(){
   status_json "$1" | jq -r --arg h "$2" --arg n "${3:-}" '
     (.networks // [])

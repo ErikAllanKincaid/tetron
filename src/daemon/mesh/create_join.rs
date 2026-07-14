@@ -146,15 +146,15 @@ impl MeshManager {
 
     /// Create a network and register it as coordinator.
     ///
-    /// `direct` marks an auto-minted 2-peer `torpedo connect` network (persisted so
-    /// `torpedo status` can tag it). `pre_approve` adds a peer to the `ApprovedList`
+    /// `direct` marks an auto-minted 2-peer `tetron connect` network (persisted so
+    /// `tetron status` can tag it). `pre_approve` adds a peer to the `ApprovedList`
     /// before the blob is signed/published, so the named peer can be welcomed
-    /// without a separate `torpedo accept` round-trip — used by `approve_connection`.
+    /// without a separate `tetron accept` round-trip — used by `approve_connection`.
     /// Build the initial [`NetworkState`] for a freshly created network: the
-    /// creator as sole coordinator, plus any `pre_approve` peer (a `torpedo connect`
+    /// creator as sole coordinator, plus any `pre_approve` peer (a `tetron connect`
     /// requester) admitted up front so the published blob already carries the
     /// approval and the peer is welcomed on its join without a separate
-    /// `torpedo accept`.
+    /// `tetron accept`.
     #[allow(clippy::too_many_arguments)]
     fn build_initial_roster(
         &self,
@@ -258,7 +258,7 @@ impl MeshManager {
                     let (eb, ep) = existing;
                     return Ok(IpcMessage::Error {
                         message: format!(
-                            "node subnet is {eb}/{ep}; change it with `torpedo config set subnet <cidr>` and restart before creating a network on a different subnet"
+                            "node subnet is {eb}/{ep}; change it with `tetron config set subnet <cidr>` and restart before creating a network on a different subnet"
                         ),
                     });
                 }
@@ -405,7 +405,7 @@ impl MeshManager {
                     name: name.map(|s| s.to_string()),
                 });
                 // Closed network: queued for live approval. Retry in the
-                // background on a backoff until `torpedo accept` admits us.
+                // background on a backoff until `tetron accept` admits us.
                 let me = Arc::clone(self);
                 let nk = network_key.to_string();
                 let nm = name.map(|s| s.to_string());
@@ -442,7 +442,7 @@ impl MeshManager {
                     }
                 });
                 IpcMessage::Ok {
-                    message: "join request sent - waiting for coordinator approval (run `torpedo status` to check)"
+                    message: "join request sent - waiting for coordinator approval (run `tetron status` to check)"
                         .to_string(),
                 }
             }
@@ -519,7 +519,7 @@ impl MeshManager {
         // blob's dial order (minter first) until one welcomes us; a reconnect/
         // restore uses the legacy single-coordinator handshake where the
         // coordinator speaks first. Either may return `None` (closed network,
-        // queued for `torpedo accept`) — propagate that to the caller as `Pending`.
+        // queued for `tetron accept`) — propagate that to the caller as `Pending`.
         let established = if initial {
             self.dial_fresh_join(&ctx, &data).await?
         } else {
@@ -577,7 +577,7 @@ impl MeshManager {
     /// Fresh-join dial: try each coordinator in `coordinator_dial_order` (minter
     /// first) until one welcomes us. `Ok(None)` means a coordinator queued the
     /// request (`JoinPending`) and we stop there; the caller retries with backoff
-    /// until `torpedo accept` admits us.
+    /// until `tetron accept` admits us.
     async fn dial_fresh_join(
         self: &Arc<Self>,
         ctx: &JoinContext<'_>,
@@ -733,7 +733,7 @@ impl MeshManager {
                 Ok(JoinResult::Pending) => {
                     // Closed network: queued for live approval. Stop the just-
                     // spawned reconnect loop (nothing connected yet); caller
-                    // retries on a backoff until `torpedo accept` lets us in.
+                    // retries on a backoff until `tetron accept` lets us in.
                     abort_join_tasks(&cancel, tasks);
                     return Ok(None);
                 }

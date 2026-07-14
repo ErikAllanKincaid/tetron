@@ -1,5 +1,5 @@
 //! Build script: stamp the git short SHA into the binary so builds are
-//! identifiable. `torpedo version`/`--version` surfaces it.
+//! identifiable. `tetron version`/`--version` surfaces it.
 //!
 //! Falls back to `unknown` when git is unavailable (e.g. a source tarball build
 //! outside a checkout), so the build never fails for lack of a `.git` dir.

@@ -5,7 +5,7 @@
 use super::super::*;
 
 /// Extra context a coordinator needs to prune the canonical member list when a
-/// peer leaves deliberately (`torpedo leave`). Members pass `None` and only ever
+/// peer leaves deliberately (`tetron leave`). Members pass `None` and only ever
 /// drop the connection from the [`PeerTable`].
 pub(crate) struct CoordinatorCleanup {
     pub(crate) state: SharedNetworkState,
@@ -46,7 +46,7 @@ pub(crate) fn spawn_peer_cleanup(
                             }
                             tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, network = %ev.network, intentional = ev.intentional, "removing dead peer");
 
-                            // A deliberate `torpedo leave` (graceful close) prunes the
+                            // A deliberate `tetron leave` (graceful close) prunes the
                             // member from the roster; any other drop stamps the
                             // member's `last_seen` so the ephemeral pruner can age
                             // it out. Both republish the signed blob and broadcast
@@ -86,7 +86,7 @@ pub(crate) fn spawn_peer_cleanup(
 }
 
 /// Coordinator-side per-member control reader. Continuously accepts control
-/// streams from one member, answers `Ping`/`Pong`, and captures a full-torpedo
+/// streams from one member, answers `Ping`/`Pong`, and captures a full-tetron
 /// peer's device cert off its `MeshHello` (D1 wire compat — kept in the roster
 /// verbatim). Hostname is fixed at join (MINIMAL-014 removed rename
 /// propagation), so a `MeshHello` hostname is no longer acted on. Runs until the
@@ -99,7 +99,7 @@ pub(crate) fn spawn_coordinator_control_reader(
     _network_name: String,
     state: SharedNetworkState,
     token: CancellationToken,
-    // Fires the waiting `torpedo ping` handler when a matching `Pong` arrives.
+    // Fires the waiting `tetron ping` handler when a matching `Pong` arrives.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) {
     tokio::spawn(async move {
@@ -140,7 +140,7 @@ pub(crate) fn spawn_coordinator_control_reader(
                     continue;
                 }
                 // Pairing (MINIMAL-004) and invite minting/gossip (MINIMAL-013)
-                // were removed; tolerate these from full-torpedo peers instead of
+                // were removed; tolerate these from full-tetron peers instead of
                 // erroring the connection (D1 wire compat: decode and ignore).
                 ControlMsg::Unpaired
                 | ControlMsg::CertRefresh { .. }
@@ -152,7 +152,7 @@ pub(crate) fn spawn_coordinator_control_reader(
                 continue;
             };
 
-            // Store a verified device cert in the roster verbatim so full-torpedo
+            // Store a verified device cert in the roster verbatim so full-tetron
             // peers keep their multi-device metadata (tetron does no revocation
             // checking; pairing was removed by MINIMAL-004). The MeshHello's
             // hostname is ignored — hostname is fixed at join (MINIMAL-014).

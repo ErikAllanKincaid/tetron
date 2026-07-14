@@ -296,9 +296,9 @@ pub trait IdentityProvider: Send + Sync {
 pub type Subnet = (Ipv4Addr, u8);
 
 /// The default overlay subnet when none is configured: 10.88.0.0/16, an
-/// uncommon 10.x slice chosen so a no-flag `torpedo create` does NOT collide
+/// uncommon 10.x slice chosen so a no-flag `tetron create` does NOT collide
 /// with Tailscale's 100.64.0.0/10 out of the box (SUBNET-011). Override with
-/// `--subnet` / `torpedo config set subnet`. Written in comma form so it does
+/// `--subnet` / `tetron config set subnet`. Written in comma form so it does
 /// not read as a dotted literal.
 pub fn default_subnet() -> Subnet {
     (Ipv4Addr::new(10, 88, 0, 0), 16)
@@ -319,7 +319,7 @@ pub fn subnet_change_warning(chosen: Subnet, live: Subnet) -> Option<String> {
     (chosen != live).then(|| {
         let (b, p) = chosen;
         format!(
-            "subnet {b}/{p} takes effect after `sudo torpedo restart` (this node's live overlay is still on the previous subnet)"
+            "subnet {b}/{p} takes effect after `sudo tetron restart` (this node's live overlay is still on the previous subnet)"
         )
     })
 }
@@ -446,9 +446,9 @@ pub fn derive_ip_with_index(identity: &EndpointId, index: u32, subnet: Subnet) -
 }
 
 /// The reserved virtual IPv4 at a fixed host offset within `subnet`. Full
-/// torpedo runs its Magic DNS resolver here; tetron removed Magic DNS
+/// tetron runs its Magic DNS resolver here; tetron removed Magic DNS
 /// (MINIMAL-012) but keeps the address reserved for **wire compatibility (D1)**:
-/// a full-torpedo node on a shared network routes this address to its own
+/// a full-tetron node on a shared network routes this address to its own
 /// resolver, so it must never be handed to a member. The `0x0064_6435` offset
 /// reproduces the historical resolver address for the default subnet and yields
 /// a stable, distinct in-subnet address for any /24-or-larger custom subnet.
@@ -556,7 +556,7 @@ pub struct ReusableKey {
     pub created: u64,
     /// Unix seconds after which the key is no longer redeemable.
     pub expires: u64,
-    /// Set by `torpedo invite revoke`; a revoked key admits no one.
+    /// Set by `tetron invite revoke`; a revoked key admits no one.
     pub revoked: bool,
 }
 
@@ -568,9 +568,9 @@ pub struct GroupBlob {
     pub members: Vec<Member>,
     pub approved: Vec<ApprovedEntry>,
     /// Coordinator-suggested firewall rules, keyed by subject hostname. Retained
-    /// for wire compatibility with full torpedo (D1): tetron removed the
+    /// for wire compatibility with full tetron (D1): tetron removed the
     /// userspace firewall (MINIMAL-010), so it carries this field through the
-    /// blob verbatim on republish but never acts on it. A full-torpedo
+    /// blob verbatim on republish but never acts on it. A full-tetron
     /// coordinator can still populate it. `BTreeMap` keys keep the encoding canonical.
     #[serde(default, skip_serializing_if = "SuggestedFirewall::is_empty")]
     pub suggested_firewall: SuggestedFirewall,
@@ -849,7 +849,7 @@ mod tests {
         let other = ("10.99.0.0".parse::<std::net::Ipv4Addr>().unwrap(), 16u8);
         assert!(subnet_change_warning(live, live).is_none());
         let w = subnet_change_warning(other, live).expect("mismatch must warn");
-        assert!(w.contains("sudo torpedo restart"), "{w}");
+        assert!(w.contains("sudo tetron restart"), "{w}");
     }
 
     use super::*;

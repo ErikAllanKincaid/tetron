@@ -11,7 +11,7 @@ use iroh::{
 use iroh_dns::pkarr::SignedPacket;
 use url::Url;
 
-const RECORD_NAME: &str = "_torpedo";
+const RECORD_NAME: &str = "_tetron";
 const RECORD_VERSION: &str = "v1";
 const RECORD_TTL: u32 = 300;
 const PKARR_RELAY_URL: &str = "https://dns.iroh.link/pkarr";
@@ -41,13 +41,13 @@ pub fn effective_pkarr_url() -> String {
 }
 
 
-/// pkarr record name for a user's device-cert **generation floor** (`torpedo unpair`
+/// pkarr record name for a user's device-cert **generation floor** (`tetron unpair`
 /// / rotation). Published under the user's own key (the identity that signs
 /// device certs), it carries a single monotonic generation. Any peer that sees a
 /// `DeviceCert` resolves this record for `cert.user_identity` and rejects the
 /// cert if `cert.generation` is below the floor. Because the pkarr address *is*
 /// the user public key, the record is self-authenticating and cannot be forged.
-const CERT_FLOOR_RECORD_NAME: &str = "_torpedo_certgen";
+const CERT_FLOOR_RECORD_NAME: &str = "_tetron_certgen";
 
 // ---------------------------------------------------------------------------
 // Pkarr client
@@ -135,7 +135,7 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
 }
 
 // ---------------------------------------------------------------------------
-// Cert-generation floor encoding / decoding (torpedo unpair / rotation)
+// Cert-generation floor encoding / decoding (tetron unpair / rotation)
 // ---------------------------------------------------------------------------
 
 /// Encode a cert-generation floor record: the user's current generation. Signed
@@ -303,7 +303,7 @@ mod tests {
         let key = SecretKey::generate();
         let hash = blake3::hash(b"test");
         let packet = encode_network_record(&key, &hash, &[]).unwrap();
-        let records = packet.txt_records("_torpedo");
+        let records = packet.txt_records("_tetron");
         assert_eq!(records[0], "v1");
     }
 
@@ -311,7 +311,7 @@ mod tests {
     fn decode_rejects_unknown_version() {
         let key = SecretKey::generate();
         let values = vec!["v99".to_string()];
-        let packet = SignedPacket::from_txt_strings(&key, "_torpedo", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_tetron", values, 300).unwrap();
         let result = decode_network_record(&packet);
         assert!(result.is_err());
         assert!(
@@ -376,7 +376,7 @@ mod tests {
         let key = SecretKey::generate();
         let peer = SecretKey::generate().public();
         let values = vec!["v1".to_string(), format!("p,{peer}")];
-        let packet = SignedPacket::from_txt_strings(&key, "_torpedo", values, 300).unwrap();
+        let packet = SignedPacket::from_txt_strings(&key, "_tetron", values, 300).unwrap();
         let result = decode_network_record(&packet);
         assert!(result.is_err());
         assert!(

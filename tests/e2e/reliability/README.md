@@ -1,7 +1,7 @@
 # Reliability (packet-loss) e2e test
 
 Four Scaleway instances form an **open**-network full mesh; the test probes every
-pair in both directions for packet loss over the torpedo tunnel, with the raw
+pair in both directions for packet loss over the tetron tunnel, with the raw
 public-IP link as the baseline.
 
 ```bash
@@ -12,27 +12,27 @@ tests/e2e.sh reliability teardown    # destroy them
 
 ## What it proves
 
-torpedo ships traffic as iroh QUIC **datagrams**, which are not retransmitted, so
+tetron ships traffic as iroh QUIC **datagrams**, which are not retransmitted, so
 under congestion, MTU mismatch, relay fallback, or reader backpressure the tunnel
 can silently drop packets. This test exists to surface exactly that: if a clean
-link between two cloud servers loses packets *through torpedo* but not directly,
+link between two cloud servers loses packets *through tetron* but not directly,
 the protocol needs work.
 
-Per pair, per direction, over both the `torpedo` TUN IP and the `direct` public
+Per pair, per direction, over both the `tetron` TUN IP and the `direct` public
 IP:
 
 - **ICMP burst** — `ping -c 1000 -i 0.01` (100 packets/s)
 - **ICMP flood** — `ping -f -c 10000` (as fast as the link accepts)
 - **iperf3 UDP** — `iperf3 -u -b 50M -t 10`, reading `lost_percent`
 
-A probe **FAILs** only when the torpedo-path loss exceeds the direct-path loss by
+A probe **FAILs** only when the tetron-path loss exceeds the direct-path loss by
 more than `MARGIN` percentage points (default `0.5`), so genuine internet drops
-on the underlying link aren't blamed on torpedo. Direct loss is always reported.
+on the underlying link aren't blamed on tetron. Direct loss is always reported.
 A per-run markdown table is saved under `results/`.
 
 ## First-run findings (4× DEV1-S, fr-par-1)
 
-- **ICMP burst and flood: 0% loss over the torpedo tunnel on every directed pair**
+- **ICMP burst and flood: 0% loss over the tetron tunnel on every directed pair**
   (12/12), matching the direct baseline. The datagram data path holds up under
   sustained ICMP load between cloud servers.
 - **Known limitation — iperf3 UDP over the tunnel returns no measurement.** The
@@ -51,7 +51,7 @@ A per-run markdown table is saved under `results/`.
 | `DURATION` | `10` | iperf3 seconds per run |
 | `PING_COUNT` | `1000` | ICMP burst packets (at `-i 0.01`) |
 | `FLOOD_COUNT` | `10000` | ICMP flood packets |
-| `MARGIN` | `0.5` | torpedo loss may exceed direct by this many pp before failing |
+| `MARGIN` | `0.5` | tetron loss may exceed direct by this many pp before failing |
 
 Plus the shared `ZONE`/`TYPE`/`IMAGE`/`SSH_KEY`/`KEEP_STATE` overrides (see
 [`../README.md`](../README.md)).

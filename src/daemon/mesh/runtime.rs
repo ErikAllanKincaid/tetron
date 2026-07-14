@@ -333,7 +333,7 @@ impl MeshManager {
     /// closes its own link to the target immediately. Refused on open networks
     /// (the target would auto-re-join) and against coordinators / self.
     /// Resolve a peer argument (hostname — bare or `host.net.ray` — or a
-    /// short-id / endpoint-id prefix) to its endpoint id. Backs `torpedo kick`.
+    /// short-id / endpoint-id prefix) to its endpoint id. Backs `tetron kick`.
     /// Resolves hostnames directly against the signed roster (Magic DNS was
     /// removed in MINIMAL-012), then falls back to a short-id match.
     pub(crate) async fn resolve_peer_name(&self, name: &str) -> Option<EndpointId> {
@@ -416,7 +416,7 @@ impl MeshManager {
         };
         if member_id == self.endpoint.id() {
             return IpcMessage::Error {
-                message: "cannot kick yourself — use `torpedo leave` or `torpedo nuke`".to_string(),
+                message: "cannot kick yourself — use `tetron leave` or `tetron nuke`".to_string(),
             };
         }
         if is_coord {
@@ -441,7 +441,7 @@ impl MeshManager {
 
     /// Connect to every saved network (control plane). Run once at daemon
     /// startup so mesh connections follow the daemon lifecycle, not the data
-    /// plane: `torpedo down` keeps these connected so the node stays online to
+    /// plane: `tetron down` keeps these connected so the node stays online to
     /// peers. Connections are dropped only on leave/nuke/shutdown.
     pub(crate) async fn connect_all_networks(self: &Arc<Self>) {
         let app_config = match config::load() {
@@ -538,7 +538,7 @@ impl MeshManager {
     /// route calls are skipped.
     pub async fn activate(self: &Arc<Self>, hostname: Option<String>) -> IpcMessage {
         // Persist the personal default hostname first (before the already-active
-        // short-circuit) so `torpedo up --hostname X` records the new default even
+        // short-circuit) so `tetron up --hostname X` records the new default even
         // when the VPN is already up. Used as the fallback for future
         // creates/joins; doesn't rename networks already joined.
         if let Some(h) = hostname {
@@ -569,7 +569,7 @@ impl MeshManager {
         }
 
         // Non-fatal problems hit while activating. The daemon stays up, but we
-        // return these to the client so `torpedo up` can tell the user something is
+        // return these to the client so `tetron up` can tell the user something is
         // wrong instead of silently reporting success on a degraded VPN.
         let mut warnings: Vec<String> = Vec::new();
 

@@ -48,7 +48,7 @@ pub(crate) struct CoordinatorAcceptState {
     pub(crate) disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     pub(crate) token: CancellationToken,
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
-    /// Shared with the router; lets the control reader resolve `torpedo ping` Pongs.
+    /// Shared with the router; lets the control reader resolve `tetron ping` Pongs.
     pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 }
 
@@ -145,7 +145,7 @@ impl CoordinatorAcceptState {
             _ => return,
         };
 
-        // Verify a device certificate if one is presented (full-torpedo peers
+        // Verify a device certificate if one is presented (full-tetron peers
         // with paired devices send one; tetron itself never does). A verified
         // cert is stored in the roster verbatim so full peers keep their
         // multi-device metadata; tetron does no revocation-floor checking or
@@ -157,7 +157,7 @@ impl CoordinatorAcceptState {
             return;
         }
 
-        // A peer pre-approved via `torpedo accept` is admitted directly.
+        // A peer pre-approved via `tetron accept` is admitted directly.
         let is_approved = self.state.read().unwrap().approved.is_approved(&remote_id);
         if is_approved {
             // Live-approved name is joiner-chosen, not authoritative.
@@ -191,7 +191,7 @@ impl CoordinatorAcceptState {
         }
 
         // Unknown peer, no invite: open networks auto-admit; closed networks
-        // queue the request for live operator approval (`torpedo accept`).
+        // queue the request for live operator approval (`tetron accept`).
         let mode = self.state.read().unwrap().mode;
         match mode {
             GroupMode::Open => {
@@ -264,9 +264,9 @@ impl CoordinatorAcceptState {
     /// tetron does not mint single-use invites (MINIMAL-013), so the only invite
     /// a tetron coordinator can honor is a reusable key riding the verified,
     /// network-key-signed blob (redeemable by any network-key holder, no burn).
-    /// A single-use invite minted by a full-torpedo coordinator is not in our
+    /// A single-use invite minted by a full-tetron coordinator is not in our
     /// (non-existent) ledger and is denied here — that joiner must reach its
-    /// full-torpedo coordinator to redeem it.
+    /// full-tetron coordinator to redeem it.
     #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
         &self,
@@ -688,7 +688,7 @@ impl ProtocolHandler for MeshProtocol {
 pub(crate) struct ProtocolRouter {
     blobs: BlobsProtocol,
     handlers: DashMap<Vec<u8>, Arc<MeshProtocol>>,
-    /// In-flight `torpedo ping` probes, keyed by nonce. The control reader fires the
+    /// In-flight `tetron ping` probes, keyed by nonce. The control reader fires the
     /// oneshot when the matching `Pong` arrives so the ping handler can measure
     /// round-trip time. Cloned into both control readers.
     pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,

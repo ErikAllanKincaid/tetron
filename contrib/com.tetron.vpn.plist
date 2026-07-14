@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.torpedo.vpn</string>
+    <string>com.tetron.vpn</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/torpedo</string>
+        <string>/usr/local/bin/tetron</string>
         <string>daemon</string>
     </array>
     <key>RunAtLoad</key>
@@ -14,8 +14,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/torpedo.log</string>
+    <string>/var/log/tetron.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/torpedo.log</string>
+    <string>/var/log/tetron.log</string>
 </dict>
 </plist>

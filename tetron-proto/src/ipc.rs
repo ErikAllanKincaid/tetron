@@ -302,9 +302,9 @@ pub type IpcFramed = Framed<UnixStream, MsgpackCodec<IpcMessage>>;
 
 pub fn socket_path() -> PathBuf {
     if cfg!(target_os = "macos") {
-        PathBuf::from("/var/run/torpedo.sock")
+        PathBuf::from("/var/run/tetron.sock")
     } else {
-        PathBuf::from("/var/run/torpedo/torpedo.sock")
+        PathBuf::from("/var/run/tetron/tetron.sock")
     }
 }
 
@@ -312,7 +312,7 @@ pub async fn connect() -> Result<IpcFramed> {
     let path = socket_path();
     let stream = UnixStream::connect(&path)
         .await
-        .context("daemon not running — start it with: sudo torpedo daemon")?;
+        .context("daemon not running — start it with: sudo tetron daemon")?;
     Ok(Framed::new(stream, MsgpackCodec::new()))
 }
 

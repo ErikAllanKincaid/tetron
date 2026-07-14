@@ -13,10 +13,10 @@
 #     a fresh join is admitted by the co-coordinator (via live approval) while
 #     the original coordinator is offline
 #   - peers reach each other by mesh IP (hostname is fixed at join)
-#   - graceful leave + nuke (`torpedo leave` / `torpedo nuke`)
+#   - graceful leave + nuke (`tetron leave` / `tetron nuke`)
 #
 # Reads tests/e2e/closed-net/.servers (written by provision.sh). Does NOT modify
-# infra. Re-runnable (resets torpedo state each run unless KEEP_STATE=1).
+# infra. Re-runnable (resets tetron state each run unless KEEP_STATE=1).
 set -uo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -40,54 +40,54 @@ wait_all_ssh "$A" "$B" "$C"
 seed_known_hosts "$A" "$B" "$C"
 reset_state "$A" "$B" "$C"
 deploy_all "$ROOT" "$A" "$B" "$C"
-for h in "$A" "$B" "$C"; do on "$h" 'torpedo up' >/dev/null 2>&1 || true; done
+for h in "$A" "$B" "$C"; do on "$h" 'tetron up' >/dev/null 2>&1 || true; done
 wait_daemons "$A" "$B" "$C"
 
 # ---------------------------------------------------------------------------
 step "1. srv-a creates the closed network"
-CREATE="$(on "$A" "torpedo create --name $NET --hostname srv-a" | strip)"
+CREATE="$(on "$A" "tetron create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   a| /'
-ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
+ROOM="$(echo "$CREATE" | sed -n 's/.*tetron join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
 [[ -n "$ROOM" ]] && pass "network '$NET' created (room ${ROOM:0:12}…)" || { fail "create failed"; summary; }
 
 # ---------------------------------------------------------------------------
 step "2. live approval — srv-b joins with NO invite, srv-a approves"
 # A bare room id on a closed net does not admit; the join queues for approval.
-on "$B" "torpedo join $ROOM --hostname srv-b" 2>&1 | strip | sed 's/^/   b| /'
+on "$B" "tetron join $ROOM --hostname srv-b" 2>&1 | strip | sed 's/^/   b| /'
 RID=""
 if retry_until 60 "RID=\"\$(request_id '$A' '$NET' srv-b)\"; [[ -n \"\$RID\" ]]"; then
   RID="$(request_id "$A" "$NET" srv-b)"
-  pass "srv-b shows up in 'torpedo requests' (id ${RID})"
+  pass "srv-b shows up in 'tetron requests' (id ${RID})"
 else
-  fail "srv-b never appeared in 'torpedo requests'"; summary
+  fail "srv-b never appeared in 'tetron requests'"; summary
 fi
-on "$A" "torpedo accept $NET $RID" 2>&1 | strip | sed 's/^/   a| /'
+on "$A" "tetron accept $NET $RID" 2>&1 | strip | sed 's/^/   a| /'
 wait_roster "$A" srv-b
 
 # ---------------------------------------------------------------------------
 step "3. live denial — srv-c joins with NO invite, srv-a denies"
-on "$C" "torpedo join $ROOM --hostname srv-c" 2>&1 | strip | sed 's/^/   c| /'
+on "$C" "tetron join $ROOM --hostname srv-c" 2>&1 | strip | sed 's/^/   c| /'
 CID=""
 if retry_until 60 "CID=\"\$(request_id '$A' '$NET' srv-c)\"; [[ -n \"\$CID\" ]]"; then
   CID="$(request_id "$A" "$NET" srv-c)"; pass "srv-c queued (id ${CID})"
 else
   fail "srv-c never queued"; CID=""
 fi
-[[ -n "$CID" ]] && on "$A" "torpedo deny $NET $CID" 2>&1 | strip | sed 's/^/   a| /'
+[[ -n "$CID" ]] && on "$A" "tetron deny $NET $CID" 2>&1 | strip | sed 's/^/   a| /'
 # A denied peer must not become a member. Give it a window; expect still offline.
 sleep 15
 [[ "$(peer_online "$A" srv-c "$NET")" == "0" ]] && pass "denied peer is not admitted" \
   || fail "denied peer unexpectedly became a member"
-on "$C" "torpedo leave $NET" >/dev/null 2>&1 || true   # stop srv-c's background retries
+on "$C" "tetron leave $NET" >/dev/null 2>&1 || true   # stop srv-c's background retries
 
 # ---------------------------------------------------------------------------
 step "4. co-coordinator grant — srv-a promotes srv-b (admin add / list)"
 B_ID="$(peer_endpoint "$A" srv-b "$NET")"
 echo "   srv-b id (as seen by srv-a): ${B_ID:0:16}…"
 [[ -n "$B_ID" ]] || { fail "could not resolve srv-b's id"; summary; }
-on "$A" "torpedo admin $NET add $B_ID" 2>&1 | strip | sed 's/^/   a| /'
+on "$A" "tetron admin $NET add $B_ID" 2>&1 | strip | sed 's/^/   a| /'
 # admin list should now show two key-holders (the local node + srv-b).
-if retry_until 30 "[[ \"\$(on '$A' 'torpedo admin $NET list --json' | jq -r 'length')\" -ge 2 ]]"; then
+if retry_until 30 "[[ \"\$(on '$A' 'tetron admin $NET list --json' | jq -r 'length')\" -ge 2 ]]"; then
   pass "srv-a's 'admin list' shows two key-holders"
 else
   fail "srv-b not reflected as a key-holder"
@@ -97,7 +97,7 @@ sleep 8
 
 # ---------------------------------------------------------------------------
 step "5. gatekeeper resilience — co-coordinator admits while srv-a is offline"
-on "$A" 'torpedo down' >/dev/null 2>&1 || true   # original coordinator goes offline
+on "$A" 'tetron down' >/dev/null 2>&1 || true   # original coordinator goes offline
 sleep 3
 # srv-c joins with the bare room id; it queues for approval. Only srv-b (the
 # co-coordinator promoted in step 4) is online to admit it — this proves any
@@ -109,7 +109,7 @@ else
   fail "srv-c was never admitted by co-coordinator srv-b"
 fi
 wait_roster "$B" srv-c
-on "$A" 'torpedo up' >/dev/null 2>&1 || true     # bring the coordinator back
+on "$A" 'tetron up' >/dev/null 2>&1 || true     # bring the coordinator back
 
 # ---------------------------------------------------------------------------
 step "6. peers reach each other by mesh IP (hostname is fixed at join in tetron)"
@@ -125,14 +125,14 @@ fi
 
 # ---------------------------------------------------------------------------
 step "7. graceful leave + nuke"
-on "$C" "torpedo leave $NET" 2>&1 | strip | sed 's/^/   c| /'
+on "$C" "tetron leave $NET" 2>&1 | strip | sed 's/^/   c| /'
 # A graceful leave (LEAVE_CODE) prunes the member promptly, not on a timeout.
 if retry_until 45 "[[ \"\$(peer_online '$B' srv-c '$NET')\" == 0 ]]"; then
   pass "graceful leave pruned srv-c from the roster"
 else
   fail "srv-c still present after leave"
 fi
-on "$A" "torpedo nuke $NET --force" 2>&1 | strip | sed 's/^/   a| /'
+on "$A" "tetron nuke $NET --force" 2>&1 | strip | sed 's/^/   a| /'
 # After nuke the coordinator drops the network locally.
 if retry_until 30 "! has_net '$A' '$NET'"; then
   pass "nuke removed the network from the coordinator"

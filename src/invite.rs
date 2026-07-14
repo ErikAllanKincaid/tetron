@@ -1,9 +1,9 @@
 //! Invite-code encoding (joiner side).
 //!
 //! tetron does not mint invites (approval-only admission, MINIMAL-013). A joiner
-//! can still *redeem* an invite minted by a full-torpedo coordinator: the invite
+//! can still *redeem* an invite minted by a full-tetron coordinator: the invite
 //! *code* is `bs58(network_pubkey || coordinator || secret)` (see
-//! [`encode_invite_code`]). `torpedo join <code>` decodes it, dials the pinned
+//! [`encode_invite_code`]). `tetron join <code>` decodes it, dials the pinned
 //! coordinator directly, and presents the secret in its `JoinRequest`.
 
 use anyhow::{Result, bail};

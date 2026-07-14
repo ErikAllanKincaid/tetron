@@ -49,7 +49,7 @@ impl MeshManager {
         }
     }
 
-    /// Build one network's `NetworkStatus` for `torpedo status`. The peer list comes
+    /// Build one network's `NetworkStatus` for `tetron status`. The peer list comes
     /// from the *roster* (every known member, not just live connections) so
     /// offline peers still show (Tailscale-style) with `connection: None`.
     fn network_status(

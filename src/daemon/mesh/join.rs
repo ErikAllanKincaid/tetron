@@ -43,7 +43,7 @@ pub(crate) struct JoinParams {
     pub(crate) net_pubkey: EndpointId,
     pub(crate) invite_secret: Option<Vec<u8>>,
     /// From the fetched blob: the current coordinator-suggested firewall rules.
-    /// Retained for wire compatibility with full torpedo (D1) — carried into the
+    /// Retained for wire compatibility with full tetron (D1) — carried into the
     /// member's state and republished verbatim, but not acted on (the userspace
     /// firewall was removed, MINIMAL-010).
     pub(crate) suggested_firewall: SuggestedFirewall,
@@ -71,7 +71,7 @@ pub(crate) async fn join_mesh_shared(
     // here after persisting an `AdminGrant` key, so the daemon loop can swap in
     // the coordinator accept handler (see `MeshManager::promote_to_coordinator`).
     promote_tx: mpsc::Sender<String>,
-    // Shared with the router; lets the member control reader resolve `torpedo ping`
+    // Shared with the router; lets the member control reader resolve `tetron ping`
     // Pongs back to the waiting handler.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) -> Result<JoinResult> {
@@ -685,7 +685,7 @@ fn spawn_member_control_listener(
                                 }
                                 // Pairing (MINIMAL-004) and invite minting/gossip
                                 // (MINIMAL-013) are removed; tolerate a
-                                // full-torpedo coordinator's pairing + invite
+                                // full-tetron coordinator's pairing + invite
                                 // control messages (D1 wire compat: decode and
                                 // ignore, never error).
                                 ControlMsg::Unpaired
@@ -758,7 +758,7 @@ pub(crate) fn spawn_reconnect_loop(
                 continue;
             }
 
-            // A deliberate `torpedo leave` (graceful close with the leave code) means
+            // A deliberate `tetron leave` (graceful close with the leave code) means
             // the peer is gone for good — don't spin a reconnect task against it.
             // The coordinator's MemberSync will prune it from our roster.
             if event.intentional {

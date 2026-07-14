@@ -1,6 +1,6 @@
 //! Daemon process bootstrap and the IPC server. Moved out of `daemon/mod.rs`.
 //!
-//! `run_daemon` is the process entry point (called by the `torpedo daemon`
+//! `run_daemon` is the process entry point (called by the `tetron daemon`
 //! command): it builds the shared [`MeshManager`], reconnects saved networks,
 //! and runs the IPC accept loop until shutdown. `build_daemon` wires the endpoint
 //! / TUN / protocol router / metrics; `serve_ipc` + `handle_ipc_client` answer
@@ -41,7 +41,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     }
 
     // Connect the control plane (mesh connections) once, for the daemon's
-    // whole lifetime, then bring the data plane up. `torpedo up`/`torpedo down` toggle
+    // whole lifetime, then bring the data plane up. `tetron up`/`tetron down` toggle
     // only the data plane after this; connections persist across `down` so the
     // node stays online to peers.
     daemon.connect_all_networks().await;
@@ -62,7 +62,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // "Endpoint dropped without calling `Endpoint::close`. Aborting
     // ungracefully." and can leave the process lingering until the service
     // manager escalates to SIGKILL — which delays the relaunch on
-    // `torpedo restart` past the client's reachability probe. Closing
+    // `tetron restart` past the client's reachability probe. Closing
     // it here lets QUIC connections terminate cleanly and the process exit
     // promptly so the new daemon comes up fast.
     daemon.endpoint.close().await;
@@ -112,7 +112,7 @@ async fn build_daemon(
     token: CancellationToken,
     stats: Arc<ForwardMetrics>,
 ) -> Result<Arc<MeshManager>> {
-    // Relocate a pre-/etc config tree into /etc/torpedo (Linux upgrade path)
+    // Relocate a pre-/etc config tree into /etc/tetron (Linux upgrade path)
     // before anything reads identity or config. No-op on macOS / once migrated.
     config::migrate_location();
 
@@ -159,7 +159,7 @@ async fn build_daemon(
     // creates the real device and calls `attach_tun`; on embedders (mobile) the
     // `VpnService` fd is attached the same way. `tun_name` starts as a placeholder
     // and is overwritten when a real interface is attached.
-    let tun_name = String::from("torpedo");
+    let tun_name = String::from("tetron");
     let peers = PeerTable::new();
     let active = Arc::new(AtomicBool::new(false));
     // Placeholder sender whose receiver is dropped immediately: no real channel

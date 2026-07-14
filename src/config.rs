@@ -120,13 +120,13 @@ pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportMode>,
     /// Identities this coordinator has granted the per-network secret key to
-    /// (`torpedo admin add`). Local tracking only — the key is shared and not
+    /// (`tetron admin add`). Local tracking only — the key is shared and not
     /// attributable, so this is the coordinator's record of grants, not a
     /// verifiable roster. Never published in the GroupBlob.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<EndpointId>,
-    /// This is an auto-minted 2-peer "direct connection" network (`torpedo connect`),
-    /// not a user-created mesh. Tagged so `torpedo status` can label it `[direct]`
+    /// This is an auto-minted 2-peer "direct connection" network (`tetron connect`),
+    /// not a user-created mesh. Tagged so `tetron status` can label it `[direct]`
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
@@ -221,7 +221,7 @@ fn parse_entries(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Apply a `torpedo config set`/`unset` to the in-memory config. An empty value or
+/// Apply a `tetron config set`/`unset` to the in-memory config. An empty value or
 /// the lone keyword `n0` resets the key to its default (iroh n0). Validates
 /// every entry, so a bad URL/IP or unknown preset is rejected before persist.
 pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) -> Result<()> {
@@ -283,7 +283,7 @@ fn render_override(o: &ServerOverride) -> String {
     }
 }
 
-/// Render config settings as `(key, value)` rows for `torpedo config get`. With a
+/// Render config settings as `(key, value)` rows for `tetron config get`. With a
 /// key, returns just that one (error on unknown key); without, all three.
 pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, String)>> {
     let row = |k: &str| -> Result<(String, String)> {
@@ -327,7 +327,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub operator_uid: Option<u32>,
     /// Personal default hostname used when creating/joining a network without an
-    /// explicit `--hostname`. Set via `torpedo up --hostname <name>`. `None` falls
+    /// explicit `--hostname`. Set via `tetron up --hostname <name>`. `None` falls
     /// back to a random generated name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_hostname: Option<String>,
@@ -336,7 +336,7 @@ pub struct AppConfig {
     /// signed `GroupBlob`; this is a read-through cache so the daemon can build
     /// its single TUN / identity in the right subnet at bootstrap, before any
     /// network is active. `None` means the default 10.88.0.0/16. Written by
-    /// `create --subnet`, `join`, and `torpedo config set subnet`.
+    /// `create --subnet`, `join`, and `tetron config set subnet`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -371,9 +371,9 @@ pub struct AppConfig {
 // `networks.toml` whose non-atomic full-file rewrites raced under concurrent
 // load-modify-save and silently dropped networks.
 //
-// Linux stores the tree under /etc/torpedo owned root:torpedo (see
+// Linux stores the tree under /etc/tetron owned root:tetron (see
 // `config_dir`); secret-bearing files are 0600 root:root, dirs 0750
-// root:torpedo.
+// root:tetron.
 
 const LEGACY_FILE: &str = "networks.toml";
 const SETTINGS_FILE: &str = "settings.toml";
@@ -401,11 +401,11 @@ struct Settings {
     pending_joins: Vec<PendingJoinEntry>,
 }
 
-/// Look up the `torpedo` group's gid (Linux), if the group exists.
+/// Look up the `tetron` group's gid (Linux), if the group exists.
 #[cfg(target_os = "linux")]
-fn torpedo_gid() -> Option<u32> {
+fn tetron_gid() -> Option<u32> {
     use std::ffi::CString;
-    let name = CString::new("torpedo").ok()?;
+    let name = CString::new("tetron").ok()?;
     // SAFETY: getgrnam returns a pointer to a static struct; we copy gr_gid out
     // immediately before any further libc call could overwrite it.
     let grp = unsafe { libc::getgrnam(name.as_ptr()) };
@@ -416,7 +416,7 @@ fn torpedo_gid() -> Option<u32> {
     }
 }
 
-/// Best-effort `chown` to root, with group `torpedo` for non-secret paths (or
+/// Best-effort `chown` to root, with group `tetron` for non-secret paths (or
 /// root for secret ones). No-op off Linux. Silent on failure so the daemon
 /// still starts if the group is missing.
 #[cfg(target_os = "linux")]
@@ -424,14 +424,14 @@ fn set_owner(path: &Path, secret: bool) {
     let gid = if secret {
         Some(0)
     } else {
-        torpedo_gid().or(Some(0))
+        tetron_gid().or(Some(0))
     };
     if let Err(e) = std::os::unix::fs::chown(path, Some(0), gid) {
         tracing::debug!(path = %path.display(), error = %e, "chown failed (non-fatal)");
     }
 }
 
-/// Create `dir` (and parents) with restrictive perms: 0750 root:torpedo on
+/// Create `dir` (and parents) with restrictive perms: 0750 root:tetron on
 /// Linux. Idempotent.
 fn ensure_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -443,10 +443,10 @@ fn ensure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Base directory for all torpedo config + state. Created if missing.
+/// Base directory for all tetron config + state. Created if missing.
 ///
-/// Linux: `/etc/torpedo` (system service location, root:torpedo). macOS: the
-/// daemon's `~/.config/torpedo` (root-only under `/var/root`).
+/// Linux: `/etc/tetron` (system service location, root:tetron). macOS: the
+/// daemon's `~/.config/tetron` (root-only under `/var/root`).
 pub fn config_dir() -> Result<PathBuf> {
     // An explicit `TORPEDO_CONFIG_DIR` override (renamed from the pre-fork
     // rayfish-prefixed name, RENAME-007, so it cannot collide with a genuine
@@ -462,15 +462,15 @@ pub fn config_dir() -> Result<PathBuf> {
         return Ok(dir);
     }
     #[cfg(target_os = "linux")]
-    let dir = PathBuf::from("/etc/torpedo");
+    let dir = PathBuf::from("/etc/tetron");
     // Android without the override falls back to a fixed app-private path so the
     // library still compiles/runs standalone.
     #[cfg(target_os = "android")]
-    let dir = PathBuf::from("/data/local/tmp/torpedo");
+    let dir = PathBuf::from("/data/local/tmp/tetron");
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let dir = dirs::config_dir()
         .context("could not determine config directory")?
-        .join("torpedo");
+        .join("tetron");
     ensure_dir(&dir)?;
     Ok(dir)
 }
@@ -492,9 +492,9 @@ fn validate_net_name(name: &str) -> Result<()> {
 /// Atomically write `bytes` to `path`: write a sibling temp file, set its
 /// perms/owner, then rename over the target. The rename is atomic on POSIX, so
 /// a concurrent reader sees either the old file or the new one — never a torn
-/// one. `secret` selects 0600 root:root vs 0640 root:torpedo.
+/// one. `secret` selects 0600 root:root vs 0640 root:tetron.
 ///
-/// Public so every torpedo config writer (identity key, invite ledger, etc.)
+/// Public so every tetron config writer (identity key, invite ledger, etc.)
 /// shares the same atomic + restrictive-perms guarantees under the config tree.
 pub fn write_file(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
     let dir = path.parent().context("config path has no parent")?;
@@ -539,12 +539,12 @@ pub fn restrict_perms(path: &Path, secret: bool) {
     set_owner(path, secret);
 }
 
-/// Linux-only: relocate a pre-`/etc` config tree into `/etc/torpedo` on first
+/// Linux-only: relocate a pre-`/etc` config tree into `/etc/tetron` on first
 /// start after the upgrade that moved the location. Earlier Linux builds stored
-/// everything under the daemon's `~/.config/torpedo` (i.e. `/root/.config`); this
+/// everything under the daemon's `~/.config/tetron` (i.e. `/root/.config`); this
 /// moves `secret_key`, `networks.toml`, `invites/`, etc. over so
 /// the node keeps its identity and networks. No-op on macOS (location unchanged)
-/// and once `/etc/torpedo` is populated. Must run before any config/identity read
+/// and once `/etc/tetron` is populated. Must run before any config/identity read
 /// (called at the top of `build_daemon`).
 pub fn migrate_location() {
     #[cfg(target_os = "linux")]
@@ -558,7 +558,7 @@ pub fn migrate_location() {
         {
             return;
         }
-        let Some(old) = dirs::config_dir().map(|d| d.join("torpedo")) else {
+        let Some(old) = dirs::config_dir().map(|d| d.join("tetron")) else {
             return;
         };
         if old == new || !old.is_dir() {
@@ -576,7 +576,7 @@ pub fn migrate_location() {
             match std::fs::rename(e.path(), &dest) {
                 Ok(()) => moved += 1,
                 Err(err) => {
-                    tracing::warn!(entry = ?e.path(), error = %err, "could not relocate config entry into /etc/torpedo")
+                    tracing::warn!(entry = ?e.path(), error = %err, "could not relocate config entry into /etc/tetron")
                 }
             }
         }
@@ -591,7 +591,7 @@ pub fn migrate_location() {
                     }
                 }
             }
-            tracing::info!(from = %old.display(), to = %new.display(), entries = moved, "relocated config tree to /etc/torpedo");
+            tracing::info!(from = %old.display(), to = %new.display(), entries = moved, "relocated config tree to /etc/tetron");
         }
     }
 }

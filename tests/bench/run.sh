@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Rayfish throughput/latency benchmark: direct (public IP) vs torpedo (VPN tunnel).
+# Rayfish throughput/latency benchmark: direct (public IP) vs tetron (VPN tunnel).
 #
 # Topology:
 #   srv-a  coordinator of a closed network "bench"
 #   srv-b  joins it by live approval (tetron is approval-only)
 #
 # For both directions we measure, over the public IP (DIRECT) and over the
-# torpedo 10.88.x.x TUN address (TORPEDO):
+# tetron 10.88.x.x TUN address (TORPEDO):
 #   - ping RTT (latency)
 #   - iperf3 TCP throughput
-# so the delta isolates the cost torpedo (iroh QUIC datagrams, MTU 1200,
+# so the delta isolates the cost tetron (iroh QUIC datagrams, MTU 1200,
 # encryption, userspace TUN) adds on top of the raw link.
 #
 # Reads tests/bench/.servers (written by provision.sh). Does NOT modify infra.
@@ -46,12 +46,12 @@ wait_daemons "$A" "$B"
 # ---------------------------------------------------------------------------
 step "2. create closed network on srv-a, srv-b joins by approval"
 NET=bench
-CREATE="$(on "$A" "torpedo create --name $NET --hostname srv-a" | strip)"
+CREATE="$(on "$A" "tetron create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   | /'
-ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
+ROOM="$(echo "$CREATE" | sed -n 's/.*tetron join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
 if [[ -z "$ROOM" ]]; then
   # maybe it already exists; pull the room id from status
-  ROOM="$(on "$A" 'torpedo status' | strip | sed -n 's/.*\([A-Za-z0-9]\{40,\}\).*/\1/p' | head -1)"
+  ROOM="$(on "$A" 'tetron status' | strip | sed -n 's/.*\([A-Za-z0-9]\{40,\}\).*/\1/p' | head -1)"
 fi
 [[ -n "$ROOM" ]] && pass "network '$NET' created (room ${ROOM:0:12}…)" || { fail "no room id"; exit 1; }
 
@@ -62,11 +62,11 @@ join_approve "$B" "$A" "$NET" "$ROOM" srv-b || { fail "srv-b was not admitted"; 
 step "3. wait for roster convergence"
 converged=0
 for _ in $(seq 1 24); do  # up to ~120s
-  SA="$(on "$A" 'torpedo status' | strip)"
+  SA="$(on "$A" 'tetron status' | strip)"
   if echo "$SA" | grep -q 'srv-b\.'; then converged=1; break; fi
   sleep 5
 done
-SA="$(on "$A" 'torpedo status' | strip)"; SB="$(on "$B" 'torpedo status' | strip)"
+SA="$(on "$A" 'tetron status' | strip)"; SB="$(on "$B" 'tetron status' | strip)"
 echo "---- srv-a status ----"; echo "$SA" | sed 's/^/   a| /'
 echo "---- srv-b status ----"; echo "$SB" | sed 's/^/   b| /'
 [[ "$converged" == 1 ]] && pass "roster converged (srv-a sees srv-b)" || fail "roster did not converge"
@@ -78,7 +78,7 @@ echo "   A_VPN=$A_VPN  B_VPN=$B_VPN"
 
 # sanity: both paths reachable before benchmarking
 on "$A" "ping -c 2 -W 2 $B_PUB" >/dev/null 2>&1 && pass "direct path up (A->B public)" || fail "direct path down"
-on "$A" "ping -c 2 -W 2 $B_VPN"  >/dev/null 2>&1 && pass "torpedo path up (A->B vpn)"  || fail "torpedo path down"
+on "$A" "ping -c 2 -W 2 $B_VPN"  >/dev/null 2>&1 && pass "tetron path up (A->B vpn)"  || fail "tetron path down"
 
 # ---------------------------------------------------------------------------
 # Benchmark helpers.
@@ -136,15 +136,15 @@ bench_pair(){ # bench_pair <dir-label> <client-ip> <listen-ip> <server-host> <pa
 # ---------------------------------------------------------------------------
 step "4. benchmark  A -> B"
 bench_pair "A -> B" "$A" "$B_PUB" "$B" "direct"
-bench_pair "A -> B" "$A" "$B_VPN" "$B" "torpedo"
+bench_pair "A -> B" "$A" "$B_VPN" "$B" "tetron"
 
 step "5. benchmark  B -> A"
 bench_pair "B -> A" "$B" "$A_PUB" "$A" "direct"
-bench_pair "B -> A" "$B" "$A_VPN" "$A" "torpedo"
+bench_pair "B -> A" "$B" "$A_VPN" "$A" "tetron"
 
 # ---------------------------------------------------------------------------
 step "results"
-ratio(){ # ratio <torpedo> <direct> -> percentage of direct
+ratio(){ # ratio <tetron> <direct> -> percentage of direct
   local r="$1" d="$2"
   [[ "$r" =~ ^[0-9.]+$ && "$d" =~ ^[0-9.]+$ && "$d" != 0 ]] || { echo "—"; return; }
   awk -v r="$r" -v d="$d" 'BEGIN{printf "%.0f%%", (r/d)*100}'
@@ -166,9 +166,9 @@ REPORT="$RESDIR/$STAMP.md"
   printf '| Direction | Metric | Direct | Rayfish | Rayfish/Direct |\n'
   printf '|---|---|---:|---:|---:|\n'
   for dir in "A -> B" "B -> A"; do
-    printf '| %s | RTT (ms) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 3)" "$(get "$dir" torpedo 3)" "$(overhead "$(get "$dir" torpedo 3)" "$(get "$dir" direct 3)")"
-    printf '| %s | TCP tx (Mbit/s) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 4)" "$(get "$dir" torpedo 4)" "$(ratio "$(get "$dir" torpedo 4)" "$(get "$dir" direct 4)")"
-    printf '| %s | TCP rx (Mbit/s) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 5)" "$(get "$dir" torpedo 5)" "$(ratio "$(get "$dir" torpedo 5)" "$(get "$dir" direct 5)")"
+    printf '| %s | RTT (ms) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 3)" "$(get "$dir" tetron 3)" "$(overhead "$(get "$dir" tetron 3)" "$(get "$dir" direct 3)")"
+    printf '| %s | TCP tx (Mbit/s) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 4)" "$(get "$dir" tetron 4)" "$(ratio "$(get "$dir" tetron 4)" "$(get "$dir" direct 4)")"
+    printf '| %s | TCP rx (Mbit/s) | %s | %s | %s |\n' "$dir" "$(get "$dir" direct 5)" "$(get "$dir" tetron 5)" "$(ratio "$(get "$dir" tetron 5)" "$(get "$dir" direct 5)")"
   done
 } | tee "$REPORT"
 

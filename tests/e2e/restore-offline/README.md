@@ -23,7 +23,7 @@ proving the fix connects to any available peer rather than just the coordinator.
 A member (non-coordinator) already holds the verified group blob, so being *in* a
 network must not depend on the coordinator being reachable at restore time. Before
 the fix, member restore dialed the coordinator first and, on failure, aborted
-before registering the network: no ALPN handler, absent from `torpedo status`, inbound
+before registering the network: no ALPN handler, absent from `tetron status`, inbound
 mesh connections rejected with `no handler for ALPN` then `closed by peer: 0`.
 Startup restore runs once with no retry, so the network stayed gone until the node
 happened to restart again while the coordinator was reachable (its config was
@@ -33,7 +33,7 @@ never lost). One member was observed stuck for ~13 hours.
 
 1. `srv-a` creates a closed network; `srv-b` and `srv-c` join by live approval
    (`requests`/`accept`) and the three full-mesh.
-2. `srv-a`'s daemon is stopped entirely (`systemctl stop`, not `torpedo down` standby),
+2. `srv-a`'s daemon is stopped entirely (`systemctl stop`, not `tetron down` standby),
    so the coordinator endpoint is genuinely unreachable; `srv-b` and `srv-c` see it
    go offline but stay linked to each other.
 3. `srv-b`'s daemon is restarted while the coordinator is offline (the exact
@@ -58,4 +58,4 @@ tests/e2e.sh restore-offline provision   # create the two Scaleway instances onl
 tests/e2e.sh restore-offline teardown    # destroy them
 ```
 
-Re-runnable: each run resets torpedo state on both hosts unless `KEEP_STATE=1`.
+Re-runnable: each run resets tetron state on both hosts unless `KEEP_STATE=1`.

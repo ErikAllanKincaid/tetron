@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single entry point for the torpedo end-to-end / benchmark suites.
+# Single entry point for the tetron end-to-end / benchmark suites.
 #
 #   ./tests/e2e.sh <scenario> [action]
 #

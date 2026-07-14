@@ -8,7 +8,7 @@
 #
 # Regression guard for the bug where a member whose daemon restarts while its
 # coordinator is offline silently drops the network from its running state
-# (`torpedo status` -> "no active networks", inbound mesh rejected with "no handler
+# (`tetron status` -> "no active networks", inbound mesh rejected with "no handler
 # for ALPN"), and stays that way until it happens to restart while the
 # coordinator is reachable again. See PR #60 / issue #59.
 #
@@ -20,7 +20,7 @@
 #
 # Flow:
 #   1. a-coordinator + b-member + c-member come up and full-mesh,
-#   2. the coordinator daemon is stopped entirely (not `torpedo down` standby, so its
+#   2. the coordinator daemon is stopped entirely (not `tetron down` standby, so its
 #      endpoint is genuinely unreachable); b and c stay linked to each other,
 #   3. srv-b's daemon is restarted (the restore-with-coordinator-offline path),
 #   4. asserts srv-b still has the network AND reconnects to srv-c while the
@@ -28,7 +28,7 @@
 #   5. brings the coordinator back and asserts the full mesh reconverges.
 #
 # Reads tests/e2e/restore-offline/.servers (written by provision). Does NOT
-# modify infra. Re-runnable (resets torpedo state each run unless KEEP_STATE=1).
+# modify infra. Re-runnable (resets tetron state each run unless KEEP_STATE=1).
 set -uo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -52,15 +52,15 @@ wait_all_ssh "$A" "$B" "$C"
 seed_known_hosts "$A" "$B" "$C"
 reset_state "$A" "$B" "$C"
 deploy_all "$ROOT" "$A" "$B" "$C"
-for h in "$A" "$B" "$C"; do on "$h" 'torpedo up' >/dev/null 2>&1 || true; done
+for h in "$A" "$B" "$C"; do on "$h" 'tetron up' >/dev/null 2>&1 || true; done
 wait_daemons "$A" "$B" "$C"
 
 # ---------------------------------------------------------------------------
 step "1. srv-a creates a closed network; srv-b and srv-c join by live approval"
-CREATE="$(on "$A" "torpedo create --name $NET --hostname srv-a" | strip)"
+CREATE="$(on "$A" "tetron create --name $NET --hostname srv-a" | strip)"
 echo "$CREATE" | sed 's/^/   a| /'
 has_net "$A" "$NET" && pass "network '$NET' created on srv-a" || { fail "create failed"; summary; }
-ROOM="$(echo "$CREATE" | sed -n 's/.*torpedo join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
+ROOM="$(echo "$CREATE" | sed -n 's/.*tetron join \([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1)"
 [[ -n "$ROOM" ]] || { fail "could not parse room id"; summary; }
 
 # tetron is approval-only: each member dials the room id, queues, and srv-a accepts.
@@ -73,10 +73,10 @@ wait_roster "$B" srv-a srv-c
 wait_roster "$C" srv-a srv-b
 
 # ---------------------------------------------------------------------------
-step "2. take the coordinator fully offline (systemctl stop, not 'torpedo down')"
-# `torpedo down` is standby: the daemon stays connected to peers, so it would still
+step "2. take the coordinator fully offline (systemctl stop, not 'tetron down')"
+# `tetron down` is standby: the daemon stays connected to peers, so it would still
 # answer the member's restore dial. We need the endpoint genuinely gone.
-on "$A" 'systemctl stop torpedo' >/dev/null 2>&1 || true
+on "$A" 'systemctl stop tetron' >/dev/null 2>&1 || true
 if retry_until 45 "[[ \"\$(peer_online '$B' srv-a '$NET')\" == 0 && \"\$(peer_online '$C' srv-a '$NET')\" == 0 ]]"; then
   pass "srv-b and srv-c both see the coordinator go offline"
 else
@@ -91,10 +91,10 @@ fi
 step "3. restart the member daemon while the coordinator is offline"
 # This is the exact failure path: startup restore dials the coordinator, which
 # is unreachable. Pre-fix, restore aborted and the network was never registered.
-on "$B" 'systemctl restart torpedo' >/dev/null 2>&1 || true
+on "$B" 'systemctl restart tetron' >/dev/null 2>&1 || true
 sleep 5
-on "$B" 'torpedo up' >/dev/null 2>&1 || true
-if retry_until 30 "on '$B' 'torpedo status' >/dev/null 2>&1"; then
+on "$B" 'tetron up' >/dev/null 2>&1 || true
+if retry_until 30 "on '$B' 'tetron status' >/dev/null 2>&1"; then
   pass "srv-b daemon responds after restart"
 else
   fail "srv-b daemon not responding after restart"; summary
@@ -132,9 +132,9 @@ fi
 
 # ---------------------------------------------------------------------------
 step "5. RECOVERY: bring the coordinator back, full mesh reconverges"
-on "$A" 'systemctl start torpedo' >/dev/null 2>&1 || true
+on "$A" 'systemctl start tetron' >/dev/null 2>&1 || true
 sleep 5
-on "$A" 'torpedo up' >/dev/null 2>&1 || true
+on "$A" 'tetron up' >/dev/null 2>&1 || true
 wait_daemons "$A"
 # The reconnect loop (seeded at restore) keeps dialing with backoff, so links
 # form without any manual step on the members.
