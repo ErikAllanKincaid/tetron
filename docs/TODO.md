@@ -10,6 +10,10 @@
 
 - **Build a .deb package** for tetron: systemd service file, config dir, binary, postinst/prerm scripts. Simplifies install on Debian/Ubuntu vs the current `sudo tetron install` from a loose binary.
 
+## WebUI addon
+
+- **tetron-web companion binary**: a separate unprivileged process that serves a web UI on localhost, translating HTTP requests to Unix-socket IPC messages. Uses the existing `IpcMessage` msgpack protocol over `/var/run/tetron/tetron.sock` (mode 0666). Covers: mint invites, kick, list peers/networks, admin, leave. Straightforward because every CLI command is already an IPC round-trip. Could share `tetron-proto` crate for wire types. No daemon changes needed.
+
 ## UX cleanup
 
 - **`tetron join --name` rename to `--local-nickname`**: the current `--name` flag on join is a local-only alias, but `--name` on create sets the published network name. Same flag, different scopes, confusing. Rename to `--local-nickname` on join, keep `--name` on create.
