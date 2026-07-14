@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/torpedo
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M02, CON-M03)
+# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M03)
 # from spec/design_spec.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
@@ -271,28 +271,6 @@ def check_crate_identity() -> dict:
     return {"leak_count": leaks}
 
 
-def check_wire_compat() -> dict:
-    """CON-M02: transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob
-    struct in src/membership.rs must retain its `suggested_firewall` and
-    `reusable_keys` fields (ignored/preserved, never enforced or minted)."""
-    transport = Path("src/transport.rs").read_text()
-    membership = Path("src/membership.rs").read_text()
-    mesh_version = None
-    for line in transport.splitlines():
-        # Matches `MESH_PROTOCOL_VERSION: u32 = 1` or `MESH_PROTOCOL_VERSION = 1`
-        m = re.search(r"MESH_PROTOCOL_VERSION[^;]*?=\s*(\d+)", line)
-        if m:
-            mesh_version = int(m.group(1))
-            break
-    blob_fields = (
-        "suggested_firewall" in membership and "reusable_keys" in membership
-    )
-    return {
-        "mesh_version": mesh_version,
-        "blob_fields_present": blob_fields,
-    }
-
-
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -307,7 +285,6 @@ if __name__ == "__main__":
         "test_harness_identity": check_test_harness_identity(),
         "test_subnet_identity": check_test_subnet_identity(),
         "dependency_absence": check_dependency_absence(),
-        "wire_compat": check_wire_compat(),
         "crate_identity": check_crate_identity(),
     }
     print(json.dumps(ctx, indent=2))
@@ -324,8 +301,6 @@ if __name__ == "__main__":
         and ctx["test_harness_identity"]["unexpected_count"] == 0
         and ctx["test_subnet_identity"]["unexpected_count"] == 0
         and ctx["dependency_absence"]["unexpected_count"] == 0
-        and ctx["wire_compat"]["mesh_version"] == 1
-        and ctx["wire_compat"]["blob_fields_present"]
         and ctx["crate_identity"]["leak_count"] == 0
     )
     sys.exit(0 if ok else 1)

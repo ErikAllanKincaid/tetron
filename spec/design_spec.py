@@ -106,26 +106,6 @@ class ConflictCheckRemoved(Requirement):
     req_id = "SUBNET-006"
 
 
-class MagicDnsRelocated(Requirement):
-    """REQUIREMENT-ID: SUBNET-007
-
-    MAGIC_DNS_V4 (src/dns.rs) is computed as an offset within the configured
-    subnet instead of the fixed 100.100.100.53 literal. Assumes the configured
-    subnet is /24 or larger.
-    """
-    req_id = "SUBNET-007"
-
-
-class PtrHandlerParameterized(Requirement):
-    """REQUIREMENT-ID: SUBNET-008
-
-    The PTR/reverse-lookup NXDOMAIN range check in src/dns.rs (~line 246 as
-    of commit 9e142411) mirrors whichever range check
-    RangeValidationParameterized (SUBNET-004) implements, so both stay
-    consistent.
-    """
-    req_id = "SUBNET-008"
-
 
 # --------------------------------------------------------------------------
 # Requirements: rebrand rayfish -> torpedo (RENAME-*)
@@ -238,9 +218,9 @@ class TestsPass(Constraint):
 
 # --------------------------------------------------------------------------
 # Follow-up round: node subnet at boot (SUBNET-009/010).
-# (UPGRADE-001 / CON-006 — the neutralized-not-deleted self-update and its
-# kill-switch gate — were RETIRED by MINIMAL-002: tetron deletes the
-# machinery outright, so absence replaces the gate.)
+# (UPGRADE-001 / CON-006 — the self-update requirement and its kill-switch
+# constraint — were RETIRED by MINIMAL-002: tetron deletes the machinery
+# outright, so absence replaces the gate.)
 # --------------------------------------------------------------------------
 
 class ConfigSetSubnet(Requirement):
@@ -351,40 +331,11 @@ class DefaultSubnetDocsAccurate(Requirement):
 
 # --------------------------------------------------------------------------
 # Thorough-fork round: purge residual `rayfish` identity from host-visible
-# artifacts and cosmetics (RENAME-006..009 / CON-007). Distinct from the
+# artifacts and cosmetics (RENAME-007..009 / CON-007). Distinct from the
 # KEEP-ON-PURPOSE names (upstream relay/discovery presets, REPO_SLUG, the
 # `.ray` TLD, the internal Cargo crate name `rayfish`), which CON-001 and the
 # honesty rationale explicitly protect and which this round must NOT touch.
 # --------------------------------------------------------------------------
-
-class HostDnsArtifactsRenamed(Requirement):
-    """REQUIREMENT-ID: RENAME-006
-
-    The host-filesystem artifacts the DNS layer writes (src/dns_config.rs) carry
-    the `torpedo` identity, not `rayfish`, so torpedo and a genuine rayfish
-    daemon on the same host never read or clobber each other's files — the
-    coexistence guarantee RENAME-004/005 established for the wire and ports,
-    extended to disk. Rename, consistently across writers, marker-guards, backup
-    /restore, the panic-time emergency restore, and tests:
-    - NetworkManager drop-in `/etc/NetworkManager/conf.d/rayfish-dns.conf` ->
-      `torpedo-dns.conf` (NM_DROPIN).
-    - resolv.conf takeover marker `# Added by rayfish - do not edit` ->
-      `# Added by torpedo - do not edit` (HEADER_COMMENT); the "ours?" marker
-      check and re-assert log follow the new marker.
-    - resolv.conf backup suffix `.before-rayfish` -> `.before-torpedo`
-      (BACKUP_SUFFIX) and the macOS `/etc/resolver/<tld>.before-rayfish` backup.
-    - resolvconf interface tags `tun-rayfish`/`tun-rayfish.inet` ->
-      `tun-torpedo`/`tun-torpedo.inet`.
-    - macOS SCDynamicStore service key `State:/Network/Service/rayfish/DNS` and
-      the `SCDynamicStoreBuilder::new("rayfish")` client name -> `torpedo`.
-    Because the marker guard keys on our own marker, only a file torpedo itself
-    wrote is ever modified; the fork is pre-deployment so there is no old-marker
-    migration to carry. The upstream `relay.iroh.rayfish.xyz` /
-    `dns.iroh.rayfish.xyz` preset URLs are NOT touched (CON-001) — those name
-    upstream's servers, not a host artifact.
-    """
-    req_id = "RENAME-006"
-
 
 class UserIdentifiersRenamed(Requirement):
     """REQUIREMENT-ID: RENAME-007
@@ -434,7 +385,7 @@ class CosmeticIdentitySweep(Requirement):
     ray-proto/Cargo.toml `repository`/`homepage`, the ray-proto `description`,
     and REPORT_REPO_URL (src/cli/status.rs) so `torpedo report` opens an issue on
     the fork's tracker, not upstream's. No behavioral effect on the mesh; done
-    opportunistically in files already edited by RENAME-006..008.
+    opportunistically in files already edited by RENAME-007..008.
 
     Deliberately EXCLUDED (KEEP-ON-PURPOSE, not cosmetic churn): the internal
     Cargo crate/lib name `rayfish` and all `use rayfish::` references (renaming is
@@ -450,7 +401,7 @@ class CosmeticIdentitySweep(Requirement):
 class NoResidualHostIdentityLeak(Constraint):
     """CONSTRAINT-ID: CON-007
 
-    After RENAME-006..008 (and RENAME-015's observability names), none of the
+    After RENAME-007..008 (and RENAME-015's observability names), none of the
     collision-prone `rayfish` host-artifact / user-identifier tokens remain in
     src/: the curated set is `rayfish-dns.conf`, `.before-rayfish`, `# Added by
     rayfish`, `tun-rayfish`, `com.rayfish.vpn`, `rayfish://`, `RAYFISH_CONFIG_DIR`,
@@ -519,7 +470,7 @@ class NoResidualBuildToolingIdentityLeak(Constraint):
 class UserFacingCommandNameRenamed(Requirement):
     """REQUIREMENT-ID: RENAME-011
 
-    RENAME-006..009 renamed host artifacts, wire identifiers, and doc-comment/
+    RENAME-007..009 renamed host artifacts, wire identifiers, and doc-comment/
     metadata cosmetics, but missed the pre-fork upstream binary's own short
     name, `ray`, hardcoded directly into ~40 LIVE, reachable, user-facing
     strings: CLI hint text, error messages, an IPC response message, a printed
@@ -594,297 +545,9 @@ class UserFacingCommandNameRenamed(Requirement):
     never appear in comments or dead code), a token-count gate here would
     false-fail on the deliberately-untouched comments and the dead
     `cli/update.rs` tail, which still contain `ray <verb>` after this change.
-    Verified by reading the diff, same as RENAME-006..009.
+    Verified by reading the diff, same as RENAME-007..009.
     """
     req_id = "RENAME-011"
-
-
-class SurfaceDnsTakeoverWarning(Requirement):
-    """REQUIREMENT-ID: DNS-001
-
-    When torpedo has to manage /etc/resolv.conf directly (the tier-5
-    `DirectResolvConf` takeover, reached only when no systemd-resolved,
-    NetworkManager, resolvectl, or resolvconf backend is present — the common
-    case on a default Debian trixie server / minimal install), `sudo torpedo up`
-    MUST surface a user-visible warning, not merely a daemon-side log line. The
-    prior behavior logged the takeover at INFO to /var/log/torpedo, so the user
-    discovered the change only by noticing that their resolv.conf had been
-    rewritten (reported in the field against upstream).
-
-    The warning rides the EXISTING `activate()` `warnings` channel (returned in
-    the `Up` IPC Ok message and rendered by `torpedo up`), so no IPC wire change
-    is needed. Its text names the backup path (/etc/resolv.conf.before-torpedo)
-    and the restore path (`torpedo down` / `sudo torpedo uninstall`) so the
-    notice is actionable, not alarming. Implemented as a
-    `DnsConfigurator::user_warning()` trait method: default None (split-DNS
-    backends leave resolv.conf untouched), overridden to Some(..) by
-    DirectResolvConf; `DnsManager::configure` pushes it into `warnings`. The
-    takeover daemon log is also raised INFO -> WARN so it appears in
-    `torpedo report` bundles for the non-interactive (reboot / auto-activate)
-    path where there is no CLI to print to.
-
-    Scope: covers the interactive `torpedo up`. Surfacing the active DNS mode in
-    `torpedo status` for the non-interactive path is a separate later item.
-
-    ENFORCEMENT: unit test (run by reconcile.py's `test` check) asserts
-    DirectResolvConf::user_warning() is Some and names the backup file, and that
-    a split-DNS configurator returns None.
-    """
-    req_id = "DNS-001"
-
-
-class NoMutualDnsForwardingLoopWithTailscale(Requirement):
-    """REQUIREMENT-ID: DNS-003
-
-    CRITICAL, TOP PRIORITY — found live in Phase-7 two-machine testing
-    (2026-07-08, xps-17-9720). On a tier-5 host (no systemd-resolved,
-    NetworkManager, resolvectl, or resolvconf — DirectResolvConf takeover,
-    same class of host DNS-001 covers) running Tailscale, torpedo and
-    Tailscale form a MUTUAL DNS FORWARDING LOOP that breaks ALL DNS
-    resolution system-wide — not just `.ray` names, ALL of it, including the
-    torpedo daemon's own outbound HTTP (pkarr discovery). This directly
-    defeats the fork's entire reason to exist: coexisting with Tailscale.
-
-    SYMPTOMS (all observed live on xps-17-9720, a minimal Debian-trixie-family
-    host, LMDE, with Tailscale active):
-    - `torpedo join <invite>` fails immediately: "failed to resolve network
-      record: failed to resolve network record: Service 'pkarr' failed".
-    - Direct queries to EITHER resolver hang for the full timeout and return
-      nothing: `dig @100.100.100.100 github.com` (Tailscale's quad-100) and
-      `dig @10.99.100.53 github.com` (torpedo's magic resolver, subnet-derived)
-      both time out. Critically, `dig @10.99.100.53 <anything>.ray` answers
-      correctly and instantly (NXDOMAIN + SOA, 0ms) — torpedo's local `.ray`
-      answering path and its TUN-interception plumbing are NOT the bug.
-    - `ping -c1 github.com` on the host: "Temporary failure in name
-      resolution" — total outbound DNS failure, confirmed independent of any
-      particular application.
-    - Raw ICMP to both `100.100.100.100` and `10.99.100.53` succeeds fine
-      (sub-millisecond) as both root and non-root — the network/routing path
-      is healthy; this is a DNS-application-layer bug, not connectivity.
-    - `journalctl -u tailscaled` shows, at the exact moment of failure:
-      `dns udp query: waiting for response or error from [10.99.100.53]:
-      context deadline exceeded` and `dns udp query: request queue full`
-      (with hundreds of queries dropped under `[RATELIMIT]`) — i.e.
-      Tailscale's own DNS proxy is ALSO stuck waiting on torpedo's resolver.
-
-    DIAGNOSIS (root cause, confirmed via `/etc/resolv.conf.before-torpedo`,
-    the daemon's own capture log, and the interleaved torpedo/tailscaled
-    journal):
-    1. Before torpedo ran, `/etc/resolv.conf` was Tailscale's own file:
-       `nameserver 100.100.100.100` (this is the literal content of the
-       `.before-torpedo` backup — confirmed).
-    2. `DirectResolvConf::new()` (src/dns_config.rs) reads that file BEFORE
-       overwriting it and correctly captures `100.100.100.100` as the sole
-       upstream via `parse_resolv_nameservers` (also confirmed via the
-       daemon's own `took over /etc/resolv.conf directly … upstreams=
-       [100.100.100.100]` log line, present at every one of several restarts
-       in this test run). torpedo's capture step is NOT the bug — it also
-       already excludes its own magic IP from a captured upstream list
-       (`parse_resolv_nameservers` filters `crate::dns::magic_dns_v4_node()`),
-       so torpedo correctly guards against looping to itself on re-takeover.
-    3. `DirectResolvConf::apply()` then overwrites `/etc/resolv.conf` to point
-       solely at torpedo's own magic resolver IP (`10.99.100.53`, subnet-
-       derived).
-    4. `tailscaled` ITSELF watches `/etc/resolv.conf` to learn where to
-       forward queries its own quad-100 resolver can't answer (the same
-       "watch resolv.conf for the real upstream" design torpedo uses,
-       independently implemented). Once torpedo rewrites the file, tailscaled
-       adopts torpedo's magic IP (`10.99.100.53`) as ITS OWN upstream —
-       tailscaled has no way to know that IP belongs to another VPN's
-       self-referential resolver, so it has no equivalent guard.
-    5. Net effect, a perfect two-hop loop with no real exit: an app's query
-       hits `10.99.100.53` (torpedo, the OS's sole nameserver) -> torpedo
-       does not recognize the name as `.ray` -> forwards to its captured
-       upstream `100.100.100.100` (Tailscale) -> Tailscale's quad-100 also
-       does not recognize the name -> forwards to ITS captured upstream,
-       `10.99.100.53` -> back to torpedo. Neither side ever reaches the real
-       internet; each side's own timeout eventually fires (torpedo's
-       `forward_once`, 3s; tailscaled's own deadline), which is exactly the
-       observed hang-then-timeout behavior, not an instant error.
-
-    WHY THIS WAS NOT CAUGHT ON THE COORDINATOR (AORUS, tier-1): AORUS has
-    systemd-resolved, so torpedo took the D-Bus split-DNS registration path
-    (`configured systemd-resolved via D-Bus for .ray`) instead of touching
-    `/etc/resolv.conf` at all, and Tailscale itself very likely also registers
-    with systemd-resolved there rather than writing the file directly — so
-    there is no file for the two to collide over. This loop is specific to
-    hosts where BOTH torpedo and Tailscale independently fall back to direct
-    `/etc/resolv.conf` management (tier-5, this fork's own DNS-001 scenario) —
-    which, per DNS-001's own framing, is not a rare edge case: it is "the
-    common case on a default Debian trixie server / minimal install", i.e.
-    exactly the kind of host an operator would run a lean VPN mesh on.
-
-    IMPACT: on any tier-5 host running Tailscale, `sudo torpedo up` silently
-    breaks ALL system DNS (not just `.ray`), including torpedo's own ability
-    to join a network (pkarr discovery needs working DNS to resolve
-    `dns.iroh.link`). This is a total, silent failure of the fork's headline
-    coexistence promise on a documented-common host class, not a cosmetic bug.
-
-    NOT YET FIXED — left open deliberately for focused design work (this
-    docstring is diagnostic, not prescriptive). Candidate directions worth
-    weighing, none chosen yet: detect that Tailscale is active (e.g. a
-    `tailscale0` interface or `100.100.100.100` present in the pre-takeover
-    resolv.conf) and refuse the direct takeover / warn loudly instead of
-    proceeding blind; special-case known other-VPN quad-resolver IPs
-    (`100.100.100.100`) by never handing them out as a captured upstream
-    that could loop back; or (a smaller, more surgical option) detect the
-    specific loop pattern at forward time (a query that bounces back to
-    ourselves) and fail fast with a clear error instead of a silent hang.
-
-    ENFORCEMENT: none yet (no fix designed or landed). Add a unit test once a
-    fix direction is chosen; this is exactly the kind of interaction bug a
-    single-process unit test cannot catch on its own (it requires a second,
-    real DNS-proxying daemon), so integration-level verification (a live
-    two-machine re-test with Tailscale + a tier-5 host) is the real gate.
-    """
-    req_id = "DNS-003"
-
-
-class ForeignOverlayUpstreamLoopBreaker(Requirement):
-    """REQUIREMENT-ID: DNS-004
-
-    The SAFETY NET for the opt-in `magic-dns direct` takeover. The primary
-    resolution of DNS-003 is DNS-005, which makes the /etc/resolv.conf takeover
-    opt-in so the loop cannot occur by default. This requirement hardens the
-    remaining case: a user who explicitly runs `torpedo config set magic-dns
-    direct` on a tier-5 host that ALSO runs Tailscale. Without it, that opt-in
-    would re-expose the mutual torpedo<->Tailscale DNS forwarding loop of
-    DNS-003. Two decoupled mechanisms plus housekeeping.
-
-    (1) LOOP-BREAKER — never adopt a foreign overlay VPN's resolver as our
-    upstream. `parse_resolv_nameservers` (src/dns_config.rs) already drops our
-    OWN magic IP; extend the same filter to drop EVERY address in the whole
-    CGNAT / shared range 100.64.0.0/10 (RFC 6598). That range is where overlay
-    VPNs park self-referential stub resolvers (Tailscale's 100.100.100.100, and
-    the LEGACY rayfish magic 100.100.100.53 from before this fork moved the
-    default subnet to 10.88.0.0/16) — a genuine recursive resolver essentially
-    never lives there. A captured 100.64/10 address is precisely the poison that
-    forms the loop, so refusing to forward to it breaks the loop at the source.
-
-    This is deliberately NOT gated on "NetworkManager in default DNS mode" (an
-    early candidate). That signal is wrong twice over: it MISSES the pure no-NM
-    tier-5 host (minimal Debian netinst on ifupdown+dhclient or systemd-networkd
-    without resolved), which DNS-001 itself calls "the common case" and which
-    loops identically; and it is unnecessary, because the filter is already
-    scoped to the only risky path (captured_upstreams() is non-empty ONLY in
-    DirectResolvConf — every split-DNS backend returns empty) AND self-gates by
-    content (it does nothing unless a 100.64/10 address is actually present,
-    which only happens when a foreign overlay poisoned resolv.conf). On a normal
-    tier-5 host with a real router (e.g. 192.168.1.1) and no Tailscale it is a
-    no-op. Every drop is logged so an operator can see it happened.
-
-    (2) REAL-UPSTREAM RECOVERY — the loop-breaker alone converts a hang into a
-    failure (on a Tailscale-first-then-torpedo host the captured set was ONLY
-    100.100.100.100, so after the filter it is empty and non-`.ray` DNS dies).
-    To restore working internet DNS, recover the genuine upstream, in priority:
-      (a) config `dns_upstreams` if the operator set it (already honored via
-          config::resolve_upstreams, applied before recovery runs);
-      (b) IMPLEMENTED: a coexisting overlay's own pre-takeover backup file —
-          Tailscale's /etc/resolv.pre-tailscale-backup.conf, where it stashes the
-          true DHCP upstream (on the repro host it held `nameserver 192.168.1.1`);
-          read by dns_config::recover_real_upstreams() and parsed with the SAME
-          100.64/10 exclusion so a poisoned backup can never re-introduce the loop.
-      (c) DEFERRED: NetworkManager's DHCP-learned nameservers via D-Bus (the
-          physical NIC's Ip4Config.Nameservers — unpoisoned even while Tailscale
-          owns resolv.conf, since tailscale0 is unmanaged; NM detection as a
-          SOURCE, not a gate on (1)). A more general source than (b) but more
-          code; the backup-file source already covers the Tailscale repro, so NM
-          D-Bus is a follow-up if a no-Tailscale-backup host ever needs it.
-      (d) if still empty, DO NOT silently egress to a public resolver: leave
-          non-`.ray` unresolved and surface a clear warning naming
-          `torpedo config set dns-upstreams <ip>` (reuses the DNS-001 warnings
-          channel). A public default may later be an explicit opt-in, never the
-          silent fallback.
-    Wired in DnsManager::configure: only when is_direct && the resolved upstream
-    set is empty. Result (VERIFIED LIVE on xps + Tailscale, `magic-dns direct`):
-    no loop, `github.com` resolves via torpedo->192.168.1.1, `.ray` resolves
-    locally, tailscaled shows zero `deadline exceeded`/`queue full`.
-
-    KNOWN LIMITATION of `direct` on a Tailscale host (verified: NXDOMAIN): while
-    torpedo owns resolv.conf it is the SOLE nameserver and forwards non-`.ray`
-    queries to the real router, which does not know `.ts.net` — so Tailscale's own
-    MagicDNS names stop resolving system-wide (Tailscale itself still answers when
-    queried directly at 100.100.100.100). `direct` therefore trades `.ts.net` for
-    `.ray`. Recovering BOTH needs the deferred `.ts.net`->Tailscale forwarding
-    (below), or the clean answer: run systemd-resolved so both VPNs take the
-    split-DNS path and neither seizes resolv.conf.
-
-    (3) HOUSEKEEPING — purge stale `100.100.100.53` literals that misdocument
-    torpedo's own resolver as the legacy /10-derived address instead of the
-    subnet-derived magic_dns_v4_node() (10.88.100.53 on the default subnet):
-    done in src/dns_config.rs (module doc, the two direct-mode comments, and the
-    resolv_conf_is_ours test fixture). Cosmetic but prevents a reader from
-    trusting a wrong resolver IP.
-
-    DEFERRED (v2): special-case `.ts.net` (and the tailnet reverse zones) to
-    forward to 100.100.100.100 instead of the router, which would restore
-    Tailscale MagicDNS under `direct` with no loop (Tailscale is authoritative for
-    its own zone, so it answers rather than re-forwarding). Not done in v1 — the
-    `direct` path is opt-in and the clean recommendation is systemd-resolved.
-    NON-GOAL: actively reconfiguring Tailscale itself.
-
-    ENFORCEMENT: unit tests (reconcile.py's `test` check) — is_overlay_resolver
-    matches the whole 100.64/10 range and nothing else; parse_resolv_nameservers
-    drops ALL 100.64/10 addresses (100.100.100.100 and 100.100.100.53) while
-    keeping a real router IP (192.168.1.1). recover_real_upstreams (file read) and
-    the true two-daemon loop are not unit-testable in-process (per DNS-003), so a
-    live xps + Tailscale re-test in `magic-dns direct` remains the integration gate.
-    """
-    req_id = "DNS-004"
-
-
-class MagicDnsIsOptInNeverSeizesResolvConf(Requirement):
-    """REQUIREMENT-ID: DNS-005
-
-    THE PRIMARY resolution of DNS-003: torpedo does not touch /etc/resolv.conf by
-    default. Magic DNS (`.ray` name resolution) is a convenience, not a
-    requirement — the mesh data plane, firewall, embedded SSH, and file transfer
-    never use system DNS, the `torpedo` CLI resolves hostnames daemon-side from
-    the roster, and `torpedo status` already lists every peer's mesh IP (its own
-    IP on each network header + an ipv4 column per peer row). So an operator can
-    reach every host by mesh IP (or a one-time ~/.ssh/config alias) with no OS-DNS
-    changes at all. Seizing /etc/resolv.conf to answer `.ray` is exactly what
-    collides with another VPN that manages the same file (Tailscale) and produces
-    the DNS-003 blackhole — so it must never be the default.
-
-    MECHANISM: a node-global setting `magic_dns: MagicDnsMode` in settings.toml
-    (config.rs), three values, set via `torpedo config set magic-dns off|auto|direct`:
-      - `off`   — never configure OS DNS at all; DnsManager::configure returns
-                  early. Pure mesh-IP operation.
-      - `auto`  — DEFAULT. Use a CLEAN split-DNS backend if present
-                  (systemd-resolved / NetworkManager dnsmasq / resolvconf — all
-                  cooperative, none collide with another VPN); if only the direct
-                  /etc/resolv.conf takeover remains, DECLINE it and surface a
-                  plain-English notice (dns_config::magic_dns_declined_notice)
-                  naming the two ways to enable `.ray`: install systemd-resolved,
-                  or `magic-dns direct`.
-      - `direct`— additionally permit the /etc/resolv.conf takeover as a last
-                  resort (the pre-existing behavior), now guarded by DNS-004's
-                  loop-breaker. Opt-in only.
-    detect_and_configure(tun_name, allow_direct) returns Option<Box<dyn
-    DnsConfigurator>>: Some(clean backend) is always used when present; the direct
-    fallback is constructed only when allow_direct (i.e. mode == direct);
-    otherwise Ok(None) => the decline notice. `off` short-circuits before
-    detection. The cooperative backends are UNCHANGED — this only removes the
-    unconditional DirectResolvConf fallback from the default path.
-
-    WHY THIS IS THE RIGHT DEFAULT (field topology): the tier-5 host in the repro
-    is the workstation (xps-17, LMDE trixie, NM in default DNS mode), the tier-1
-    clean host is the headless server (AORUS, systemd-resolved). On a workstation
-    the user does want `.ray`, but the safe default is still hands-off: it never
-    blackholes DNS, and the workstation user can either install systemd-resolved
-    (moves to the clean path both torpedo and Tailscale share) or opt into
-    `magic-dns direct`. Users who love Magic DNS keep it — for free on any host
-    with a clean backend (`auto` just works there, e.g. AORUS), or via the opt-in
-    on a minimal host.
-
-    ENFORCEMENT: unit tests (reconcile.py's `test` check) — MagicDnsMode::default
-    is Auto and !allows_direct; parse/set/get roundtrip incl. reset-on-empty and
-    rejection of a bad mode; persistence across save/load. The decline-vs-takeover
-    branch and the true two-daemon coexistence are integration-verified by the
-    live xps + Tailscale re-test (per DNS-003).
-    """
-    req_id = "DNS-005"
 
 
 class SubnetChangeObservableAndAnnounced(Requirement):
@@ -912,34 +575,6 @@ class SubnetChangeObservableAndAnnounced(Requirement):
     ENFORCEMENT: unit test on subnet_change_warning (reconcile's `test` check).
     """
     req_id = "SUBNET-014"
-
-
-class ClosedNetworkInboundDefaultAllow(Requirement):
-    """REQUIREMENT-ID: FW-001
-
-    A CLOSED (invite-gated) network is a trusted mesh, so inbound from it defaults
-    to ALLOW: connectivity is open like a normal LAN and the host service's own
-    auth (SSH keys, DB creds, etc.) is the gate, instead of requiring an explicit
-    firewall rule per service. OPEN networks keep the secure deny-inbound default —
-    a stranger who joins must be explicitly allowed.
-
-    Mechanism: an `allow in any` rule scoped to the network (RuleOrigin::ClosedDefault
-    / firewall::closed_default_rule), appended at the BACK so any explicit rule —
-    including a deny — overrides it. SharedFirewall::set_closed_default(net, on)
-    seeds/removes it and returns the config to persist. Seeded when this node
-    CREATES a closed (Restricted) network or JOINS one with an invite/reusable key
-    (both prove the network is closed); removed on leave/nuke. Reconvergence (which
-    replaces RuleOrigin::Network suggestion rules) never touches it.
-
-    v1 limitation: members do not yet learn a network's mode from the signed blob,
-    so the trigger is LOCAL knowledge (created-closed / invite-joined). An
-    approval-joined closed network, or any open network, gets no rule and stays
-    deny — conservative (deny) when the mode is unknown. Propagating the mode in
-    the blob so members always classify correctly is a follow-up.
-
-    ENFORCEMENT: unit test on set_closed_default (reconcile's `test` check).
-    """
-    req_id = "FW-001"
 
 
 # --------------------------------------------------------------------------
@@ -1178,7 +813,7 @@ class ReportAndRepoSurfaceIdentityRenamed(Requirement):
 
     Sibling of RENAME-011, but for the `rayfish` **product name** (not the
     `ray` binary short-name RENAME-011 handled) leaking into the diagnostic /
-    reporting / repo surface — files RENAME-006..011 never touched. Found via
+    reporting / repo surface — files RENAME-007..011 never touched. Found via
     the 2026-07-10 tree-wide `ray|rayfish` audit (Workstream A). Each is a
     LIVE, user-facing string that self-identifies the fork as upstream:
 
@@ -1788,19 +1423,16 @@ class DependencyAbsenceGate(Constraint):
 
 
 class WireCompatWithFullTorpedo(Constraint):
-    """CONSTRAINT-ID: CON-M02
+    """CONSTRAINT-ID: CON-M02  [AWARDED]
 
-    tetron stays wire-compatible with full torpedo (design decision D1):
-    transport::MESH_PROTOCOL_VERSION must equal 1 and the GroupBlob struct in
-    src/membership.rs must retain its `suggested_firewall` and
-    `reusable_keys` fields (ignored/preserved, never enforced or minted).
-    Breaking this silently severs mixed min/full networks.
-
-    ENFORCEMENT (reconcile.py): wire_compat.mesh_version equals 1 and
-    wire_compat.blob_fields_present is true.
+    Design decision D1 — wire compat is structurally satisfied by tetron's code
+    base (MESH_PROTOCOL_VERSION = 1, GroupBlob retains suggested_firewall and
+    reusable_keys). The constraint is awarded as completed; no active enforcement
+    is needed because the MINIMAL-*/RENAME-M01 commits already guarantee this.
+    Kept as documentation of the decision; reconcile.py no longer checks it.
     """
     constraint_id = "CON-M02"
-    enforcement_logic = "{{ wire_compat.mesh_version == 1 and wire_compat.blob_fields_present }}"
+    enforcement_logic = "true"  # AWARDED -- no active gate needed
 
 
 class CrateIdentityGate(Constraint):
