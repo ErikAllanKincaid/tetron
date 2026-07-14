@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# reconcile.py -- run from ~/code/torpedo
+# reconcile.py -- run from ~/code/tetron
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M03)
+# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M03, CON-M04)
 # from spec/design_spec.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
@@ -271,6 +271,36 @@ def check_crate_identity() -> dict:
     return {"leak_count": leaks}
 
 
+def check_product_identity() -> dict:
+    """CON-M04: binary name is tetron, ALPN prefix starts with tetron/net/,
+    config dir references /etc/tetron."""
+    cargo = Path("Cargo.toml").read_text()
+    transport = Path("src/transport.rs").read_text()
+    config = Path("src/config.rs").read_text()
+    # Binary name: look for [[bin]] section with name = "tetron"
+    # Match '[[bin]]\nname = "tetron"' or same on adjacent lines
+    binary_ok = False
+    for i, line in enumerate(cargo.splitlines()):
+        if line.strip() == "[[bin]]":
+            next_line = cargo.splitlines()[i + 1] if i + 1 < len(cargo.splitlines()) else ""
+            if 'name = "tetron"' in next_line:
+                binary_ok = True
+                break
+    # ALPN prefix: look for the actual prefix string in the ALPN builder
+    alpn_prefix_ok = False
+    for line in transport.splitlines():
+        if '"tetron/net/"' in line or "'tetron/net/'" in line:
+            alpn_prefix_ok = True
+            break
+    # Config dir: /etc/tetron
+    config_dir_ok = "/etc/tetron" in config
+    return {
+        "binary_name": "tetron" if binary_ok else None,
+        "alpn_prefix": "tetron/net/" if alpn_prefix_ok else None,
+        "config_dir": "/etc/tetron" if config_dir_ok else None,
+    }
+
+
 if __name__ == "__main__":
     ctx = {
         "build": check_build(),
@@ -286,6 +316,7 @@ if __name__ == "__main__":
         "test_subnet_identity": check_test_subnet_identity(),
         "dependency_absence": check_dependency_absence(),
         "crate_identity": check_crate_identity(),
+        "product_identity": check_product_identity(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -302,5 +333,8 @@ if __name__ == "__main__":
         and ctx["test_subnet_identity"]["unexpected_count"] == 0
         and ctx["dependency_absence"]["unexpected_count"] == 0
         and ctx["crate_identity"]["leak_count"] == 0
+        and ctx["product_identity"]["binary_name"] == "tetron"
+        and ctx["product_identity"]["alpn_prefix"] == "tetron/net/"
+        and ctx["product_identity"]["config_dir"] == "/etc/tetron"
     )
     sys.exit(0 if ok else 1)

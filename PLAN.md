@@ -54,7 +54,13 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 | 16 | MINIMAL-016 | Workspace: remove ray-mobile member (and the android/ dir), trim benches/ to the surviving forward path, prune Cargo.toml features to default-only, sweep cliff.toml/justfile targets that reference removed surfaces. |
 | 17 | docs | Final AGENTS.md rewrite describing tetron as it now is (module list, CLI surface, flows), README rewrite with the D4 security-posture note and nftables example, CHANGELOG entry. |
 
-## Phase 6: verification
+## Phase 6: full product identity rename (RENAME-M02)
+
+| Commit | Req | Scope |
+|---|---|---|
+| 19 | RENAME-M02 | Full product rename: binary `tetron`, service `tetron.service`, paths `/etc/tetron`, `/var/log/tetron`, `/var/run/tetron/tetron.sock`, ALPN `tetron/net/...`, all user-facing CLI/messages. Retires CON-M02 (D1 severed). Adds CON-M04 constraint for sweep completeness. Done 2026-07-13. |
+
+## Phase 7: verification
 
 - Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two min nodes.
 - Interop run (success criterion 3): one full-torpedo node and one tetron node on the same network passing traffic. Use two LAN test machines; full torpedo deploys by its existing release path, tetron by `just deploy-dev`.
@@ -64,12 +70,10 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 
 Not part of the MINIMAL milestone; each item is its own decision after Phase 6 is green.
 
-- TOR-M01: flexible per-network Tor policy (`any` / `tor` / `tor-isolated`). Tiers 1-2 already work via the kept `--tor` flag; the new work is tier 3, a second Tor-only endpoint with its own key, relays disabled, onion-only discovery (the only leak-free tier). Node-local routing only; never a blob or protocol change (CON-M02 holds).
-- RENAME-M01 / RENAME-M02: the deferred crate and product identity renames (see PROPOSAL.md, Naming and crate identity).
+- TOR-M01: flexible per-network Tor policy (`any` / `tor` / `tor-isolated`). Tiers 1-2 already work via the kept `--tor` flag; the new work is tier 3, a second Tor-only endpoint with its own key, relays disabled, onion-only discovery (the only leak-free tier). Node-local routing only; never a blob or protocol change.
 
 ## Standing rules
 
 - Delete whole files where possible; do not reorganize surviving modules (keeps cherry-picks from torpedo clean).
-- Any ControlMsg variant a min node can still receive from a full node must decode and be handled or ignored, never error the connection (D1).
 - reconcile.py must stay green on every commit; a check that references a removed file is trimmed in the same commit that removes the file.
 - Commit subjects conventional, message body states the requirement ID, no authorship trailers.

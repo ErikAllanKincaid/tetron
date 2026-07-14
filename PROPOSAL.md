@@ -2,9 +2,9 @@
 
 ## Summary
 
-tetron is a minimal variant of [torpedo](https://github.com/ErikAllanKincaid/torpedo), itself a fork of [rayfish](https://github.com/rayfish/rayfish). It follows the Unix philosophy: do one thing, do it well. The one thing is connecting a set of machines into a private mesh network with stable addresses. Everything else that torpedo accumulated (userspace firewall, Magic DNS, file transfer, embedded SSH, self-update, declarative apply, diagnostics, direct-connect, multi-device pairing) is removed. Name resolution, packet filtering, file copying, and remote shells already have excellent dedicated tools; tetron hands those jobs back to them.
+tetron is a minimal, standalone P2P mesh VPN: it connects a set of machines into a private overlay network with stable addresses and nothing else.
 
-Full-fat torpedo stays as it is and continues to evolve in its own repository. This repository was created as a git clone of torpedo at commit 4809edb, so the two share history and fixes can be cherry-picked in either direction.
+It began as a fork of [torpedo](https://github.com/ErikAllanKincaid/torpedo) (itself a fork of [rayfish](https://github.com/rayfish/rayfish)), but the product identity is now independent. The full-fat torpedo feature set (userspace firewall, Magic DNS, file transfer, embedded SSH, self-update, declarative apply, diagnostics, direct-connect, multi-device pairing) has been stripped away. Name resolution, packet filtering, file copying, and remote shells already have excellent dedicated tools; tetron hands those jobs back to them. This repository shares git history with torpedo (cloned at commit 4809edb) so fixes can be cherry-picked from either side, but the two projects are not wire-compatible.
 
 ## Motivation
 
@@ -20,17 +20,17 @@ Identity (Ed25519 key) -> signed pkarr record -> signed GroupBlob roster -> iroh
 The complete CLI surface:
 
 ```
-torpedo create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # closed network, prints room id
-torpedo join <room-id-or-invite> [--name alias] [--hostname h] [--tor]
-torpedo leave <net>  |  nuke <net>
-torpedo requests <net>  |  accept <net> <id>  |  deny <net> <id>
-torpedo admin <net> add <id> | list
-torpedo kick <net> <peer>
-torpedo status [--json]
-torpedo up | down
-torpedo config [get|set|unset]        # relay, discovery-dns, subnet only
-torpedo completions <shell>  |  version
-sudo torpedo install | restart | uninstall | start | stop | set-operator <user>
+tetron create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # closed network, prints room id
+tetron join <room-id-or-invite> [--name alias] [--hostname h] [--tor]
+tetron leave <net>  |  nuke <net>
+tetron requests <net>  |  accept <net> <id>  |  deny <net> <id>
+tetron admin <net> add <id> | list
+tetron kick <net> <peer>
+tetron status [--json]
+tetron up | down
+tetron config [get|set|unset]        # relay, discovery-dns, subnet only
+tetron completions <shell>  |  version
+sudo tetron install | restart | uninstall | start | stop | set-operator <user>
 ```
 
 Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery), dht, membership, control (rate-limited), peers, tun, forward (with the upstream anti-spoof ingress check), config (trimmed), ipc, daemon core (create/join/accept/bootstrap/publish/reconverge/coordinator/select/runtime), shutdown, logdir, hostname and network-name generation, the operator privilege model, the panic-fail-fast convention, and the compile-time `tor` feature (off by default, see D7).
@@ -57,43 +57,45 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 
 ## Key design decisions
 
-**D1: Wire compatibility with full torpedo is preserved.** `MESH_PROTOCOL_VERSION` stays 1, ALPNs are unchanged, and the GroupBlob schema keeps its `suggested_firewall` and `reusable_keys` fields. A tetron node ignores firewall suggestions instead of enforcing them, preserves the fields verbatim when it republishes as coordinator, and still validates reusable keys and invite secrets presented by joiners where it can. This means min and full nodes interoperate on one network (for example: tetron on servers, full torpedo on a laptop), and it keeps membership.rs textually close to torpedo for cherry-picking. Control messages a min node no longer initiates (Ping, file offers, pair) are either answered passively (Pong) or politely refused, never a decode error.
+**D1 (RETIRED by RENAME-M02): full product rename.** tetron is no longer wire-compatible with full torpedo. The ALPN prefix changed from `torpedo/net/...` to `tetron/net/...`, so the two meshes cannot interoperate — they negotiate different ALPNs at the QUIC handshake and never connect. The binary, service unit, config/log/socket paths, and all user-facing identity were renamed from `torpedo` to `tetron`. A brief attribution note in the README and the upstream author field in Cargo.toml are the only remaining references to the project's lineage. The `GroupBlob` schema still retains its `suggested_firewall` and `reusable_keys` fields for schema stability, but they are inert in tetron.
 
-**D2: Admission is closed-plus-approval only.** `torpedo create` always makes a Restricted network; `--open` is gone. Joining a min-coordinated network is: dial, land in the pending queue, coordinator runs `torpedo accept`. A min node can still *join* a full-torpedo network using an invite code (redemption is a few client-side lines and is kept). Invite minting, the invite ledger, invite gossip, and reusable-key minting are removed. `admin add` (co-coordinator grant) is kept: it is small and is the availability story for admission.
+**D2: Admission is closed-plus-approval only.** `tetron create` always makes a Restricted network; `--open` is gone. Joining is: dial the room id, land in the pending queue, coordinator runs `tetron accept`. Invite minting, the invite ledger, invite gossip, and reusable-key minting are removed. `admin add` (co-coordinator grant) is kept: it is small and is the availability story for admission.
 
 **D3: No host mutation beyond the TUN device and routes.** Removing the DNS stack removes the resolv.conf takeover, NetworkManager drop-ins, and the panic-hook DNS restore. The daemon's host footprint becomes: TUN device, routes, config dir, log dir, unix socket.
 
 **D4: Security posture change, stated loudly.** Without the userspace firewall, every mesh peer reaches every port on the TUN interface. The README must say so and show the two-line nftables equivalent. The mesh itself remains the coarse boundary (peers must share a network), and the anti-spoof ingress check stays.
 
-**D5: Same binary name, no host coexistence with full torpedo.** The binary, service, paths, and ALPNs keep the torpedo identity, so tetron and full torpedo can not be installed on the same host; a host runs one or the other. They *can* share a network (D1). KEEP-ON-PURPOSE rules from torpedo (relay preset, upstream REPO_SLUG references that survive, author attribution) carry over unchanged. The crate name is `tetron` (RENAME-M01, 2026-07-13).
+**D5 (RENAMED): Product identity is tetron, fully independent.** The binary, service unit, config/log/socket paths, ALPN prefixes, and all user-facing identity are renamed from `torpedo` to `tetron`. tetron and full torpedo can coexist on the same host (different ports, paths, and service names) and are unaware of each other. KEEP-ON-PURPOSE rules from the torpedo/rayfish lineage (the `"rayfish"` relay preset keyword and URLs, upstream author attribution in Cargo.toml) remain unchanged.
 
 **D6: Spec-first workflow carries over.** Same libspec + reconcile.py discipline: one requirement per commit, reconcile.py green, `libspec link` after each commit. New requirements are MINIMAL-*; new constraints are CON-M* (a separate constraint namespace so future torpedo CON-0xx numbers never collide when cherry-picking). Inherited SUBNET-*/RENAME-*/CON-* specs remain valid until a removal commit retires them explicitly.
 
-**D7: Tor stays, as compile-time-gated glue, with a flexible per-network policy as the post-MINIMAL roadmap.** Tor carries only TCP streams, so an iroh QUIC/UDP mesh can not be torified externally (torsocks, TransPort redirection, and gateway setups all drop UDP); the in-endpoint iroh-tor-transport integration is the only way, and it already delegates the actual onion routing to the system Tor daemon. The `tor` cargo feature and the per-network `--tor` flag therefore survive MINIMAL-008 unchanged; default builds carry zero Tor code. The flexible target is TOR-M01 (deferred until after Phase 6): a per-network transport policy `any` / `tor` (dial-preference over the shared endpoint; censorship resistance, not anonymity, since the shared endpoint id still resolves to clearnet addresses) / `tor-isolated` (a second, Tor-only endpoint with its own key, no relays, onion-only discovery; the only leak-free per-network tier). Policy is node-local routing and never touches the blob or protocol, preserving D1.
+**D7: Tor stays, as compile-time-gated glue, with a flexible per-network policy as the post-MINIMAL roadmap.** Tor carries only TCP streams, so an iroh QUIC/UDP mesh can not be torified externally (torsocks, TransPort redirection, and gateway setups all drop UDP); the in-endpoint iroh-tor-transport integration is the only way, and it already delegates the actual onion routing to the system Tor daemon. The `tor` cargo feature and the per-network `--tor` flag therefore survive MINIMAL-008 unchanged; default builds carry zero Tor code. The flexible target is TOR-M01 (deferred): a per-network transport policy `any` / `tor` (dial-preference over the shared endpoint; censorship resistance, not anonymity) / `tor-isolated` (a second, Tor-only endpoint with its own key, no relays, onion-only discovery; the only leak-free per-network tier). Policy is node-local routing and never touches the blob or protocol.
 
 ## Costs and risks
 
 - Two repositories to maintain. Mitigation: tetron deletes whole files and avoids reshaping what it keeps, so torpedo fixes cherry-pick cleanly; the shared history makes `git cherry-pick` from the torpedo remote routine.
-- Wire compatibility (D1) constrains how much membership/control code can be deleted. This is deliberate: the deleted code is feature surface, not protocol surface.
+- The product rename breaks compatibility — existing tetron nodes and full-torpedo nodes cannot mesh. Existing networks must be recreated after the rename. The ALPN change is a deliberate protocol boundary.
 - reconcile.py and the tests/ e2e harness exercise removed features (firewall, dns, invite, files, ssh). Each removal commit must trim the corresponding checks and tests in the same commit to stay green.
 - Some peripheral removals touch shared plumbing (DeviceUserMap, stats counters wired through forward.rs) and need care rather than bulk deletion.
 
 ## Success criteria
 
-1. `cargo build` produces a torpedo binary whose CLI is exactly the surface above.
+1. `cargo build` produces a tetron binary whose CLI is exactly the surface above.
 2. Main crate under ~15,000 lines; Cargo.toml direct dependencies roughly halved; CON-M01 (dependency absence gate) green.
-3. A tetron node and a full torpedo node join the same network and pass traffic (wire-compat proof, CON-M02).
-4. Two tetron nodes: create, approve, join, ping over mesh IPs, kick, leave, all green in the trimmed e2e harness.
-5. reconcile.py green on every commit; libspec ledger continuous from torpedo's history.
+3. Two tetron nodes: create, approve, join, ping over mesh IPs, kick, leave, all green in the trimmed e2e harness.
+4. reconcile.py green on every commit; libspec ledger continuous from torpedo's history.
+5. No residual `torpedo` strings in user-facing output, CLI help, error messages, or host artifacts (paths, service units, socket names).
 
 ## Naming and crate identity
 
-Directory and working name: tetron. The binary stays `torpedo` (D5). The Cargo package/library is `tetron` (RENAME-M01, 2026-07-13). The helper crate is `tetron-proto`.
+Everything is `tetron`. Cargo package/library `tetron`, helper crate `tetron-proto`, binary `tetron`, service `tetron`, paths under `/etc/tetron` and `/var/run/tetron`, ALPN prefix `tetron/net/...`.
 
-### Staged renames
+### Rename history
 
-**RENAME-M01 — COMPLETED 2026-07-13.** Crate identity renamed: `rayfish` -> `tetron`, `ray-proto` -> `tetron-proto`. Internal only, D1 wire compat preserved. Additive config constraint CON-M03 gates against regressions. Cherry-picks from torpedo now need manual import fixups on `use rayfish::` lines.
+**RENAME-M01 — COMPLETED 2026-07-13.** Crate identity renamed: `rayfish` -> `tetron`, `ray-proto` -> `tetron-proto`. Internal only, D1 preserved.
 
-**RENAME-M02, the product identity rename (optional, BREAKS D1).** Not yet started. Binary name, service unit, config/log/socket paths (`/etc/tetron`, `/var/run/tetron`, `/var/log/tetron`), and the ALPN prefixes (`torpedo/net/…` to `tetron/net/…`). This is a full RENAME-006-style host-artifact pass; it lets tetron coexist with torpedo and rayfish on one host, but changing the ALPNs severs wire compatibility with full torpedo, so it retires CON-M02 and design decision D1 in the same commit, deliberately and loudly. Do not fold this into RENAME-M01; going public does not require it on day one, and D1 (min nodes on full-torpedo networks) may be worth keeping until the standalone network effect exists.
+**RENAME-M02 — COMPLETED 2026-07-13.** Full product identity rename: binary, service, paths, ALPNs, and all user-facing strings from `torpedo` to `tetron`. Severs D1 wire compat. CON-M02 retired.
 
-**Never renamed under any outcome:** the relay preset keyword `"rayfish"` and its URLs (CON-001; that is the name of upstream's hosted relay/DNS service, not our identity) and the MPL-2.0 lineage (LICENSE, upstream author attribution in Cargo.toml). This project is and remains a derivative of rayfish; separation is identity separation, never attribution removal.
+### Never renamed
+
+The relay preset keyword `"rayfish"` and its URLs (CON-001) — that is the name of upstream's hosted relay/DNS service, not our identity. The MPL-2.0 lineage (LICENSE, upstream author attribution in Cargo.toml). This project is and remains a derivative of rayfish; separation is identity separation, never attribution removal.

@@ -1064,14 +1064,12 @@ class NoResidualTestCgnatLeak(Constraint):
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
-# This repository is tetron, a clone of full torpedo at 4809edb that
-# strips the product down to its core: connect machines into a private mesh
-# with stable identity-derived addresses. See PROPOSAL.md for the rationale
-# and design decisions D1-D6, PLAN.md for the commit-by-commit execution
-# order. Inherited SUBNET-*/RENAME-*/CON-* specs above remain valid until a
-# MINIMAL removal commit retires them explicitly. New constraints use the
-# CON-M* namespace so future full-torpedo CON-0xx numbers never collide on
-# cherry-pick.
+# This repository is tetron, a stripped-down P2P mesh VPN. See PROPOSAL.md
+# for the rationale and design decisions, PLAN.md for the commit-by-commit
+# execution order. Inherited SUBNET-*/RENAME-*/CON-* specs above remain
+# valid until a MINIMAL removal commit retires them explicitly. New
+# constraints use the CON-M* namespace so future full-torpedo CON-0xx
+# numbers never collide on cherry-pick.
 # ==========================================================================
 
 
@@ -1081,7 +1079,7 @@ class MinimalIntent(UserStory):
     Strip torpedo to a single-purpose tool that connects machines into a
     private mesh network, delegating firewalling, name resolution, file
     transfer, remote shells, and updates to the host tools that already do
-    those jobs well, while remaining wire-compatible with full torpedo.
+    those jobs well, and rename the product identity to tetron.
 
     Priority: high.
     User journey: install tetron on two machines -> create a network on
@@ -1109,10 +1107,9 @@ class MinimalScope(Requirement):
     config/completions/version plus the sudo service verbs). Policy
     enforcement, naming, file transfer, remote shells, diagnostics probes,
     self-update, and multi-device identity are out of scope. Wire
-    compatibility with full torpedo is preserved (see CON-M02): protocol
-    version 1, unchanged ALPNs, unchanged GroupBlob schema; control messages
-    a min node no longer initiates are answered passively or ignored on
-    receipt, never a decode error or connection close.
+    compatibility with full torpedo was preserved until RENAME-M02 severed
+    it by changing the ALPN prefix; prior to that commit, protocol version 1
+    and unchanged ALPNs allowed mixed networks.
     """
     req_id = "MINIMAL-001"
 
@@ -1366,6 +1363,46 @@ class WorkspaceTrim(Requirement):
     req_id = "MINIMAL-016"
 
 
+class ProductIdentityRenamed(Requirement):
+    """REQUIREMENT-ID: RENAME-M02
+
+    Full product identity rename from `torpedo` to `tetron` across every
+    user-facing and host-visible surface:
+
+    - Binary: `[[bin]] name = "tetron"` in Cargo.toml (the clap CLI crate name
+      and version-string help output change automatically).
+    - Service unit: `contrib/torpedo.service` -> `contrib/tetron.service`, with
+      all `torpedo` references inside (ExecStart path, Description, group name).
+      macOS launchd `com.torpedo.vpn` -> `com.tetron.vpn` (plist filename and
+      label string).
+    - Config dir: config_dir() in src/config.rs returns `/etc/tetron`.
+    - Log dir: log_dir() in src/logdir.rs returns `/var/log/tetron`.
+    - Socket path: tetron-proto/src/ipc.rs path changes from
+      `/var/run/torpedo/torpedo.sock` to `/var/run/tetron/tetron.sock`.
+    - ALPN prefix: transport::network_alpn() generates `tetron/net/<version>/<key>`
+      instead of `torpedo/net/...`. This is the protocol-boundary change that
+      severs wire compat with full torpedo (D1 retired).
+    - CLI help text, error messages, version banner: all `torpedo` -> `tetron`
+      in src/main.rs, src/cli/*.rs.
+    - Config env var: any TORPEDO_CONFIG_DIR -> TETRON_CONFIG_DIR.
+    - IPC response messages that embed the binary name.
+    - justfile (`groupadd torpedo` -> `groupadd tetron`, service references).
+    - cliff.toml, SECURITY.md, README.md: product name update.
+    - Internal source comments referencing `torpedo` as the product name.
+    - The `README.md` header and description shall include: "tetron is a
+      derivative of torpedo (fork of rayfish)" for attribution, but no longer
+      present itself as a fork.
+
+    KEEP (not renamed):
+    - The `"rayfish"` relay preset keyword and its URLs (CON-001).
+    - Author attribution (Cargo.toml `dario@rayfish.xyz`).
+    - LICENSE (MPL-2.0).
+    - git history (the rename is a commit in the existing chain).
+    - The tetron-proto crate name was set by RENAME-M01; it stays.
+    """
+    req_id = "RENAME-M02"
+
+
 class TorPerNetworkPolicy(Requirement):
     """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
 
@@ -1393,8 +1430,8 @@ class TorPerNetworkPolicy(Requirement):
     Deferred until after Phase 6: tier 3 touches bootstrap, MeshManager,
     create/join, and status, and must not ride along with the removal
     phases. Tiers 1-2 already exist upstream and are kept by MINIMAL-008.
-    Implementation must keep CON-M02 wire compat: policy is node-local
-    routing, never a blob/protocol change.
+    Policy is node-local routing, never a blob/protocol change (D1 was
+    severed by RENAME-M02, but routing policy is inherently local).
     """
     req_id = "TOR-M01"
 
@@ -1423,16 +1460,16 @@ class DependencyAbsenceGate(Constraint):
 
 
 class WireCompatWithFullTorpedo(Constraint):
-    """CONSTRAINT-ID: CON-M02  [AWARDED]
+    """CONSTRAINT-ID: CON-M02  [RETIRED]
 
-    Design decision D1 — wire compat is structurally satisfied by tetron's code
-    base (MESH_PROTOCOL_VERSION = 1, GroupBlob retains suggested_firewall and
-    reusable_keys). The constraint is awarded as completed; no active enforcement
-    is needed because the MINIMAL-*/RENAME-M01 commits already guarantee this.
-    Kept as documentation of the decision; reconcile.py no longer checks it.
+    Design decision D1 — superseded by RENAME-M02 which changed the ALPN
+    prefix and severed wire compatibility with full torpedo. The constraint
+    is retired; the product rename is a deliberate protocol boundary.
+    GroupBlob still retains suggested_firewall and reusable_keys for schema
+    stability but they are inert.
     """
     constraint_id = "CON-M02"
-    enforcement_logic = "true"  # AWARDED -- no active gate needed
+    enforcement_logic = "true"  # RETIRED -- D1 severed by RENAME-M02
 
 
 class CrateIdentityGate(Constraint):
@@ -1449,3 +1486,21 @@ class CrateIdentityGate(Constraint):
     """
     constraint_id = "CON-M03"
     enforcement_logic = "{{ crate_identity.leak_count == 0 }}"
+
+
+class ProductIdentityGate(Constraint):
+    """CONSTRAINT-ID: CON-M04
+
+    After RENAME-M02, the binary name in Cargo.toml must be `tetron`, the
+    ALPN prefix in src/transport.rs must start with `tetron/net/`, and the
+    config path in src/config.rs must reference `/etc/tetron`. This is the
+    anti-regression gate for the product identity rename: if a cherry-pick
+    from torpedo re-introduces `torpedo` in any of these load-bearing paths,
+    reconcile.py catches it.
+
+    ENFORCEMENT (reconcile.py): product_identity.binary_name equals "tetron",
+    product_identity.alpn_prefix starts with "tetron/net/",
+    product_identity.config_dir contains "/etc/tetron".
+    """
+    constraint_id = "CON-M04"
+    enforcement_logic = "{{ product_identity.binary_name == 'tetron' and product_identity.alpn_prefix.startswith('tetron/net/') and '/etc/tetron' in product_identity.config_dir }}"
