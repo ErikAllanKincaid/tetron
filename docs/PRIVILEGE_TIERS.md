@@ -242,3 +242,134 @@ fn may_publish(actor: EndpointId, state: &NetworkState) -> bool {
    key. How does an existing network migrate to the new tier model? Does
    every existing member become admin, or coordinator, or need to re-join
    with a new invite?
+
+---
+
+## The Ethernet analogy — a simpler lens
+
+A tetron mesh is a virtual Ethernet cable. Joining is plugging in. What you
+do with your connection is your business (and your firewall's). The network
+admin can kick your MAC address at the router.
+
+### The analogy
+
+| Physical Ethernet | tetron |
+|---|---|
+| Plug patch cable into switch | Present invite key, get mesh IP |
+| Switch forwards frames to all ports | Mesh forwards packets to all peers |
+| Your machine listens on ports you choose | Host firewall on TUN interface |
+| Admin blocks MAC on switch port | `tetron kick <peer>` |
+| Switch keeps working when admin is out | Mesh keeps working when creator is offline |
+| New person starts, needs admin to free a port | New join needs an invite from creator |
+| If admin is gone forever, network is frozen | Same — roster freezes, no new admissions |
+
+### What this implies
+
+**Data plane is flat.** Every member on the mesh can reach every other
+member's ports. No per-peer access control in the mesh itself — that is the
+host firewall's job. tetron already matches this (MINIMAL-010 removed the
+userspace firewall).
+
+**Administration is separate from connectivity.** The admin role is only
+about managing the membership list — who gets to be on the network. It has
+no bearing on what members do once connected, any more than an Ethernet
+switch admin controls what you do with your link.
+
+**Joining should not carry privileges.** An invite is a "patch cable." It
+admits you to the network. It should not encode an admin or coordinator
+role, because being on the network and administering the network are
+different concerns.
+
+### What simplifies
+
+The three-tier model (admin/coordinator/member) was over-engineered.
+The Ethernet lens suggests two tiers:
+
+| Tier | Powers |
+|---|---|
+| **Admin** | Kick, mint invites, publish blob |
+| **Member** | Use the mesh |
+
+No coordinator tier. No invites with `--admin` or `--coordinator` flags.
+An invite is just an invite.
+
+### The network key
+
+Only admins hold the per-network `SecretKey`. Members do not need it —
+they never publish, mint, or kick.
+
+This creates the laptop fleet problem in its purest form: if the admin is
+offline, no one can admit new members. But the Ethernet analogy accepts
+this as normal. A physical switch port assignment waits for the admin to
+come back. The mesh keeps working for existing members.
+
+**If the admin is permanently gone** (lost laptop, left the group), the
+network is administratively frozen but data-plane traffic between existing
+members keeps working indefinitely. This is a design trade-off, not a bug,
+and matches physical networking.
+
+### Escape hatch: admin transfer
+
+If permanent admin loss is unacceptable, add a single escape: a `--backup`
+flag on `create` that pre-authorizes another identity as co-admin:
+
+```bash
+# Creator specifies a backup admin at network creation time.
+tetron create --hostname alice --backup <bobs-endpoint-id>
+```
+
+The backup has the same powers as the creator. No tiers, no negotiation,
+no consensus protocol. Just a second key holder from day one.
+
+### What this means for earlier proposals
+
+| Earlier proposal | Simplified by Ethernet lens |
+|---|---|
+| Three-tier (admin/coordinator/member) | Two-tier (admin/member). No coordinator role. |
+| Invite encodes tier | Invite is just an invite. No role. |
+| Auto-coordinator on join | Members never get the network key. |
+| Invite in blob (needed for coordinator-less admission) | Invite in blob still useful — any admin can mint, any admin can validate. But invite does not carry a role. |
+| Fetch-before-publish merge | Still needed if there are multiple admins. |
+| Threshold kick | Unnecessary if admin transfer exists. |
+
+### Remaining open questions through this lens
+
+1. **Does invite-in-blob still make sense?** Yes — if there are multiple
+   admins, any of them can mint an invite, and any of them can validate it
+   without needing to coordinate. This is independent of the tier model.
+
+2. **Is fetch-before-publish still needed?** Yes — multiple admins can
+   still race on publishing. The problem is cross-admin, not
+   cross-coordinator.
+
+3. **How does the backup admin get created?** `--backup` flag on `create`,
+   or `admin add` by the original admin later. The default is a single
+   admin (the creator).
+
+4. **Should there be a way to revoke admin from the backup?** In
+   Ethernet terms, this is "fire the co-admin." The original admin kicks
+   them (since kick works on any member) and sets a new backup. This is
+   the same as kicking any other member — the backup is just a member with
+   the key, and a kicked member with a key can still sign a stale blob.
+   **This is a real problem.** See below.
+
+### The kicked-admin problem
+
+A kicked admin still holds the network key. They can still sign and publish
+a blob even after being kicked. The blob will be stale (missing newer
+members), but the DHT does not filter by membership — it filters by
+signature, and the key still signs.
+
+Solutions:
+
+- **Rotate the network key on admin kick.** Generates a new keypair,
+  republishes the blob, and distributes the new key to remaining admins
+  via a secure channel (the existing mesh ALPN). This is complex but
+  correct.
+
+- **Accept it.** A kicked admin with the key can cause at most a stale
+  blob revert, which is fixed by the next admin publish or by
+  fetch-before-publish on all admins. They cannot corrupt the roster
+  beyond what the merge resolves.
+
+The second option is simpler and matches real Ethernet — a disgruntled ex-employee with physical access to the wiring closet can unplug cables. You change the locks (rotate the key) when you can.
