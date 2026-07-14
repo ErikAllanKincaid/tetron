@@ -215,6 +215,7 @@ impl MeshManager {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_network_inner(
         &self,
         mode: GroupMode,
