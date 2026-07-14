@@ -180,7 +180,7 @@ pub(crate) enum AdminAction {
 pub(crate) enum InviteAction {
     /// Mint a new single-use invite key
     Create {
-        /// Expiry duration (e.g. "24h", "7d", "30m"). Omit for no expiry.
+        /// Expiry duration (e.g. "24h", "7d", "30m"). Defaults to 7 days. Pass "0" or "never" for no expiry.
         #[arg(long)]
         expires: Option<String>,
     },
