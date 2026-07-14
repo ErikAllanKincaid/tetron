@@ -373,3 +373,81 @@ Solutions:
   beyond what the merge resolves.
 
 The second option is simpler and matches real Ethernet — a disgruntled ex-employee with physical access to the wiring closet can unplug cables. You change the locks (rotate the key) when you can.
+
+---
+
+## The router analogy — second pass
+
+The Ethernet analogy is useful but I collapsed it too far the first time. A
+physical network is not just cables; it has a **router/switch** that is the
+shared infrastructure. tetron distributes that function across members who
+hold the network key.
+
+### What the router does in a physical network
+
+| Router function | tetron equivalent |
+|---|---|
+| DHCP (hand out IPs) | `assign_ip` in the signed blob |
+| ARP table / DHCP lease list (who is connected) | `MemberList` in the signed blob |
+| Port security / MAC filtering (who gets on) | Invite validation + admission gate |
+| VLAN config (which ports can talk to which) | (No equivalent — mesh is flat after MINIMAL-010) |
+| Keeps forwarding when admin walks away | Mesh keeps working; roster is cached |
+| Admin must be present to add a new port | Coordinator must be online to admit |
+
+### The roles re-derived from this
+
+| Physical network | tetron role | What you can do |
+|---|---|---|
+| Senior sysadmin (can MAC-ban, change VLANs) | Admin | Kick, promote, nuke |
+| Junior sysadmin (can DHCP-reserve, config switch ports) | Coordinator | Admit, mint invites, publish blob |
+| Staff with Ethernet cable | Member | Use the mesh |
+
+**All three exist in physical networking.** They just are not named because
+the router is a box with a single password. tetron distributes the router
+across members, making the roles explicit.
+
+### What this means for the design
+
+**The coordinator tier is not over-engineering.** It is "can operate the
+shared infrastructure." Multiple coordinators = more people who can
+configure the switch when the senior admin is out. The earlier collapse to
+two tiers (admin/member) was wrong.
+
+**The invite encodes the tier.** A coordinator invite says "you are
+authorized to touch the router." A member invite says "you are authorized
+to plug in." The tier is a property of the invite, not a post-join grant.
+
+**Admission is not "plugging in."** It is: the sysadmin pre-authorizes your
+MAC on the switch port, then you plug in. The invite is the
+pre-authorization. A coordinator admitting is the sysadmin configuring the
+port.
+
+**The blob is the router config.** It lists every device, its IP, and its
+role. Publishing is saving the running config. Multiple people can save —
+last-write-wins needs protection (fetch-before-publish merge, version
+vectors).
+
+### The network key is the router password
+
+How many people have it is a trust decision per network, not a protocol
+decision. The protocol should support any number:
+
+- **Single admin:** one router password, one person operates it.
+- **Two co-admins:** creator sets a `--backup` at create time.
+- **Everyone is a sysadmin:** all join with `--coordinator` invites. The
+  laptop fleet model where any online member can admit.
+- **Mix:** some coordinators, mostly members. The normal case.
+
+### What stays from the earlier discussion
+
+| Feature | Still needed? | Why |
+|---|---|---|
+| Invite in blob | Yes | Any coordinator can mint; any coordinator can validate. No machine-local bottleneck. |
+| Fetch-before-publish merge | Yes | Multiple coordinators (or a kicked key holder) can publish concurrent rosters. |
+| Invite encoding (pubkey + secret) | Yes | Removes coordinator-endpoint pinning so any online coordinator can validate. |
+| Auto-coordinator on `--coordinator` invite | Yes | The invite encodes the tier; join handshake grants key. |
+| `--backup` flag on create | Yes | Pre-authorize a second admin day one. |
+| Kick requires admin | Yes | Matching physical MAC-ban. |
+| Role encoded in invite | Yes | Coordinator vs member determined at admission, not after. |
+| Threshold kick | Unnecessary | Admin transfer / backup is simpler. |
+| Key rotation on admin kick | Deferred | Accept stale-blob risk for now; merge mitigates it.
