@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Overlap guard**: instead of the upstream rayfish preflight that refused to start if anything used `100.64.0.0/10`, tetron refuses to start only if the *chosen* subnet overlaps an existing local network. This lets tetron run alongside Tailscale or any other overlay without hijacking routing.
+
+### Changed
+
+- **rayfish relay/discovery presets retained (CON-001)**: the `"rayfish"` config keyword and its preset URLs (`relay.iroh.rayfish.xyz`, `dns.iroh.rayfish.xyz`) are kept as-is — they are load-bearing infrastructure references that must match upstream. The default remains n0's neutral infrastructure, but the keyword survives for users who pin to rayfish's hosted services.
+
 ### Fixed
 
 - **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the

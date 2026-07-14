@@ -1437,6 +1437,183 @@ class TorPerNetworkPolicy(Requirement):
 
 
 # --------------------------------------------------------------------------
+# Invite-key admission (INVITE-*)
+#
+# Reverse the MINIMAL-013 direction: bring back invite minting, but make
+# single-use invite keys the PRIMARY admission mechanism instead of the
+# room-id + live approval queue. The room id becomes discovery-only.
+# --------------------------------------------------------------------------
+
+class InviteKeyIntent(UserStory):
+    """USER-STORY: INVITE-INTENT
+
+    Replace live-approval admission with single-use invite keys as the
+    primary way onto a network. A coordinator mints an invite key (a
+    printable string), shares it out-of-band with whoever should join, and
+    the bearer is auto-admitted on presentation -- no approval queue, no
+    coordinator attendance required beyond minting.
+
+    Priority: high.
+    User journey: create a network -> mint an invite key -> share it with a
+    collaborator -> they run `tetron join <key>` and connect immediately.
+    Acceptance: `tetron invite <net> create` prints a usable key; joining
+    with it succeeds without `tetron accept`; the invite is single-use
+    (re-joining with the same key is denied). `tetron join <room-id>` alone
+    fails with a message telling the user to obtain an invite key.
+    """
+    brief_title = "Single-use invite key admission"
+    priority = "high"
+
+
+class InviteStore(Requirement):
+    """REQUIREMENT-ID: INVITE-001
+
+    tetron gains a per-network invite store at
+    `<config_dir>/invites/<network>/<invite-id>.toml`. Each file holds:
+    - `id`: 8-byte random hex invite identifier (also the filename stem).
+    - `secret_hash`: blake3 hex of the invite secret (64 hex chars), so the
+      plaintext secret is never persisted.
+    - `created_at`, `expires_at` (0 = never): unix timestamps.
+    - `used`: bool, set true on single-use redemption.
+
+    The store directory auto-creates under the config dir via the existing
+    `config_dir()` helper. No new top-level config keys.
+    """
+    req_id = "INVITE-001"
+
+
+class InviteMinting(Requirement):
+    """REQUIREMENT-ID: INVITE-002
+
+    The coordinator daemon can mint invite keys. On `invite_create`:
+    1. Generate a random 16-byte secret.
+    2. Compute its blake3 hash.
+    3. Persist the hash + metadata in the invite store (INVITE-001).
+    4. Return the printable invite key: `bs58(network_pubkey(32) ||
+       coordinator_pubkey(32) || secret(16))`, using the existing
+       `invite::encode_invite_code()`.
+
+    The invite key encodes the minting coordinator's pubkey so the joiner
+    knows which coordinator to dial. If the minting coordinator goes offline
+    before the invite is redeemed, the joiner must wait or obtain a fresh
+    invite from another coordinator (cross-coordinator gossip is deferred).
+    """
+    req_id = "INVITE-002"
+
+
+class InviteStoreValidation(Requirement):
+    """REQUIREMENT-ID: INVITE-003
+
+    On join with `invite_secret` set, `redeem_invite_and_admit` in
+    accept.rs checks the local invite store (INVITE-001) before falling
+    back to `GroupBlob.reusable_keys` validation (D1 compat path):
+
+    1. Hash the presented secret.
+    2. Look up the hash in the store.
+    3. If found and not expired and not used:
+       - Mark single-use invites as `used = true`.
+       - Auto-admit the joiner (skip pending queue).
+    4. If not found, expired, or already used:
+       - Send `JoinDenied`.
+
+    Single-use invites are burned on first successful redemption.
+    """
+    req_id = "INVITE-003"
+
+
+class CliInviteSubcommand(Requirement):
+    """REQUIREMENT-ID: INVITE-004
+
+    New CLI subcommand:
+
+        tetron invite <network> create [--expires <duration>]
+        tetron invite <network> list
+        tetron invite <network> revoke <invite-id>
+
+    `create` prints the invite key and its invite-id. `list` shows
+    outstanding invites (id, status, age, expiry). `revoke` marks an invite
+    as used so it cannot be redeemed. `tetron invite` with no subcommand
+    shows subcommand help.
+
+    The initial `cli/invite.rs` (currently requests/accept/deny handlers)
+    is renamed to `cli/requests.rs` to avoid confusion; the invite handlers
+    live in a new `cli/invite.rs`.
+    """
+    req_id = "INVITE-004"
+
+
+class InviteIpcOps(Requirement):
+    """REQUIREMENT-ID: INVITE-005
+
+    New IPC messages for invite operations (tetron-proto/src/ipc.rs):
+
+    - `InviteCreate { network, expires: Option<String> }` ->
+      `InviteCreated { invite_key, invite_id, expires_at }`
+    - `InviteList { network }` ->
+      `InviteListResponse { invites: Vec<InviteInfo> }`
+    - `InviteRevoke { network, invite_id }` ->
+      `Ok`
+
+    Daemon-side handlers `MeshManager::invite_create`,
+    `MeshManager::invite_list`, `MeshManager::invite_revoke` in a new
+    `daemon/mesh/invite_store.rs` module.
+    """
+    req_id = "INVITE-005"
+
+
+class PostCreateInitialInvite(Requirement):
+    """REQUIREMENT-ID: INVITE-006
+
+    `tetron create` auto-mints one single-use invite key and returns it in
+    the `Created` IPC response alongside the room id. The CLI displays it
+    as the primary way for peers to join:
+
+        created muddy-sunset-whale
+          address  10.88.0.1  ·  abcd…1234
+        ──────────────────────────────────────────────
+        next: tetron join <invite-key>    single-use invite
+              tetron invite <net> create  mint another invite
+              tetron up                   activate the VPN
+
+    The room id is still printed (it identifies the network to `create` more
+    invites for), but the join hint references the invite key instead.
+    """
+    req_id = "INVITE-006"
+
+
+class InviteKeyPrimaryAdmission(Requirement):
+    """REQUIREMENT-ID: INVITE-007
+
+    `tetron join <room-id>` without an invite key fails with a message
+    explaining that an invite key is required and instructing the user to
+    obtain one from the coordinator. The room id becomes discovery-only:
+    it identifies the network but does not suffice to join. The pending
+    queue (`tetron requests`/`accept`/`deny`) is removed entirely -- live
+    approval is no longer an admission path.
+
+    The wire protocol still accepts `JoinRequest` without `invite_secret`
+    on open networks (D1 compat for full-tetron open-mode networks), but
+    tetron only creates closed networks and always requires an invite
+    secret for admission.
+    """
+    req_id = "INVITE-007"
+
+
+class InviteFormatUnchanged(Requirement):
+    """REQUIREMENT-ID: INVITE-008
+
+    The invite code format is unchanged from upstream:
+    `bs58(network_pubkey(32) || coordinator_pubkey(32) || secret(16))`.
+    The existing `invite::encode_invite_code` and `decode_invite_code` in
+    `src/invite.rs` are reused as-is. The CLI `ipc_join()` in
+    `src/cli/network.rs` already detects invite codes vs room ids via
+    `decode_invite_code` and sends the secret in `JoinRequest.invite_secret`
+    -- no change needed on the joiner side.
+    """
+    req_id = "INVITE-008"
+
+
+# --------------------------------------------------------------------------
 # Constraints: tetron gates (CON-M*)
 # --------------------------------------------------------------------------
 

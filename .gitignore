@@ -1,6 +1,6 @@
 /target
 /ray-proto/target
-/docs
+/docs/upstream
 .superpowers
 
 # Android build outputs / local config
