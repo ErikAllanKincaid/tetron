@@ -381,7 +381,7 @@ class CosmeticIdentitySweep(Requirement):
     reworded to "torpedo" (e.g. dns_config.rs `rayfish_domains` locals, "routes
     queries to rayfish" comments; main.rs `/usr/local/bin/ray` test fixtures).
     Also the crate/bug-report metadata that describes THIS package points at the
-    fork (github.com/ErikAllanKincaid/torpedo): Cargo.toml +
+    fork (github.com/ErikAllanKincaid/tetron): Cargo.toml +
     ray-proto/Cargo.toml `repository`/`homepage`, the ray-proto `description`,
     and REPORT_REPO_URL (src/cli/status.rs) so `torpedo report` opens an issue on
     the fork's tracker, not upstream's. No behavioral effect on the mesh; done
@@ -835,7 +835,7 @@ class ReportAndRepoSurfaceIdentityRenamed(Requirement):
     - `cliff.toml` — the changelog "Full Changelog" compare link was
       hardcoded to `github.com/rayfish/rayfish/compare/...`, rendering an
       upstream URL into this fork's published release notes. Repointed to the
-      fork repo (`github.com/ErikAllanKincaid/torpedo`, matching
+      fork repo (`github.com/ErikAllanKincaid/tetron`, matching
       `status.rs`'s `REPORT_REPO_URL`). Distinct from the KEEP-ON-PURPOSE
       `REPO_SLUG = "rayfish/rayfish"` (self-update target, CON-006) — that
       names upstream on purpose; this one is our own changelog. Also fixed

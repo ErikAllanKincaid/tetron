@@ -16,7 +16,7 @@ body = """
 {% endfor %}
 {% endfor %}
 {% if version and previous and previous.version %}
-**Full Changelog**: https://github.com/ErikAllanKincaid/torpedo/compare/{{ previous.version }}...{{ version }}
+**Full Changelog**: https://github.com/ErikAllanKincaid/tetron/compare/{{ previous.version }}...{{ version }}
 {% endif %}
 """
 trim = true

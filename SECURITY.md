@@ -11,7 +11,7 @@ against the current `main`.
 Please report security vulnerabilities **privately** — do not open a public
 GitHub issue.
 
-Use [GitHub private vulnerability reporting](https://github.com/ErikAllanKincaid/torpedo/security/advisories/new)
+Use [GitHub private vulnerability reporting](https://github.com/ErikAllanKincaid/tetron/security/advisories/new)
 on this repository.
 
 Include enough detail to reproduce: affected version/commit, configuration, and

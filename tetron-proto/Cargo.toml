@@ -6,7 +6,7 @@ rust-version = "1.91"
 authors = ["Dario <dario@rayfish.xyz>"]
 license = "MPL-2.0"
 description = "Shared IPC wire protocol for the torpedo daemon/CLI and frontends"
-repository = "https://github.com/ErikAllanKincaid/torpedo"
+repository = "https://github.com/ErikAllanKincaid/tetron"
 
 # Shared wire protocol between the `ray` daemon/CLI and GUI frontends.
 # Holds the IPC message enum + msgpack codec and the small enums those
