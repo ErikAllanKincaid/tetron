@@ -81,6 +81,13 @@ sudo tetron restart
 tetron create --hostname alice
 ```
 
+**Subnet collision warning.** If you already belong to a network on
+`10.88.0.0/16` and create (or join) a second network on the same subnet,
+traffic can route to the wrong peer — the kernel route table cannot
+distinguish two networks sharing one range. Set a different subnet
+first, or use `--force` on create/join if you understand the routing
+implications. See `docs/SUBNET_COLLISION.md` for details.
+
 ---
 
 ## 3. Mint invite keys

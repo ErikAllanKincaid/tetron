@@ -74,6 +74,11 @@ No WebSocket streaming needed for basic use — poll `Status` every few seconds.
 
 - **`tetron join --name` rename to `--local-nickname`**: the current `--name` flag on join is a local-only alias, but `--name` on create sets the published network name. Same flag, different scopes, confusing. Rename to `--local-nickname` on join, keep `--name` on create.
 
+## Subnet collision
+
+- **Reject overlapping subnets on create/join**: check all active networks before creating or joining. See `docs/SUBNET_COLLISION.md` for scenario analysis, solutions, and recommendation (Solution 1+2 with `--force` flag).
+- **Policy routing (deferred)**: per-network routing tables so identical subnets do not collide. Higher effort, correct long-term fix.
+
 ## High priority
 
 - **Reusable keys (--reusable)**: add `--reusable` flag to `tetron invite <net> create` — adds hash to `GroupBlob.reusable_keys`, signs + republishes blob. Any coordinator validates against the blob.
