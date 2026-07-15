@@ -30,7 +30,7 @@ tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that ow
 ```bash
 # 1. Install the binary and bring the node online (needs root once):
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
-chmod +x tetron-linux-x86_64
+chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 sudo tetron up
 
