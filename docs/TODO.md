@@ -16,12 +16,12 @@
 Three changes to make a network of laptop users work without an always-on
 member:
 
-### 1. Multi-coordinator (routine)
+### 1. Multi-coordinator (routine) -- DONE (COORD-001)
 
-`tetron admin add <net> <identity>` should be the default practice. Every
-fully trusted user gets the network key. No single machine is the SPOF for
-administration. Already implemented -- just needs to be the recommended
-workflow in docs and HOWTO.
+`tetron admin add <net> <identity>` is now the recommended default practice
+in the README quickstart and HOWTO. Every fully trusted member should be a
+co-coordinator to avoid a single point of failure for admission, invite
+minting, and member management.
 
 ### 2. Invite in blob -- DONE (BLOB-001, committed at 79375be)
 

@@ -6,6 +6,8 @@ Electric ray *Tetronarce californica*
 
 **A standalone P2P mesh VPN.** tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish) that is stripped to a single purpose "Do one thing well.": connect machines into a private overlay with stable identity-derived addresses. It defaults to `10.88.0.0/24` (an uncommon 10.x slice that avoids Tailscale's `100.64.0.0/10`).
 
+### TL;DR
+
 ```bash
 sudo tetron up                        # start the node (installs the service)
 tetron create --hostname alice        # you are the coordinator; prints an invite key
@@ -21,14 +23,14 @@ ping 10.88.x.y                        # reach each other by mesh IP from `tetron
 
 ---
 
-## TL;DR quickstart
+## How to quickstart
 
 tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that owns the TUN device and the iroh endpoint. Everything else is an unprivileged `tetron` command talking to it over a local socket.
 
 ```bash
 # 1. Install the binary and bring the node online (needs root once):
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
-chmod +x tetron
+chmod +x tetron-linux-x86_64
 sudo install tetron /usr/local/bin/tetron
 sudo tetron up
 
@@ -36,7 +38,7 @@ sudo tetron up
 tetron create --name mynet --hostname alice --subnet 10.88.0.0/24
 
 #    Sample output:
-#      created fuzzy-sunset-coral        ← network name (auto-generated)
+#      created mynet        ← network name
 #        address  10.88.0.1  ·  abcd…1234
 #      next: tetron join <invite-key>    single-use invite (one more available)
 #            tetron invite <net> create  mint another invite
@@ -57,14 +59,14 @@ Tailscale keeps working throughout -- tetron's default `10.88.0.0/24` does not o
 
 Upstream rayfish hardcodes its overlay IPv4 range to `100.64.0.0/10` (the CGNAT range) and refuses to start if another interface already holds an address there. That is exactly the range **Tailscale** uses, so stock rayfish and Tailscale cannot run on the same host. tetron makes the overlay subnet configurable and defaults it to a range that coexists with Tailscale, so both meshes run side by side.
 
-The fork takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic can never be confused with, or bind the same ports as, genuine rayfish on the same host. Multiple subsystems from upstream have been removed — userspace firewall, Magic DNS, file sharing, device pairing, hostname rename, the declarative apply layer, self-update, and more — because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method. The "tetron" name was chosen as a short, distinctive derivative of the *Torpedo californica* electric ray.
+The fork takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic can never be confused with, or bind the same ports as, genuine rayfish on the same host. Multiple subsystems from upstream have been removed — userspace firewall, Magic DNS, file sharing, device pairing, hostname rename, the declarative apply layer, self-update, and more — because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method. The "tetron" name was chosen as a short, distinctive derivative of the *Tetronarce californica* electric ray.
 
 ### Using a custom subnet
 
 If `10.88.0.0/24` collides with a network you already use, pick another. The node builds its single TUN device at daemon start, so set the subnet **before** it is in use and restart:
 
 ```bash
-tetron config set subnet 10.77.0.0/16   # node-wide; applies on restart
+tetron config set subnet 10.77.0.0/24   # node-wide; applies on restart
 sudo tetron restart
 tetron create --hostname alice          # the network uses your node subnet
 ```
@@ -76,7 +78,7 @@ Do the `config set subnet` + `restart` on **every** node before it creates or jo
 Each machine runs the `tetron` daemon, which creates a TUN device, captures IP packets, and tunnels them over [iroh](https://iroh.computer) QUIC connections.
 
 1. **Create.** One peer starts a network and becomes its coordinator. The network's public key is its **room id**: it lets others discover the network but is not enough to get in.
-2. **Join.** A peer gets in using an **invite key** minted by a coordinator. The invite encodes the network pubkey and a one-time secret; the joiner presents the secret to the minting coordinator, which validates it against its local invite store and admits the peer. Grant a co-coordinator with `tetron admin add` so another member can mint invites when the original coordinator is offline.
+2. **Join.** A peer gets in using an **invite key** minted by a coordinator. The invite encodes the network pubkey and a one-time secret; the joiner presents the secret to any online coordinator, which validates it against the signed blob and admits the peer. Every fully trusted member should be granted the network key with `tetron admin add` -- this eliminates the single-point-of-failure where only one machine can admit, mint, or kick.
 3. **Mesh.** Every peer derives its own stable virtual IPv4 (in the configured subnet) and IPv6 (`200::/7`) from its identity, then connects directly to every other peer -- hole-punched where possible, falling back to encrypted relays otherwise.
 4. **Use it.** Any TCP/UDP app works, addressed by the peer's mesh IP (from `tetron status`).
 
@@ -84,9 +86,9 @@ Each machine runs the `tetron` daemon, which creates a TUN device, captures IP p
 
 The **room id** (network public key) is a discovery key, never an admission credential. tetron networks are **invite-only** — the only way in is with an invite key:
 
-- A coordinator mints **single-use invite keys** with `tetron invite <network> create`. The joiner redeems the key with `tetron join <invite-key> --hostname bob`. The invite encodes which coordinator minted it, so that specific coordinator must be online to admit the joiner.
+- A coordinator mints **single-use invite keys** with `tetron invite <network> create`. The joiner redeems the key with `tetron join <invite-key> --hostname bob`. The invite is validated against the signed blob, so any online coordinator can admit the joiner.
 - `tetron create` auto-mints the first invite key and prints it in its output, so you can share immediate access.
-- Grant a co-coordinator with `tetron admin add` so another member can mint invites (and admit joiners against their own invite store) when the original coordinator is offline.
+- Grant a co-coordinator with `tetron admin add` so another member can mint invites (and admit joiners) when the original coordinator is offline. Every trusted member should be a co-coordinator to avoid a single-point-of-failure.
 - Invite keys default to 7-day expiry. Use `--expires never` for permanent invites, or `--expires 24h` / `--expires 30d` for custom durations.
 
 Joining with a bare room id is not supported (tetron removed live approval).
@@ -108,7 +110,7 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 **tetron additions:**
 
 - **Invite-key admission** -- invite-only closed networks. Coordinators mint single-use invite keys with `tetron invite <network> create`; joiners redeem them with `tetron join <invite-key>`. `tetron create` auto-mints the first invite key so you can share immediate access.
-- **Configurable overlay subnet** -- default `10.88.0.0/24` avoids Tailscale's `100.64.0.0/10` and gives 256 host addresses. Override per-network with `create --subnet` or node-wide with `config set subnet`. The overlap guard refuses to start only if the chosen subnet collides with an existing local network.
+- **Configurable overlay subnet** -- default `10.88.0.0/24` avoids Tailscale's `100.64.0.0/10`. Override per-network with `create --subnet` or node-wide with `config set subnet`. The overlap guard refuses to start only if the chosen subnet collides with an existing local network.
 
 **Inherited from rayfish:**
 

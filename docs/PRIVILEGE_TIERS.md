@@ -1,5 +1,11 @@
 # Privilege Tiers — Design Discussion
 
+> **Status: Decided.** Three-tier model (admin / coordinator / member).
+> Survivability model A (accept the freeze) is the default; C (all
+> coordinators) is opt-in per network. Model B (pre-signed vouchers) is
+> rejected as too complex. See the Decisions section at the end.
+> Last updated: 2026-07-15.
+
 A tetron network today has two roles: **coordinator** (holds the per-network
 `SecretKey`, can publish the signed blob, can admit, kick, and mint invites)
 and **member** (uses the mesh, no network key). This document explores how
@@ -213,35 +219,33 @@ fn may_publish(actor: EndpointId, state: &NetworkState) -> bool {
 
 ---
 
-## Open questions for next session
+## Open questions — answered
 
-1. **Threshold kick.** Should N-of-M coordinators together kick without an
-   admin? This adds a consensus path but helps if the admin is permanently
-   gone.
+1. **Threshold kick.** No. The `--backup` flag on create handles
+   permanent-admin-loss more simply. No consensus protocol needed.
 
-2. **Invite revocation.** With invites in the blob, revoking means
-   publishing a new blob. The old invite is burned by marking `used = true`.
-   Should there be a separate `invite revoke` flow or just `kick` + re-issue?
+2. **Invite revocation.** Kick + re-issue is adequate. Revoking an invite
+   means publishing a new blob with the invite marked `used = true`. There
+   is no separate `invite revoke` CLI flow — use `kick` to remove the
+   member and re-issue if needed.
 
-3. **Reusable keys (`--reusable`).** These already live in the blob
-   (`GroupBlob.reusable_keys`). Phase 5 from the original plan. Do
-   reusable keys also carry a role? Or are they always member-only?
+3. **Reusable keys and roles.** Always member-only. A reusable key is a
+   pre-authorized port reservation — it lets someone onto the network but
+   does not grant administrative powers. Coordinator/admin access requires
+   a tier-encoded invite.
 
-4. **Role changes after join.** Can an admin downgrade a coordinator to
-   member? This requires revoking the network key — but the network key is
-   what signs the blob. If the key is baked into the member's config, there
-   is no way to remotely un-bake it. Kick + re-join with a new invite is the
-   only practical path.
+4. **Role changes after join.** Kick + re-join with a new invite. The
+   network key is baked into the member's config at join; there is no
+   remote way to un-bake it. This is documented as a deliberate limitation.
 
-5. **Read-only members.** What specifically should a member be unable to
-   do? The list above says "no network key = cannot publish/admit/kick."
-   Is there any other power a member should lack? Viewing `tetron status` is
-   data-plane level and available to everyone.
+5. **Read-only members.** Already the default. A member has no network key,
+   cannot publish/admit/kick. `tetron status` is available to everyone.
+   No additional restrictions needed.
 
-6. **Transition.** Existing networks have coordinator-only members with the
-   key. How does an existing network migrate to the new tier model? Does
-   every existing member become admin, or coordinator, or need to re-join
-   with a new invite?
+6. **Transition (existing networks).** All existing coordinators become
+   **admins**. This is the conservative choice — it preserves their full
+   power and does not require re-joining. A future `create` without
+   `--coordinator` will produce proper tier-encoded invites from the start.
 
 ---
 
@@ -486,99 +490,77 @@ boundary automatically.
 
 ### What stays from the earlier discussion
 
-| Feature | Still needed? | Why |
+| Feature | Decision | Why |
 |---|---|---|
-| Invite in blob | Yes | Any coordinator can mint; any coordinator can validate. No machine-local bottleneck. |
-| Fetch-before-publish merge | Yes | Multiple coordinators (or a kicked key holder) can publish concurrent rosters. |
-| Invite encoding (pubkey + secret) | Yes | Removes coordinator-endpoint pinning so any online coordinator can validate. |
-| Auto-coordinator on `--coordinator` invite | Yes | The invite encodes the tier; join handshake grants key. |
-| `--backup` flag on create | Yes | Pre-authorize a second admin day one. |
-| Kick requires admin | Yes | Matching physical MAC-ban. |
-| Role encoded in invite | Yes | Coordinator vs member determined at admission, not after. |
-| Threshold kick | Unnecessary | Admin transfer / backup is simpler. |
-| Key rotation on admin kick | Deferred | Accept stale-blob risk for now; merge mitigates it. |
+| Invite in blob | Yes | Any coordinator can mint; any coordinator can validate. No machine-local bottleneck. Needed under both survivability modes. |
+| Fetch-before-publish merge | Yes | Multiple admins/coordinators (or a kicked key holder) can publish concurrent rosters. Needed under both modes. |
+| Invite encoding (pubkey + secret) | Yes | Removes coordinator-endpoint pinning so any online coordinator can validate. Needed under both modes. |
+| Auto-coordinator on `--coordinator` invite | Yes (mode C only) | The invite encodes the tier; join handshake grants key. Only used when the network chooses "all coordinators" mode. |
+| `--backup` flag on create | Yes | Pre-authorize a second admin day one. Useful under both modes. |
+| Kick requires admin | Yes | Matching physical MAC-ban. Same under both modes. |
+| Role encoded in invite | Yes | Coordinator vs member determined at admission, not after. Same under both modes. |
+| Threshold kick | No | Admin transfer / backup is simpler. No consensus protocol needed. |
+| Key rotation on admin kick | Deferred | Accept stale-blob risk for now; merge mitigates it. Rotate keys when practical. |
 
 ---
 
-## Survivability assumption
+## Survivability — decision
 
-The central unsolved tension: **can a new member join when all
-coordinators are offline?**
+**Default mode is A (accept the freeze).** Mode C (all coordinators) is
+available as an opt-in for networks that want it. Mode B (pre-signed
+vouchers) is rejected.
 
-### What works today
+### Decision rationale
 
-| Scenario | Works? | Why |
+**A is the default** because:
+
+- It matches the physical-network model. A new device cannot join a VLAN
+  until the switch admin configures the port. tetron is a virtual switch.
+- It keeps the attack surface small. The network key stays on a small
+  number of machines.
+- It is the simplest to implement. No gossip, no voucher verification,
+  no extra protocol messages.
+- Most tetron deployments will have at least one always-on node (a
+  server, a NAS, a cloud VM). For those, A is never a limitation.
+
+**C is available as an opt-in** because:
+
+- Laptop fleets with no always-on member are a real use case.
+- The implementation cost is low: auto-grant the network key to every
+  member who joins with `--coordinator`.
+- The blast radius is bounded by the admin tier (kick, nuke, grant still
+  require a higher role).
+
+**B is rejected** because:
+
+- Voucher verification adds a crypto dependency and a new code path for
+  a problem that has two simpler alternatives (A and C).
+- Roster gossip between members is a protocol addition that touches the
+  control plane and needs testing with partition scenarios.
+- The benefit (join without any coordinator online) is already covered
+  by mode C with simpler implementation.
+
+### Implementation summary
+
+| Mechanism | Implement for | Notes |
 |---|---|---|
-| Existing member reconnects after being offline | Yes | Cached blob; peer-to-peer blob exchange converges. |
-| New member joins while a coordinator is online | Yes | Coordinator validates invite, admits, publishes. |
-| New member joins while ALL coordinators are offline | **No** | No one holds the network key. Invite cannot be validated or burned. Blob cannot be published. |
+| Invite in blob | Both A and C | Foundation — all invite data in the signed GroupBlob |
+| Role encoded in invite | Both A and C | `member` (default) or `coordinator` (grants key) |
+| Auto-coordinator on join | C only | Join handshake distributes network key when invite role = coordinator |
+| Fetch-before-publish merge | Both A and C | Admins and coordinators merge before publishing |
+| Admission freeze | A only | New member waits for an online coordinator/admin; no special handling needed |
+| Per-network mode flag | A and C | The `create` / invite-encoding protocol selects which mode the network uses |
+| Pre-signed vouchers | Neither | Rejected — complexity without enough benefit |
 
-### The question the document does not answer
+### When to use each mode
 
-Choose one:
-
-**A. Accept the freeze.** The coordinator tier is a SPOF for growth but
-not for connectivity. New members wait until a coordinator comes back.
-Matches physical networking — the new hire sits in a bare cube until the
-sysadmin activates their switch port. The invite is a pre-authorization
-(like a port reservation), not a self-service credential.
-
-**B. Pre-signed admission vouchers.** The invite is a signed statement
-from a coordinator: "bearer of secret X joins as hostname bob, role
-member." The voucher is signed by the minting coordinator's endpoint key
-(not the network key). The coordinator's public key is listed in the
-blob's `admins` field. Any online member verifies the signature and admits
-the joiner locally, propagating the updated roster to peers via gossip. No
-blob publish happens until a coordinator returns, fetches the converged
-roster, and publishes the canonical signed blob.
-
-```rust
-// The voucher payload (signed by a coordinator's endpoint key):
-struct AdmissionVoucher {
-    network_pubkey: EndpointId,
-    invite_secret: [u8; 16],
-    hostname: Option<String>,
-    role: Role,
-    expires_at: u64,
-}
-```
-
-Costs:
-- Signature verification in the admit path (~new dep: ed25519-dalek or
-  use iroh's existing signing)
-- Voucher replay protection (nonce or expiry)
-- Roster convergence by gossip (members exchange their local roster
-  versions; newest winning)
-- Blob publish by the returning coordinator (fetch from peers, merge,
-  sign, publish)
-
-**C. Give every member the network key** (the `--coordinator` default).
-If everyone is a coordinator, everyone can admit. Blast radius of a
-compromised key is limited by the admin tier (cannot kick). This is the
-laptop-fleet model from earlier in this document. Simpler than vouchers
-but trusts every member with the signing key.
-
-### Impact on the rest of the design
-
-| Feature | Needed under A? | Needed under B? | Needed under C? |
-|---|---|---|---|
-| Invite in blob | Yes (multi-coordinator validation) | Yes (members need invite table for voucher check) | Yes |
-| Fetch-before-publish merge | Yes | Yes | Yes |
-| Invite without coordinator endpoint | Yes | Yes | Yes |
-| Auto-coordinator on join | No (only admins publish) | No | Yes (default) |
-| Voucher signature verification | No | Yes (new) | No |
-| Roster gossip between members | No | Yes (new) | No |
-| Network key on all members | No | No | Yes |
-| Coordinator SPOF for growth | Yes (accepted) | No | No |
-
-### When the choice matters
-
-- **Laptop fleet (no always-on node).** A is painful — new team members
-  cannot join until a specific coordinator wakes up. B or C is better.
-- **Corporate network.** A is fine. There is always a coordinator (the
-  ops team runs one on a server). B and C add complexity for no benefit.
-- **Mixed deployment.** Some networks want the freeze, some do not. The
-  protocol could support both — the invite encoding includes a flag that
-  selects the admission mode.
-
-Not deciding this yet. Recorded for next session.
+- **A (freeze):** Any network with an always-on coordinator — most
+  tetron deployments. Server, NAS, cloud VM, always-on desktop. New
+  members wait for the coordinator to come back.
+- **C (all coordinators):** Laptop fleets with no always-on member.
+  Everyone gets the key. Anyone can admit new members when they are
+  online. Trust everyone with signing. Kick/admin still restricted.
+- **Mixed networks:** Not supported per-network. A network picks its
+  mode at create time and it is encoded in the invite format. A node
+  can participate in networks of both modes simultaneously — the
+  `ProtocolRouter` enforces per-network authority.

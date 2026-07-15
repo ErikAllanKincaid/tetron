@@ -163,7 +163,19 @@ tetron join <room-id> --hostname bob
 # Error: "this network uses live approval, which tetron does not support"
 ```
 
-If you only have a room id, ask the coordinator for an invite key.
+If you only have a room id, ask a coordinator for an invite key.
+
+**After joining, promote the new member to co-coordinator.** Every fully
+trusted member should hold the network key so there is no single point of
+failure for administration:
+
+```bash
+# On any existing coordinator:
+tetron admin mynetwork add <short-id-from-status>
+```
+
+The grantee can then mint invites, admit joiners, and kick members
+independently.
 
 ---
 
@@ -240,19 +252,25 @@ sudo tetron start      # start the installed service
 
 ## 8. Administrative tasks
 
-### Grant co-coordinator
+### Grant co-coordinator (recommended for every trusted member)
 
-Promote a trusted member to co-coordinator so they can admit joiners and
-publish the signed roster:
+Multi-coordinator is the expected default. Every fully trusted member
+should be granted the network key so there is no single point of failure
+for admission, invite minting, or member management.
 
 ```bash
-# On the coordinator:
-tetron admin mynetwork list                      # see current key-holders
-tetron admin mynetwork add <short-id-from-status>  # promote member
+# List current key-holders:
+tetron admin mynetwork list
+
+# Promote a member to co-coordinator:
+tetron admin mynetwork add <short-id-from-status>
 ```
 
-The grantee becomes a co-coordinator immediately. They can mint invites
-and admit peers independently while the original coordinator is offline.
+The grantee becomes a co-coordinator immediately. They can mint invites,
+admit joiners, and kick members independently while the original
+coordinator is offline. Invites ride the signed `GroupBlob` (BLOB-001),
+so any coordinator can validate and admit -- the minting machine does not
+need to be online.
 
 ### Kick a member
 

@@ -54,22 +54,34 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 | 16 | MINIMAL-016 | Workspace: remove ray-mobile member (and the android/ dir), trim benches/ to the surviving forward path, prune Cargo.toml features to default-only, sweep cliff.toml/justfile targets that reference removed surfaces. |
 | 17 | docs | Final AGENTS.md rewrite describing tetron as it now is (module list, CLI surface, flows), README rewrite with the D4 security-posture note and nftables example, CHANGELOG entry. |
 
-## Phase 6: full product identity rename (RENAME-M02)
+## Phase 6: full product identity rename (RENAME-M02) -- DONE
 
 | Commit | Req | Scope |
 |---|---|---|
-| 19 | RENAME-M02 | Full product rename: binary `tetron`, service `tetron.service`, paths `/etc/tetron`, `/var/log/tetron`, `/var/run/tetron/tetron.sock`, ALPN `tetron/net/...`, all user-facing CLI/messages. Retires CON-M02 (D1 severed). Adds CON-M04 constraint for sweep completeness. Done 2026-07-13. |
+| ddf2db7 | RENAME-M02 | Full product rename: binary `tetron`, service `tetron.service`, paths `/etc/tetron`, `/var/log/tetron`, `/var/run/tetron/tetron.sock`, ALPN `tetron/net/...`, all user-facing CLI/messages. Retires CON-M02 (D1 severed). Adds CON-M04 constraint for sweep completeness. Done 2026-07-13. |
 
-## Phase 7: verification
+## Phase 7: verification -- DONE
 
 - Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two tetron nodes.
 - Line-count and dependency audit against the success criteria in PROPOSAL.md.
 
-## Phase 7: post-MINIMAL, on demand
+## Post-MINIMAL work (on demand, in progress)
 
 Not part of the MINIMAL milestone; each item is its own decision after Phase 6 is green.
 
+### Laptop fleet -- DONE
+
+Three changes to make a network of laptop users work without an always-on member:
+
+- **CACHE-001** (aa5715e): peer address cache to disk. Solves all-offline reconnection.
+- **BLOB-001** (79375be): invites in signed GroupBlob. Any coordinator validates.
+- **COORD-001** (this commit): docs update making multi-coordinator the default practice.
+
+### Pending
+
 - TOR-M01: flexible per-network Tor policy (`any` / `tor` / `tor-isolated`). Tiers 1-2 already work via the kept `--tor` flag; the new work is tier 3, a second Tor-only endpoint with its own key, relays disabled, onion-only discovery (the only leak-free tier). Node-local routing only; never a blob or protocol change.
+- ANDROID-CLEANUP: strip stale android/ entries from .gitignore (6 lines).
+- macOS port: fix hardcoded subnet references in tun.rs for macOS route_peer_range.
 
 ## Standing rules
 
