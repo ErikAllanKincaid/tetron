@@ -82,6 +82,40 @@ Each machine runs the `tetron` daemon, which creates a TUN device, captures IP p
 3. **Mesh.** Every peer derives its own stable virtual IPv4 (in the configured subnet) and IPv6 (`200::/7`) from its identity, then connects directly to every other peer -- hole-punched where possible, falling back to encrypted relays otherwise.
 4. **Use it.** Any TCP/UDP app works, addressed by the peer's mesh IP (from `tetron status`).
 
+### Making a co-coordinator
+
+By default only the node that ran `tetron create` holds the network key. That machine is a **single point of failure**: if it is asleep or offline, no other node can admit new joiners, mint invites, or kick departed members. Every trusted member of the network should be made a **co-coordinator** by granting them a copy of the network key.
+
+The command is `tetron admin add`:
+
+```bash
+# 1. On the coordinator, list the trusted member (get their short id from status):
+tetron status --json
+#    Look for "id": "c3f8a1057..." in the member you trust.
+
+# 2. Grant them the network key:
+tetron admin add shallows c3f8a1057f
+#    Sample output:
+#     added c3f8a1057f as a coordinator of shallows
+
+# 3. The new co-coordinator receives the key over the authenticated mesh
+#    connection (no manual copy needed). After a few seconds `tetron status`
+#    on their machine shows them as a coordinator (look for the crown or
+#    "(coordinator)" annotation on the `tetron <network>` row).
+```
+
+The new co-coordinator can then mint invites, admit joiners, and kick members just like the original coordinator. Run this for **every** fully trusted member so the network stays operational even when any one machine is offline.
+
+To see who currently holds the network key:
+
+```bash
+tetron admin list shallows
+#    (c)  c3f8a1057f  usbos-1  10.77.0.205
+#    (c)  bd21f97f19  sneak    10.77.0.185
+```
+
+Each row marked `(c)` is a co-coordinator. The original creator is always a coordinator.
+
 ### Who can join
 
 The **room id** (network public key) is a discovery key, never an admission credential. tetron networks are **invite-only** — the only way in is with an invite key:
