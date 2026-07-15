@@ -20,6 +20,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **IPv4 fragmentation for QUIC datagram size limits (FRAG-001)**: when Quinn's
+   `max_datagram_size()` is below the TUN MTU (1280), IP packets larger than
+   ~1192 bytes were silently dropped by `send_datagram` with a "datagram too
+   large" error, stalling TCP connections (SSH key exchange failed at "expecting
+   SSH2_MSG_KEX_ECDH_REPLY"). The forwarder now fragments oversize IPv4 packets
+   into RFC 791-compliant IP fragments (each sent as a separate QUIC datagram)
+   before the receiving kernel reassembles them. IPv6 fragmentation is not yet
+   implemented; oversize IPv6 packets are dropped with a warning.
+
 - **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the
    `--tor` flag on `torpedo create` and `torpedo join` was accepted by the CLI but
    silently ignored — the `transport` field was never threaded through the IPC
