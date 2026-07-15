@@ -167,7 +167,7 @@ pub(crate) enum Command {
 pub(crate) enum AdminAction {
     /// Grant the network key to a member (coordinator only)
     Add {
-        /// Short id of the member to promote (from `tetron status`)
+        /// Hostname (from `tetron status`), mesh IP, or short id of the member to promote
         identity: String,
     },
     /// List this network's key-holders (the local node + granted members)

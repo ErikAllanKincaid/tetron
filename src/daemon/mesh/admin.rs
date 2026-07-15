@@ -10,10 +10,10 @@ impl MeshManager {
     /// a transfer of publish capability, not an attributable delegation. The
     /// grant is recorded locally for `tetron admin list`.
     pub(crate) async fn admin_add(&self, network: &str, identity_str: &str) -> IpcMessage {
-        let Some(identity) = self.resolve_short_id_any_network(identity_str) else {
+        let Some(identity) = self.resolve_peer_name(identity_str).await else {
             return IpcMessage::Error {
                 message: format!(
-                    "could not resolve identity '{identity_str}' (use a short id of a joined member)"
+                    "could not resolve '{identity_str}' — use a hostname, mesh IP, or short id of a joined member"
                 ),
             };
         };

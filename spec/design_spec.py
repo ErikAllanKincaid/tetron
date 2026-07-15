@@ -1950,3 +1950,28 @@ class Ipv4Fragmentation(Requirement):
     """
     req_id = "FRAG-001"
 
+
+# --------------------------------------------------------------------------
+# ADMIN-ADD-EASY-ID: tetron admin add should accept hostname or mesh IP
+# --------------------------------------------------------------------------
+
+class AdminAddAcceptsHostname(Requirement):
+    """REQUIREMENT-ID: ADMIN-ADD-EASY-ID
+
+    `tetron admin <NETWORK> add <IDENTITY>` must accept a hostname, mesh IP,
+    or short id (first 10 hex chars of the endpoint_id). Previously it only
+    accepted the raw short-id, which required looking up the peer's endpoint_id
+    from `tetron status --json` and manually truncating to 10 characters --
+    error-prone for humans.
+
+    Use the same resolution logic as `tetron kick` (`resolve_peer_name`):
+    match the argument as a hostname against the signed roster, then fall back
+    to short-id prefix matching against endpoint IDs. This makes the admin-add
+    workflow as easy as `tetron admin shallows add usbos-1`.
+
+    Found: 2026-07-15, while writing the co-coordinator HOWTO section in
+    README.md. The short-id-only requirement forced an awkward `--json` + manual
+    truncation step for what should be a simple operation.
+    """
+    req_id = "ADMIN-ADD-EASY-ID"
+
