@@ -89,9 +89,12 @@ By default only the node that ran `tetron create` holds the network key. That ma
 The command is `tetron admin <network> add <short-id>`:
 
 ```bash
-# 1. On the coordinator, list the trusted member (get their short id from status):
-tetron status
-#    Look for the short id (e.g. c3f8a1057f) in the member's row.
+# 1. On the coordinator, get the member's short id from JSON status:
+tetron status --json
+#    Find the member by hostname, then take the first 10 hex chars of their
+#    "endpoint_id".  Example:
+#      "hostname": "usbos-1",
+#      "endpoint_id": "c3f8a1057f38dd05..."  →  short id = c3f8a1057f
 
 # 2. Grant them the network key:
 tetron admin shallows add c3f8a1057f
