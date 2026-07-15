@@ -1975,3 +1975,36 @@ class AdminAddAcceptsHostname(Requirement):
     """
     req_id = "ADMIN-ADD-EASY-ID"
 
+
+# --------------------------------------------------------------------------
+# ADMIN-RECONNECT-CTRL: admin-grant must work after coordinator reconnect
+# --------------------------------------------------------------------------
+
+class AdminGrantRespawnsControlListener(Requirement):
+    """REQUIREMENT-ID: ADMIN-RECONNECT-CTRL
+
+    When a member's coordinator connection drops and the reconnect loop
+    re-establishes it, a new control-listener task must be spawned on the new
+    connection. Previously the control listener was only spawned once during
+    initial join (attached to the initial connection). When that connection
+    dropped the listener died, and the reconnect loop only respawned a forward
+    reader -- never a control listener. As a result, any `AdminGrant` sent by
+    the coordinator after a reconnect was silently lost, making co-coordinator
+    promotion impossible after the coordinator had restarted.
+
+    The fix: pass daemon-wide resources (promote_tx, pending_pongs) and
+    per-network state (live_state, reconverge_notify) to the reconnect loop.
+    On a successful reconnect, spawn a fresh `spawn_member_control_listener`
+    on the new connection alongside the forward reader. The per-network state
+    is delivered via oneshot channels because it does not exist when the
+    reconnect loop is spawned (it is created inside `join_mesh_shared`, which
+    runs after the reconnect loop starts but before any disconnect can occur).
+
+    Found: 2026-07-15, while testing co-coordinator promotion on network
+    "shallows". AORUS granted the network key to USB-OS via `tetron admin
+    shallows add usbos-1`, which succeeded. USB-OS never received the grant
+    because its daemon had reconnected after an earlier restart of AORUS,
+    and no control listener was running on the new connection.
+    """
+    req_id = "ADMIN-RECONNECT-CTRL"
+

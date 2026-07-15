@@ -29,6 +29,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
    before the receiving kernel reassembles them. IPv6 fragmentation is not yet
    implemented; oversize IPv6 packets are dropped with a warning.
 
+- **Coordinator restart no longer orphans control listeners (ADMIN-RECONNECT-CTRL)**:
+   when the coordinator connection drops and the reconnect loop establishes a new
+   one, a fresh control-listener task is now spawned on the new connection.
+   Previously the listener was only spawned once at initial join, so
+   AdminGrant (and other control messages) arriving on the re-established
+   connection were silently lost. This fixes `tetron admin add` failing to
+   promote a member after the coordinator daemon restarts.
+
 - **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the
    `--tor` flag on `torpedo create` and `torpedo join` was accepted by the CLI but
    silently ignored — the `transport` field was never threaded through the IPC

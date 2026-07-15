@@ -581,8 +581,19 @@ impl MeshManager {
         for coordinator_id in &order {
             let cancel = self.shutdown_token.child_token();
             let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
-            let tasks =
-                vec![self.spawn_join_reconnect(ctx, my_id, &disconnect_tx, disconnect_rx, &cancel)];
+            // Oneshot channels deliver the live_state/reconverge_notify to the
+            // reconnect loop after join_mesh_shared creates them.
+            let (live_state_tx, live_state_rx) = tokio::sync::oneshot::channel();
+            let (reconverge_notify_tx, reconverge_notify_rx) = tokio::sync::oneshot::channel();
+            let tasks = vec![self.spawn_join_reconnect(
+                ctx,
+                my_id,
+                &disconnect_tx,
+                disconnect_rx,
+                &cancel,
+                live_state_rx,
+                reconverge_notify_rx,
+            )];
 
             tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
             let conn = match transport::connect_to_peer_with_alpn(
@@ -613,7 +624,16 @@ impl MeshManager {
                 )
                 .await
             {
-                Ok(JoinResult::Joined(state)) => {
+                Ok(JoinResult::Joined(state, reconverge_notify)) => {
+                    // Deliver the resources to the reconnect loop (which blocks
+                    // on the receivers until now; forward readers — and thus
+                    // disconnect events — are spawned inside join_mesh_shared,
+                    // so no race is possible).
+                    // Best-effort: if the reconnect task was already aborted
+                    // (another coordinator succeeded first), the receivers are
+                    // dropped and the sends silently fail.
+                    let _ = live_state_tx.send(state.clone());
+                    let _ = reconverge_notify_tx.send(reconverge_notify);
                     return Ok(Some(EstablishedMesh {
                         state,
                         cancel,
@@ -666,8 +686,17 @@ impl MeshManager {
         let cancel = self.shutdown_token.child_token();
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
         let my_id = self.identity.local_identity();
-        let tasks =
-            vec![self.spawn_join_reconnect(ctx, my_id, &disconnect_tx, disconnect_rx, &cancel)];
+        let (live_state_tx, live_state_rx) = tokio::sync::oneshot::channel();
+        let (reconverge_notify_tx, reconverge_notify_rx) = tokio::sync::oneshot::channel();
+        let tasks = vec![self.spawn_join_reconnect(
+            ctx,
+            my_id,
+            &disconnect_tx,
+            disconnect_rx,
+            &cancel,
+            live_state_rx,
+            reconverge_notify_rx,
+        )];
 
         // Fallback state built straight from the verified blob so registration
         // never blocks on (or dies with) the coordinator handshake.
@@ -691,41 +720,49 @@ impl MeshManager {
 
         tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
         let mut seed_from_blob = false;
-        let state = match transport::connect_to_peer_with_alpn(
+        let (state, state_notify) = match transport::connect_to_peer_with_alpn(
             &self.endpoint,
             coordinator_id,
             ctx.alpn,
         )
         .await
         {
-            Ok(conn) => match self
-                .run_join_handshake(
-                    ctx,
-                    data,
-                    conn,
-                    false,
-                    &disconnect_tx,
-                    &cancel,
-                    ctx.invite.clone(),
-                )
-                .await
-            {
-                Ok(JoinResult::Joined(state)) => state,
-                Ok(JoinResult::Pending) => {
-                    // Closed network: queued for live approval. Stop the just-
-                    // spawned reconnect loop (nothing connected yet); caller
-                    // retries on a backoff until `tetron accept` lets us in.
-                    abort_join_tasks(&cancel, tasks);
-                    return Ok(None);
+            Ok(conn) => {
+                let mut joined_state: Option<(SharedNetworkState, Arc<tokio::sync::Notify>)> = None;
+                match self
+                    .run_join_handshake(
+                        ctx,
+                        data,
+                        conn,
+                        false,
+                        &disconnect_tx,
+                        &cancel,
+                        ctx.invite.clone(),
+                    )
+                    .await
+                {
+                    Ok(JoinResult::Joined(state, reconverge_notify)) => {
+                        joined_state = Some((state, reconverge_notify));
+                    }
+                    Ok(JoinResult::Pending) => {
+                        // Closed network: queued for live approval. Stop the just-
+                        // spawned reconnect loop (nothing connected yet); caller
+                        // retries on a backoff until `tetron accept` lets us in.
+                        abort_join_tasks(&cancel, tasks);
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        // Dialed the coordinator but the handshake failed. We still
+                        // hold the verified blob, so register from it and let the
+                        // reconnect loop recover rather than dropping the network.
+                        tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator handshake failed on restore; registering from blob, reconnect loop will retry");
+                        seed_from_blob = true;
+                    }
                 }
-                Err(e) => {
-                    // Dialed the coordinator but the handshake failed. We still
-                    // hold the verified blob, so register from it and let the
-                    // reconnect loop recover rather than dropping the network.
-                    tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator handshake failed on restore; registering from blob, reconnect loop will retry");
-                    seed_from_blob = true;
-                    state_from_blob()
-                }
+                joined_state.unwrap_or_else(|| {
+                    let fb = state_from_blob();
+                    (fb, Arc::new(tokio::sync::Notify::new()))
+                })
             },
             Err(e) => {
                 // Coordinator offline at restore: register from the blob so the
@@ -733,9 +770,13 @@ impl MeshManager {
                 // returns.
                 tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator offline on restore; registering from blob, reconnect loop will retry");
                 seed_from_blob = true;
-                state_from_blob()
+                (state_from_blob(), Arc::new(tokio::sync::Notify::new()))
             }
         };
+        // Deliver state to the reconnect loop (it blocks until now). Must happen
+        // once, outside the match, because oneshot::Sender::send takes ownership.
+        let _ = live_state_tx.send(state.clone());
+        let _ = reconverge_notify_tx.send(state_notify);
 
         // The reconnect loop is edge-triggered on disconnect events, so a cold
         // registration (no live connection yet) needs a synthetic kick per member
@@ -771,6 +812,7 @@ impl MeshManager {
     }
 
     /// Spawn the per-network reconnect loop used by both dial paths.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_join_reconnect(
         &self,
         ctx: &JoinContext<'_>,
@@ -778,6 +820,12 @@ impl MeshManager {
         disconnect_tx: &mpsc::Sender<forward::DisconnectEvent>,
         disconnect_rx: mpsc::Receiver<forward::DisconnectEvent>,
         cancel: &CancellationToken,
+        // The reconnect loop blocks on these receivers until the caller delivers
+        // live_state + reconverge_notify via the corresponding senders after
+        // join_mesh_shared completes. No disconnect can arrive before then (forward
+        // readers are spawned inside join_mesh_shared), so the block is safe.
+        live_state_rx: tokio::sync::oneshot::Receiver<SharedNetworkState>,
+        reconverge_notify_rx: tokio::sync::oneshot::Receiver<Arc<tokio::sync::Notify>>,
     ) -> tokio::task::JoinHandle<()> {
         spawn_reconnect_loop(
             disconnect_rx,
@@ -789,6 +837,10 @@ impl MeshManager {
             self.mesh_ctx(),
             disconnect_tx.clone(),
             cancel.clone(),
+            live_state_rx,
+            reconverge_notify_rx,
+            self.promote_tx.clone(),
+            self.protocol_router.pending_pongs.clone(),
         )
     }
 
@@ -1093,6 +1145,26 @@ impl MeshManager {
             let my_hostname = net_config.my_hostname.clone();
             let cancel = self.shutdown_token.child_token();
             let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
+            // DHT fallback has no run_join_handshake, so deliver dummy state/notify
+            // to the reconnect loop immediately (the reconnect loop only uses them
+            // for the control listener, which is optional).
+            let (live_state_tx, live_state_rx) = tokio::sync::oneshot::channel();
+            let (reconverge_notify_tx, reconverge_notify_rx) = tokio::sync::oneshot::channel();
+            let dummy_state = Arc::new(std::sync::RwLock::new(NetworkState {
+                members: crate::membership::MemberList::new(),
+                approved: crate::membership::ApprovedList::new(),
+                snapshot: None,
+                network_secret_key: None,
+                network_public_key: net_pubkey,
+                network_name: Some(network_name.to_string()),
+                mode: crate::membership::GroupMode::Restricted,
+                suggested_firewall: SuggestedFirewall::default(),
+                subnet: crate::membership::resolve_subnet(None),
+                reusable_keys: Default::default(),
+                invites: Default::default(),
+            }));
+            let _ = live_state_tx.send(dummy_state);
+            let _ = reconverge_notify_tx.send(Arc::new(tokio::sync::Notify::new()));
 
             let tasks = vec![spawn_reconnect_loop(
                 disconnect_rx,
@@ -1104,6 +1176,10 @@ impl MeshManager {
                 self.mesh_ctx(),
                 disconnect_tx.clone(),
                 cancel.clone(),
+                live_state_rx,
+                reconverge_notify_rx,
+                self.promote_tx.clone(),
+                self.protocol_router.pending_pongs.clone(),
             )];
 
             self.dial_all_members(

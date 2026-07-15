@@ -34,3 +34,4 @@ android/.idea/
 # Python bytecode (libspec specs)
 __pycache__/
 *.pyc
+/tetron
