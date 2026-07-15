@@ -31,13 +31,9 @@ pub enum IpcMessage {
         name: Option<String>,
         hostname: Option<String>,
         transport: Option<TransportMode>,
-        /// One-time invite secret to present for invite-gated admission. When set,
-        /// `coordinator` is dialed directly (no pkarr lookup).
+        /// One-time invite secret to present for invite-gated admission.
         #[serde(default)]
         invite: Option<Vec<u8>>,
-        /// Coordinator endpoint id to dial directly when joining via an invite.
-        #[serde(default)]
-        coordinator: Option<EndpointId>,
     },
     Leave {
         name: String,
@@ -401,25 +397,21 @@ mod tests {
 
     #[test]
     fn test_join_with_invite_roundtrip() {
-        let coord = iroh::SecretKey::generate().public();
         let req = IpcMessage::Join {
             network_key: "abc".to_string(),
             name: None,
             hostname: None,
             transport: None,
             invite: Some(vec![1, 2, 3]),
-            coordinator: Some(coord),
         };
         let bytes = rmp_serde::to_vec(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
         match decoded {
             IpcMessage::Join {
                 invite,
-                coordinator,
                 ..
             } => {
                 assert_eq!(invite, Some(vec![1, 2, 3]));
-                assert_eq!(coordinator, Some(coord));
             }
             _ => panic!("wrong variant"),
         }

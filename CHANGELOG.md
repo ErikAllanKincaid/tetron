@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Invite-in-blob (BLOB-001)**: invites now ride in the signed `GroupBlob` instead of machine-local files (`InviteStore` superseded). Any network-key holder can mint, list, and revoke invites. The invite code drops the pinned coordinator endpoint (48 B vs 80 B) since every coordinator validates from the blob. Validation happens against the in-memory invite table; on redemption the entry is removed and the blob republished immediately. A narrow replay race window (~30-60 s DHT poll) is accepted for the initial implementation.
+
+- **Peer address cache (CACHE-001)**: persistent transport-address cache at `<config_dir>/peercache.msgpack` so the mesh can re-establish direct QUIC connections without DHT lookups after an all-offline gap. Loaded at startup, seeded from live connections, saved every 5 min and on shutdown. Entries older than 30 days are pruned.
+
 - **Overlap guard**: instead of the upstream rayfish preflight that refused to start if anything used `100.64.0.0/10`, tetron refuses to start only if the *chosen* subnet overlaps an existing local network. This lets tetron run alongside Tailscale or any other overlay without hijacking routing.
 
 ### Changed

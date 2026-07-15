@@ -1,5 +1,7 @@
 //! Invite-key handlers for `MeshManager`: `invite_create` / `invite_list` /
-//! `invite_revoke`. Split out of `daemon/mod.rs`.
+//! `invite_revoke`. The invite entries ride in the signed `GroupBlob` (BLOB-001)
+//! instead of a machine-local invite store, so any network-key holder can mint,
+//! list, or revoke, and the state is authoritative across the mesh.
 
 use super::super::*;
 
@@ -17,28 +19,22 @@ impl MeshManager {
             return e;
         }
 
-        let (invite_store, net_pubkey) = {
+        let (dht_notify, net_pubkey) = {
             let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
                     message: format!("network '{network}' not active"),
                 };
             };
-            let s = handle.state.read().unwrap();
-            if s.invite_store.is_none() {
-                return IpcMessage::Error {
-                    message: format!("invite store not available for '{network}'"),
-                };
-            }
-            (s.invite_store.clone().unwrap(), handle.network_key)
+            (handle.dht_notify.clone(), handle.network_key)
         };
 
-        // INVITE-009: default 7-day expiry (None → store default). `--expires 0`
-        // or `--expires never` maps to Some(0) for permanent (never expires).
-        let ttl_secs: Option<u64> = match expires {
-            None => None,
-            Some(dur) if dur == "0" || dur == "never" => Some(0),
+        // INVITE-009: default 7-day expiry. `--expires 0` or `--expires never`
+        // maps to 0 for permanent (never expires).
+        let ttl_secs: u64 = match expires {
+            None => 7 * 24 * 3600,
+            Some(dur) if dur == "0" || dur == "never" => 0,
             Some(dur) => match parse_duration(dur) {
-                Ok(secs) => Some(secs),
+                Ok(secs) => secs,
                 Err(e) => {
                     return IpcMessage::Error {
                         message: format!("invalid duration '{dur}': {e}"),
@@ -47,32 +43,36 @@ impl MeshManager {
             },
         };
 
-        let (id, secret) = match invite_store.create(ttl_secs) {
-            Ok(pair) => pair,
-            Err(e) => {
+        let secret: [u8; crate::invite::SECRET_LEN] = rand::random();
+        let now = now_secs();
+        let (key, entry) = crate::membership::InviteEntry::from_secret(&secret, now, ttl_secs);
+
+        {
+            let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
-                    message: format!("failed to create invite: {e}"),
+                    message: format!("network '{network}' not active"),
                 };
-            }
-        };
+            };
+            let mut s = handle.state.write().unwrap();
+            s.invites.insert(key, entry);
+            s.refresh_snapshot();
+        }
 
-        let invite_key = crate::invite::encode_invite_code(
-            &net_pubkey,
-            &self.endpoint.id(),
-            &secret,
-        );
+        // Pulse the background publisher to sign + publish the updated blob.
+        if let Some(ref notify) = dht_notify {
+            notify.notify_one();
+        }
 
-        // Some(0) means permanent (never expires) at the store level. Represent
-        // that as `None` in the IPC response so the client shows "never".
+        let invite_key = crate::invite::encode_invite_code(&net_pubkey, &secret);
+
         let expires_at = match ttl_secs {
-            None => Some(crate::daemon::mesh::reconverge::now_secs() + 7 * 24 * 3600),
-            Some(0) => None,
-            Some(ttl) => Some(crate::daemon::mesh::reconverge::now_secs() + ttl),
+            0 => None,
+            ttl => Some(now + ttl),
         };
 
         IpcMessage::InviteCreated {
             invite_key,
-            invite_id: id,
+            invite_id: crate::membership::InviteEntry::from_secret(&secret, now, ttl_secs).1.id,
             expires_at,
         }
     }
@@ -83,73 +83,56 @@ impl MeshManager {
             return e;
         }
 
-        let invite_store = {
+        let invites = {
             let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
                     message: format!("network '{network}' not active"),
                 };
             };
             let s = handle.state.read().unwrap();
-            match s.invite_store.as_ref() {
-                Some(store) => store.clone(),
-                None => {
-                    return IpcMessage::InviteListResponse {
-                        invites: vec![],
-                    };
-                }
-            }
-        };
-
-        let invites = match invite_store.list() {
-            Ok(list) => list
-                .into_iter()
-                .map(|s| ipc::InviteInfo {
-                    id: s.id,
-                    created_at: s.created_at,
-                    expires_at: s.expires_at,
-                    used: s.used,
+            s.invites
+                .values()
+                .map(|entry| ipc::InviteInfo {
+                    id: entry.id.clone(),
+                    created_at: entry.created,
+                    expires_at: entry.expires,
+                    used: entry.revoked, // revoked flag means "consumed"
                 })
-                .collect(),
-            Err(e) => {
-                return IpcMessage::Error {
-                    message: format!("failed to list invites: {e}"),
-                };
-            }
+                .collect::<Vec<_>>()
         };
 
         IpcMessage::InviteListResponse { invites }
     }
 
-    /// Coordinator-only: revoke (mark as used) an invite by its short id.
+    /// Coordinator-only: revoke (mark as revoked) an invite by its short id.
     pub(crate) fn invite_revoke(&self, network: &str, invite_id: &str) -> IpcMessage {
         if let Err(e) = self.coordinator_handle(network) {
             return e;
         }
 
-        let invite_store = {
+        let dht_notify = {
             let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
                     message: format!("network '{network}' not active"),
                 };
             };
-            let s = handle.state.read().unwrap();
-            match s.invite_store.as_ref() {
-                Some(store) => store.clone(),
-                None => {
-                    return IpcMessage::Error {
-                        message: format!("invite store not available for '{network}'"),
-                    };
-                }
+            let mut s = handle.state.write().unwrap();
+            if let Err(e) = crate::membership::revoke_invite(&mut s.invites, invite_id) {
+                return IpcMessage::Error {
+                    message: format!("{e:#}"),
+                };
             }
+            s.refresh_snapshot();
+            handle.dht_notify.clone()
         };
 
-        match invite_store.revoke(invite_id) {
-            Ok(()) => IpcMessage::Ok {
-                message: format!("invite '{invite_id}' revoked"),
-            },
-            Err(e) => IpcMessage::Error {
-                message: format!("failed to revoke invite '{invite_id}': {e}"),
-            },
+        // Pulse the background publisher so the revoked entry is signed + published.
+        if let Some(ref notify) = dht_notify {
+            notify.notify_one();
+        }
+
+        IpcMessage::Ok {
+            message: format!("invite '{invite_id}' revoked"),
         }
     }
 }
@@ -225,7 +208,6 @@ mod tests {
 
     #[test]
     fn test_parse_duration_overflow() {
-        // u64::MAX / 604800 < value, would overflow with multiplier 604800 (weeks).
         let big = format!("{}w", u64::MAX);
         assert!(parse_duration(&big).is_err());
     }

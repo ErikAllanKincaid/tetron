@@ -205,13 +205,15 @@ pub(crate) struct NetworkState {
     /// received. Reloaded from the verified blob on every reconverge so any admin
     /// can admit and revocation propagates.
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
+    /// Single-use invite entries carried in the signed blob (keyed by hex
+    /// `blake3(secret)`). On a network-key holder this is what it publishes and
+    /// validates redemptions against. Entries are removed on successful
+    /// redemption (the blob is republished without the used invite).
+    invites: BTreeMap<String, crate::membership::InviteEntry>,
     /// The network's resolved overlay subnet (from the signed `GroupBlob`, or the
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
     subnet: Subnet,
-    /// Per-network invite store for single-use invite keys. `None` on non-coordinator
-    /// members (they have no need to mint or validate invites locally).
-    pub(crate) invite_store: Option<InviteStore>,
 }
 
 impl NetworkState {
@@ -245,6 +247,7 @@ impl NetworkState {
             self.network_name.as_deref(),
             &self.reusable_keys,
             self.blob_subnet(),
+            &self.invites,
         );
         let hash = blake3::hash(&bytes);
         self.snapshot = Some(GroupSnapshot {
@@ -676,7 +679,7 @@ impl MeshManager {
                 hostname,
                 transport,
                 invite,
-                coordinator,
+                ..
             } => {
                 self.join_network(
                     &network_key,
@@ -684,7 +687,6 @@ impl MeshManager {
                     hostname,
                     transport,
                     invite,
-                    coordinator,
                 )
                 .await
             }
@@ -824,7 +826,7 @@ mod accept_handler_tests {
             suggested_firewall: SuggestedFirewall::default(),
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
-            invite_store: None,
+            invites: BTreeMap::new(),
         }))
     }
 

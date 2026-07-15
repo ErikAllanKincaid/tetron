@@ -1,10 +1,10 @@
 //! Invite-code encoding (joiner side).
 //!
-//! tetron does not mint invites (approval-only admission, MINIMAL-013). A joiner
-//! can still *redeem* an invite minted by a full-tetron coordinator: the invite
-//! *code* is `bs58(network_pubkey || coordinator || secret)` (see
-//! [`encode_invite_code`]). `tetron join <code>` decodes it, dials the pinned
-//! coordinator directly, and presents the secret in its `JoinRequest`.
+//! An invite _code_ is `bs58(network_pubkey(32) || secret(16))` — 48 bytes.
+//! `tetron join <code>` decodes it, resolves the network's blob (which carries
+//! the invite entry), and dials any coordinator to present the secret.
+//! Pinning a specific coordinator in the code is no longer needed because every
+//! network-key holder validates from the signed blob (BLOB-001).
 
 use anyhow::{Result, bail};
 use iroh::EndpointId;
@@ -12,39 +12,34 @@ use iroh::EndpointId;
 /// Length of the random invite secret, in bytes (128 bits).
 pub const SECRET_LEN: usize = 16;
 
-/// Encode an invite code: `bs58(network_pubkey(32) || coordinator(32) || secret(16))`.
+/// Encode an invite code: `bs58(network_pubkey(32) || secret(16))`.
 pub fn encode_invite_code(
     network_pubkey: &EndpointId,
-    coordinator: &EndpointId,
     secret: &[u8],
 ) -> String {
-    let mut bytes = Vec::with_capacity(32 + 32 + SECRET_LEN);
+    let mut bytes = Vec::with_capacity(32 + SECRET_LEN);
     bytes.extend_from_slice(network_pubkey.as_bytes());
-    bytes.extend_from_slice(coordinator.as_bytes());
     bytes.extend_from_slice(secret);
     bs58::encode(&bytes).into_string()
 }
 
-/// Decode an invite code into `(network_pubkey, coordinator, secret)`.
-pub fn decode_invite_code(code: &str) -> Result<(EndpointId, EndpointId, Vec<u8>)> {
+/// Decode an invite code into `(network_pubkey, secret)`.
+pub fn decode_invite_code(code: &str) -> Result<(EndpointId, Vec<u8>)> {
     let bytes = bs58::decode(code)
         .into_vec()
         .map_err(|e| anyhow::anyhow!("invalid invite code: {e}"))?;
-    if bytes.len() != 32 + 32 + SECRET_LEN {
+    if bytes.len() != 32 + SECRET_LEN {
         bail!(
             "invalid invite code: expected {} bytes, got {}",
-            32 + 32 + SECRET_LEN,
+            32 + SECRET_LEN,
             bytes.len()
         );
     }
     let net: [u8; 32] = bytes[0..32].try_into().unwrap();
-    let coord: [u8; 32] = bytes[32..64].try_into().unwrap();
-    let secret = bytes[64..].to_vec();
+    let secret = bytes[32..].to_vec();
     let network_pubkey = EndpointId::from_bytes(&net)
         .map_err(|e| anyhow::anyhow!("invalid network key in invite: {e}"))?;
-    let coordinator = EndpointId::from_bytes(&coord)
-        .map_err(|e| anyhow::anyhow!("invalid coordinator key in invite: {e}"))?;
-    Ok((network_pubkey, coordinator, secret))
+    Ok((network_pubkey, secret))
 }
 
 #[cfg(test)]
@@ -60,12 +55,10 @@ mod tests {
     #[test]
     fn code_roundtrip() {
         let net = test_id(1);
-        let coord = test_id(2);
         let secret: [u8; SECRET_LEN] = rand::random();
-        let code = encode_invite_code(&net, &coord, &secret);
-        let (dn, dc, ds) = decode_invite_code(&code).unwrap();
+        let code = encode_invite_code(&net, &secret);
+        let (dn, ds) = decode_invite_code(&code).unwrap();
         assert_eq!(dn, net);
-        assert_eq!(dc, coord);
         assert_eq!(ds, secret.to_vec());
     }
 

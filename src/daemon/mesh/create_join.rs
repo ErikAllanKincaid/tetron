@@ -16,8 +16,6 @@ struct JoinContext<'a> {
     /// Invite secret to redeem at admission, if any. Cloned per dial attempt (a
     /// fresh join may try several coordinators).
     invite: Option<Vec<u8>>,
-    /// Pinned coordinator to dial first (the invite minter), if known.
-    coordinator: Option<EndpointId>,
     /// Per-network transport preference (none = default, Some(Tor) = route over Tor).
     transport: Option<TransportMode>,
 }
@@ -211,7 +209,7 @@ impl MeshManager {
             suggested_firewall: SuggestedFirewall::default(),
             subnet,
             reusable_keys: BTreeMap::new(),
-            invite_store: crate::daemon::mesh::invite_store::InviteStore::new(name).ok(),
+            invites: BTreeMap::new(),
         })
     }
 
@@ -362,12 +360,33 @@ impl MeshManager {
 
         // Mint an initial invite so the creator can share it immediately.
         let initial_invite_key = {
-            let s = state.read().unwrap();
-            s.invite_store.as_ref().and_then(|store| {
-                store.create(None).ok().map(|(_id, secret)| {
-                    crate::invite::encode_invite_code(&net_public_key, &self.endpoint.id(), &secret)
-                })
-            })
+            let secret: [u8; crate::invite::SECRET_LEN] = rand::random();
+            // Add invite to blob state, refresh snapshot, then drop lock.
+            let snapshot_data = {
+                let mut s = state.write().unwrap();
+                let (key, _entry) = crate::membership::InviteEntry::from_secret(
+                    &secret,
+                    now_secs(),
+                    7 * 24 * 3600,
+                );
+                s.invites.insert(key, _entry);
+                s.refresh_snapshot();
+                s.snapshot.as_ref().map(|sn| (sn.msgpack_bytes.clone(), sn.hash))
+            };
+            // Publish the updated blob (lock-free).
+            if let Some((snap_bytes, snap_hash)) = snapshot_data {
+                let _ = self.blob_store.blobs().add_slice(&snap_bytes).await;
+                if let Ok(pkarr_client) = crate::dht::create_pkarr_client(&self.endpoint) {
+                    let _ = crate::dht::publish_network(
+                        &pkarr_client,
+                        &net_secret_key,
+                        &snap_hash,
+                        &[self.endpoint.id()],
+                    )
+                    .await;
+                }
+            }
+            crate::invite::encode_invite_code(&net_public_key, &secret)
         };
 
         Ok(IpcMessage::Created {
@@ -376,12 +395,12 @@ impl MeshManager {
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
             warning: crate::membership::subnet_change_warning(subnet, self.identity.subnet()),
-            initial_invite_key,
+            initial_invite_key: Some(initial_invite_key),
         })
     }
 
     /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    /// join an existing network by key (optionally with an invite/coordinator).
+    /// join an existing network by key (optionally with an invite secret).
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, hostname), fields(net = name.unwrap_or(network_key)))]
     pub async fn join_network(
@@ -391,7 +410,6 @@ impl MeshManager {
         hostname: Option<String>,
         transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
-        coordinator: Option<EndpointId>,
     ) -> IpcMessage {
         match self
             .join_network_inner(
@@ -400,7 +418,6 @@ impl MeshManager {
                 hostname.clone(),
                 transport,
                 invite.clone(),
-                coordinator,
                 true,
             )
             .await
@@ -430,7 +447,6 @@ impl MeshManager {
         hostname: Option<String>,
         transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
-        coordinator: Option<EndpointId>,
         // True for a fresh join (we send a JoinRequest first); false when
         // restoring a network we're already a member of (legacy handshake where
         // the coordinator speaks first).
@@ -481,7 +497,6 @@ impl MeshManager {
             my_ip,
             net_pubkey,
             invite,
-            coordinator,
             transport,
         };
 
@@ -554,11 +569,10 @@ impl MeshManager {
         data: &crate::membership::GroupBlob,
     ) -> Result<Option<EstablishedMesh>> {
         let my_id = self.identity.local_identity();
-        // With no invite, use our own id as the nominal minter;
-        // coordinator_dial_order filters it out (minter != me), so we just get
-        // all blob coordinators in order.
-        let minter = ctx.coordinator.unwrap_or(my_id);
-        let order = coordinator_dial_order(minter, &data.members, my_id);
+        // In the invite-in-blob model (BLOB-001) there is no pinned coordinator
+        // in the invite code. Use our own id as the nominal minter so the dial
+        // order includes all blob coordinators.
+        let order = coordinator_dial_order(my_id, &data.members, my_id);
         if order.is_empty() {
             anyhow::bail!("no coordinator found in network record");
         }
@@ -635,14 +649,11 @@ impl MeshManager {
         ctx: &JoinContext<'_>,
         data: &crate::membership::GroupBlob,
     ) -> Result<Option<EstablishedMesh>> {
-        let coordinator_id = ctx
-            .coordinator
-            .or_else(|| {
-                data.members
-                    .iter()
-                    .find(|m| m.is_coordinator)
-                    .map(|m| m.identity)
-            })
+        let coordinator_id = data
+            .members
+            .iter()
+            .find(|m| m.is_coordinator)
+            .map(|m| m.identity)
             .context("no coordinator found in network record")?;
 
         // The reconnect loop is spawned unconditionally and up front. A member
@@ -672,7 +683,7 @@ impl MeshManager {
                 suggested_firewall: data.suggested_firewall.clone(),
                 subnet: crate::membership::resolve_subnet(data.subnet),
                 reusable_keys: data.reusable_keys.clone(),
-                invite_store: None,
+                invites: data.invites.clone(),
             };
             ns.refresh_snapshot();
             Arc::new(std::sync::RwLock::new(ns))
@@ -807,6 +818,7 @@ impl MeshManager {
                 invite_secret,
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
+                invites: data.invites.clone(),
                 transport: ctx.transport.clone(),
                 initial,
             },
@@ -1123,7 +1135,7 @@ impl MeshManager {
                 suggested_firewall: SuggestedFirewall::default(),
                 subnet: joined_subnet,
                 reusable_keys: data.reusable_keys.clone(),
-                invite_store: None,
+                invites: data.invites.clone(),
             };
             ns.refresh_snapshot();
             let live_state = Arc::new(std::sync::RwLock::new(ns));

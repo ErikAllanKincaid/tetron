@@ -30,6 +30,7 @@ pub(crate) fn spawn_network_publisher(
                             s.network_name.as_deref(),
                             &s.reusable_keys,
                             s.blob_subnet(),
+                            &s.invites,
                         )
                     })
             };
@@ -89,6 +90,7 @@ pub(crate) fn spawn_lazy_publisher(
                             s.network_name.as_deref(),
                             &s.reusable_keys,
                             s.blob_subnet(),
+                            &s.invites,
                         )
                     })
             };

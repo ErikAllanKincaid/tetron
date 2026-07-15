@@ -93,9 +93,9 @@ pub(crate) async fn ipc_join(
     // `tetron join <arg>` accepts either a bare room id (the network public key) or
     // a self-contained invite code. An invite decodes to the network key plus the
     // coordinator to dial and a one-time secret to present.
-    let (network_key, invite, coordinator) = match invite::decode_invite_code(network_key) {
-        Ok((net_pubkey, coord, secret)) => (net_pubkey.to_string(), Some(secret), Some(coord)),
-        Err(_) => (network_key.to_string(), None, None),
+    let (network_key, invite) = match invite::decode_invite_code(network_key) {
+        Ok((net_pubkey, secret)) => (net_pubkey.to_string(), Some(secret)),
+        Err(_) => (network_key.to_string(), None),
     };
     let mut stream = ipc::connect().await?;
     ipc::send(
@@ -106,7 +106,6 @@ pub(crate) async fn ipc_join(
             hostname,
             transport,
             invite,
-            coordinator,
         },
     )
     .await?;

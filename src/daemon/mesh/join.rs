@@ -50,6 +50,9 @@ pub(crate) struct JoinParams {
     /// From the fetched blob: reusable join keys, so this node can validate
     /// redemptions if it later holds the network key (HA admission).
     pub(crate) reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
+    /// From the fetched blob: single-use invite entries, so this node can mint
+    /// invites and validate redemptions if it later holds the network key.
+    pub(crate) invites: BTreeMap<String, crate::membership::InviteEntry>,
     /// Per-network transport preference (None = default, Some(Tor) = Tor routed).
     pub(crate) transport: Option<TransportMode>,
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
@@ -90,6 +93,7 @@ pub(crate) async fn join_mesh_shared(
         invite_secret,
         suggested_firewall,
         reusable_keys,
+        invites,
         transport,
         initial,
     } = params;
@@ -169,6 +173,7 @@ pub(crate) async fn join_mesh_shared(
         network_name,
         suggested_firewall,
         reusable_keys,
+        invites,
         &blob_store,
     )
     .await;
@@ -279,6 +284,7 @@ async fn send_reconnect_hello(
 /// Build the in-memory `NetworkState` cell for a joined member from the admitted
 /// roster + blob-derived firewall/keys, refresh its snapshot, and seed the local
 /// blob store with those bytes.
+#[allow(clippy::too_many_arguments)]
 async fn build_member_state(
     members: Vec<crate::membership::Member>,
     approved: Vec<ApprovedEntry>,
@@ -286,6 +292,7 @@ async fn build_member_state(
     network_name: &str,
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
+    invites: BTreeMap<String, crate::membership::InviteEntry>,
     blob_store: &FsStore,
 ) -> SharedNetworkState {
     let mut ns = NetworkState {
@@ -302,7 +309,7 @@ async fn build_member_state(
         // network record.
         subnet: crate::config::node_subnet(),
         reusable_keys,
-        invite_store: None,
+        invites,
     };
     ns.refresh_snapshot();
     if let Some(snap) = &ns.snapshot {

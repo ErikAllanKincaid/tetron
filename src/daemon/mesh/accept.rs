@@ -155,10 +155,18 @@ impl CoordinatorAcceptState {
 
     /// Admit (or reject) an unknown peer that presented an invite `secret`.
     ///
-    /// First checks the local single-use invite store (INVITE-003). If the secret
-    /// matches a stored (unused, non-expired) invite, the peer is admitted and the
-    /// invite is burned. Falls back to `GroupBlob.reusable_keys` for D1 compat
-    /// with full-tetron reusable keys.
+    /// Checks the signed `GroupBlob` invite table first (BLOB-001). If the secret
+    /// matches a valid (not revoked, not expired) invite entry, the entry is
+    /// removed from the blob, `dht_notify` is pulsed (so the background publisher
+    /// republishes the updated blob, burning the invite), and the peer is admitted.
+    /// Falls back to `GroupBlob.reusable_keys` for D1 compat with full-tetron
+    /// reusable keys.
+    ///
+    /// **Replay race:** there is a narrow window between removing the invite from
+    /// our local blob copy and the updated blob propagating to other coordinators
+    /// (~30-60s DHT poll interval). A second coordinator that hasn't received the
+    /// update could also accept the same secret. This is accepted for the initial
+    /// implementation; a local reject cache will close the window in a follow-up.
     #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
         &self,
@@ -170,39 +178,39 @@ impl CoordinatorAcceptState {
         device_cert: Option<control::DeviceCert>,
         secret: Vec<u8>,
     ) {
-        // Phase 1: check local single-use invite store.
-        let local_store = { self.state.read().unwrap().invite_store.clone() };
-        if let Some(ref store) = local_store {
-            match store.validate_and_burn(&secret) {
-                Ok(true) => {
-                    tracing::info!(
-                        peer = %remote_id.fmt_short(),
-                        "single-use invite redeemed"
-                    );
-                    self
-                        .admit_peer(
-                            conn,
-                            send,
-                            remote_id,
-                            peer_ip,
-                            hostname,
-                            device_cert,
-                            false,
-                        )
-                        .await;
-                    return;
-                }
-                Ok(false) => {
-                    // Not in local store — fall through to reusable key check.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        peer = %remote_id.fmt_short(),
-                        error = %e,
-                        "invite store error"
-                    );
-                }
+        // Phase 1: check blob invite table.
+        let invite_valid = {
+            let s = self.state.read().unwrap();
+            crate::membership::validate_invite(&s.invites, &secret, now_secs()).is_some()
+        };
+        if invite_valid {
+            // Burn the invite: remove from blob, refresh snapshot, notify publisher.
+            let hash = blake3::hash(&secret).to_hex().to_string();
+            {
+                let mut s = self.state.write().unwrap();
+                s.invites.remove(&hash);
+                s.refresh_snapshot();
             }
+            // Pulse the publisher so the updated blob is signed + published.
+            if let Some(ref notify) = self.dht_notify {
+                notify.notify_one();
+            }
+            tracing::info!(
+                peer = %remote_id.fmt_short(),
+                "invite redeemed from blob"
+            );
+            self
+                .admit_peer(
+                    conn,
+                    send,
+                    remote_id,
+                    peer_ip,
+                    hostname,
+                    device_cert,
+                    false,
+                )
+                .await;
+            return;
         }
 
         // Phase 2: fall back to GroupBlob reusable keys (D1 compat).
@@ -218,7 +226,7 @@ impl CoordinatorAcceptState {
                 "reusable key redeemed"
             );
             // Reusable joins are non-authoritative: joiner-chosen name,
-            // collision → suffix.
+            // collision --> suffix.
             self.admit_peer(
                 conn,
                 send,

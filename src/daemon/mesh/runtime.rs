@@ -11,6 +11,7 @@ struct RestoredRoster {
     approved: ApprovedList,
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
+    invites: BTreeMap<String, crate::membership::InviteEntry>,
 }
 
 impl MeshManager {
@@ -32,12 +33,14 @@ impl MeshManager {
         // `suggested_firewall` is authoritative in the signed blob; fall back to
         // an empty set only if the blob can't be fetched.
         let mut suggested_firewall = SuggestedFirewall::default();
-        // Reusable join keys are authoritative in the signed blob too.
+        // Reusable join keys and invites are authoritative in the signed blob too.
         let mut reusable_keys = BTreeMap::new();
+        let mut invites = BTreeMap::new();
         match self.restore_roster_from_blob(net_public_key).await {
             Ok(data) => {
                 suggested_firewall = data.suggested_firewall.clone();
                 reusable_keys = data.reusable_keys.clone();
+                invites = data.invites.clone();
                 for m in &data.members {
                     let _ = member_list.add(m.clone());
                 }
@@ -102,6 +105,7 @@ impl MeshManager {
             approved: approved_list,
             suggested_firewall,
             reusable_keys,
+            invites,
         }
     }
 
@@ -145,6 +149,7 @@ impl MeshManager {
             approved: approved_list,
             suggested_firewall,
             reusable_keys,
+            invites,
         } = self
             .restore_member_roster(name, net_public_key, net_config, my_ip, &persisted_hostname)
             .await;
@@ -162,7 +167,7 @@ impl MeshManager {
             // (built from the persisted node cache at bootstrap).
             subnet: self.identity.subnet(),
             reusable_keys,
-            invite_store: InviteStore::new(name).ok(),
+            invites,
         };
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
@@ -317,6 +322,7 @@ impl MeshManager {
                 None,
                 &BTreeMap::new(),
                 None,
+                &BTreeMap::new(),
             );
             if let Err(e) = dht::publish_network(&client, &key, &empty_hash, &[]).await {
                 tracing::warn!(error = %e, "failed to publish empty network record on nuke");
@@ -494,7 +500,6 @@ impl MeshManager {
                             Some(&name),
                             persisted_hostname,
                             net_transport,
-                            None,
                             None,
                             false,
                         )
