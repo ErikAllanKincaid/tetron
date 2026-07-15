@@ -116,3 +116,23 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 ## High priority
 
 - **Reusable keys (--reusable)**: add `--reusable` flag to `tetron invite <net> create` -- adds hash to `GroupBlob.reusable_keys`, signs + republishes blob. Any coordinator validates against the blob.
+
+## Bugs
+
+- **SUBNET-BUG-001: TUN created with local subnet, not network subnet, silently breaking data plane**: When a node joins a network whose subnet differs from the node's locally configured subnet (`tetron config set subnet` or default), the TUN device is created with the *local* subnet, not the network's subnet from the `GroupBlob`. The member is assigned a mesh IP from the network's subnet (visible in `tetron status`), but its TUN interface has an IP from the local subnet instead. Packets addressed to the member's correct mesh IP arrive via QUIC but are written to a TUN whose IP is in a different range -- the kernel does not recognize the dst IP as local and drops the packet. This scilently breaks the data plane (no ping, no TCP) with no error message.
+
+  **How to reproduce:**
+  1. Node A (coordinator) creates network with `--subnet 10.77.0.0/24` (or has its node config set to that subnet).
+  2. Node B joins using an invite key but has a different local subnet (e.g. `10.88.0.0/16` default).
+  3. `tetron status` on both sides shows the member with the correct mesh IP from the network's subnet (e.g. `10.77.0.205`).
+  4. TUN on node B shows a different IP (e.g. `10.88.169.205`), not the one in status.
+  5. Ping from A to B: ICMP echos go out on A's TUN, reach B via QUIC, but B's kernel drops them because dst IP `10.77.0.205` does not match B's TUN IP `10.88.169.205`.
+
+  **Severity:** medium -- silent data-plane failure, no errors logged anywhere. Only affects networks where members have inconsistent local subnet configs (common when subnet was changed after initial setup).
+
+  **Suggested fix:** On join, compare the network's subnet (from blob) against the local node subnet. If they differ, either:
+  - (a) Reject the join with a clear error: "network subnet 10.77.0.0/24 differs from your node subnet 10.88.0.0/16; run `tetron config set subnet 10.77.0.0/24 && sudo tetron restart` first."
+  - (b) Auto-adopt: update the local node subnet to match the network's subnet and warn the user.
+  - (c) Per-network TUN (or policy routing) as the correct long-term fix (see SUBNET_COLLISION.md).
+
+  **Found:** 2026-07-15, real-world deployment with AORUS (10.77.0.0/24) and usbos-1 (10.88.0.0/16) on network "shallows".

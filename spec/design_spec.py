@@ -1054,6 +1054,43 @@ class NoResidualTestCgnatLeak(Constraint):
     enforcement_logic = "{{ test_subnet_identity.unexpected_count == 0 }}"
 
 
+# --------------------------------------------------------------------------
+# SUBNET-BUG-001: TUN created with local subnet, not network's subnet
+# --------------------------------------------------------------------------
+
+class SubnetMismatchOnJoin(Requirement):
+    """REQUIREMENT-ID: SUBNET-BUG-001
+
+    When a node joins a network whose overlay subnet differs from the node's
+    locally configured subnet (from `tetron config set subnet` or the
+    default), the TUN device is created with the *local* subnet, not the
+    network's authoritative subnet from the `GroupBlob`. The member is
+    assigned a mesh IP from the network's subnet (visible in `tetron status`
+    and the signed roster), but the TUN interface carries an IP from the
+    local subnet. Packets addressed to the member's correct mesh IP arrive
+    via QUIC but are written to a TUN whose IP is in a different range --
+    the kernel does not recognise the dst IP as local and drops the packet.
+    This silently breaks the data plane (no ping, no TCP) with no error
+    logged anywhere.
+
+    Fix (choose one):
+    (a) Reject the join with a clear error message telling the user to run
+        `tetron config set subnet <network-subnet> && sudo tetron restart`.
+    (b) Auto-adopt: update the node's local subnet on join to match the
+        network's subnet, log a warning.
+    (c) Per-network TUN devices or policy routing (the correct long-term
+        fix, documented in SUBNET_COLLISION.md as deferred).
+
+    (a) is the simplest and least surprising: the subnet is a node-wide
+    property tied to the TUN device, and joining a network with a different
+    subnet should fail fast rather than silently misroute.
+
+    Found: 2026-07-15, network "shallows" with AORUS (10.77.0.0/24) and
+    usbos-1 (10.88.0.0/16).
+    """
+    req_id = "SUBNET-BUG-001"
+
+
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
@@ -1880,4 +1917,36 @@ class MultiCoordinatorRoutine(Requirement):
     - Update `README.md` quickstart to show `tetron admin add` after join.
     """
     req_id = "COORD-001"
+
+
+# --------------------------------------------------------------------------
+# FRAG-001: IPv4 fragmentation for QUIC datagram size limits
+# --------------------------------------------------------------------------
+
+class Ipv4Fragmentation(Requirement):
+    """REQUIREMENT-ID: FRAG-001
+
+    When the QUIC connection's `max_datagram_size()` is smaller than the TUN
+    MTU (1280), IP packets read from the TUN device will not fit in a single
+    QUIC datagram. The forwarder must fragment oversize IPv4 packets into RFC
+    791-compliant IP fragments, each sent as a separate QUIC datagram, so TCP
+    connections (SSH, HTTP, etc.) do not stall.
+
+    Fragment payload size is rounded down to the nearest multiple of 8 bytes
+    (RFC 791 Section 3.2). Each fragment carries the original IP header with
+    updated Total Length, More-Fragments flag, Fragment Offset, and a
+    recalculated header checksum. The original identification and Don't
+    Fragment flag are preserved.
+
+    Receiving kernel reassembles fragments before delivery -- no reassembly
+    logic is needed in the daemon.
+
+    IPv6 fragmentation is not yet implemented and oversized IPv6 packets are
+    dropped with a warning log entry.
+
+    Found: 2026-07-15, network "shallows" where Quinn's max_datagram_size
+    was 1162-1192, below the 1228-byte TCP segments produced at TUN MTU 1280.
+    SSH key exchange stalled silently at "expecting SSH2_MSG_KEX_ECDH_REPLY".
+    """
+    req_id = "FRAG-001"
 

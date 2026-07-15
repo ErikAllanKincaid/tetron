@@ -186,29 +186,95 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
         // Reachability is "we share a network" — enforced by connection
         // existence. Packet filtering is the host firewall's job.
         tracing::debug!(dst = %info.dst_ip, "routing to peer");
-        // Drop-newest at the application boundary: if the peer's QUIC datagram send
-        // buffer is too full to accept this packet without evicting an already-queued
-        // (older) one, drop the *new* packet here instead of calling `send_datagram`,
-        // which would drop the *oldest* queued packet (see N6 in the datagram audit).
-        // This keeps the send path non-blocking (no cross-peer head-of-line blocking
-        // in this single TUN read loop) while preferring drop-newest over drop-oldest.
-        // Full per-peer backpressure (`send_datagram_wait` in a per-peer writer task)
-        // is the sized follow-up that needs the e2e harness to land safely.
-        if route.conn.datagram_send_buffer_space() < n {
-            tracing::trace!(
-                dst = %info.dst_ip,
-                space = route.conn.datagram_send_buffer_space(),
-                len = n,
-                "datagram send buffer full; dropping newest",
-            );
-            stats.record_drop(DropReason::Backpressure);
-            continue;
-        }
-        match route.conn.send_datagram(pkt) {
-            Ok(()) => stats.record_tx(n),
-            Err(e) => {
-                tracing::debug!(dst = %info.dst_ip, error = %e, "datagram send failed");
+        let max_dgram = match route.conn.max_datagram_size() {
+            Some(sz) => sz,
+            None => {
+                tracing::warn!(
+                    dst = %info.dst_ip,
+                    "connection does not support QUIC datagrams — dropping",
+                );
                 stats.record_drop(DropReason::SendFailure);
+                continue;
+            }
+        };
+        if n <= max_dgram {
+            // Standard path: the packet fits within the QUIC connection's maximum
+            // datagram size — send it as a single datagram.
+            // Drop-newest at the application boundary: if the peer's QUIC datagram
+            // send buffer is too full to accept this packet without evicting an
+            // already-queued (older) one, drop the *new* packet here instead of
+            // calling `send_datagram`, which would drop the *oldest* queued packet
+            // (see N6 in the datagram audit). This keeps the send path non-blocking
+            // (no cross-peer head-of-line blocking in this single TUN read loop)
+            // while preferring drop-newest over drop-oldest.
+            // Full per-peer backpressure (`send_datagram_wait` in a per-peer writer
+            // task) is the sized follow-up that needs the e2e harness to land safely.
+            if route.conn.datagram_send_buffer_space() < n {
+                tracing::trace!(
+                    dst = %info.dst_ip,
+                    space = route.conn.datagram_send_buffer_space(),
+                    len = n,
+                    "datagram send buffer full; dropping newest",
+                );
+                stats.record_drop(DropReason::Backpressure);
+                continue;
+            }
+            match route.conn.send_datagram(pkt) {
+                Ok(()) => stats.record_tx(n),
+                Err(e) => {
+                    tracing::debug!(dst = %info.dst_ip, error = %e, "datagram send failed");
+                    stats.record_drop(DropReason::SendFailure);
+                }
+            }
+        } else {
+            // The packet exceeds the QUIC max_datagram_size — it must be
+            // fragmented at the IP layer before sending. The receiving kernel
+            // will reassemble the fragments.
+            match pkt.first().map(|b| b >> 4) {
+                Some(4) => {
+                    match packet::fragment_ipv4(&pkt, max_dgram) {
+                        Some(fragments) => {
+                            tracing::debug!(
+                                dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
+                                "fragmenting oversized IP packet",
+                            );
+                            for frag in &fragments {
+                                match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
+                                    Ok(()) => stats.record_tx(frag.len()),
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            dst = %info.dst_ip, error = %e, frag_len = frag.len(),
+                                            "fragment send failed",
+                                        );
+                                        stats.record_drop(DropReason::SendFailure);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                dst = %info.dst_ip, len = n, max = max_dgram,
+                                "cannot fragment IPv4 packet (options or malformed)",
+                            );
+                            stats.record_drop(DropReason::SendFailure);
+                        }
+                    }
+                }
+                Some(6) => {
+                    tracing::warn!(
+                        dst = %info.dst_ip, len = n, max = max_dgram,
+                        "packet exceeds QUIC max datagram size and IPv6 fragmentation \
+                         is not yet implemented — dropping",
+                    );
+                    stats.record_drop(DropReason::SendFailure);
+                }
+                _ => {
+                    tracing::debug!(
+                        dst = %info.dst_ip, len = n, first_byte = pkt[0],
+                        "unrecognised IP version in oversized packet — dropping",
+                    );
+                    stats.record_drop(DropReason::SendFailure);
+                }
             }
         }
     }
