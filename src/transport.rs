@@ -214,12 +214,20 @@ pub async fn accept_connection_with_alpn(ep: &Endpoint) -> Result<(Connection, V
 
 /// Connects to a peer by EndpointId with a specific ALPN. iroh handles
 /// NAT traversal and falls back to relay if direct connection fails.
+///
+/// If the peer address cache (see `peercache.rs`) has known addresses for
+/// this peer, they are included in the [`EndpointAddr`] so iroh tries them
+/// directly before falling back to DHT lookup — this enables reconnection
+/// after an all-offline gap without a functioning pkarr relay.
 pub async fn connect_to_peer_with_alpn(
     ep: &Endpoint,
     id: EndpointId,
     alpn: &[u8],
 ) -> Result<Connection> {
-    let addr: EndpointAddr = id.into();
+    let addr: EndpointAddr = match crate::peercache::lookup(&id) {
+        Some(addrs) => EndpointAddr::from_parts(id, addrs),
+        None => id.into(),
+    };
     let conn = match ep.connect(addr, alpn).await {
         Ok(conn) => conn,
         // An ALPN mismatch fails the QUIC/TLS handshake opaquely. Map that one

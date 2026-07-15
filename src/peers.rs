@@ -236,9 +236,19 @@ impl PeerTable {
             .collect()
     }
 
-    #[cfg(test)]
     pub fn all_peer_ids(&self) -> Vec<(Ipv4Addr, EndpointId)> {
         self.v4.iter().map(|e| (*e.key(), e.endpoint_id)).collect()
+    }
+
+    /// Returns every peer with its endpoint ID, IPv4 address, and the
+    /// connection chosen by the deterministic routing rule (lexicographically
+    /// smallest network name). Used by the peer address cache to extract live
+    /// path information.
+    pub fn all_entries(&self) -> Vec<(EndpointId, Ipv4Addr, Connection)> {
+        self.v4
+            .iter()
+            .filter_map(|e| e.route().map(|r| (e.endpoint_id, *e.key(), r.conn)))
+            .collect()
     }
 }
 

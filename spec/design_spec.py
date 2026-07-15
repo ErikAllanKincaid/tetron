@@ -1759,3 +1759,125 @@ class LiveApprovalAbsenceGate(Constraint):
     constraint_id = "CON-M05"
     enforcement_logic = "{{ live_approval_absence.unexpected_count == 0 }}"
 
+
+# --------------------------------------------------------------------------
+# Laptop fleet: making tetron work without an always-on member
+#
+# The three laptop fleet changes (CACHE-001, BLOB-001, COORD-001) let a
+# network of laptop users who come and go operate reliably without an
+# always-on member. The two-tier model (coordinator / member) is sufficient;
+# no new roles are added.
+#
+# Implementation order:
+#   1. CACHE-001 (peer address cache) -- standalone, quick win
+#   2. BLOB-001 (invite in blob) -- core change, enables cross-machine invites
+#   3. COORD-001 (multi-coordinator docs) -- already works, just document
+# --------------------------------------------------------------------------
+
+class LaptopFleetIntent(UserStory):
+    """USER-STORY: LAPTOP-FLEET-INTENT
+
+    Make tetron work for a network of laptop users who come and go with no
+    always-on member. A member should be able to rejoin after an all-offline
+    gap, join a network using an invite minted from a machine that is now
+    asleep, and kick a departed member when the network creator is offline.
+
+    Priority: high.
+    User journey: Alice creates a network, mints an invite, grants Bob the
+    network key via admin add. Everyone goes home for the night. Next morning
+    Bob comes online first, can admit Carol (who has an invite from Alice)
+    because the invite is in the blob, can reconnect without DHT because
+    peers are cached, and can kick a stale member.
+    Acceptance: `tetron join <invite>` works when the minting coordinator is
+    offline but another coordinator is online; `tetron status` shows peers
+    immediately after an all-offline restart; `tetron kick` works when any
+    coordinator is online.
+    """
+    brief_title = "Laptop fleet operation"
+    priority = "high"
+
+
+class PeerAddressCache(Requirement):
+    """REQUIREMENT-ID: CACHE-001
+
+    tetron saves known peer addresses (endpoint ID, direct addresses, relay
+    URL, last seen timestamp) to a flat file on disk on graceful shutdown and
+    periodically every 5 minutes. On startup, the cache is loaded and iroh's
+    peer table is seeded before any DHT lookup.
+
+    After an all-offline gap, the first member back tries each cached address
+    directly. If any other member is also back, the QUIC handshake succeeds
+    and the mesh is live without DHT or relay bootstrap. Stale addresses are
+    harmless because iroh verifies endpoint identity via the QUIC crypto
+    handshake (wrong address = connection failure, not wrong peer).
+
+    Format: flat msgpack file at `<config_dir>/peercache.msgpack` containing
+    `Vec<CacheEntry>` where each entry holds endpoint_id (32 bytes),
+    known_addresses (Vec<SocketAddr>), relay_url (Option<String>), and
+    last_seen (u64 unix timestamp). Entries older than 30 days are pruned on
+    load. Writes are atomic (write to temp file, rename).
+    """
+    req_id = "CACHE-001"
+
+
+class InviteInBlob(Requirement):
+    """REQUIREMENT-ID: BLOB-001
+
+    Move invite storage from machine-local files (`InviteStore`,
+    `invites/<network>/<id>.toml`) into the signed `GroupBlob`. An invite is
+    an `InviteEntry` struct in the blob:
+
+        struct InviteEntry {
+            secret_hash: String,    // blake3 hex
+            created_by: EndpointId,
+            created_at: u64,
+            expires_at: u64,        // 0 = permanent
+            used: bool,
+        }
+
+    Minting an invite adds an entry to the in-memory blob, signs it, and
+    republishes to the DHT. Validating a presented secret: any online
+    coordinator hashes the secret and checks the blob's invite table for a
+    matching, not-expired, not-used entry. On admission the entry is removed
+    (not just marked used) to bound blob size and prevent replay.
+
+    The invite code encoding changes from
+    `bs58(pubkey(32) || coordinator(32) || secret(16))` to
+    `bs58(pubkey(32) || secret(16))` -- the coordinator endpoint ID is
+    dropped so the joiner dials any peer, not the minting machine.
+
+    Supersedes INVITE-001 (machine-local store), INVITE-002 (machine-local
+    minting), INVITE-003 (machine-local validation), INVITE-008 (old format),
+    and INVITE-009 (expiry logic -- still applies but against blob entries).
+
+    Fetch-before-publish merge is required so concurrent mints from multiple
+    coordinators do not clobber each other's entries (the merge logic from
+    the PRIVILEGE_TIERS.md design is reused).
+
+    Replay race mitigation: a local reject cache per coordinator (set of
+    recently-admitted secret hashes, TTL 5 minutes) plus `InviteUsed` gossip
+    (wire message broadcast on admission) prevents a used invite from being
+    accepted by a coordinator who has not yet received the updated blob. Once
+    the updated blob propagates via DHT poll (~30-60s), the reject cache
+    entry expires naturally.
+    """
+    req_id = "BLOB-001"
+
+
+class MultiCoordinatorRoutine(Requirement):
+    """REQUIREMENT-ID: COORD-001
+
+    `tetron admin add <net> <identity>` is the documented practice for making
+    a fully trusted user a coordinator. Every fully trusted member should be
+    granted the network key. This eliminates the single-point-of-failure
+    where only one machine can admit, mint, kick, or publish.
+
+    The CLI command already exists and works. No code changes are needed.
+    Implementation consists of:
+    - Update `docs/HOWTO.md` to recommend `admin add` as a routine post-join
+      step for every trusted user.
+    - Update `docs/TODO.md` to mark multi-coordinator as the expected default.
+    - Update `README.md` quickstart to show `tetron admin add` after join.
+    """
+    req_id = "COORD-001"
+

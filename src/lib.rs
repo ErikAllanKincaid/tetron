@@ -60,6 +60,7 @@ pub mod logdir;
 pub mod membership;
 pub mod network_name;
 pub mod packet;
+pub mod peercache;
 pub mod peers;
 pub mod ratelimit;
 pub mod shutdown;

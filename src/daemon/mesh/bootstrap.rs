@@ -45,7 +45,18 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // only the data plane after this; connections persist across `down` so the
     // node stays online to peers.
     daemon.connect_all_networks().await;
+
+    // Seed the peer address cache from the live connections we just established.
+    // Subsequent reconnects (after an all-offline gap) will skip DHT lookup and
+    // dial cached addresses directly (CACHE-001).
+    crate::peercache::refresh_from_peers(&daemon.peers);
+
     daemon.activate(None).await;
+
+    // Spawn a periodic task that saves the peer address cache to disk every
+    // 5 minutes. The task exits when the shutdown token fires, saving one
+    // final snapshot.
+    crate::peercache::spawn_periodic_save(token.clone());
 
     // The promotion receiver was stashed on the daemon by the builder; take it
     // back to drive the IPC loop.
@@ -57,6 +68,11 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         .expect("promote_rx present after build");
 
     let result = serve_ipc(&daemon, promote_rx, token).await;
+
+    // Save one final cache snapshot before tearing down connections, so the
+    // most recent peer addresses survive a restart (CACHE-001).
+    crate::peercache::refresh_from_peers(&daemon.peers);
+    crate::peercache::save();
 
     // Close the iroh endpoint before returning. Dropping it on return logs
     // "Endpoint dropped without calling `Endpoint::close`. Aborting
@@ -115,6 +131,11 @@ async fn build_daemon(
     // Relocate a pre-/etc config tree into /etc/tetron (Linux upgrade path)
     // before anything reads identity or config. No-op on macOS / once migrated.
     config::migrate_location();
+
+    // Initialise the peer address cache from disk. Must happen before any
+    // connections are made so `connect_to_peer_with_alpn` can use cached
+    // addresses on the very first dial (CACHE-001).
+    crate::peercache::init(&config::config_dir()?);
 
     // --- Identity (persistent transport key) ---
     let key = identity::load_or_create()?;
