@@ -86,15 +86,15 @@ Each machine runs the `tetron` daemon, which creates a TUN device, captures IP p
 
 By default only the node that ran `tetron create` holds the network key. That machine is a **single point of failure**: if it is asleep or offline, no other node can admit new joiners, mint invites, or kick departed members. Every trusted member of the network should be made a **co-coordinator** by granting them a copy of the network key.
 
-The command is `tetron admin add`:
+The command is `tetron admin <network> add <short-id>`:
 
 ```bash
 # 1. On the coordinator, list the trusted member (get their short id from status):
-tetron status --json
-#    Look for "id": "c3f8a1057..." in the member you trust.
+tetron status
+#    Look for the short id (e.g. c3f8a1057f) in the member's row.
 
 # 2. Grant them the network key:
-tetron admin add shallows c3f8a1057f
+tetron admin shallows add c3f8a1057f
 #    Sample output:
 #     added c3f8a1057f as a coordinator of shallows
 
@@ -104,12 +104,12 @@ tetron admin add shallows c3f8a1057f
 #    "(coordinator)" annotation on the `tetron <network>` row).
 ```
 
-The new co-coordinator can then mint invites, admit joiners, and kick members just like the original coordinator. Run this for **every** fully trusted member so the network stays operational even when any one machine is offline.
+The new co-coordinator can then mint invites, admit joiners, and kick members just like the original coordinator. Run this for **every** fully trusted member so the network stays operational even when any one machine is offline. The short id is the same one shown in `tetron status` for each peer -- hostname is NOT accepted here, unlike other commands.
 
 To see who currently holds the network key:
 
 ```bash
-tetron admin list shallows
+tetron admin shallows list
 #    (c)  c3f8a1057f  usbos-1  10.77.0.205
 #    (c)  bd21f97f19  sneak    10.77.0.185
 ```
