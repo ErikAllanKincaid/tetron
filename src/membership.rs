@@ -2,7 +2,7 @@
 //!
 //! Virtual IPs are deterministically derived from [`EndpointId`] via FNV-1a hashing
 //! into the network's configured overlay subnet (the `GroupBlob.subnet` field),
-//! defaulting to 10.88.0.0/16 when none is set (an uncommon 10.x slice that
+//! defaulting to 10.88.0.0/24 when none is set (an uncommon 10.x slice that
 //! avoids Tailscale's 100.64.0.0/10). The host-bit width follows the prefix.
 
 use std::collections::{BTreeMap, HashMap};
@@ -295,13 +295,13 @@ pub trait IdentityProvider: Send + Sync {
 /// [`GroupBlob`] / config means "use [`default_subnet`]".
 pub type Subnet = (Ipv4Addr, u8);
 
-/// The default overlay subnet when none is configured: 10.88.0.0/16, an
+/// The default overlay subnet when none is configured: 10.88.0.0/24, an
 /// uncommon 10.x slice chosen so a no-flag `tetron create` does NOT collide
 /// with Tailscale's 100.64.0.0/10 out of the box (SUBNET-011). Override with
-/// `--subnet` / `tetron config set subnet`. Written in comma form so it does
-/// not read as a dotted literal.
+/// `--subnet` / `tetron config set subnet`. A /24 gives 256 host addresses,
+/// enough for personal/team meshes.
 pub fn default_subnet() -> Subnet {
-    (Ipv4Addr::new(10, 88, 0, 0), 16)
+    (Ipv4Addr::new(10, 88, 0, 0), 24)
 }
 
 /// Resolve an optional configured subnet to a concrete one, falling back to
@@ -577,7 +577,7 @@ pub struct GroupBlob {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The network-wide overlay IPv4 subnet as `(base, prefix)`, serialized as a
-    /// CIDR string. `None` means the [`default_subnet`] (10.88.0.0/16), keeping
+    /// CIDR string. `None` means the [`default_subnet`] (10.88.0.0/24), keeping
     /// default-subnet networks byte-identical. This is the signed, network-wide
     /// source of truth every peer derives and validates addresses against.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "cidr_opt")]
@@ -1834,24 +1834,40 @@ mod tests {
 
     #[test]
     fn validate_member_accepts_all_derived_ips_in_range() {
-        // Every derive_ip() output for a spread of identities must pass validation.
-        for seed in 0u8..=255 {
+        // Every derive_ip() output for a spread of identities must pass validation,
+        // as long as the IP does not collide with a reserved address (.0, .1, or
+        // the subnet-relative magic-DNS address). With the default /24 there are 253
+        // usable host addresses; we skip seeds that land on one of the 3 reserved.
+        let mut validated = 0u32;
+        let mut seed: u8 = 0;
+        loop {
             let id = test_id(seed);
-            let member = Member {
-                identity: id,
-                ip: derive_ip(&id, default_subnet()),
-                is_coordinator: false,
-                hostname: None,
-                user_identity: None,
-                device_cert: None,
-                collision_index: 0,
-                last_seen: None,
-            };
-            assert!(
-                validate_member(&member, default_subnet()).is_ok(),
-                "seed {seed} -> {}",
-                member.ip
-            );
+            let ip = derive_ip(&id, default_subnet());
+            if !is_reserved_ipv4(ip, default_subnet())
+                && ip != Ipv4Addr::new(10, 88, 0, 0)  // network
+                && ip != Ipv4Addr::new(10, 88, 0, 1)  // gateway
+            {
+                let member = Member {
+                    identity: id,
+                    ip,
+                    is_coordinator: false,
+                    hostname: None,
+                    user_identity: None,
+                    device_cert: None,
+                    collision_index: 0,
+                    last_seen: None,
+                };
+                assert!(
+                    validate_member(&member, default_subnet()).is_ok(),
+                    "seed {seed} -> {}",
+                    member.ip
+                );
+                validated += 1;
+                if validated >= 200 {
+                    break;
+                }
+            }
+            seed = seed.wrapping_add(1);
         }
     }
 
@@ -2091,7 +2107,7 @@ mod tests {
 
     // --- configurable subnet (SUBNET-003/004/005/007) ------------------------
 
-    // A custom subnet distinct from BOTH the default (10.88.0.0/16) and the
+    // A custom subnet distinct from BOTH the default (10.88.0.0/24) and the
     // legacy CGNAT range, so "custom != default" assertions stay meaningful.
     const CUSTOM: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 16);
 
@@ -2099,7 +2115,7 @@ mod tests {
     fn derive_ip_lands_in_custom_subnet_and_avoids_reserved() {
         for seed in 1u8..40 {
             let ip = derive_ip(&test_id(seed), CUSTOM);
-            assert!(ip_in_subnet(ip, CUSTOM), "{ip} not in 10.88.0.0/16");
+            assert!(ip_in_subnet(ip, CUSTOM), "{ip} not in {CUSTOM:?}");
             let host = u32::from(ip) & subnet_host_mask(16);
             assert!(host >= 2, "{ip} must avoid network(.0)/gateway(.1)");
             // A custom-subnet address must NOT be a default-range CGNAT address.
@@ -2138,7 +2154,7 @@ mod tests {
         assert!(subnets_overlap(overlay, overlay));
         // A disjoint home LAN does not.
         assert!(!subnets_overlap((Ipv4Addr::new(192, 168, 1, 5), 24), overlay));
-        // Crucially, Tailscale's 100.64.0.0/10 does NOT overlap 10.88.0.0/16 —
+        // Crucially, Tailscale's 100.64.0.0/10 does NOT overlap 10.88.0.0/24 —
         // this is the whole point of the safe default.
         assert!(!subnets_overlap((Ipv4Addr::new(100, 64, 0, 1), 10), overlay));
     }

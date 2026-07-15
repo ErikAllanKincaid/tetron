@@ -57,9 +57,9 @@ pub(crate) enum Command {
         /// Your hostname within the network (e.g. "alice" → alice.gaming.ray). Random if not set
         #[arg(long)]
         hostname: Option<String>,
-        /// Overlay IPv4 subnet in CIDR form (e.g. "10.88.0.0/16"). Override the
+        /// Overlay IPv4 subnet in CIDR form (e.g. "10.88.0.0/24"). Override the
         /// default only if it collides with an existing local network. Defaults
-        /// to 10.88.0.0/16, chosen to coexist with Tailscale's 100.64.0.0/10.
+        /// to 10.88.0.0/24, chosen to coexist with Tailscale's 100.64.0.0/10.
         #[arg(long)]
         subnet: Option<String>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
@@ -213,7 +213,7 @@ pub(crate) enum ConfigAction {
         #[arg(long)]
         replace: bool,
     },
-    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/16)
+    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/24)
     #[command(visible_alias = "rm")]
     Unset {
         /// relay, discovery-dns, or subnet

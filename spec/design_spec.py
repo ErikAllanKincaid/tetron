@@ -261,14 +261,11 @@ class DefaultSubnetSafe(Requirement):
 
     The built-in default overlay subnet (membership::default_subnet, used when a
     GroupBlob's / config's subnet is None) changes from 100.64.0.0/10 to
-    10.88.0.0/16 — an uncommon 10.x slice deliberately chosen NOT to collide
-    with Tailscale's 100.64.0.0/10, so a no-flag `torpedo create` coexists with
+    10.88.0.0/24 — an uncommon 10.x slice deliberately chosen NOT to collide
+    with Tailscale's 100.64.0.0/10, so a no-flag `tetron create` coexists with
     Tailscale out of the box. `--subnet` / `config set subnet` still override it.
-    A /16 gives ample host space (~65k). reconcile.py's CON-002 allowed-default
-    substring is updated accordingly, and the membership Magic-DNS test that
-    checked the historical 100.100.100.53 address is re-pinned to an explicit
-    100.64.0.0/10 subnet (that back-compat property holds for the /10 range
-    regardless of what the default is).
+    A /24 gives 256 host addresses, enough for personal/team meshes; users who
+    need more can set a larger prefix explicitly.
     """
     req_id = "SUBNET-011"
 
@@ -309,16 +306,12 @@ class DefaultSubnetDocsAccurate(Requirement):
     """REQUIREMENT-ID: SUBNET-013
 
     User-facing help text and doc-strings state the ACTUAL default overlay
-    subnet (10.88.0.0/16), not the old 100.64.0.0/10 that SUBNET-011 replaced:
-    - `torpedo create --subnet` CLI help (src/main.rs) says the default is
-      10.88.0.0/16.
+    subnet (10.88.0.0/24), not the old 100.64.0.0/10 that SUBNET-011 replaced:
+    - `tetron create --subnet` CLI help (src/main.rs) says the default is
+      10.88.0.0/24.
     - The GroupBlob.subnet (src/membership.rs) and AppConfig.subnet
       (src/config.rs) field docs, and the IPC Create.subnet doc
-      (ray-proto/src/ipc.rs), describe `None` as the 10.88.0.0/16 default.
-    - The service startup-failure message (src/cli/service.rs) no longer claims
-      a foreign VPN on 100.64.0.0/10 (Tailscale) is a likely cause — that
-      conflict was intentionally removed — and instead points at the SUBNET-012
-      overlay-overlap guard / DNS port 53 / a conflicting route.
+      (tetron-proto/src/ipc.rs), describe `None` as the 10.88.0.0/24 default.
 
     Explicitly OUT OF SCOPE (documented deferrals, not the fork's Linux path,
     decision left for later): the macOS `route_peer_range` branch (src/tun.rs),

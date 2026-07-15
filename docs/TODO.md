@@ -2,6 +2,7 @@
 
 ## Recently completed
 
+- **Default subnet /16 -> /24**: changed `membership::default_subnet()` from `10.88.0.0/16` to `10.88.0.0/24` (256 addresses, enough for personal/team meshes). Updated SUBNET-011/SUBNET-013 spec entries, CLI help text, all Rust doc strings, README, HOWTO. Libspec-linked.
 - **Invite key admission** (Phases 1-4): invite store, IPC handlers, CLI (create/list/revoke), post-create auto-mint, e2e tested on 3 machines. Room-id joins still queue for live approval (both paths coexist).
 - **Old torpedo cleanup**: service stopped, binary/config removed on AORUS, xps-17, and SB-OS.
 - **E2E test results** logged in `docs/TESTING.md` Stage 9.

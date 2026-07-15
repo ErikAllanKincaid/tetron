@@ -72,7 +72,7 @@ The invite key printed at creation is a single-use invite that expires in
 tetron create --hostname alice --expires never
 ```
 
-**Custom subnet.** If `10.88.0.0/16` collides with a local network, set a
+**Custom subnet.** If `10.88.0.0/24` collides with a local network, set a
 different subnet node-wide before creating:
 
 ```bash
@@ -82,7 +82,7 @@ tetron create --hostname alice
 ```
 
 **Subnet collision warning.** If you already belong to a network on
-`10.88.0.0/16` and create (or join) a second network on the same subnet,
+`10.88.0.0/24` and create (or join) a second network on the same subnet,
 traffic can route to the wrong peer — the kernel route table cannot
 distinguish two networks sharing one range. Set a different subnet
 first, or use `--force` on create/join if you understand the routing
@@ -481,7 +481,7 @@ only one key for the batch.
 
 ### Custom subnet with Tailscale coexistence
 
-tetron defaults to `10.88.0.0/16` specifically to avoid Tailscale's
+tetron defaults to `10.88.0.0/24` specifically to avoid Tailscale's
 `100.64.0.0/10`. Both run side by side with no overlap:
 
 ```bash
@@ -491,7 +491,7 @@ ping 10.88.0.2                    # reach a tetron peer
 ping 100.x.x.x                    # reach a Tailscale peer
 ```
 
-If `10.88.0.0/16` is already in use on your LAN, pick another uncommon
+If `10.88.0.0/24` is already in use on your LAN, pick another uncommon
 slice:
 
 ```bash

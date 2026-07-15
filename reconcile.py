@@ -196,7 +196,7 @@ def check_test_harness_identity() -> dict:
 def check_test_subnet_identity() -> dict:
     """CON-012/SUBNET-015: the tests/ harness must not assume the pre-fork
     100.64.0.0/10 CGNAT range or the fixed 100.100.100.53 magic-DNS IP. The fork
-    defaults to 10.88.0.0/16 and derives the resolver at 10.88.100.53, so a stale
+    defaults to 10.88.0.0/24 and derives the resolver at 10.88.100.53, so a stale
     literal is FUNCTIONAL breakage: `own_ip`'s `grep` extracts nothing from a real
     10.88.x.x address, and the DNS test queries the wrong magic IP. Counts the two
     upstream literals; must be 0. (`grep_hardcoded_cgnat`/CON-002 covers src.)"""
