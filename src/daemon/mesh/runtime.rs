@@ -390,8 +390,9 @@ impl MeshManager {
             };
         }
 
-        // Resolve the argument to a roster member.
-        let candidate = match self.resolve_peer_name(peer).await {
+        // Resolve the argument to a roster member by endpoint id only (no
+        // hostname or IP resolution — kick requires a cryptographic identity).
+        let candidate = match self.resolve_short_id_any_network(peer) {
             Some(id) => id,
             None => {
                 return IpcMessage::Error {

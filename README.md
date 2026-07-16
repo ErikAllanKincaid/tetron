@@ -133,9 +133,9 @@ tetron has **no userspace firewall** — within a shared network every peer can 
 
 ### Naming peers
 
-Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`tetron status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). A hostname is set once at join (`--hostname`, collision-resolved by the coordinator) and is fixed after that, there is no rename command. Hostnames ride the signed roster, so `tetron kick <hostname>` continues to work.
+Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`tetron status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). A hostname is set once at join (`--hostname`, collision-resolved by the coordinator) and is fixed after that, there is no rename command.
 
-Note: `--hostname` is your node's name within the network, not the network's name. The network itself gets a random three-word name (or one you set with `--name` on `create`). You refer to networks by their name (`tetron leave <network-name>`, `tetron invite <network-name> create`) and peers by their hostname (`tetron kick <network-name> <hostname>`).
+Note: `--hostname` is your node's name within the network, not the network's name. The network itself gets a random three-word name (or one you set with `--name` on `create`). You refer to networks by their name (`tetron leave <network-name>`, `tetron invite <network-name> create`). `tetron kick` requires an endpoint id (short id from `tetron status`), not a hostname.
 
 ## Features
 

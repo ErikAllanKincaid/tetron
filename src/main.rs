@@ -99,7 +99,7 @@ pub(crate) enum Command {
     Kick {
         /// Network name
         network: String,
-        /// Member to remove: hostname, mesh IP, or short id
+        /// Endpoint id (short id from `tetron status`) of the member to kick
         peer: String,
     },
     /// Show status of all networks (active + saved)

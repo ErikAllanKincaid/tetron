@@ -115,6 +115,10 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 - **Reject overlapping subnets on create/join**: check all active networks before creating or joining. See `docs/SUBNET_COLLISION.md` for scenario analysis, solutions, and recommendation (Solution 1+2 with `--force` flag).
 - **Policy routing (deferred)**: per-network routing tables so identical subnets do not collide. Higher effort, correct long-term fix.
 
+## Hardening
+
+- **KICK-REQUIRES-ID: tetron kick requires endpoint-id only (no hostname/IP resolution)**: `tetron kick` currently accepts hostname, mesh IP, or short id (via `resolve_peer_name`). For a destructive action like kicking, the peer should be identified by its cryptographic identity only -- human-friendly names are ambiguous and a kick by the wrong name is disruptive. Change `kick_member` to call `resolve_short_id_any_network` directly instead of `resolve_peer_name`. Update CLI help text, docs/HOWTO.md, and README.md to show only the short-id form. `admin add` keeps the friendly resolution.
+
 ## High priority
 
 - **Reusable keys (--reusable)**: add `--reusable` flag to `tetron invite <net> create` -- adds hash to `GroupBlob.reusable_keys`, signs + republishes blob. Any coordinator validates against the blob.

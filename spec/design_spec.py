@@ -2008,3 +2008,33 @@ class AdminGrantRespawnsControlListener(Requirement):
     """
     req_id = "ADMIN-RECONNECT-CTRL"
 
+
+# --------------------------------------------------------------------------
+# KICK-REQUIRES-ID: kick requires endpoint-id, not hostname/IP
+# --------------------------------------------------------------------------
+
+class KickRequiresEndpointId(Requirement):
+    """REQUIREMENT-ID: KICK-REQUIRES-ID
+
+    `tetron kick <net> <peer>` must resolve the peer by its cryptographic
+    identity (endpoint id / short id) only. No hostname or mesh IP
+    resolution. The previous behavior accepted a hostname, mesh IP, or
+    short id via `resolve_peer_name`, which made it possible to kick the
+    wrong member if two peers shared a similar name or if the operator
+    misread a mesh IP.
+
+    Kicking is a destructive action (removes a member from the roster and
+    severs all connections). Using the endpoint id as the sole identifier
+    ensures the operator is explicitly naming the target by its
+    cryptographic identity, not by a human-friendly alias that could be
+    ambiguous.
+
+    Implementation: `kick_member` in `runtime.rs` calls
+    `resolve_short_id_any_network` directly instead of `resolve_peer_name`.
+    The `resolve_peer_name` helper is unchanged and still used by `admin
+    add`, where friendly hostname resolution is appropriate.
+
+    Doc updates: CLI help text, HOWTO.md, and README.md updated to show
+    short-id-only form.
+    """
+    req_id = "KICK-REQUIRES-ID"

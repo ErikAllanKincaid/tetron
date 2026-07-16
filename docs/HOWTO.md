@@ -278,9 +278,8 @@ need to be online.
 ### Kick a member
 
 ```bash
-tetron kick mynetwork bob       # by hostname
-tetron kick mynetwork 10.88.0.5 # by mesh IP
-tetron kick mynetwork a1b2      # by short endpoint id prefix
+tetron kick mynetwork a1b2c3d4e5  # by short endpoint id (from `tetron status`)
+tetron kick mynetwork a1b2         # or a prefix of it
 ```
 
 The kicked member is removed from the roster and disconnected. They
