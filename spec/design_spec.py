@@ -2038,3 +2038,71 @@ class KickRequiresEndpointId(Requirement):
     short-id-only form.
     """
     req_id = "KICK-REQUIRES-ID"
+
+
+# --------------------------------------------------------------------------
+# NUKE-CONSENSUS: require at least two coordinators to nuke a network
+# --------------------------------------------------------------------------
+
+class NukeRequiresConsensus(Requirement):
+    """REQUIREMENT-ID: NUKE-CONSENSUS
+
+    Currently `tetron nuke <net>` can be run by any single coordinator and
+    immediately publishes an empty DHT record (poisoning the pkarr record)
+    and calls `leave_network`. This means a single compromised or reckless
+    coordinator can destroy the network irrecoverably.
+
+    Require at least two coordinators to approve a nuke, **unless there is
+    only one coordinator** in the network. A solo coordinator has no one to
+    second and retains the current unilateral nuke behavior.
+
+    Detection: count coordinators from the signed roster
+    (`Member.is_coordinator == true`). If total coordinators >= 2, the nuke
+    is a two-phase proposal; if exactly 1, the nuke proceeds immediately
+    (current behavior).
+
+    Two-phase flow (coordinators >= 2):
+
+    1. Add a `nuke_proposals: BTreeMap<String, u64>` field to `GroupBlob`
+       (keyed by coordinator identity hex via `EndpointId::fmt_short()`,
+       value = Unix timestamp of the proposal). `#[serde(default)]` so old
+       blobs without the field are backward-compatible.
+
+    2. `tetron nuke <net>` on a coordinator adds the coordinator's own entry
+       to `nuke_proposals` and republishes the blob (does NOT publish the
+       empty DHT record yet). The coordinator announces the proposal via the
+       existing `MemberSync` broadcast so other coordinators reconverge
+       quickly.
+
+    3. Other coordinators see the proposal on reconverge. To second, they
+       run `tetron nuke <net>` (same command -- the daemon checks if a
+       proposal from another coordinator already exists and seconds it).
+       A dedicated `tetron nuke <net> --second <proposer-id>` subcommand
+       allows seconding by short-id when the roster has >2 coordinators.
+
+    4. Any coordinator processing a blob with >= 2 unique proposer identities
+       in `nuke_proposals` executes the actual nuke:
+       - Publish empty DHT record (existing code at `runtime.rs:318-330`)
+       - Call `leave_network` (existing code at `runtime.rs:333`)
+       - Optionally broadcast `NukeNow` control message so connected peers
+         learn immediately rather than waiting for the 60s group poller.
+
+    5. Proposals should auto-expire (e.g., ttl 24h) to prevent stale
+       proposals from blocking future nuke attempts. A coordinator can also
+       cancel their own proposal with `tetron nuke --cancel`.
+
+    6. Edge case: if the proposing coordinator goes offline before a second
+       is obtained, another coordinator can second by referring to the
+       proposal in the blob. The proposal persists in the blob for its TTL.
+
+    7. `tetron status` should expose pending nuke proposals so members know
+       a nuke is being considered.
+
+    Found: 2026-07-16, during multi-coordinator audit. Race C (no coordinator
+    revocation) makes nuke the only way to remove a compromised coordinator.
+    Requiring consensus prevents a single key holder from destroying the
+    network, while the solo-coordinator exception avoids locking out networks
+    that have never promoted a co-coordinator.
+    """
+    req_id = "NUKE-CONSENSUS"
+
