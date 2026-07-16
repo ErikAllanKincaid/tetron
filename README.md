@@ -59,19 +59,19 @@ Tailscale keeps working throughout -- tetron's default `10.88.0.0/24` does not o
 
 Upstream rayfish hardcodes its overlay IPv4 range to `100.64.0.0/10` (the CGNAT range) and refuses to start if another interface already holds an address there. That is exactly the range **Tailscale** uses, so stock rayfish and Tailscale cannot run on the same host. tetron makes the overlay subnet configurable and defaults it to a range that coexists with Tailscale, so both meshes run side by side.
 
-The fork takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic can never be confused with, or bind the same ports as, genuine rayfish on the same host. Multiple subsystems from upstream have been removed — userspace firewall, Magic DNS, file sharing, device pairing, hostname rename, the declarative apply layer, self-update, and more — because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method. The "tetron" name was chosen as a short, distinctive derivative of the *Tetronarce californica* electric ray.
+The fork takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic can never be confused with, or bind the same ports as, rayfish on the same host. Multiple subsystems from upstream have been removed — userspace firewall, Magic DNS, file sharing, device pairing, hostname rename, the declarative apply layer, self-update, and more — because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method. The "tetron" name was chosen as a short, distinctive derivative of the *Tetronarce californica* electric ray.
 
 ### Using a custom subnet
 
-If `10.88.0.0/24` collides with a network you already use, pick another. The node builds its single TUN device at daemon start, so set the subnet **before** it is in use and restart:
+If `10.88.0.0/24` collides with a network you already use, pick another. Set the subnet before creating or joining and restart the daemon:
 
 ```bash
-tetron config set subnet 10.77.0.0/24   # node-wide; applies on restart
+tetron config set subnet 10.99.0.0/24   # node-wide; applies on restart
 sudo tetron restart
-tetron create --hostname alice          # the network uses your node subnet
+tetron create --hostname alice          # the network uses your node's subnet
 ```
 
-Do the `config set subnet` + `restart` on **every** node before it creates or joins, so all nodes share one subnet. `tetron create --subnet <cidr>` records the subnet but only applies it to the live TUN at the next restart -- it prints a reminder to run `sudo tetron restart`, so `config set subnet` + `restart` first is the reliable path. If a requested subnet disagrees with the one the node is already on, or overlaps a real local network, tetron refuses and tells you to pick another instead of silently breaking your routing.
+The subnet is per-node, so every node must agree before they can mesh. A mismatch is caught at join time with a clear error. If a subnet overlaps a real local network, tetron refuses at daemon start to avoid breaking your routing.
 
 ## How it works
 
@@ -86,42 +86,41 @@ Each machine runs the `tetron` daemon, which creates a TUN device, captures IP p
 
 By default only the node that ran `tetron create` holds the network key. That machine is a **single point of failure**: if it is asleep or offline, no other node can admit new joiners, mint invites, or kick departed members. Every trusted member of the network should be made a **co-coordinator** by granting them a copy of the network key.
 
-The command is `tetron admin <network> add <short-id>`:
+The command is `tetron admin <network> add <identity>`, where identity can be
+a member's hostname, mesh IP, or short id (from `tetron status`):
 
 ```bash
-# 1. On the coordinator, get the member's short id from JSON status:
-tetron status --json
-#    Find the member by hostname, then take the first 10 hex chars of their
-#    "endpoint_id".  Example:
-#      "hostname": "usbos-1",
-#      "endpoint_id": "c3f8a1057f38dd05..."  →  short id = c3f8a1057f
+# 1. Find the member you want to promote in `tetron status`:
+tetron status
 
-# 2. Grant them the network key:
-tetron admin shallows add c3f8a1057f
+# 2. Grant them the network key (by hostname, mesh IP, or short id):
+tetron admin mynet add bob
 #    Sample output:
-#     added c3f8a1057f as a coordinator of shallows
+#     granted network key to bob on mynet
 
 # 3. The new co-coordinator receives the key over the authenticated mesh
 #    connection (no manual copy needed). After a few seconds `tetron status`
-#    on their machine shows them as a coordinator (look for the crown or
-#    "(coordinator)" annotation on the `tetron <network>` row).
+#    on their machine shows `coordinator` as their role.
 ```
 
-The new co-coordinator can then mint invites, admit joiners, and kick members just like the original coordinator. Run this for **every** fully trusted member so the network stays operational even when any one machine is offline. The short id is the same one shown in `tetron status` for each peer -- hostname is NOT accepted here, unlike other commands.
+The new co-coordinator can then mint invites, admit joiners, and kick members
+just like the original coordinator. Run this for **every** fully trusted
+member so the network stays operational even when any one machine is offline.
 
 To see who currently holds the network key:
 
 ```bash
-tetron admin shallows list
-#    (c)  c3f8a1057f  usbos-1  10.77.0.205
-#    (c)  bd21f97f19  sneak    10.77.0.185
+tetron admin mynet list
+#    (c)  a1b2c3d4e5  alice  10.88.0.1
+#    (c)  f6e7d8c9b0  bob    10.88.0.2
 ```
 
-Each row marked `(c)` is a co-coordinator. The original creator is always a coordinator.
+Each row marked `(c)` is a co-coordinator. The original creator is always
+a coordinator.
 
 ### Who can join
 
-The **room id** (network public key) is a discovery key, never an admission credential. tetron networks are **invite-only** — the only way in is with an invite key:
+The tetron networks are **invite-only**. The only way in is with an invite key:
 
 - A coordinator mints **single-use invite keys** with `tetron invite <network> create`. The joiner redeems the key with `tetron join <invite-key> --hostname bob`. The invite is validated against the signed blob, so any online coordinator can admit the joiner.
 - `tetron create` auto-mints the first invite key and prints it in its output, so you can share immediate access.
@@ -130,17 +129,13 @@ The **room id** (network public key) is a discovery key, never an admission cred
 
 Joining with a bare room id is not supported (tetron removed live approval).
 
-tetron has **no userspace firewall** (MINIMAL-010): within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `tetron` TUN interface -- e.g. `nft add rule inet filter input iifname "tetron" tcp dport != 22 drop`.
+tetron has **no userspace firewall** — within a shared network every peer can reach every port a local service binds. Mesh membership still gates *who* can connect, but restricting *which ports* is the host firewall's job (nftables/ufw) on the `tetron` TUN interface -- e.g. `nft add rule inet filter input iifname "tetron" tcp dport != 22 drop`.
 
-### Naming peers (Magic DNS removed)
+### Naming peers
 
-tetron removed Magic DNS and all OS DNS mutation (MINIMAL-012), so the daemon never touches `/etc/resolv.conf`, systemd-resolved, or NetworkManager. Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`tetron status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). A hostname is set once at join (`--hostname`, collision-resolved by the coordinator) and is fixed after that -- MINIMAL-014 removed `tetron hostname` rename; hostnames still ride the signed roster, so `tetron kick <hostname>` continues to work.
+Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`tetron status --json` for scripting). If you want names, add the IPs to `/etc/hosts` (or generate it from `status --json`). A hostname is set once at join (`--hostname`, collision-resolved by the coordinator) and is fixed after that, there is no rename command. Hostnames ride the signed roster, so `tetron kick <hostname>` continues to work.
 
 Note: `--hostname` is your node's name within the network, not the network's name. The network itself gets a random three-word name (or one you set with `--name` on `create`). You refer to networks by their name (`tetron leave <network-name>`, `tetron invite <network-name> create`) and peers by their hostname (`tetron kick <network-name> <hostname>`).
-
-## Development
-
-Developed with [Specification-driven development](https://en.wikipedia.org/wiki/Specification-driven_development) using [libspec](https://github.com/drhodes/libspec) a Specification Management System.
 
 ## Features
 
@@ -199,18 +194,22 @@ just cross                      # build for x86_64 Linux
 just deploy <ip>                # cross-build release + install + start on a remote host
 ```
 
-tetron currently targets **Linux**. (The macOS and Android paths inherited from rayfish still assume the old range and identity; deferred, tracked as SUBNET-013 in `spec/design_spec.py`.)
+tetron currently targets **Linux** only. (macOS and Android support is deferred.)
 
 ## Uninstall
 
 ```bash
 sudo systemctl stop tetron              # stop the daemon                                                      
-sudo tetron nuke testnet                # tear down the test network first                                
+sudo tetron nuke <network-name>         # tear down each network first                                
 sudo systemctl disable tetron           # disable auto-start                                                   
 sudo rm -rf /etc/tetron/                # wipe config + identity (backup if needed)                            
 sudo rm /etc/systemd/system/tetron.service                                                                 
 sudo systemctl daemon-reload    
 ```
+
+## Development
+
+Developed with [Specification-driven development](https://en.wikipedia.org/wiki/Specification-driven_development) using [libspec](https://github.com/drhodes/libspec), a specification management system. Each requirement is a documented class in `spec/design_spec.py`; the `reconcile.py` gate enforces automatable constraints. Commits are recorded with `libspec link` so the spec keeps a complete history alongside the code.
 
 ## Background and further reading
 

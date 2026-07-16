@@ -1094,8 +1094,8 @@ class SubnetMismatchOnJoin(Requirement):
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
-# This repository is tetron, a stripped-down P2P mesh VPN. See PROPOSAL.md
-# for the rationale and design decisions, PLAN.md for the commit-by-commit
+# This repository is tetron, a stripped-down P2P mesh VPN. See docs/PROPOSAL.md
+# for the rationale and design decisions, docs/PLAN.md for the commit-by-commit
 # execution order. Inherited SUBNET-*/RENAME-*/CON-* specs above remain
 # valid until a MINIMAL removal commit retires them explicitly. New
 # constraints use the CON-M* namespace so future full-torpedo CON-0xx
@@ -1116,7 +1116,7 @@ class MinimalIntent(UserStory):
     one -> join from the other -> approve the join -> reach the peer by its
     mesh IP from `torpedo status` -> filter traffic with nftables on the TUN
     interface if desired.
-    Acceptance: the CLI exposes exactly the surface in PROPOSAL.md; the main
+    Acceptance: the CLI exposes exactly the surface in docs/PROPOSAL.md; the main
     crate is roughly 15k lines; a tetron node and a full torpedo node
     interoperate on one network; the trimmed e2e harness is green.
     """

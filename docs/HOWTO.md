@@ -26,7 +26,9 @@ install it:
 
 ```bash
 # Download the release binary for x86_64 Linux
-curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-x86_64-unknown-linux-gnu
+curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
+# OR
+wget -O tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 
@@ -76,7 +78,7 @@ tetron create --hostname alice --expires never
 different subnet node-wide before creating:
 
 ```bash
-tetron config set subnet 10.77.0.0/16
+tetron config set subnet 10.77.0.0/24
 sudo tetron restart
 tetron create --hostname alice
 ```
@@ -155,12 +157,13 @@ appending `-1`, `-2`, etc. if the name is already taken.
 tetron status    # shows your assigned hostname
 ```
 
-**Joining by room id (deprecated, only works with full-tetron
-coordinators that still use live approval):**
+**Bare room-id join is not supported.** tetron is invite-only (LIVE-001).
+A bare room id (network public key) is discovery-only — it is never an
+admission credential.
 
 ```bash
 tetron join <room-id> --hostname bob
-# Error: "this network uses live approval, which tetron does not support"
+# Error: "a valid invite key is required to join"
 ```
 
 If you only have a room id, ask a coordinator for an invite key.

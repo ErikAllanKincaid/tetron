@@ -90,9 +90,11 @@ pub(crate) async fn ipc_join(
     } else {
         None
     };
-    // `tetron join <arg>` accepts either a bare room id (the network public key) or
-    // a self-contained invite code. An invite decodes to the network key plus the
-    // coordinator to dial and a one-time secret to present.
+    // `tetron join <arg>` accepts a self-contained invite code that decodes to the
+    // network pubkey plus a one-time secret. A bare room id (raw network public key)
+    // is still parsed for backward compat but the daemon will deny it (tetron is
+    // invite-only — LIVE-001 removed live approval). The daemon side rejects bare
+    // room-id joins with "a valid invite key is required".
     let (network_key, invite) = match invite::decode_invite_code(network_key) {
         Ok((net_pubkey, secret)) => (net_pubkey.to_string(), Some(secret)),
         Err(_) => (network_key.to_string(), None),

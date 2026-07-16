@@ -6,7 +6,7 @@ Cherry-pick channel: `origin` points at the local full-torpedo repository. `git 
 
 ## Phase 0: project scaffolding (this commit)
 
-- PROPOSAL.md, PLAN.md, MINIMAL-* / CON-M* spec classes appended to spec/design_spec.py, AGENTS.md variant banner.
+- `docs/PROPOSAL.md`, this document (`docs/PLAN.md`), MINIMAL-* / CON-M* spec classes appended to `spec/design_spec.py`, AGENTS.md variant banner.
 - `libspec link` the commit: the ledger continues torpedo's history, so inherited SUBNET/RENAME/CON components stay tracked.
 
 ## Phase 1: independent leaves
@@ -63,7 +63,7 @@ Order is free; each is self-contained and low risk. All are pure deletions plus 
 ## Phase 7: verification -- DONE
 
 - Trimmed e2e harness green: create/approve/join/traffic/kick/leave between two tetron nodes.
-- Line-count and dependency audit against the success criteria in PROPOSAL.md.
+- Line-count and dependency audit against the success criteria in `docs/PROPOSAL.md`.
 
 ## Post-MINIMAL work (on demand, in progress)
 

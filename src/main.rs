@@ -66,9 +66,9 @@ pub(crate) enum Command {
         #[arg(long)]
         tor: bool,
     },
-    /// Join an existing network using its room id or an invite code
+    /// Join an existing network using an invite code (bare room id is denied — tetron is invite-only)
     Join {
-        /// The network public key (room id) or a one-time invite code
+        /// A one-time invite code (tetron join <room-id> is denied)
         network_key: String,
         /// Optional local alias for the network
         #[arg(long)]

@@ -20,10 +20,9 @@ Identity (Ed25519 key) -> signed pkarr record -> signed GroupBlob roster -> iroh
 The complete CLI surface:
 
 ```
-tetron create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # closed network, prints room id
-tetron join <room-id-or-invite> [--name alias] [--hostname h] [--tor]
+tetron create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # invite-only, prints room id + invite key
+tetron join <invite-code> [--hostname h] [--tor]  # bare room id denied — tetron is invite-only
 tetron leave <net>  |  nuke <net>
-tetron requests <net>  |  accept <net> <id>  |  deny <net> <id>
 tetron admin <net> add <id> | list
 tetron kick <net> <peer>
 tetron status [--json]
@@ -59,7 +58,7 @@ Kept internals: identity, transport (fixed port 43737, relays, pkarr discovery),
 
 **D1 (RETIRED by RENAME-M02): full product rename.** tetron is no longer wire-compatible with full torpedo. The ALPN prefix changed from `torpedo/net/...` to `tetron/net/...`, so the two meshes cannot interoperate — they negotiate different ALPNs at the QUIC handshake and never connect. The binary, service unit, config/log/socket paths, and all user-facing identity were renamed from `torpedo` to `tetron`. A brief attribution note in the README and the upstream author field in Cargo.toml are the only remaining references to the project's lineage. The `GroupBlob` schema still retains its `suggested_firewall` and `reusable_keys` fields for schema stability, but they are inert in tetron.
 
-**D2: Admission is closed-plus-approval only.** `tetron create` always makes a Restricted network; `--open` is gone. Joining is: dial the room id, land in the pending queue, coordinator runs `tetron accept`. Invite minting, the invite ledger, invite gossip, and reusable-key minting are removed. `admin add` (co-coordinator grant) is kept: it is small and is the availability story for admission.
+**D2: Admission is invite-only.** `tetron create` always makes a Restricted network; `--open` is gone. A bare room-id join is always denied — the only way in is an invite key minted by a coordinator. Invites ride the signed GroupBlob (BLOB-001); any coordinator validates. `admin add` (co-coordinator grant) is kept: any key holder can mint invites, eliminating the single-point-of-failure for admission.
 
 **D3: No host mutation beyond the TUN device and routes.** Removing the DNS stack removes the resolv.conf takeover, NetworkManager drop-ins, and the panic-hook DNS restore. The daemon's host footprint becomes: TUN device, routes, config dir, log dir, unix socket.
 

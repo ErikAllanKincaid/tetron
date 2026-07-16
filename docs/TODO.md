@@ -108,6 +108,8 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 
 - **`tetron join --name` rename to `--local-nickname`**: the current `--name` flag on join is a local-only alias, but `--name` on create sets the published network name. Same flag, different scopes, confusing. Rename to `--local-nickname` on join, keep `--name` on create.
 
+- **`tetron hostname` rename command**: see `docs/DECISIONS.md` section 6 for feasibility analysis. The kick+rejoin workaround is not a real substitute (requires coordinator to mint invite, connectivity interruption). Simplified design (~110 lines) needs: (a) IpcMessage::SetHostname variant, (b) MeshManager::set_hostname handler that updates config + sends MeshHello to coordinators, (c) re-add hostname processing in coordinator control reader (30 lines, deleted by MINIMAL-014, available in git history), (d) CLI command. Deferred pending user demand.
+
 ## Subnet collision
 
 - **Reject overlapping subnets on create/join**: check all active networks before creating or joining. See `docs/SUBNET_COLLISION.md` for scenario analysis, solutions, and recommendation (Solution 1+2 with `--force` flag).
@@ -116,6 +118,55 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 ## High priority
 
 - **Reusable keys (--reusable)**: add `--reusable` flag to `tetron invite <net> create` -- adds hash to `GroupBlob.reusable_keys`, signs + republishes blob. Any coordinator validates against the blob.
+
+## Docs cleanup (deferred — do once the application works)
+
+A full docs sanitization pass is needed before public release. The current docs
+were written during development and contain internal details that should not be
+in the final public docs. Specific items:
+
+1. **Real hostnames**: replace `590I-AORUS-ULTRA`, `xps-17-9720`, `xps-17`,
+   `usbos-1`, `SB-OS`, `AORUS` with generic names like `node-a`, `node-b`,
+   `coordinator`, `member`.
+
+2. **Real IPs / subnet values**: testing used `10.77.0.0/24`, `10.88.169.205`,
+   etc. Replace with example addresses (`10.88.0.1`, `10.88.0.2`) or the
+   `SUBNET_COLLISION.md` examples.
+
+3. **Real network names**: `"shallows"`, `"testnet"`, `"multicoord"` are
+   testing artifacts. Use `"mynetwork"` or `"example"` in user-facing docs.
+
+4. **Commit SHAs**: `docs/TODO.md` and `CHANGELOG.md` reference specific SHAs
+   (`79375be`, `aa5715e`, etc.). These are development history. For users,
+   replace with feature names or version numbers. For internal dev docs, they
+   can stay.
+
+5. **Libspec class names / requirement IDs**: `BLOB-001`, `COORD-001`,
+   `LIVE-001`, `CACHE-001`, `FRAG-001`, `SUBNET-BUG-001`, `NUKE-CONSENSUS`
+   are internal tracking labels. User-facing docs should not reference them.
+
+6. **Real-world incident details**: "SSH key exchange stalled on 'shallows'",
+   "found 2026-07-15 while testing co-coordinator promotion on network
+   'shallows'" — these are bug-hunting notes. Public docs should not contain
+   them.
+
+7. **Outdated feature references**: any remaining mentions of `torpedo`,
+   `rayfish`, removed features (firewall, Magic DNS, SSH, etc.) in docs that
+   are supposed to describe current tetron.
+
+8. **docs/ that are dev-internal**: `DECISIONS.md`, `IDEAS_LaptopFleet.md`,
+   `SUBNET_COLLISION.md`, `PRIVILEGE_TIERS.md` — decide which are internal
+   dev notes (maybe move to a `docs/internal/` subdirectory or delete before
+   publishing).
+
+9. **`.claude/` references**: `MEMORY.md`, `MEMORY/MEMORY_tetron.md`,
+   `TODO/TODO_tetron.md` contain the same real hostnames, IPs, and SHAs.
+   These stay local (gitignored) but should still be cleaned up if shared.
+
+**Rule of thumb for the cleanup pass:** every file that a new user would read
+(README, HOWTO, TESTING, AGENTS.md, CHANGELOG, man page) should have zero
+development-environment fingerprints. Every file that is internal (spec,
+.debriefs, design docs) can keep them.
 
 ## Bugs
 
