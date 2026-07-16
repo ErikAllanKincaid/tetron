@@ -110,6 +110,8 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 
 - **`tetron hostname` rename command**: see `docs/DECISIONS.md` section 6 for feasibility analysis. The kick+rejoin workaround is not a real substitute (requires coordinator to mint invite, connectivity interruption). Simplified design (~110 lines) needs: (a) IpcMessage::SetHostname variant, (b) MeshManager::set_hostname handler that updates config + sends MeshHello to coordinators, (c) re-add hostname processing in coordinator control reader (30 lines, deleted by MINIMAL-014, available in git history), (d) CLI command. Deferred pending user demand.
 
+- **`tetron leave` accept network key as well as name**: users may only have the invite key or room id handy when uninstalling. Add a resolution helper: try exact name match first, then scan all known networks for a public-key prefix match against the per-network keys in config. Update uninstall docs to show the key form.
+
 ## Subnet collision
 
 - **Reject overlapping subnets on create/join**: check all active networks before creating or joining. See `docs/SUBNET_COLLISION.md` for scenario analysis, solutions, and recommendation (Solution 1+2 with `--force` flag).

@@ -1073,20 +1073,28 @@ class SubnetMismatchOnJoin(Requirement):
     This silently breaks the data plane (no ping, no TCP) with no error
     logged anywhere.
 
-    Fix (choose one):
-    (a) Reject the join with a clear error message telling the user to run
-        `tetron config set subnet <network-subnet> && sudo tetron restart`.
-    (b) Auto-adopt: update the node's local subnet on join to match the
-        network's subnet, log a warning.
-    (c) Per-network TUN devices or policy routing (the correct long-term
-        fix, documented in SUBNET_COLLISION.md as deferred).
+    Fix: reject the join in `join_network_inner` with a clear error
+    message when the network's subnet (from `GroupBlob.subnet`) differs
+    from the node's local subnet (`config::node_subnet()`). The error
+    tells the user to run `sudo tetron config set subnet <network-cidr>
+    && sudo tetron restart` and try again before joining. This matches
+    the pattern already used by `tetron create --subnet` which rejects a
+    `--subnet` that disagrees with the persisted node subnet (lines
+    260-264 in create_join.rs).
 
-    (a) is the simplest and least surprising: the subnet is a node-wide
-    property tied to the TUN device, and joining a network with a different
-    subnet should fail fast rather than silently misroute.
+    The existing persist-on-join code in `finalize_join` (lines 1199-1204
+    in create_join.rs) that calls `config::set_node_subnet(joined_subnet)`
+    is retained: when subnets already match, it redundantly persists the
+    value, ensuring the next restart rebuilds the TUN in the correct
+    subnet even if config was somehow reset.
+
+    (Per-network TUN devices or policy routing — option (c) — is the
+    correct long-term fix and is documented in SUBNET_COLLISION.md as
+    deferred.)
 
     Found: 2026-07-15, network "shallows" with AORUS (10.77.0.0/24) and
-    usbos-1 (10.88.0.0/16).
+    usbos-1 (10.88.0.0/16). Tested: 2026-07-16, network "test-tetronnet"
+    with 590i-aorus-ultra, xps-17-9720, X10SRA, xeon40 (10.55.55.0/24).
     """
     req_id = "SUBNET-BUG-001"
 

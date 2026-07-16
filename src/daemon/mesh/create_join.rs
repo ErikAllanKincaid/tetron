@@ -478,6 +478,25 @@ impl MeshManager {
             anyhow::bail!("already in network '{display_name}'");
         }
 
+        // Fail fast if the network's subnet differs from the node's configured
+        // subnet — joining would create a TUN with the wrong IP, silently
+        // breaking the data plane (SUBNET-BUG-001).
+        let network_subnet = crate::membership::resolve_subnet(data.subnet);
+        let node_subnet = config::node_subnet();
+        if network_subnet != node_subnet {
+            anyhow::bail!(
+                "node subnet is {}/{} but network '{display_name}' uses {}/{}; \
+                 run `sudo tetron config set subnet {}/{} && sudo tetron restart` \
+                 and try joining again",
+                node_subnet.0,
+                node_subnet.1,
+                network_subnet.0,
+                network_subnet.1,
+                network_subnet.0,
+                network_subnet.1,
+            );
+        }
+
         let my_hostname = match hostname {
             Some(h) => {
                 anyhow::ensure!(
