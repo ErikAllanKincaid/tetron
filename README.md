@@ -198,14 +198,22 @@ tetron currently targets **Linux** only. (macOS and Android support is deferred.
 
 ## Uninstall
 
+Just remove tetron from this machine. If you want to gracefully leave
+your networks first (so the coordinator can prune you), do `tetron leave
+<network-name>` before stopping the daemon.
+
 ```bash
-sudo systemctl stop tetron              # stop the daemon                                                      
-sudo tetron nuke <network-name>         # tear down each network first                                
-sudo systemctl disable tetron           # disable auto-start                                                   
-sudo rm -rf /etc/tetron/                # wipe config + identity (backup if needed)                            
-sudo rm /etc/systemd/system/tetron.service                                                                 
-sudo systemctl daemon-reload    
+tetron leave <network-name>       # optional: depart gracefully first
+sudo systemctl stop tetron        # stop the daemon
+sudo systemctl disable tetron     # disable auto-start
+sudo rm -rf /etc/tetron/          # wipe config + identity (backup if needed)
+sudo rm /etc/systemd/system/tetron.service
+sudo systemctl daemon-reload
 ```
+
+Do not run `sudo tetron nuke <network-name>` when uninstalling -- that
+destroys the network for everyone, not just your machine. Nuke is for
+permanently removing a network, not for uninstalling the client.
 
 ## Development
 
