@@ -1143,8 +1143,12 @@ class CoCoordinatorPublishRace(Requirement):
 
     This prevents the 300s timer from ever overwriting a newer blob. When
     the original coordinator's timer fires but the DHT hash differs from
-    `last_published_hash`, the publisher skips the cycle and the group
-    poller reconciles the in-memory state with the DHT's blob.
+    `last_published_hash`, the publisher skips the cycle.
+
+    The coordinator MUST also run a group poller (spawned in
+    `spawn_coordinator_background_tasks`) to discover blob updates from
+    co-coordinators. Without it, the coordinator's in-memory state is
+    permanently stale if only co-coordinators publish changes.
 
     Found: 2026-07-16, e2e test with aorus (original coordinator) and
     xps-17-9720 (co-coordinator) on network "test-tetronnet"

@@ -105,6 +105,22 @@ impl MeshManager {
             ));
         }
 
+        // Group poller: discover blob updates published by co-coordinators.
+        // Without this, the coordinator never learns about changes it did not
+        // originate itself (CONVERGE-001 follow-up).
+        let net_pubkey = net_secret_key.public();
+        if let Ok(poller_client) = dht::create_pkarr_client(&self.endpoint) {
+            tasks.push(spawn_group_poller(
+                poller_client,
+                net_pubkey,
+                state.clone(),
+                self.endpoint.clone(),
+                self.mesh_ctx(),
+                name.to_string(),
+                cancel.clone(),
+            ));
+        }
+
         // Disconnect handler (coordinator removes dead peers, republishes blob)
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
         tasks.push(spawn_peer_cleanup(
