@@ -132,8 +132,10 @@ pub(crate) async fn update_snapshot_and_publish(
         s.refresh_snapshot();
         s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
     };
-    if let Some(bytes) = snap_bytes {
-        let _ = blob_store.blobs().add_slice(&bytes).await;
+    if let Some(bytes) = snap_bytes
+        && let Err(e) = blob_store.blobs().add_slice(&bytes).await
+    {
+        tracing::error!(error = %e, "update_snapshot_and_publish: add_slice failed");
     }
     if let Some(notify) = dht_notify {
         notify.notify_one();
@@ -155,8 +157,10 @@ impl MeshManager {
                 s.snapshot.as_ref().map(|x| x.msgpack_bytes.clone()),
             )
         };
-        if let Some(bytes) = snap_bytes {
-            let _ = self.blob_store.blobs().add_slice(&bytes).await;
+        if let Some(bytes) = snap_bytes
+            && let Err(e) = self.blob_store.blobs().add_slice(&bytes).await
+        {
+            tracing::error!(error = %e, "store_and_publish_group: add_slice failed");
         }
         if let (Some(hash), Some(key)) = (hash, net_key)
             && let Ok(client) = dht::create_pkarr_client(&self.endpoint)

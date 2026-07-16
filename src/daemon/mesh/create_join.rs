@@ -50,8 +50,10 @@ impl MeshManager {
         net_secret_key: &SecretKey,
     ) {
         net_state.refresh_snapshot();
-        if let Some(snap) = &net_state.snapshot {
-            let _ = self.blob_store.blobs().add_slice(&snap.msgpack_bytes).await;
+        if let Some(snap) = &net_state.snapshot
+            && let Err(e) = self.blob_store.blobs().add_slice(&snap.msgpack_bytes).await
+        {
+            tracing::error!(error = %e, "seal_and_publish: add_slice failed");
         }
         if let Ok(pkarr_client) = dht::create_pkarr_client(&self.endpoint) {
             let blob_hash = net_state

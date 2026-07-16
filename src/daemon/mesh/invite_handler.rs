@@ -10,7 +10,7 @@ impl MeshManager {
     ///
     /// `expires` is an optional human-readable duration ("24h", "7d", "30m").
     /// If absent the invite never expires.
-    pub(crate) fn invite_create(
+    pub(crate) async fn invite_create(
         &self,
         network: &str,
         expires: Option<&str>,
@@ -47,7 +47,7 @@ impl MeshManager {
         let now = now_secs();
         let (key, entry) = crate::membership::InviteEntry::from_secret(&secret, now, ttl_secs);
 
-        {
+        let snap_bytes = {
             let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
                     message: format!("network '{network}' not active"),
@@ -56,6 +56,17 @@ impl MeshManager {
             let mut s = handle.state.write().unwrap();
             s.invites.insert(key, entry);
             s.refresh_snapshot();
+            s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
+        };
+
+        // Persist the updated blob bytes in the store so peers can fetch by hash.
+        if let Some(ref bytes) = snap_bytes
+            && let Err(e) = self.blob_store.blobs().add_slice(bytes).await
+        {
+            tracing::error!(error = %e, "invite_create: add_slice failed");
+            return IpcMessage::Error {
+                message: format!("failed to persist invite blob: {e}"),
+            };
         }
 
         // Pulse the background publisher to sign + publish the updated blob.
@@ -105,12 +116,12 @@ impl MeshManager {
     }
 
     /// Coordinator-only: revoke (mark as revoked) an invite by its short id.
-    pub(crate) fn invite_revoke(&self, network: &str, invite_id: &str) -> IpcMessage {
+    pub(crate) async fn invite_revoke(&self, network: &str, invite_id: &str) -> IpcMessage {
         if let Err(e) = self.coordinator_handle(network) {
             return e;
         }
 
-        let dht_notify = {
+        let (dht_notify, snap_bytes) = {
             let Some(handle) = self.networks.get(network) else {
                 return IpcMessage::Error {
                     message: format!("network '{network}' not active"),
@@ -123,8 +134,21 @@ impl MeshManager {
                 };
             }
             s.refresh_snapshot();
-            handle.dht_notify.clone()
+            (
+                handle.dht_notify.clone(),
+                s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone()),
+            )
         };
+
+        // Persist the updated blob bytes in the store so peers can fetch by hash.
+        if let Some(ref bytes) = snap_bytes
+            && let Err(e) = self.blob_store.blobs().add_slice(bytes).await
+        {
+            tracing::error!(error = %e, "invite_revoke: add_slice failed");
+            return IpcMessage::Error {
+                message: format!("failed to persist revoked blob: {e}"),
+            };
+        }
 
         // Pulse the background publisher so the revoked entry is signed + published.
         if let Some(ref notify) = dht_notify {

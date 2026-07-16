@@ -706,13 +706,13 @@ impl MeshManager {
             IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
             IpcMessage::InviteCreate { network, expires } => {
-                self.invite_create(&network, expires.as_deref())
+                self.invite_create(&network, expires.as_deref()).await
             }
             IpcMessage::InviteList { network } => self.invite_list(&network),
             IpcMessage::InviteRevoke {
                 network,
                 invite_id,
-            } => self.invite_revoke(&network, &invite_id),
+            } => self.invite_revoke(&network, &invite_id).await,
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },
