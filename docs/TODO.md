@@ -2,14 +2,15 @@
 
 ## Recently completed
 
+- **CONVERGE-001 FIXED**: read-before-write DHT guard prevents co-coordinator publish race. `spawn_network_publisher` and `spawn_lazy_publisher` now resolve DHT before publishing and skip when another coordinator published a newer blob. Group poller reconciles within 60s.
+- **SUBNET-BUG-001 FIXED**: Join with mismatched subnet now rejects with clear error. Verified e2e across 4 nodes. Commit fa29ef9.
+- **E2E test session 2026-07-16**: tested SUBNET-BUG-001, co-coordinator admission flow. Found CONVERGE-001 (publish race) and CONVERGE-002 (stale DHT restore). Full log at `docs/TEST_LOG-2026-07-16.md`.
+- **TEST_PROCEDURE.md updated**: added Phase 0.5 (stale TUN check), Phase 1c (TUN cleanup), Phase 2 (SUBNET-BUG-001 test), Phase 3 (TUN consistency check).
 - **Invite in blob (BLOB-001)**: invites now ride in signed `GroupBlob` (keyed by blake3(secret)). Any network-key holder can mint/list/revoke. Invite code drops coordinator (48 B vs 80 B). Validation against blob, removal on admission. DHT-notify-driven immediate republish. Committed at 79375be.
 - **Peer address cache (CACHE-001)**: persistent cache at `<config_dir>/peercache.msgpack`. Solves all-offline reconnection. Committed at aa5715e.
-- **Default subnet /16 -> /24**: changed `membership::default_subnet()` from `10.88.0.0/16` to `10.88.0.0/24` (256 addresses, enough for personal/team meshes). Updated SUBNET-011/SUBNET-013 spec entries, CLI help text, all Rust doc strings, README, HOWTO. Libspec-linked.
-- **Invite key admission** (Phases 1-4): invite store, IPC handlers, CLI (create/list/revoke), post-create auto-mint, e2e tested on 3 machines. Room-id joins still queue for live approval (both paths coexist).
-- **Old torpedo cleanup**: service stopped, binary/config removed on AORUS, xps-17, and SB-OS.
-- **E2E test results** logged in `docs/TESTING.md` Stage 9.
-- **SUBNET_COLLISION.md updated**: added VLAN analogy, /24 refs, policy routing as correct physical model (Phase 2), physical-model alignment for every solution, updated recommendation with phases.
-- **Laptop fleet plan drafted** in `docs/IDEAS_LaptopFleet.md`: multi-coordinator (routine), invite-in-blob, peer address cache. Two-tier model is sufficient -- three-tier model set aside.
+- **Default subnet /16 -> /24**: changed `membership::default_subnet()` from `10.88.0.0/16` to `10.88.0.0/24` (256 addresses, enough for personal/team meshes).
+- **Invite key admission**: invite store, IPC handlers, CLI (create/list/revoke), post-create auto-mint, e2e tested.
+- **SUBNET_COLLISION.md updated**: added VLAN analogy, /24 refs, policy routing as correct physical model.
 
 ## Laptop fleet (current plan)
 
@@ -176,20 +177,33 @@ development-environment fingerprints. Every file that is internal (spec,
 
 ## Bugs
 
-- **SUBNET-BUG-001: TUN created with local subnet, not network subnet, silently breaking data plane**: When a node joins a network whose subnet differs from the node's locally configured subnet (`tetron config set subnet` or default), the TUN device is created with the *local* subnet, not the network's subnet from the `GroupBlob`. The member is assigned a mesh IP from the network's subnet (visible in `tetron status`), but its TUN interface has an IP from the local subnet instead. Packets addressed to the member's correct mesh IP arrive via QUIC but are written to a TUN whose IP is in a different range -- the kernel does not recognize the dst IP as local and drops the packet. This scilently breaks the data plane (no ping, no TCP) with no error message.
+### FIXED
 
-  **How to reproduce:**
-  1. Node A (coordinator) creates network with `--subnet 10.77.0.0/24` (or has its node config set to that subnet).
-  2. Node B joins using an invite key but has a different local subnet (e.g. `10.88.0.0/16` default).
-  3. `tetron status` on both sides shows the member with the correct mesh IP from the network's subnet (e.g. `10.77.0.205`).
-  4. TUN on node B shows a different IP (e.g. `10.88.169.205`), not the one in status.
-  5. Ping from A to B: ICMP echos go out on A's TUN, reach B via QUIC, but B's kernel drops them because dst IP `10.77.0.205` does not match B's TUN IP `10.88.169.205`.
+- **SUBNET-BUG-001: TUN created with local subnet, not network subnet, silently breaking data plane**: Fixed in fa29ef9. Join now rejects with a clear error when the network's subnet differs from the node's configured subnet. Verified in e2e test on 2026-07-16 across 4 nodes.
 
-  **Severity:** medium -- silent data-plane failure, no errors logged anywhere. Only affects networks where members have inconsistent local subnet configs (common when subnet was changed after initial setup).
+### OPEN
 
-  **Suggested fix:** On join, compare the network's subnet (from blob) against the local node subnet. If they differ, either:
-  - (a) Reject the join with a clear error: "network subnet 10.77.0.0/24 differs from your node subnet 10.88.0.0/16; run `tetron config set subnet 10.77.0.0/24 && sudo tetron restart` first."
-  - (b) Auto-adopt: update the local node subnet to match the network's subnet and warn the user.
-  - (c) Per-network TUN (or policy routing) as the correct long-term fix (see SUBNET_COLLISION.md).
+- **CONVERGE-001: Co-coordinator publish race with original coordinator**: When a promoted co-coordinator admits new members and publishes an updated blob to the DHT, the original coordinator may overwrite it with a stale blob (on its 300s periodic publish). Cascade:
+  1. Co-coordinator publishes updated blob (members: aorus, xps, x10sra, xeon40)
+  2. Original coordinator's 300s timer fires, publishes stale blob (members: aorus, xps only)
+  3. Co-coordinator's 60s poller sees DHT hash regressed, fetches old blob, overwrites in-memory state
+  4. Members admitted by co-coordinator vanish from both coordinators
 
-  **Found:** 2026-07-15, real-world deployment with AORUS (10.77.0.0/24) and usbos-1 (10.88.0.0/16) on network "shallows".
+  Root cause: multiple coordinators publish to the same DHT key without coordination. The lazy publisher on co-coordinators has no `dht_notify` handle. The original coordinator's publisher uses NOTIFY + 300s timer.
+
+  **Workaround:** restart original coordinator after members join via co-coordinator.
+  **Fix ideas:** (a) read-before-write DHT record (fetch current hash, only publish if newer), (b) single-writer model (only original coordinator publishes to DHT), (c) co-coordinators provide blob via iroh-blobs only, never publish.
+
+  **Severity:** high -- breaks mesh convergence when using co-coordinator admission.
+  **Found:** 2026-07-16, e2e test with aorus (original) + xps (co-coordinator).
+
+- **CONVERGE-002: Stale DHT restore on coordinator restart**: When a coordinator restarts after the DHT record was overwritten with a stale blob (CONVERGE-001), `restore_coordinator_network` fails with "group blob not found locally or at any seed peer" and falls back to the config, producing a roster with only the coordinator itself. Other members are denied with "no invite presented" because the coordinator does not recognize them.
+
+  **Severity:** high -- can orphan the network.
+  **Found:** 2026-07-16, consequence of CONVERGE-001.
+
+## Procedural Notes (from e2e test 2026-07-16)
+
+- **TUN-CLEANUP**: Stale TUN devices survive `sudo tetron uninstall`. Always verify and delete them: `for dev in $(ip -o link show | grep -oP 'tun\d+'); do sudo ip link delete "$dev"; done`
+- **SCP-TRUNCATION**: The 29MB binary transfer through SSH jump host may time out. Verify file size after copy. Use `scp -C` (compression) or longer timeout for remote deploys.
+- **xeon40-specific**: Binary at `/tmp/tetron-new` must be re-copied after each fresh build (separate from the local machine's binary).

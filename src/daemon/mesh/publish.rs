@@ -1,8 +1,54 @@
 //! DHT publishers for the mesh core: the notify-driven network-record
-//! publisher, the lazy
-//! co-coordinator publisher, and the shared snapshot-refresh + publish step.
+//! publisher, the lazy co-coordinator publisher, and the shared
+//! snapshot-refresh + publish step.
 
 use super::super::*;
+
+/// Read-before-write guard for DHT publishing. Returns `true` if the caller
+/// should proceed with publishing `local_hash`, `false` if the DHT already has
+/// a different (presumably newer) blob that the group poller should reconcile.
+///
+/// The rule: publish if we have never published before (`last_published` is
+/// `None`), OR the DHT record matches our `last_published` hash (no one else
+/// changed it since we did), OR the DHT has no record yet. Skip if the DHT
+/// hash differs from `last_published` — another coordinator published a newer
+/// blob (CONVERGE-001).
+async fn dht_read_before_write(
+    client: &PkarrRelayClient,
+    net_pubkey: EndpointId,
+    local_hash: blake3::Hash,
+    last_published: Option<blake3::Hash>,
+) -> bool {
+    let Some(lp) = last_published else {
+        // First publish for this coordinator — always proceed.
+        return true;
+    };
+    match crate::dht::resolve_network(client, net_pubkey).await {
+        Ok((dht_hash, _)) => {
+            if dht_hash == lp {
+                // DHT still points to our last published blob — safe to publish.
+                true
+            } else if dht_hash == local_hash {
+                // DHT already matches our local state — no-op, skip publish.
+                false
+            } else {
+                // DHT has a different hash — another coordinator published a
+                // newer blob. Don't overwrite; the group poller will reconcile.
+                tracing::info!(
+                    dht_hash = %dht_hash,
+                    local_hash = %local_hash,
+                    last_published = %lp,
+                    "DHT record changed externally; skipping publish (reconverge will pick up)"
+                );
+                false
+            }
+        }
+        Err(_) => {
+            // No DHT record yet — safe to publish.
+            true
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_network_publisher(
@@ -15,7 +61,9 @@ pub(crate) fn spawn_network_publisher(
     notify: Arc<tokio::sync::Notify>,
     token: CancellationToken,
 ) -> JoinHandle<()> {
+    let net_pubkey = net_secret_key.public();
     tokio::spawn(async move {
+        let mut last_published: Option<blake3::Hash> = None;
         loop {
             let hash = {
                 let s = state.read().unwrap();
@@ -34,18 +82,30 @@ pub(crate) fn spawn_network_publisher(
                         )
                     })
             };
-            let mut seed_peers: Vec<EndpointId> = peers
-                .peers_for_network(&network_name)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
-            seed_peers.push(endpoint_id);
-            seed_peers.sort_by_key(|id| id.to_string());
-            seed_peers.dedup();
+            if dht_read_before_write(&client, net_pubkey, hash, last_published).await {
+                let mut seed_peers: Vec<EndpointId> = peers
+                    .peers_for_network(&network_name)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+                seed_peers.push(endpoint_id);
+                seed_peers.sort_by_key(|id| id.to_string());
+                seed_peers.dedup();
 
-            match dht::publish_network(&client, &net_secret_key, &hash, &seed_peers).await {
-                Ok(()) => tracing::info!(peers = seed_peers.len(), "published network record"),
-                Err(e) => tracing::warn!(error = %e, "failed to publish network record"),
+                match crate::dht::publish_network(
+                    &client,
+                    &net_secret_key,
+                    &hash,
+                    &seed_peers,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tracing::info!(peers = seed_peers.len(), "published network record");
+                        last_published = Some(hash);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "failed to publish network record"),
+                }
             }
             tokio::select! {
                 _ = token.cancelled() => break,
@@ -62,7 +122,8 @@ pub(crate) fn spawn_network_publisher(
 /// runtime when a member is promoted: it has no `dht_notify` handle, so it
 /// re-reads the snapshot hash every few seconds and republishes on change.
 /// Latency is bounded by `LAZY_PUBLISH_INTERVAL`; members' 60s group poller is
-/// the downstream backstop regardless.
+/// the downstream backstop regardless. Uses the same read-before-write guard
+/// as [`spawn_network_publisher`] (CONVERGE-001).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_lazy_publisher(
     client: PkarrRelayClient,
@@ -73,9 +134,10 @@ pub(crate) fn spawn_lazy_publisher(
     network_name: String,
     token: CancellationToken,
 ) -> JoinHandle<()> {
+    let net_pubkey = net_secret_key.public();
     const LAZY_PUBLISH_INTERVAL: Duration = Duration::from_secs(10);
     tokio::spawn(async move {
-        let mut last_hash: Option<blake3::Hash> = None;
+        let mut last_published: Option<blake3::Hash> = None;
         loop {
             let hash = {
                 let s = state.read().unwrap();
@@ -94,7 +156,11 @@ pub(crate) fn spawn_lazy_publisher(
                         )
                     })
             };
-            if last_hash != Some(hash) {
+            // Only attempt publish if the hash changed since our last publish
+            // AND the read-before-write guard passes (CONVERGE-001).
+            if last_published != Some(hash)
+                && dht_read_before_write(&client, net_pubkey, hash, last_published).await
+            {
                 let mut seed_peers: Vec<EndpointId> = peers
                     .peers_for_network(&network_name)
                     .into_iter()
@@ -103,13 +169,20 @@ pub(crate) fn spawn_lazy_publisher(
                 seed_peers.push(endpoint_id);
                 seed_peers.sort_by_key(|id| id.to_string());
                 seed_peers.dedup();
-                match dht::publish_network(&client, &net_secret_key, &hash, &seed_peers).await {
+                match crate::dht::publish_network(
+                    &client,
+                    &net_secret_key,
+                    &hash,
+                    &seed_peers,
+                )
+                .await
+                {
                     Ok(()) => {
                         tracing::info!(
                             network = %network_name,
                             "lazy publisher: published network record"
                         );
-                        last_hash = Some(hash);
+                        last_published = Some(hash);
                     }
                     Err(e) => tracing::warn!(error = %e, "lazy publisher: publish failed"),
                 }

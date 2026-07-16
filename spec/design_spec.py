@@ -1099,6 +1099,87 @@ class SubnetMismatchOnJoin(Requirement):
     req_id = "SUBNET-BUG-001"
 
 
+# --------------------------------------------------------------------------
+# CONVERGE-001: Co-coordinator publish race
+# --------------------------------------------------------------------------
+
+class CoCoordinatorPublishRace(Requirement):
+    """REQUIREMENT-ID: CONVERGE-001
+
+    When a promoted co-coordinator admits new members and publishes an
+    updated blob to the DHT, the original coordinator may overwrite it with
+    a stale blob on its 300s periodic publish timer. The cascade:
+
+    1. Co-coordinator publishes updated blob (members: orig + co + new1 + new2)
+    2. Original coordinator's 300s timer fires, publishes stale blob
+       (members: orig + co only) to the SAME DHT key
+    3. Co-coordinator's 60s group poller sees DHT hash regressed, fetches
+       old blob, overwrites its in-memory state
+    4. Members admitted by co-coordinator vanish from both coordinators
+
+    Root cause: multiple coordinators publish to the same DHT key without
+    coordination. The lazy publisher on co-coordinators has no dht_notify
+    handle and uses polling (10s). The original coordinator's publisher
+    overwrites the DHT on notify or 300s timer, regardless of whether the
+    DHT already has a newer blob.
+
+    Fix (read-before-write):
+
+    Both `spawn_network_publisher` (original coordinator) and
+    `spawn_lazy_publisher` (co-coordinator) add a DHT read before each
+    publish. The rule:
+
+    - Track `last_published_hash` (the hash we most recently published).
+    - Before publishing, resolve the current DHT record via
+      `dht::resolve_network` using the client + network public key
+      (derived from `net_secret_key.public()`).
+    - Publish if: `last_published_hash` is None (first publish), OR
+      the DHT hash matches `last_published_hash` (no one else has
+      published since we did), OR the DHT has no record yet.
+    - Skip (do not publish) if: the DHT hash differs from both our local
+      hash and `last_published_hash`. This means another coordinator
+      published a newer blob. The 60s group poller on all nodes will
+      fetch and reconcile it within one cycle.
+
+    This prevents the 300s timer from ever overwriting a newer blob. When
+    the original coordinator's timer fires but the DHT hash differs from
+    `last_published_hash`, the publisher skips the cycle and the group
+    poller reconciles the in-memory state with the DHT's blob.
+
+    Found: 2026-07-16, e2e test with aorus (original coordinator) and
+    xps-17-9720 (co-coordinator) on network "test-tetronnet"
+    (10.55.55.0/24).
+    """
+    req_id = "CONVERGE-001"
+
+
+# --------------------------------------------------------------------------
+# CONVERGE-002: Stale DHT restore on coordinator restart (consequence of
+# CONVERGE-001)
+# --------------------------------------------------------------------------
+
+class StaleDhtRestore(Requirement):
+    """REQUIREMENT-ID: CONVERGE-002
+
+    When the DHT record points to a stale blob (CONVERGE-001), a restarting
+    coordinator fails to find the blob bytes at any seed peer and falls back
+    to its config file, producing a roster with only the coordinator itself.
+    Other members are denied with "no invite presented" because the
+    coordinator does not recognize them.
+
+    This is a CONSEQUENCE of CONVERGE-001, not a separate root cause. With
+    the CONVERGE-001 (read-before-write) fix, the DHT record always points
+    to the latest blob, so a restarting coordinator can find and fetch it.
+
+    Additional hardening: if the DHT fallback fails, the restored
+    coordinator should trigger an immediate reconverge (not wait 60s) so
+    it discovers the latest blob faster.
+
+    Found: 2026-07-16, consequence of CONVERGE-001.
+    """
+    req_id = "CONVERGE-002"
+
+
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
