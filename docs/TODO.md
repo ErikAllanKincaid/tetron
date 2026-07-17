@@ -195,14 +195,15 @@ development-environment fingerprints. Every file that is internal (spec,
 
   **Found:** 2026-07-16, consequence of CONVERGE-001.
 
+- **CONVERGE-006: Member boot-restore had no config fallback**: Fixed (see spec `CONVERGE-006`). `join_network_inner`'s boot-restore call (`initial=false`) now falls back to a `GroupBlob` built from the persisted `NetworkConfig` roster when `resolve_and_fetch_blob` fails (pkarr unreachable, no dialable seed peer), matching the config-fallback the coordinator restore path already had. Verified live on X10SRA: blocked the pkarr relay via iptables/ip6tables DROP across a full daemon restart — the fallback fired, and the member fully reconnected to both peers (direct, 0% ping loss) using the fallback roster to dial the coordinator, since DHT reachability is only needed to *resolve* the peer, not to talk to it once dialed. Superseded the original CONVERGE-004 write-up below, which was based on an incomplete diagnosis.
+
 ### OPEN
 
-- **CONVERGE-004: Group poller never spawned on boot-time member reconnect**: `connect_all_networks`' member-rejoin-via-DHT-lookup path (used when a daemon restarts with a persisted, non-coordinator network) only spawns `spawn_reconnect_loop` — never a group poller, and never `reconverge_and_apply` either (that only runs via a live `MemberSync`/`BlobUpdated` control-message trigger, which a member with a flapping/denied connection may never receive). A member whose roster membership was lost while its daemon was down (or that never manages a stable connection after boot) has no path to ever notice, and just redials forever with no route to CONVERGE-003's cleanup. Only a fresh `finalize_join` (a live `tetron join`) currently gets a poller.
-
-  **Severity:** medium -- narrows CONVERGE-003's fix to nodes with at least one live connection or a fresh join; a node stuck in this exact boot-reconnect path stays a ghost.
-  **Found:** 2026-07-16, while verifying CONVERGE-003 on X10SRA after a daemon restart.
-
 - **Exact same-generation tie with divergent content is not merged (CONVERGE-005 known limitation)**: If two coordinators independently mutate from the same base generation (rare — requires near-simultaneous admits before either publish lands), the guard leaves the DHT alone rather than picking a winner; the loser's admission is deferred until its own next local mutation bumps past the tie. Not a regression (the old code had the same effective outcome, just via uncontrolled write-order races instead), and admission is idempotent (a deferred admit can simply be retried), so not treated as a priority fix.
+
+### SUPERSEDED
+
+- **CONVERGE-004 (original write-up, inaccurate)**: Originally claimed "group poller never spawned on boot-time member reconnect." Re-verified live on 2026-07-16 by restarting X10SRA's daemon under normal conditions: the log clearly shows `group poller spawned network=converge-test` during an ordinary boot-restore. Reading `finalize_join` confirmed why — it's the single shared endpoint for both a fresh `tetron join` and a boot-restore (`connect_all_networks` → `join_network_inner(initial=false)` → `dial_reconnect` → `finalize_join`), and it spawns the poller unconditionally regardless of role; `dial_reconnect`'s own fallback (`state_from_blob`, for when the coordinator is unreachable) still reaches `finalize_join` too. The original diagnosis was made mid-way through a messier live incident (X10SRA already being actively denied by both coordinators from the CONVERGE-001 race) without isolating the actual cause carefully enough. The real, narrower gap this investigation actually found is CONVERGE-006 above (`resolve_and_fetch_blob` itself has no fallback when DHT resolution fails outright) — now fixed.
 
 ## Procedural Notes (from e2e test 2026-07-16)
 
