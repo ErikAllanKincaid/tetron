@@ -6,47 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-16
+
 ### Added
 
 - **Invite-in-blob (BLOB-001)**: invites now ride in the signed `GroupBlob` instead of machine-local files (`InviteStore` superseded). Any network-key holder can mint, list, and revoke invites. The invite code drops the pinned coordinator endpoint (48 B vs 80 B) since every coordinator validates from the blob. Validation happens against the in-memory invite table; on redemption the entry is removed and the blob republished immediately. A narrow replay race window (~30-60 s DHT poll) is accepted for the initial implementation.
-
 - **Peer address cache (CACHE-001)**: persistent transport-address cache at `<config_dir>/peercache.msgpack` so the mesh can re-establish direct QUIC connections without DHT lookups after an all-offline gap. Loaded at startup, seeded from live connections, saved every 5 min and on shutdown. Entries older than 30 days are pruned.
-
 - **Overlap guard**: instead of the upstream rayfish preflight that refused to start if anything used `100.64.0.0/10`, tetron refuses to start only if the *chosen* subnet overlaps an existing local network. This lets tetron run alongside Tailscale or any other overlay without hijacking routing.
+- **`ray kick <network> <peer>`**: coordinators can now remove a member from a
+  closed network. Identify the peer by hostname, mesh IP, or short id. The member
+  is dropped from the network's roster, and every node disconnects from it: the
+  kicked peer is severed mesh-wide, not just from the coordinator. It cannot
+  re-join the closed network without a fresh invite or approval (to bar it
+  permanently, also revoke its invite or reusable key). Kicking is refused on open
+  networks (where the peer could immediately re-join) and against another
+  coordinator or yourself.
 
 ### Changed
 
 - **rayfish relay/discovery presets retained (CON-001)**: the `"rayfish"` config keyword and its preset URLs (`relay.iroh.rayfish.xyz`, `dns.iroh.rayfish.xyz`) are kept as-is — they are load-bearing infrastructure references that must match upstream. The default remains n0's neutral infrastructure, but the keyword survives for users who pin to rayfish's hosted services.
-
-### Fixed
-
-- **IPv4 fragmentation for QUIC datagram size limits (FRAG-001)**: when Quinn's
-   `max_datagram_size()` is below the TUN MTU (1280), IP packets larger than
-   ~1192 bytes were silently dropped by `send_datagram` with a "datagram too
-   large" error, stalling TCP connections (SSH key exchange failed at "expecting
-   SSH2_MSG_KEX_ECDH_REPLY"). The forwarder now fragments oversize IPv4 packets
-   into RFC 791-compliant IP fragments (each sent as a separate QUIC datagram)
-   before the receiving kernel reassembles them. IPv6 fragmentation is not yet
-   implemented; oversize IPv6 packets are dropped with a warning.
-
-- **Coordinator restart no longer orphans control listeners (ADMIN-RECONNECT-CTRL)**:
-   when the coordinator connection drops and the reconnect loop establishes a new
-   one, a fresh control-listener task is now spawned on the new connection.
-   Previously the listener was only spawned once at initial join, so
-   AdminGrant (and other control messages) arriving on the re-established
-   connection were silently lost. This fixes `tetron admin add` failing to
-   promote a member after the coordinator daemon restarts.
-
-- **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the
-   `--tor` flag on `torpedo create` and `torpedo join` was accepted by the CLI but
-   silently ignored — the `transport` field was never threaded through the IPC
-   handler, create/join functions, or persisted to config. It is now threaded end
-   to end: the flag reaches `create_network`/`join_network`, is saved to the
-   per-network `networks/<name>.toml`, and is restored on daemon restart
-   (`restore_coordinator_network`) so Tor transport survives restarts as intended.
-
-### Changed
-
 - **Crate identity renamed to tetron (RENAME-M01)**: the library crate is now
   `tetron` (`[package] name = "tetron"`), the helper crate is `tetron-proto`,
   all `use rayfish::…` paths are `use tetron::…`, and the tracing filter is
@@ -63,14 +41,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any co-coordinator granted with `torpedo admin add`) admits it with
   `torpedo requests` → `torpedo accept`/`deny`. This is now the only way onto a
   tetron-coordinated network.
-
-### Changed
-
 - **Phase 5 complete**: presentation and workspace cleanup. The CLI is now
   plain text (no ANSI colors or spinners; `--json` remains for machine
   output). The Android build (`ray-mobile`, `android/`) is removed, leaving
   a single-product workspace (binary `torpedo`, library `tetron`, helper
   `tetron-proto`). The `desktop` cargo feature is retired.
+- **Bounded pending-join queue** — on a closed network, the coordinator's queue
+  of join requests awaiting `ray accept` is now capped (oldest request evicted
+  when full), so a peer churning fresh identities can no longer grow it without
+  limit. Legitimate queues are far below the cap, so this is invisible in normal
+  use.
+- **Admission is invite-only (LIVE-001)**: supersedes the live-approval queue described above (MINIMAL-013's `torpedo requests`/`accept`/`deny` and the bounded pending-join queue entry above) -- both are gone. A bare room-id join is now always denied; the only way onto a tetron-coordinated network is an invite key minted by a coordinator (auto-minted on `tetron create`, or via `tetron invite <net> create`), which the joiner presents to be admitted directly. This was never logged as its own changelog entry when it landed; recorded now for accuracy.
 
 ### Removed
 
@@ -164,155 +145,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reqwest/rustls/self-replace/sha2/semver dependencies). Upgrade by replacing
   the binary and running `sudo torpedo restart`.
 
-### Added
-
-- **DNS takeover notice**: on a host with no systemd-resolved, NetworkManager,
-  or resolvconf backend (for example a default Debian server install),
-  `sudo torpedo up` now warns that torpedo is managing `/etc/resolv.conf`
-  directly. The notice names the `/etc/resolv.conf.before-torpedo` backup and the
-  restore path (`torpedo down` or `sudo torpedo uninstall`). Previously the
-  takeover happened silently (daemon log only), so users discovered it only by
-  noticing their `resolv.conf` had changed.
-- **Ephemeral peer auto-kick**: a per-network policy that automatically removes
-  members which stay offline longer than a configured time, the same as
-  `ray kick`. Set it with `ray ephemeral <net> <duration>` (`12h`, `7d`, `1w`;
-  minimum 1 hour), turn it off with `ray ephemeral <net> off`, and read it with
-  `ray ephemeral <net> show`. Off by default; the current TTL shows on the
-  network's line in `ray status`. Only the coordinator enforces it, and only
-  offline peers are pruned, so it applies to open and closed networks alike (a
-  removed peer can simply re-join or re-request later).
-- **`ray unpair <device>`**: revoke one of your paired devices, for example a
-  lost or stolen laptop. Run it from your **primary** device (the one you paired
-  the others from). Device certificates now carry a generation; unpairing bumps
-  your generation and publishes the new value (a single signed number) under your
-  user identity, so every peer rejects any certificate below it — even on
-  networks you do not run. Your **other** devices are automatically re-issued
-  fresh certificates and keep working; only the removed device is left behind.
-  The removed device is dropped from your networks, stops being treated as one of
-  your own devices (no silent auto-admit, no own-device file auto-accept), and,
-  if online and cooperative, is told to delete its own certificate. List your
-  paired devices first with `ray pair list` (`--json` supported). Notes: a device
-  that was **offline** while you unpaired is refreshed the next time it reconnects
-  to your primary (until then other networks reject it); the generation stays
-  published while your primary runs; and to fully retire a device from a network
-  someone else runs, ask that network's coordinator to remove it too.
-- **Consistent Android device name**: the phone now uses one device name across
-  every network instead of a different random name per network. It is seeded from
-  your device model on first run and can be changed in the You screen (the change
-  applies to all your networks and to any you join later).
-- **Android app exclusions and mesh IPv6 on the phone**: apps that break behind a
-  VPN (Android Auto, Chromecast/Google Home, RCS messaging, GoPro, Sonos) now
-  bypass the tunnel, so wireless Android Auto keeps working with Rayfish on. The
-  Android tunnel also routes mesh IPv6 (the `200::/7` range), which previously did
-  not work on mobile.
-- **Android diagnostics**: the app now captures the mesh core's recent logs and
-  reports lightweight health (networks, peers online, transport, and a WARN/ERROR
-  count) to crash reporting automatically when the tunnel goes up or down and when
-  the connection changes between wifi and cellular. A new "Send diagnostics" button
-  in the You screen attaches the full recent log to a report so connection problems
-  can be diagnosed. All of this respects the existing crash-reporting toggle; the
-  toggle now reads "diagnostics". Diagnostic data (the log lines and recent errors)
-  can include network addresses such as relay hosts and your device's public IP, so
-  it is only sent while crash reporting is on.
-- **Device ownership in `ray status`**: peer rows that are your own paired
-  devices are now tagged `(your device)`, and a paired device belonging to
-  another user is labelled `(user <id>)` (or shows that user's alias when you
-  have set one) so it is clear which user each device belongs to. The `--json`
-  output gains an `is_own_device` flag on each peer.
-- **Opt-in automatic updates**: enable with `sudo ray install --auto-update` or
-  `ray auto-update on`, and the daemon checks GitHub about every 6 hours for a
-  newer **stable** release, then downloads, verifies (SHA-256), swaps the binary,
-  and restarts itself onto the new version — no manual `sudo ray update`. Off by
-  default; nightlies are never auto-installed. Applying an update restarts the
-  daemon, which briefly drops the VPN (peers reconnect automatically), so it stays
-  opt-in. A backoff guard means a bad release is retried at most once a day
-  instead of looping. `ray status` shows when auto-update is on.
-- **Auto-accept files from your own devices**: turn on
-  `ray files auto-accept <network> on` (or join with
-  `ray join <net> --auto-accept-files`) and incoming file transfers from your
-  own paired devices land automatically in your `~/Downloads`, with no manual
-  `ray files accept`. Only offers whose sender is one of your own devices (same
-  paired identity) on that network are accepted; files from anyone else still
-  queue for review. Turning it on also accepts any offers already waiting from
-  your devices. Off by default; `ray files auto-accept <net> off` disables it.
-- **Configurable auto-accept download location**: `ray files download-dir <path>`
-  sends auto-accepted files to an absolute directory (owned by the dir's owner or
-  `download-user`); `ray files download-user <user>` routes them to that user's
-  `~/Downloads`, owned by them. With neither set, the operator's `~/Downloads` is
-  used; if nothing resolves the offer stays queued rather than being written as
-  root. `--clear` unsets; no argument shows the current value.
-- **`ray alias <network> <key> <alias>`**: give a peer a friendly, node-local
-  name. `ray alias <net> set <key> <name>` binds an alias to a user, where `key`
-  is either an identity string (from `ray identityof`) or a currently-joined
-  hostname. The alias then shows inline in `ray status` (as `host.net.ray
-  [name]`) and seeds `ray apply`'s `aliases:` map, so a spec can reference the
-  name without re-declaring it (the spec still wins on a name conflict).
-  `ray alias <net> list` and `ray alias <net> rm <name>` manage the set. Aliases
-  are local and display-only: they are never published to the network.
-- **`ray kick <network> <peer>`**: coordinators can now remove a member from a
-  closed network. Identify the peer by hostname, mesh IP, or short id. The member
-  is dropped from the network's roster, and every node disconnects from it: the
-  kicked peer is severed mesh-wide, not just from the coordinator. It cannot
-  re-join the closed network without a fresh invite or approval (to bar it
-  permanently, also revoke its invite or reusable key). Kicking is refused on open
-  networks (where the peer could immediately re-join) and against another
-  coordinator or yourself.
-- **`ray firewall off` / `ray firewall on`**: a global switch to disable the
-  userspace firewall on a device. `off` allows every mesh packet (rules and the
-  secure default are bypassed; mesh membership still gates who can reach you, and
-  spoofed source addresses are still dropped), for simple setups that don't want a
-  second firewall layered on top of the host/kernel firewall. `on` restores
-  enforcement. The disabled state is shown in `ray firewall show`.
-
-### Changed
-
-- **Prometheus metrics and OTLP traces now export under the `torpedo` name.** The
-  metrics on `:9090` were published under the `rayfish`/`rayfish_peer` family
-  prefixes and OTLP spans (the `otel` feature) under service name `rayfish`; both
-  now use `torpedo`/`torpedo_peer`. If you scrape `:9090` or collect traces, update
-  any dashboards, alerts, or collector filters that referenced the old names.
-- **Magic DNS no longer seizes `/etc/resolv.conf` by default.** New setting
-  `torpedo config set magic-dns off|auto|direct` (default `auto`). In `auto`,
-  torpedo uses a clean split-DNS backend when one exists (systemd-resolved,
-  NetworkManager dnsmasq, resolvconf) but otherwise leaves `/etc/resolv.conf`
-  untouched instead of taking it over — so it no longer collides with another
-  VPN that manages the same file (e.g. Tailscale on a minimal Debian host, which
-  previously caused a mutual DNS forwarding loop that broke all name resolution).
-  When it declines, `torpedo up` prints how to enable `.ray`: install
-  systemd-resolved, or opt in with `magic-dns direct`. `.ray` names are a
-  convenience only — reach peers by their mesh IP from `torpedo status` (the mesh,
-  firewall, SSH, and file transfer never use system DNS). `direct` restores the
-  old takeover behavior for hosts that want `.ray` and have no clean backend;
-  `off` never configures system DNS at all. When `direct` takes over on a host
-  running Tailscale, torpedo no longer forwards DNS to Tailscale's own resolver
-  (any `100.64.0.0/10` overlay address is skipped) and recovers the real upstream
-  from Tailscale's pre-takeover backup, so the two do not form a query loop.
-  Note: while `direct` is active torpedo is the sole resolver, so Tailscale's own
-  `*.ts.net` names stop resolving on that host — use `auto` (the default) or
-  systemd-resolved if you need both.
-- **`ray firewall show` clarifies the firewall is separate from your host
-  firewall**: the output now notes that this is a mesh firewall applied on top of
-  your host/kernel firewall (both must allow a packet), so it is not forgotten
-  when auditing an OS firewall. Enabling mesh SSH with `ray firewall ssh on` now
-  reminds you to authorize a peer with `ray firewall ssh allow` when none is set
-  yet (the server rejects all logins until a peer is on the allow list).
-- **Bounded pending-join queue** — on a closed network, the coordinator's queue
-  of join requests awaiting `ray accept` is now capped (oldest request evicted
-  when full), so a peer churning fresh identities can no longer grow it without
-  limit. Legitimate queues are far below the cap, so this is invisible in normal
-  use.
-
-### Performance
-
-- **Drop-newest under datagram backpressure** — when a peer's QUIC datagram send
-  buffer is momentarily full, the new packet is dropped at the application
-  boundary instead of letting QUIC evict an older already-queued one (drop-newest
-  beats drop-oldest for a VPN), and the QUIC transport is tuned for the one
-  datagram stream per peer shape. Keeps the send path non-blocking with no
-  cross-peer head-of-line blocking.
-
 ### Fixed
 
+- **IPv4 fragmentation for QUIC datagram size limits (FRAG-001)**: when Quinn's
+   `max_datagram_size()` is below the TUN MTU (1280), IP packets larger than
+   ~1192 bytes were silently dropped by `send_datagram` with a "datagram too
+   large" error, stalling TCP connections (SSH key exchange failed at "expecting
+   SSH2_MSG_KEX_ECDH_REPLY"). The forwarder now fragments oversize IPv4 packets
+   into RFC 791-compliant IP fragments (each sent as a separate QUIC datagram)
+   before the receiving kernel reassembles them. IPv6 fragmentation is not yet
+   implemented; oversize IPv6 packets are dropped with a warning.
+- **Coordinator restart no longer orphans control listeners (ADMIN-RECONNECT-CTRL)**:
+   when the coordinator connection drops and the reconnect loop establishes a new
+   one, a fresh control-listener task is now spawned on the new connection.
+   Previously the listener was only spawned once at initial join, so
+   AdminGrant (and other control messages) arriving on the re-established
+   connection were silently lost. This fixes `tetron admin add` failing to
+   promote a member after the coordinator daemon restarts.
+- **`--tor` flag now actually enables Tor transport (TOR-M01)**: previously the
+   `--tor` flag on `torpedo create` and `torpedo join` was accepted by the CLI but
+   silently ignored — the `transport` field was never threaded through the IPC
+   handler, create/join functions, or persisted to config. It is now threaded end
+   to end: the flag reaches `create_network`/`join_network`, is saved to the
+   per-network `networks/<name>.toml`, and is restored on daemon restart
+   (`restore_coordinator_network`) so Tor transport survives restarts as intended.
 - **`torpedo report` and the issue templates now identify as torpedo**: the
   diagnostic bundle (`/tmp/torpedo-report-*.tgz`), its sysinfo banner, and the
   pre-filled GitHub issue title/body said `rayfish`, so every bug report
@@ -354,6 +210,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clients that already trust the host keep matching the fingerprint pinned in
   their `known_hosts`. Hosts without a usable OpenSSH key fall back to a
   generated key as before.
+- **Join with a mismatched overlay subnet no longer silently breaks the data plane (SUBNET-BUG-001)**: joining a network whose subnet differed from this node's configured subnet used to succeed at the control-plane level (a mesh IP was assigned) while the TUN device was still built with the *local* subnet -- packets to the correct mesh IP arrived over QUIC but were silently dropped by the kernel, with no error anywhere. `tetron join` now rejects the join up front with a clear error telling you to `sudo tetron config set subnet <cidr> && sudo tetron restart` first.
+- **A member kicked or dropped from the roster no longer becomes a silent zombie (CONVERGE-003)**: a node removed from the signed roster (kicked, or a casualty of the publish race below) kept redialing coordinators that correctly denied it, in a tight ~5-6s loop, while its own `tetron status` kept reporting a healthy, fully-connected membership indefinitely -- no ping, no ssh, no traffic actually moved, and nothing surfaced an error anywhere. The node now leaves the network locally as soon as it detects the removal: background tasks stopped, config deleted, `tetron status` reflects reality.
+- **Co-coordinator admissions could be permanently lost (CONVERGE-001 / CONVERGE-005)**: when a promoted co-coordinator admitted a new member, the original coordinator's own periodic republish could win the DHT write purely by landing later -- even though its content was objectively older -- permanently burying the newer admission. An earlier read-before-write guard could tell a write was unrecognized but not whether it was actually newer, so the underlying race was only narrowed, not closed. The signed `GroupBlob` and its DHT record now carry a monotonic generation number, so every publisher and poller can tell newer from stale regardless of write order.
+- **Coordinator restart no longer risks losing recently admitted members (CONVERGE-002)**: resolved as a consequence of the generation counter above -- a restarting coordinator's blob fetch is now always monotonically correct instead of occasionally landing on a stale copy.
+- **A member reconnecting at boot during a DHT/relay outage no longer drops its network (CONVERGE-006)**: if pkarr resolution failed or no seed peer answered at the exact moment a member's daemon restarted, the network vanished from that daemon's runtime entirely -- no retry, invisible in `tetron status`, until a lucky restart. It now falls back to the locally persisted roster and can fully reconnect to peers using it (DHT reachability is only needed to *resolve* a peer, not to talk to it once dialed).
+- **A single unreachable roster member no longer stalls a join, reconnect, or restart (DIAL-001)**: member join/reconnect and the coordinator's full-mesh restore dial were both serial and unbounded -- one dead or offline peer in the roster could block the whole operation for iroh's uncapped internal handshake timeout, and a coordinator restart's `tetron status` reported no active networks at all until every member had been dialed. Roster dials are now concurrent and timeout-bounded (10-30s), and a coordinator's network registers in `tetron status` before dialing its members, not after.
+- **A kick-coded connection close no longer risks evicting a valid member (CONVERGE-007)**: closing a connection with the kick code (sent whenever any node's local roster momentarily excludes a peer, not only on a real `tetron kick`) was treated the same as a deliberate `tetron leave` for the purpose of pruning the coordinator's roster -- a transient convergence hiccup could cause a false eviction. Only a genuine leave now prunes the roster; a kick-coded close is treated as ordinary transport teardown, and reconnection is decided by the already-correct, signed-roster-driven mechanism instead of the raw close code.
+
+### Performance
+
+- **Drop-newest under datagram backpressure** — when a peer's QUIC datagram send
+  buffer is momentarily full, the new packet is dropped at the application
+  boundary instead of letting QUIC evict an older already-queued one (drop-newest
+  beats drop-oldest for a VPN), and the QUIC transport is tuned for the one
+  datagram stream per peer shape. Keeps the send path non-blocking with no
+  cross-peer head-of-line blocking.
 
 ## [0.1.4]
 
@@ -618,7 +490,8 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...v0.1.6
 [0.1.4]: https://github.com/rayfish/rayfish/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rayfish/rayfish/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rayfish/rayfish/compare/v0.1.1...v0.1.2
