@@ -330,6 +330,11 @@ tetron config set discovery-dns
 sudo tetron restart
 ```
 
+This only points tetron at a relay/discovery server; it does not stand one up. To run your own:
+
+- **Relay** (NAT-traversal fallback, matches what `tetron config set relay` accepts): iroh's own relay server, `iroh-relay` (crate docs at [docs.rs/iroh-relay](https://docs.rs/iroh-relay/), source and self-hosting instructions at [github.com/n0-computer/iroh/tree/main/iroh-relay](https://github.com/n0-computer/iroh/tree/main/iroh-relay)). Build with `cargo build` from the iroh workspace; supports allow-everyone (default), an endpoint-id allowlist/denylist, a shared auth token, or an HTTP callout to an external auth service.
+- **Discovery** (pkarr server, matches what `tetron config set discovery-dns` accepts): the `pkarr-relay` crate (`cargo install pkarr-relay`), source at [github.com/pubky/pkarr/tree/main/relay](https://github.com/pubky/pkarr/tree/main/relay), with an example config at [relay/src/config.example.toml](https://github.com/pubky/pkarr/blob/main/relay/src/config.example.toml) and the underlying design at [design/relays.md](https://github.com/pubky/pkarr/blob/main/design/relays.md). Runs on `http://localhost:6881` by default.
+
 ### Tor transport
 
 Requires a running Tor daemon with `ControlPort 9051` enabled in
