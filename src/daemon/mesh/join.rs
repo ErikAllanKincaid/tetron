@@ -857,8 +857,14 @@ pub(crate) fn spawn_reconnect_loop(
 
             // A deliberate `tetron leave` (graceful close with the leave code) means
             // the peer is gone for good — don't spin a reconnect task against it.
-            // The coordinator's MemberSync will prune it from our roster.
-            if event.intentional {
+            // The coordinator's MemberSync will prune it from our roster. Narrowed
+            // to a genuine leave only (CONVERGE-007): a KICK_CODE close falls
+            // through to the `pruned_peers` check below instead, since
+            // `prune_departed_peers` sends that code from any node's own (possibly
+            // transiently stale) view of the roster, not just a real kick — the
+            // signed-roster-driven `pruned_peers` set is the correct arbiter for
+            // whether to actually stop reconnecting, not the close code alone.
+            if event.reason.prunes_member() {
                 tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer left, not reconnecting");
                 continue;
             }

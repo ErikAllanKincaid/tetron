@@ -44,21 +44,24 @@ pub(crate) fn spawn_peer_cleanup(
                                 tracing::debug!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, network = %ev.network, "ignoring stale disconnect; peer already reconnected");
                                 continue;
                             }
-                            tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, network = %ev.network, intentional = ev.intentional, "removing dead peer");
+                            tracing::info!(peer = %ev.endpoint_id.fmt_short(), ip = %ev.ip, network = %ev.network, reason = ?ev.reason, "removing dead peer");
 
-                            // A deliberate `tetron leave` (graceful close) prunes the
-                            // member from the roster; any other drop stamps the
-                            // member's `last_seen` so the ephemeral pruner can age
-                            // it out. Both republish the signed blob and broadcast
-                            // a MemberSync so co-coordinators converge. Only the
-                            // coordinator is authoritative, so members pass
+                            // A deliberate `tetron leave` prunes the member from the
+                            // roster; anything else (including a KICK_CODE close —
+                            // CONVERGE-007: never roster authority on its own, since
+                            // prune_departed_peers sends it from any node's possibly
+                            // transiently stale view, not just a real kick) stamps
+                            // the member's `last_seen` so the ephemeral pruner can
+                            // age it out. Both republish the signed blob and
+                            // broadcast a MemberSync so co-coordinators converge.
+                            // Only the coordinator is authoritative, so members pass
                             // `coordinator = None` and do neither.
                             if let Some(c) = &coordinator {
                                 let member_id = ev.endpoint_id;
                                 let mut changed = false;
                                 {
                                     let mut st = c.state.write().unwrap();
-                                    if ev.intentional {
+                                    if ev.reason.prunes_member() {
                                         st.members.remove(&member_id);
                                         changed = true;
                                     } else if let Some(m) = st.members.get_mut(&member_id) {
@@ -69,7 +72,7 @@ pub(crate) fn spawn_peer_cleanup(
                                 if changed {
                                     update_snapshot_and_publish(&c.state, &c.blob_store, &c.dht_notify).await;
                                     broadcast_member_sync(&peers, None).await;
-                                    if ev.intentional {
+                                    if ev.reason.prunes_member() {
                                         tracing::info!(peer = %member_id.fmt_short(), "pruned member after leave");
                                     } else {
                                         tracing::debug!(peer = %member_id.fmt_short(), network = %c.network_name, "stamped last_seen on member disconnect");

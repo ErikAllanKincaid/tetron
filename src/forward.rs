@@ -89,14 +89,47 @@ pub const LEAVE_CODE: u32 = 0x1ea5e;
 /// treated as a non-intentional disconnect (the peer may reconnect; no quarantine).
 pub const ABUSE_CODE: u32 = 0xab05e;
 
-/// Application close code a coordinator (or any member pruning a stale roster
-/// entry) sends when it removes a peer from the network (`tetron kick`). On the
-/// receiving (kicked) side it is treated like [`LEAVE_CODE`] — an intentional
-/// disconnect — so the kicked node stops reconnecting instead of churning back
-/// into the coordinator's pending queue. The pruning side does not observe its
-/// own close code (that read is a local close), so it relies on the shared
-/// `pruned_peers` set to suppress its reconnect loop.
+/// Application close code a coordinator (or any node pruning a stale roster
+/// entry via `prune_departed_peers`) sends when it severs a peer no longer in
+/// its local roster (`tetron kick`, or routine reconverge cleanup). **Not**
+/// authority on the receiving end (CONVERGE-007): `prune_departed_peers` runs
+/// on every node whenever *its own* view of the roster drops a peer, which can
+/// happen mid-convergence-race, not just on a real kick — so a `KICK_CODE`
+/// close alone must never prune the canonical member list. The only thing it
+/// legitimately suppresses is a doomed reconnect attempt, and even that is
+/// gated on the signed-roster-driven `pruned_peers` set, not the close code by
+/// itself (see [`CloseReason`]).
 pub const KICK_CODE: u32 = 0x14ced;
+
+/// Why a peer's connection actually closed, decided from the QUIC application
+/// close code the remote sent (or the lack of one, for a plain drop/reset).
+/// Exists so membership is decided only by the signed roster, never inferred
+/// from a close code (CONVERGE-007) — a `KICK_CODE` close is transport
+/// teardown, not eviction authority, since `prune_departed_peers` sends it
+/// from every node's own (possibly transiently stale) view of the roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    /// Deliberate `tetron leave` ([`LEAVE_CODE`]): the peer genuinely
+    /// departed. The only reason that authorizes pruning the canonical
+    /// roster on its own.
+    Left,
+    /// [`KICK_CODE`]: transport teardown for a peer the closer's local
+    /// roster didn't list — a real kick, or the closer's own transiently
+    /// stale view. Never authorizes a roster mutation by itself.
+    Kicked,
+    /// Anything else (timeout, reset, abuse-code close, or the synthetic
+    /// cold-restore dial-seed event): not intentional in any sense the
+    /// roster should care about.
+    Other,
+}
+
+impl CloseReason {
+    /// Whether this close reason alone is enough to prune the canonical
+    /// member list. Only a genuine leave qualifies — see module docs.
+    pub fn prunes_member(self) -> bool {
+        matches!(self, CloseReason::Left)
+    }
+}
 
 /// Sent by [`spawn_peer_reader`] when a peer connection drops,
 /// consumed by the reconnect loop (joiner) or cleanup task (coordinator).
@@ -107,9 +140,10 @@ pub struct DisconnectEvent {
     /// The network whose connection dropped. A multi-homed peer keeps its routes
     /// in the other networks; only this network's connection is torn down.
     pub network: String,
-    /// True when the peer closed gracefully with [`LEAVE_CODE`] (it ran
-    /// `tetron leave`), as opposed to a timeout/reset.
-    pub intentional: bool,
+    /// Why the connection closed — decides reconnect-suppression together
+    /// with `pruned_peers`, and (on a coordinator) roster pruning. See
+    /// [`CloseReason`].
+    pub reason: CloseReason,
     /// [`Connection::stable_id`] of the connection that dropped, so a consumer
     /// can tell whether the connection currently stored for this peer is still
     /// the one that died. `None` for a synthetic kick that is not tied to a live
@@ -311,20 +345,27 @@ pub fn spawn_peer_reader(
                 result = conn.read_datagram() => match result {
                     Ok(d) => d,
                     Err(e) => {
-                        let intentional = matches!(
-                            &e,
+                        let reason = match &e {
                             ConnectionError::ApplicationClosed(ac)
-                                if ac.error_code == VarInt::from_u32(LEAVE_CODE)
-                                    || ac.error_code == VarInt::from_u32(KICK_CODE)
-                        );
-                        tracing::warn!(peer = %peer_id.fmt_short(), ip = %peer_ip, error = %e, intentional, "peer connection lost");
+                                if ac.error_code == VarInt::from_u32(LEAVE_CODE) =>
+                            {
+                                CloseReason::Left
+                            }
+                            ConnectionError::ApplicationClosed(ac)
+                                if ac.error_code == VarInt::from_u32(KICK_CODE) =>
+                            {
+                                CloseReason::Kicked
+                            }
+                            _ => CloseReason::Other,
+                        };
+                        tracing::warn!(peer = %peer_id.fmt_short(), ip = %peer_ip, error = %e, ?reason, "peer connection lost");
                         let _ = disconnect_tx
                             .send(DisconnectEvent {
                                 endpoint_id: peer_id,
                                 ip: peer_ip,
                                 ipv6: peer_ipv6,
                                 network: network.clone(),
-                                intentional,
+                                reason,
                                 conn_stable_id: Some(conn.stable_id()),
                             })
                             .await;

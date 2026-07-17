@@ -2480,3 +2480,71 @@ class BackgroundConcurrentBoundedDials(Requirement):
     """
     req_id = "DIAL-001"
 
+
+# --------------------------------------------------------------------------
+# CONVERGE-007: a kick-coded connection close never mutates the roster
+# --------------------------------------------------------------------------
+
+class CloseCodeNeverMutatesRoster(Requirement):
+    """REQUIREMENT-ID: CONVERGE-007
+
+    Found triaging the applicable slice of upstream rayfish commit 1c193b9
+    (most of that commit — status device-grouping, `RequestUnpair` — is N/A
+    for tetron, since device pairing was removed by MINIMAL-004) against
+    tetron's current `forward.rs`/`coordinator.rs`. Confirmed present by direct
+    inspection, not assumed from upstream.
+
+    `DisconnectEvent.intentional` was computed `true` for *both* `LEAVE_CODE`
+    and `KICK_CODE` (`forward.rs:314-319`), and `coordinator.rs`'s
+    `spawn_peer_cleanup` treated `intentional == true` as authority to prune
+    the canonical roster (`st.members.remove(&member_id)`). But
+    `prune_departed_peers` (CONVERGE-005's territory) closes a connection with
+    `KICK_CODE` on *every* node, coordinator or not, whenever its own local
+    roster momentarily doesn't list the peer on the other end — including
+    during an ordinary, still-resolving convergence race, not just a real
+    kick. If that peer happens to be the coordinator's own link to a
+    genuinely-still-valid member (a transient reconverge race, exactly the
+    class CONVERGE-005 narrows but does not fully eliminate — the
+    same-generation-tie window is explicitly left unresolved), the
+    coordinator's cleanup handler saw the `KICK_CODE` close, computed
+    `intentional = true`, and pruned that real member from its own roster and
+    republished — a false eviction, driven by connection-close inference
+    instead of the signed record. Worse, thanks to CONVERGE-003, the
+    mistakenly-pruned member would now promptly and cleanly *leave* on
+    receiving that wrongly-updated blob — CONVERGE-003 makes a bogus eviction
+    complete faster and more silently than before that fix, since there is no
+    longer a stuck "ghost" state to notice and investigate.
+
+    tetron's actual, coordinator-authoritative kick path
+    (`remove_member_roster_only` + `finalize_removal` in `coordinator.rs`) was
+    never the problem — it already mutates the roster directly as a real
+    decision, then closes the victim's connection with `KICK_CODE` as a
+    consequence, not a cause. The bug was a second, redundant, and incorrect
+    path to the same roster mutation, reachable from mere connection-close
+    observation on *any* node running `prune_departed_peers` — not the actual
+    kick command.
+
+    Fix: replace `DisconnectEvent.intentional: bool` with a `CloseReason`
+    enum (`Left` / `Kicked` / `Other`) and a `prunes_member()` helper that is
+    `true` only for `Left`. `coordinator.rs`'s cleanup now prunes the roster
+    only on `Left`; a `Kicked` (or `Other`) close just stamps `last_seen`,
+    matching the existing non-intentional-drop branch. `join.rs`'s reconnect
+    loop narrows its "peer left, not reconnecting" skip to `Left` only,
+    letting a `Kicked` close fall through to the existing `pruned_peers` check
+    immediately below it — which is *already* the correct, signed-roster-
+    driven arbiter (populated only by `prune_departed_peers` after a verified
+    reconverge, never by raw close-code inference) for whether to actually
+    stop reconnecting. This ties every reconnect-suppression and every roster
+    mutation to the signed record, never to a bare close code, continuing the
+    "generation/signed record is the only source of truth" principle
+    CONVERGE-005 established for publishing.
+
+    The synthetic disconnect event `dial_reconnect` sends per member on a
+    cold restore (no live connection yet, used only to force the reconnect
+    loop's first dial attempt) maps to `CloseReason::Other` — it was never a
+    leave or a kick, just a kick-start (pun unintended) for the dial loop.
+
+    Found: 2026-07-16, triaging rayfish 1c193b9 for tetron applicability.
+    """
+    req_id = "CONVERGE-007"
+
