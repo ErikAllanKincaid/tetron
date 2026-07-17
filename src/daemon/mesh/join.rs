@@ -364,10 +364,10 @@ fn register_mesh_peer(
 }
 
 /// Upper bound on a single background roster dial (DIAL-001). Generous on
-/// purpose: the dial runs off the join path, so a slow-but-live member (relay
-/// + NAT holepunch on a flaky link) is worth waiting for, while a truly dead
-/// member is still bounded instead of lingering on iroh's own internal
-/// handshake timeout.
+/// purpose: the dial runs off the join path, so a slow-but-live member
+/// (relay plus NAT holepunch on a flaky link) is worth waiting for, while a
+/// truly dead member is still bounded instead of lingering on iroh's own
+/// internal handshake timeout.
 const MESH_PEER_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Dial every other roster member (skipping ourselves and the
