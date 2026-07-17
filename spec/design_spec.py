@@ -1331,6 +1331,68 @@ class MonotonicBlobGeneration(Requirement):
     req_id = "CONVERGE-005"
 
 
+# --------------------------------------------------------------------------
+# CONVERGE-006: Member boot-restore has no config fallback (asymmetric with
+# the coordinator restore path)
+# --------------------------------------------------------------------------
+
+class MemberRestoreConfigFallback(Requirement):
+    """REQUIREMENT-ID: CONVERGE-006
+
+    `connect_all_networks`'s member-restore path (`join_network_inner(initial
+    = false)`) calls `resolve_and_fetch_blob`, which has zero resilience to a
+    transient DHT/network hiccup at boot: it resolves the pkarr record, then
+    fetches the blob from one of the record's seed peers over iroh-blobs, with
+    no local blob-store fallback and no persisted-config fallback. If pkarr
+    resolution fails (relay unreachable, DNS not yet up) or none of the seed
+    peers happen to be dialable at that exact instant, it returns `Err`,
+    `join_network_inner` propagates it, and `connect_all_networks` just logs a
+    warning and moves to the next network. The network is silently absent for
+    that daemon's entire runtime -- invisible in `tetron status`, with no
+    retry, no backoff, recoverable only by noticing and running `sudo tetron
+    restart` again.
+
+    This is asymmetric with the *coordinator* restore path:
+    `restore_member_roster` (`runtime.rs`) tries the local blob store first,
+    then DHT/seeds, and if DHT resolution fails outright, falls back to the
+    persisted config roster (`NetworkConfig.members`/`.approved`) rather than
+    erroring out -- a restarting coordinator degrades gracefully to a
+    possibly-stale-but-non-empty roster. A restarting member gets none of
+    that, even though the same config-roster data is already persisted for
+    members too (`persist_join_config` writes it on every successful
+    join/reconnect) -- it is simply never consulted on this path.
+
+    Fix: on `join_network_inner`'s boot-restore call only (`!initial` -- a
+    fresh `tetron join` still fails loudly, which is correct: there is no
+    prior membership to fall back to), if `resolve_and_fetch_blob` fails,
+    build a `GroupBlob`-shaped fallback directly from the persisted
+    `NetworkConfig` (mirroring `restore_member_roster`'s config-fallback
+    branch): `members`/`approved` from config, `generation: 0` (informational
+    only for a member, which never publishes), `subnet` from
+    `config::node_subnet()` (safe per the SUBNET-BUG-001 invariant that an
+    already-joined member's node subnet already matches its network's), empty
+    `suggested_firewall`/`reusable_keys`/`invites` (not persisted per-member;
+    the next successful reconverge repopulates them like any other stale
+    field). If the config lookup also comes up empty (no member entries
+    persisted, e.g. this network was never actually joined), propagate the
+    original error unchanged.
+
+    A fresh `dial_reconnect` still runs against this fallback blob exactly as
+    it already does for a live-fetched one, so the existing "coordinator
+    offline at restore, reconnect loop will retry" degrade-and-recover
+    machinery is unaffected -- this only widens what counts as "got *a*
+    roster to start from" to include the persisted config, not just a live
+    DHT/seed fetch.
+
+    Found: 2026-07-16, while investigating CONVERGE-004 (a related but
+    distinct finding: initial diagnosis of "no poller ever spawns on
+    boot-restore" was live-reverified and found inaccurate for the ordinary
+    reconnect-succeeds case -- `finalize_join` always spawns one. The real gap
+    was traced to this narrower resolve/fetch-failure window instead.
+    """
+    req_id = "CONVERGE-006"
+
+
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #

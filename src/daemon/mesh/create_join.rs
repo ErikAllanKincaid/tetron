@@ -484,7 +484,27 @@ impl MeshManager {
             anyhow::bail!("already in network '{a}'");
         }
 
-        let data = self.resolve_and_fetch_blob(net_pubkey).await?;
+        let data = match self.resolve_and_fetch_blob(net_pubkey).await {
+            Ok(data) => data,
+            // Boot-time restore only (CONVERGE-006): degrade to the persisted
+            // config roster rather than dropping the network for this
+            // daemon's entire runtime on a transient DHT/network hiccup at
+            // boot. A fresh `tetron join` (initial=true) still fails loudly —
+            // there is no prior membership to fall back to.
+            Err(e) if !initial => {
+                let Some(name) = alias else { return Err(e) };
+                let Some(fallback) = self.fallback_blob_from_config(name) else {
+                    return Err(e);
+                };
+                tracing::warn!(
+                    network = %name,
+                    error = %e,
+                    "could not resolve/fetch network blob on restore; falling back to persisted config"
+                );
+                fallback
+            }
+            Err(e) => return Err(e),
+        };
 
         let alpn = transport::network_alpn(&net_pubkey);
         let my_ip = self.identity.local_ip();
@@ -600,6 +620,62 @@ impl MeshManager {
             }
         }
         anyhow::bail!("could not fetch group blob from any peer")
+    }
+
+    /// Build a `GroupBlob`-shaped fallback from `name`'s persisted config
+    /// roster (CONVERGE-006), for when `resolve_and_fetch_blob` fails on a
+    /// boot-time restore. Mirrors `restore_member_roster`'s config-fallback
+    /// branch (the coordinator-restore counterpart), reusing data
+    /// `persist_join_config` already writes on every successful join/
+    /// reconnect. `generation: 0` is purely informational here — a member
+    /// never publishes, and the next successful reconverge replaces it (and
+    /// the empty firewall/reusable-key/invite fields) with the real, current
+    /// blob. Returns `None` if there is no config entry or it has no members
+    /// (nothing to fall back to).
+    fn fallback_blob_from_config(&self, name: &str) -> Option<crate::membership::GroupBlob> {
+        let nc = config::load_network(name).ok().flatten()?;
+        if nc.members.is_empty() {
+            return None;
+        }
+        let members = nc
+            .members
+            .iter()
+            .map(|entry| crate::membership::Member {
+                identity: entry.identity,
+                ip: entry.ip,
+                is_coordinator: entry.is_coordinator,
+                hostname: entry.hostname.clone(),
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+                last_seen: None,
+            })
+            .collect();
+        let approved = nc
+            .approved
+            .iter()
+            .map(|entry| ApprovedEntry {
+                identity: entry.identity,
+                ip: entry.ip,
+                hostname: entry.hostname.clone(),
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+            })
+            .collect();
+        Some(crate::membership::GroupBlob {
+            generation: 0,
+            members,
+            approved,
+            suggested_firewall: SuggestedFirewall::default(),
+            name: Some(name.to_string()),
+            // Safe per the SUBNET-BUG-001 invariant: an already-joined member's
+            // node subnet already matches its network's, so the node's own
+            // configured subnet is the correct value here, not the default.
+            subnet: Some(config::node_subnet()),
+            reusable_keys: BTreeMap::new(),
+            invites: BTreeMap::new(),
+        })
     }
 
     /// Fresh-join dial: try each coordinator in `coordinator_dial_order` (minter
