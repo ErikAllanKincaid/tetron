@@ -1,9 +1,7 @@
 // The daemon's modules live in the `tetron` library crate (`src/lib.rs`) so
 // integration tests and benchmarks can reach them; this binary is the CLI/IPC
 // client built on top.
-use tetron::{
-    config, daemon, invite, ipc, logdir, membership, shutdown, stats,
-};
+use tetron::{config, daemon, invite, ipc, logdir, membership, shutdown, stats};
 
 use std::sync::{Arc, atomic};
 
@@ -87,12 +85,24 @@ pub(crate) enum Command {
         name: String,
     },
     /// Destroy a network (coordinator only)
+    ///
+    /// With a single coordinator, nukes immediately. With two or more
+    /// coordinators, requires a second: running this on a coordinator
+    /// proposes (or seconds, if a proposal already exists); once two
+    /// distinct coordinators have proposed within the last 24h, the
+    /// network is destroyed.
     Nuke {
         /// Three-word network name
         name: String,
         /// Force destroy even if other members exist
         #[arg(long)]
         force: bool,
+        /// Withdraw your own pending nuke proposal instead of proposing
+        #[arg(long, conflicts_with_all = ["force", "second"])]
+        cancel: bool,
+        /// Second a specific coordinator's proposal by short id (from `tetron status`)
+        #[arg(long, conflicts_with = "cancel")]
+        second: Option<String>,
     },
     /// Remove a member from a closed network (coordinator only)
     #[command(visible_alias = "boot")]
@@ -405,7 +415,12 @@ async fn main() -> Result<()> {
             hostname,
             tor,
         } => ipc_join(&network_key, name.as_deref(), hostname, tor).await,
-        Command::Nuke { name, force } => ipc_nuke(&name, force).await,
+        Command::Nuke {
+            name,
+            force,
+            cancel,
+            second,
+        } => ipc_nuke(&name, force, cancel, second.as_deref()).await,
         Command::Kick { network, peer } => ipc_kick(&network, &peer).await,
         Command::Status => ipc_status().await,
         Command::Daemon => {
@@ -441,7 +456,6 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 // Client-side commands (daemon optional)
 // ---------------------------------------------------------------------------
-
 
 /// `tetron config get/set/unset`: view or change global daemon settings. Writes
 /// `settings.toml` directly; relay/discovery/subnet all take effect on the next
@@ -497,7 +511,9 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             let mut cfg = config::load()?;
             config::config_set(&mut cfg, &key, "", false)?;
             config::save_settings(&cfg)?;
-            println!("Reset {key} to default. Run 'sudo tetron restart' for changes to take effect.");
+            println!(
+                "Reset {key} to default. Run 'sudo tetron restart' for changes to take effect."
+            );
         }
     }
     Ok(())

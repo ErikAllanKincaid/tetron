@@ -55,7 +55,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, pending_requests) = {
+        let (members, member_count, pending_requests, nuke_proposals) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -69,11 +69,20 @@ impl MeshManager {
                         member_count: 0,
                         peers: vec![],
                         pending_requests: 0,
+                        nuke_proposals: vec![],
                     };
                 }
             };
             let count = s.members.all().len();
-            (s.roster(), count, 0)
+            let now = now_secs();
+            let proposals = crate::membership::active_nuke_proposers(&s.nuke_proposals, now)
+                .into_iter()
+                .map(|id| ipc::NukeProposalInfo {
+                    short_id: id.chars().take(10).collect(),
+                    proposed_at: s.nuke_proposals[id],
+                })
+                .collect();
+            (s.roster(), count, 0, proposals)
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = self
@@ -111,6 +120,7 @@ impl MeshManager {
             member_count,
             peers,
             pending_requests,
+            nuke_proposals,
         }
     }
 
@@ -164,5 +174,4 @@ impl MeshManager {
             lost_packets: stats.lost_packets,
         }
     }
-
 }

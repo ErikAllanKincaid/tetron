@@ -11,8 +11,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, bail};
 use iroh::EndpointId;
-use tetron_proto::SuggestedFirewall;
 use serde::{Deserialize, Serialize};
+use tetron_proto::SuggestedFirewall;
 
 use crate::control::DeviceCert;
 
@@ -402,7 +402,9 @@ pub mod cidr_opt {
         let opt = Option::<String>::deserialize(d)?;
         match opt {
             None => Ok(None),
-            Some(cidr) => Ok(Some(super::parse_cidr(&cidr).map_err(serde::de::Error::custom)?)),
+            Some(cidr) => Ok(Some(
+                super::parse_cidr(&cidr).map_err(serde::de::Error::custom)?,
+            )),
         }
     }
 }
@@ -620,6 +622,66 @@ pub struct GroupBlob {
     /// `BTreeMap` keeps the encoding canonical.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub invites: BTreeMap<String, InviteEntry>,
+    /// Pending nuke proposals (NUKE-CONSENSUS), keyed by the proposing
+    /// coordinator's full identity string (not the short id — a map key must be
+    /// collision-free, and two coordinators' short ids could theoretically
+    /// collide; short ids are used only for CLI display/matching). Value is the
+    /// Unix-seconds timestamp of the proposal. `tetron nuke` on a network with
+    /// exactly one coordinator nukes immediately (unchanged legacy behavior);
+    /// with two or more, it adds an entry here instead, and any coordinator
+    /// that observes two or more distinct, unexpired proposers executes the
+    /// actual nuke. `BTreeMap` keeps the encoding canonical.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nuke_proposals: BTreeMap<String, u64>,
+}
+
+/// How long a nuke proposal remains valid (NUKE-CONSENSUS). A proposal older
+/// than this no longer counts toward consensus, so a stale entry from months
+/// ago can't silently combine with a fresh one to trigger an unintended nuke.
+pub const NUKE_PROPOSAL_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Count coordinators in a roster (NUKE-CONSENSUS uses this to decide whether
+/// a nuke needs consensus at all — a solo coordinator has no one to second).
+pub fn coordinator_count(members: &[Member]) -> usize {
+    members.iter().filter(|m| m.is_coordinator).count()
+}
+
+/// The proposer identities in `proposals` whose entry has not expired
+/// (NUKE-CONSENSUS's 24h TTL), as of `now` (Unix seconds).
+pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64) -> Vec<&String> {
+    proposals
+        .iter()
+        .filter(|&(_, &proposed_at)| now.saturating_sub(proposed_at) < NUKE_PROPOSAL_TTL_SECS)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Whether `proposals` currently has enough distinct, unexpired proposers to
+/// execute a nuke (NUKE-CONSENSUS requires two or more).
+pub fn nuke_consensus_reached(proposals: &BTreeMap<String, u64>, now: u64) -> bool {
+    active_nuke_proposers(proposals, now).len() >= 2
+}
+
+/// Resolve `tetron nuke --second <short-id>` against the currently active
+/// (unexpired) proposers: exact match or unambiguous prefix, mirroring
+/// [`revoke_invite`]/[`revoke_reusable`]'s id-matching convention. Proposal
+/// keys are full identity strings (not short ids, to keep the map key
+/// collision-free), so a short id is matched as a string prefix — the same
+/// relationship `EndpointId::fmt_short()` has to the full identity string.
+pub fn resolve_nuke_proposer(
+    proposals: &BTreeMap<String, u64>,
+    now: u64,
+    short: &str,
+) -> Result<String> {
+    let matches: Vec<&String> = active_nuke_proposers(proposals, now)
+        .into_iter()
+        .filter(|id| id.starts_with(short))
+        .collect();
+    match matches.as_slice() {
+        [] => bail!("no active nuke proposal from a coordinator matching '{short}'"),
+        [id] => Ok((*id).clone()),
+        _ => bail!("ambiguous proposer id '{short}'"),
+    }
 }
 
 impl ReusableKey {
@@ -691,7 +753,11 @@ impl InviteEntry {
             InviteEntry {
                 id,
                 created,
-                expires: if ttl_secs == 0 { 0 } else { created.saturating_add(ttl_secs) },
+                expires: if ttl_secs == 0 {
+                    0
+                } else {
+                    created.saturating_add(ttl_secs)
+                },
                 revoked: false,
             },
         )
@@ -712,7 +778,8 @@ pub fn revoke_invite(invites: &mut BTreeMap<String, InviteEntry>, id: &str) -> R
         [h] => h.clone(),
         _ => bail!("ambiguous invite id '{id}'"),
     };
-    invites.get_mut(&hash)
+    invites
+        .get_mut(&hash)
         .expect("hash came from this map")
         .revoked = true;
     Ok(())
@@ -762,6 +829,7 @@ pub fn canonical_group_bytes(
     reusable_keys: &BTreeMap<String, ReusableKey>,
     subnet: Option<Subnet>,
     invites: &BTreeMap<String, InviteEntry>,
+    nuke_proposals: &BTreeMap<String, u64>,
 ) -> Vec<u8> {
     let mut sorted_members: Vec<Member> = members.all().into_iter().cloned().collect();
     sorted_members.sort_by_key(|m| m.identity.to_string());
@@ -778,6 +846,7 @@ pub fn canonical_group_bytes(
         subnet,
         reusable_keys: reusable_keys.clone(),
         invites: invites.clone(),
+        nuke_proposals: nuke_proposals.clone(),
     };
     rmp_serde::to_vec_named(&data).expect("msgpack serialize")
 }
@@ -792,6 +861,7 @@ pub fn group_blob_hash(
     reusable_keys: &BTreeMap<String, ReusableKey>,
     subnet: Option<Subnet>,
     invites: &BTreeMap<String, InviteEntry>,
+    nuke_proposals: &BTreeMap<String, u64>,
 ) -> blake3::Hash {
     let bytes = canonical_group_bytes(
         generation,
@@ -802,8 +872,48 @@ pub fn group_blob_hash(
         reusable_keys,
         subnet,
         invites,
+        nuke_proposals,
     );
     blake3::hash(&bytes)
+}
+
+/// Reconstruct and verify a nuke tombstone locally, without fetching from a
+/// peer. A tombstone's content is fully deterministic given just its
+/// `generation` (empty members/approved/reusable_keys/invites/nuke_proposals,
+/// no name, default subnet/firewall — see
+/// `MeshManager::publish_nuke_tombstone`), so any node that resolves the
+/// signed `(hash, generation)` pair can recompute the exact same bytes and
+/// check them against `signed` itself.
+///
+/// This matters because the coordinator that publishes a tombstone calls
+/// `leave_network` immediately after (closing its connections), so it is
+/// typically the *only* node that ever held the blob bytes in its local
+/// store, and is gone as a fetch source by the time anyone else's
+/// reconverge/poller notices the generation bump. Found via live testing,
+/// 2026-07-17: `resolve_network` correctly signaled the new generation to
+/// remaining members, but every `fetch_verified_blob` attempt failed
+/// ("could not fetch updated group blob from any peer or seed") since
+/// nobody was left to serve it — `member_removed` (CONVERGE-003) never
+/// fired, and remaining members polled a resolved-but-unfetchable tombstone
+/// forever. Trying this local reconstruction first (before ever attempting
+/// a peer fetch) sidesteps the distribution problem entirely for the one
+/// case where content is knowable without fetching anything.
+pub fn try_decode_tombstone(signed: blake3::Hash, generation: u64) -> Option<GroupBlob> {
+    let bytes = canonical_group_bytes(
+        generation,
+        &MemberList::new(),
+        &ApprovedList::new(),
+        &SuggestedFirewall::default(),
+        None,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
+    if blake3::hash(&bytes) != signed {
+        return None;
+    }
+    rmp_serde::from_slice(&bytes).ok()
 }
 
 /// Validates that a [`Member`]'s virtual IP is consistent with its identity and
@@ -889,11 +999,7 @@ fn ensure_in_cgnat_range(ip: Ipv4Addr, subnet: Subnet) -> Result<()> {
         base_addr,
         prefix,
     );
-    anyhow::ensure!(
-        ip_u != base,
-        "ip {} is the reserved network address",
-        ip,
-    );
+    anyhow::ensure!(ip_u != base, "ip {} is the reserved network address", ip,);
     anyhow::ensure!(
         ip_u != base + 1,
         "ip {} is the reserved TUN gateway address",
@@ -1004,7 +1110,10 @@ mod tests {
     fn test_derive_ip_with_index_zero_matches_derive_ip() {
         for i in 0..=255u8 {
             let id = test_id(i);
-            assert_eq!(derive_ip(&id, default_subnet()), derive_ip_with_index(&id, 0, default_subnet()));
+            assert_eq!(
+                derive_ip(&id, default_subnet()),
+                derive_ip_with_index(&id, 0, default_subnet())
+            );
         }
     }
 
@@ -1430,7 +1539,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let b = canonical_group_bytes(
@@ -1439,7 +1550,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_eq!(a, b);
@@ -1457,7 +1570,9 @@ mod tests {
                 &approved,
                 &tetron_proto::SuggestedFirewall::default(),
                 None,
-                &BTreeMap::new(), None,
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
             ),
             canonical_group_bytes(
@@ -1466,7 +1581,9 @@ mod tests {
                 &approved,
                 &tetron_proto::SuggestedFirewall::default(),
                 None,
-                &BTreeMap::new(), None,
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
             ),
         );
@@ -1482,7 +1599,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let members2 = make_member_list(&[1, 2, 3]);
@@ -1492,7 +1611,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_ne!(h1, h2);
@@ -1523,7 +1644,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let data = decode_group_blob(&bytes).unwrap();
@@ -1541,7 +1664,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let hash = group_blob_hash(
@@ -1550,7 +1675,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let data = verify_group_blob(&bytes, &hash).unwrap();
@@ -1588,7 +1715,9 @@ mod tests {
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let bad_hash = blake3::hash(b"wrong data");
@@ -1615,8 +1744,28 @@ mod tests {
             .unwrap();
         let approved = ApprovedList::new();
         let sf = tetron_proto::SuggestedFirewall::default();
-        let bytes = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
-        let hash = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let bytes = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let hash = group_blob_hash(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, Some(12345));
     }
@@ -1642,9 +1791,29 @@ mod tests {
             .unwrap();
         let approved = ApprovedList::new();
         let sf = tetron_proto::SuggestedFirewall::default();
-        let bytes = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let bytes = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert!(!String::from_utf8_lossy(&bytes).contains("last_seen"));
-        let hash = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let hash = group_blob_hash(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, None);
     }
@@ -1661,8 +1830,28 @@ mod tests {
         sf.insert("subject".to_string(), hs);
 
         // Deterministic: BTreeMap keys canonicalize regardless of insert order.
-        let a = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
-        let b = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let a = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let b = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert_eq!(a, b);
 
         // Suggestions are part of the signed content, so they change the hash.
@@ -1672,10 +1861,22 @@ mod tests {
             &approved,
             &SuggestedFirewall::new(),
             None,
-            &BTreeMap::new(), None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
-        let h_sf = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let h_sf = group_blob_hash(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert_ne!(h_empty, h_sf);
     }
 
@@ -1734,7 +1935,9 @@ mod tests {
             &approved,
             &SuggestedFirewall::default(),
             None,
-            &keys, None,
+            &keys,
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let blob = decode_group_blob(&bytes).unwrap();
@@ -1754,7 +1957,9 @@ mod tests {
             &approved,
             &SuggestedFirewall::default(),
             None,
-            &empty, None,
+            &empty,
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -1768,7 +1973,9 @@ mod tests {
             &approved,
             &SuggestedFirewall::default(),
             None,
-            &keys, None,
+            &keys,
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_ne!(h0, h1, "adding a reusable key must change the signed hash");
@@ -1781,7 +1988,9 @@ mod tests {
             &approved,
             &SuggestedFirewall::default(),
             None,
-            &keys, None,
+            &keys,
+            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_ne!(
@@ -1862,6 +2071,7 @@ mod tests {
                 subnet: None,
                 reusable_keys: keys,
                 invites: BTreeMap::new(),
+                nuke_proposals: BTreeMap::new(),
             }
         };
         // Live key: present, not revoked, now < expires.
@@ -1907,7 +2117,9 @@ mod tests {
             collision_index: 0,
             last_seen: None,
         };
-        let err = validate_member(&member, default_subnet()).unwrap_err().to_string();
+        let err = validate_member(&member, default_subnet())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("does not match"), "{err}");
     }
 
@@ -1982,7 +2194,8 @@ mod tests {
             let ip = derive_ip(&id, default_subnet());
             if !is_reserved_ipv4(ip, default_subnet())
                 && ip != Ipv4Addr::new(10, 88, 0, 0)  // network
-                && ip != Ipv4Addr::new(10, 88, 0, 1)  // gateway
+                && ip != Ipv4Addr::new(10, 88, 0, 1)
+            // gateway
             {
                 let member = Member {
                     identity: id,
@@ -2033,6 +2246,7 @@ mod tests {
             subnet: None,
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
         let err = decode_group_blob(&bytes).unwrap_err().to_string();
@@ -2061,6 +2275,7 @@ mod tests {
             subnet: None,
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
         assert!(decode_group_blob(&bytes).is_err());
@@ -2155,7 +2370,10 @@ mod tests {
         let (a, b) = find_colliding_pair()
             .expect("birthday bound: should find a collision within 200k identities");
         // Sanity: a and b both map to the same index-0 IP.
-        assert_eq!(derive_ip(&a, default_subnet()), derive_ip(&b, default_subnet()));
+        assert_eq!(
+            derive_ip(&a, default_subnet()),
+            derive_ip(&b, default_subnet())
+        );
         let ip0 = derive_ip(&a, default_subnet());
 
         // Add `a` to the list at its index-0 IP.
@@ -2223,8 +2441,14 @@ mod tests {
     fn is_reserved_ipv4_covers_magic_dns() {
         // The predicate test isolates the guard: it fails if anyone removes the
         // magic DNS IP from the reserved set, independent of IP-derivation.
-        assert!(is_reserved_ipv4(magic_dns_v4(default_subnet()), default_subnet()));
-        assert!(!is_reserved_ipv4(Ipv4Addr::new(100, 64, 0, 7), default_subnet()));
+        assert!(is_reserved_ipv4(
+            magic_dns_v4(default_subnet()),
+            default_subnet()
+        ));
+        assert!(!is_reserved_ipv4(
+            Ipv4Addr::new(100, 64, 0, 7),
+            default_subnet()
+        ));
     }
 
     #[test]
@@ -2281,7 +2505,10 @@ mod tests {
         assert_eq!(subnet_netmask(16), Ipv4Addr::new(255, 255, 0, 0));
         assert_eq!(subnet_netmask(24), Ipv4Addr::new(255, 255, 255, 0));
         assert_eq!(subnet_gateway(CUSTOM), Ipv4Addr::new(10, 99, 0, 1));
-        assert_eq!(subnet_gateway(default_subnet()), Ipv4Addr::new(10, 88, 0, 1));
+        assert_eq!(
+            subnet_gateway(default_subnet()),
+            Ipv4Addr::new(10, 88, 0, 1)
+        );
     }
 
     #[test]
@@ -2294,10 +2521,16 @@ mod tests {
         // Identical range overlaps itself.
         assert!(subnets_overlap(overlay, overlay));
         // A disjoint home LAN does not.
-        assert!(!subnets_overlap((Ipv4Addr::new(192, 168, 1, 5), 24), overlay));
+        assert!(!subnets_overlap(
+            (Ipv4Addr::new(192, 168, 1, 5), 24),
+            overlay
+        ));
         // Crucially, Tailscale's 100.64.0.0/10 does NOT overlap 10.88.0.0/24 —
         // this is the whole point of the safe default.
-        assert!(!subnets_overlap((Ipv4Addr::new(100, 64, 0, 1), 10), overlay));
+        assert!(!subnets_overlap(
+            (Ipv4Addr::new(100, 64, 0, 1), 10),
+            overlay
+        ));
     }
 
     #[test]
@@ -2343,6 +2576,7 @@ mod tests {
             &BTreeMap::new(),
             Some(CUSTOM),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         let blob = decode_group_blob(&bytes).unwrap();
         assert_eq!(resolve_subnet(blob.subnet), CUSTOM);
@@ -2367,5 +2601,203 @@ mod tests {
             .unwrap();
         }
         list
+    }
+
+    // -- NUKE-CONSENSUS --------------------------------------------------------
+
+    fn make_member(seed: u8, is_coordinator: bool) -> Member {
+        let id = test_id(seed);
+        Member {
+            identity: id,
+            ip: derive_ip(&id, default_subnet()),
+            is_coordinator,
+            hostname: None,
+            user_identity: None,
+            device_cert: None,
+            collision_index: 0,
+            last_seen: None,
+        }
+    }
+
+    #[test]
+    fn coordinator_count_counts_only_coordinators() {
+        let members = vec![
+            make_member(1, true),
+            make_member(2, false),
+            make_member(3, true),
+        ];
+        assert_eq!(coordinator_count(&members), 2);
+        assert_eq!(coordinator_count(&[]), 0);
+    }
+
+    #[test]
+    fn active_nuke_proposers_excludes_expired() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("alice".to_string(), now - 10); // fresh
+        proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1); // expired
+        let active = active_nuke_proposers(&proposals, now);
+        assert_eq!(active, vec!["alice"]);
+    }
+
+    #[test]
+    fn active_nuke_proposers_boundary_is_expired() {
+        // Exactly at the TTL boundary counts as expired (strict `<`).
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("alice".to_string(), now - NUKE_PROPOSAL_TTL_SECS);
+        assert!(active_nuke_proposers(&proposals, now).is_empty());
+    }
+
+    #[test]
+    fn nuke_consensus_requires_two_distinct_active_proposers() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        assert!(!nuke_consensus_reached(&proposals, now));
+        proposals.insert("alice".to_string(), now);
+        assert!(!nuke_consensus_reached(&proposals, now));
+        proposals.insert("bob".to_string(), now);
+        assert!(nuke_consensus_reached(&proposals, now));
+    }
+
+    #[test]
+    fn nuke_consensus_not_reached_with_one_fresh_one_expired() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("alice".to_string(), now);
+        proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
+        assert!(!nuke_consensus_reached(&proposals, now));
+    }
+
+    #[test]
+    fn resolve_nuke_proposer_matches_unambiguous_prefix() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("aaaa1111".to_string(), now);
+        proposals.insert("bbbb2222".to_string(), now);
+        assert_eq!(
+            resolve_nuke_proposer(&proposals, now, "aaaa").unwrap(),
+            "aaaa1111"
+        );
+    }
+
+    #[test]
+    fn resolve_nuke_proposer_rejects_no_match() {
+        let now = 1_000_000u64;
+        let proposals = BTreeMap::new();
+        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+    }
+
+    #[test]
+    fn resolve_nuke_proposer_rejects_ambiguous_match() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("aaaa1111".to_string(), now);
+        proposals.insert("aaaa2222".to_string(), now);
+        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+    }
+
+    #[test]
+    fn resolve_nuke_proposer_ignores_expired() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("aaaa1111".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
+        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+    }
+
+    #[test]
+    fn nuke_proposals_field_roundtrips_and_defaults_empty() {
+        // Old blobs without the field must still decode (D1/back-compat), and a
+        // blob with no proposals must not serialize the (empty) field at all —
+        // matching `reusable_keys`/`invites`'s `skip_serializing_if` convention.
+        let members = make_member_list(&[1]);
+        let approved = ApprovedList::new();
+        let sf = tetron_proto::SuggestedFirewall::default();
+        let empty_bytes = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert!(!String::from_utf8_lossy(&empty_bytes).contains("nuke_proposals"));
+
+        let mut proposals = BTreeMap::new();
+        proposals.insert(test_id(9).to_string(), 42u64);
+        let bytes = canonical_group_bytes(
+            0,
+            &members,
+            &approved,
+            &sf,
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &proposals,
+        );
+        let decoded: GroupBlob = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.nuke_proposals, proposals);
+    }
+
+    #[test]
+    fn try_decode_tombstone_matches_deterministic_hash() {
+        // A tombstone's hash depends only on generation -- this must decode
+        // locally without any fetch, and round-trip back to an empty blob.
+        let hash = group_blob_hash(
+            7,
+            &MemberList::new(),
+            &ApprovedList::new(),
+            &tetron_proto::SuggestedFirewall::default(),
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let decoded = try_decode_tombstone(hash, 7).expect("must decode as a tombstone");
+        assert_eq!(decoded.generation, 7);
+        assert!(decoded.members.is_empty());
+        assert!(decoded.approved.is_empty());
+    }
+
+    #[test]
+    fn try_decode_tombstone_rejects_wrong_generation() {
+        // The hash is generation-specific -- claiming a different generation
+        // for the same hash must not verify (would let a stale tombstone be
+        // replayed at a higher generation).
+        let hash = group_blob_hash(
+            7,
+            &MemberList::new(),
+            &ApprovedList::new(),
+            &tetron_proto::SuggestedFirewall::default(),
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert!(try_decode_tombstone(hash, 8).is_none());
+    }
+
+    #[test]
+    fn try_decode_tombstone_rejects_non_tombstone_hash() {
+        // A real (non-empty) blob's hash must not be mistaken for a tombstone.
+        let members = make_member_list(&[1, 2]);
+        let hash = group_blob_hash(
+            7,
+            &members,
+            &ApprovedList::new(),
+            &tetron_proto::SuggestedFirewall::default(),
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert!(try_decode_tombstone(hash, 7).is_none());
     }
 }

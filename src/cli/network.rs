@@ -144,13 +144,20 @@ pub(crate) async fn ipc_join(
     Ok(())
 }
 
-pub(crate) async fn ipc_nuke(name: &str, force: bool) -> Result<()> {
+pub(crate) async fn ipc_nuke(
+    name: &str,
+    force: bool,
+    cancel: bool,
+    second: Option<&str>,
+) -> Result<()> {
     let mut stream = ipc::connect().await?;
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Nuke {
             name: name.to_string(),
             force,
+            cancel,
+            second: second.map(str::to_string),
         },
     )
     .await?;
@@ -199,4 +206,3 @@ pub(crate) async fn ipc_leave(name: &str) -> Result<()> {
     }
     Ok(())
 }
-

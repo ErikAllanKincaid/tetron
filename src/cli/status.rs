@@ -88,7 +88,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
         // Daemon not running — show saved config
         let app_config = config::load()?;
         println!();
-            println!("  ! daemon not running");
+        println!("  ! daemon not running");
         if app_config.networks.is_empty() {
             println!("  (no saved networks)");
             println!();
@@ -183,12 +183,9 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 println!();
                 println!(
                     "  ! daemon is v{} but CLI is v{}",
-                    daemon_version,
-                    cli_version,
+                    daemon_version, cli_version,
                 );
-                println!(
-                    "  (run `sudo tetron restart` to restart the daemon onto the new binary)"
-                );
+                println!("  (run `sudo tetron restart` to restart the daemon onto the new binary)");
             }
             println!();
         }
@@ -229,14 +226,28 @@ fn print_network(net: &ipc::NetworkStatus) {
     {
         println!("    join {key}");
     }
+
+    // NUKE-CONSENSUS: pending proposals, so members see one being considered
+    // before it executes.
+    if !net.nuke_proposals.is_empty() {
+        let ids: Vec<&str> = net
+            .nuke_proposals
+            .iter()
+            .map(|p| p.short_id.as_str())
+            .collect();
+        println!(
+            "    ! nuke proposed by {} ({}/2) — run `tetron nuke {}` to second, or `tetron nuke {} --cancel` to withdraw yours",
+            ids.join(", "),
+            net.nuke_proposals.len(),
+            net.name,
+            net.name,
+        );
+    }
 }
 
 /// Build one peer's status line (host, ipv4, via, rtt, tx, rx).
 fn render_peer_line(peer: &ipc::PeerStatus) -> String {
-    let host = peer
-        .hostname
-        .clone()
-        .unwrap_or_else(|| peer.ip.to_string());
+    let host = peer.hostname.clone().unwrap_or_else(|| peer.ip.to_string());
     match &peer.connection {
         Some(ci) => {
             let via = match ci.conn_type {

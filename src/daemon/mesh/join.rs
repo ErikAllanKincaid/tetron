@@ -54,6 +54,9 @@ pub(crate) struct JoinParams {
     /// From the fetched blob: single-use invite entries, so this node can mint
     /// invites and validate redemptions if it later holds the network key.
     pub(crate) invites: BTreeMap<String, crate::membership::InviteEntry>,
+    /// From the fetched blob: pending nuke proposals (NUKE-CONSENSUS), carried
+    /// into the joiner's state purely for `tetron status` visibility.
+    pub(crate) nuke_proposals: BTreeMap<String, u64>,
     /// From the fetched blob: its generation (CONVERGE-005), adopted directly
     /// into the joiner's initial `NetworkState` (never bumped — this node hasn't
     /// mutated anything yet). Only load-bearing if this node later publishes
@@ -105,6 +108,7 @@ pub(crate) async fn join_mesh_shared(
         suggested_firewall,
         reusable_keys,
         invites,
+        nuke_proposals,
         generation,
         transport,
         initial,
@@ -190,6 +194,7 @@ pub(crate) async fn join_mesh_shared(
         suggested_firewall,
         reusable_keys,
         invites,
+        nuke_proposals,
         generation,
         &blob_store,
     )
@@ -311,6 +316,7 @@ async fn build_member_state(
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
+    nuke_proposals: BTreeMap<String, u64>,
     generation: u64,
     blob_store: &FsStore,
 ) -> SharedNetworkState {
@@ -330,6 +336,7 @@ async fn build_member_state(
         subnet: crate::config::node_subnet(),
         reusable_keys,
         invites,
+        nuke_proposals,
     };
     ns.refresh_snapshot();
     if let Some(snap) = &ns.snapshot {
@@ -842,7 +849,9 @@ pub(crate) fn spawn_reconnect_loop(
             // old connection: ignore it entirely rather than tearing down the
             // live link and redialing on top of it (see conn_stable_id).
             let removed = match event.conn_stable_id {
-                Some(id) => peers.remove_peer_from_network_if(&peer_ip, &peer_ipv6, &event.network, id),
+                Some(id) => {
+                    peers.remove_peer_from_network_if(&peer_ip, &peer_ipv6, &event.network, id)
+                }
                 None => {
                     // Synthetic cold-restore kick: nothing is registered yet, so
                     // force the reconnect dial below.
@@ -884,96 +893,96 @@ pub(crate) fn spawn_reconnect_loop(
             let ep = ep.clone();
             let alpn = alpn.clone();
             let network_name = network_name.clone();
-                            let peers = peers.clone();
-                            let tun_tx = tun_tx.clone();
-                            let disconnect_tx = disconnect_tx.clone();
-                            let token = token.clone();
-                            let stats = stats.clone();
-                            let promote_tx = promote_tx.clone();
-                            let reconverge_notify = reconverge_notify.clone();
-                            let pending_pongs = pending_pongs.clone();
-                            let live_state = live_state.clone();
+            let peers = peers.clone();
+            let tun_tx = tun_tx.clone();
+            let disconnect_tx = disconnect_tx.clone();
+            let token = token.clone();
+            let stats = stats.clone();
+            let promote_tx = promote_tx.clone();
+            let reconverge_notify = reconverge_notify.clone();
+            let pending_pongs = pending_pongs.clone();
+            let live_state = live_state.clone();
 
-                            tokio::spawn(async move {
-                                let mut backoff = BACKOFF_INITIAL;
-                                let net_name = network_name.clone();
-                                loop {
-                                    if token.is_cancelled() {
-                                        return;
-                                    }
-                                    tracing::info!(peer = %peer_id.fmt_short(), secs = backoff.as_secs(), "reconnecting in");
-                                    tokio::select! {
-                                        _ = token.cancelled() => return,
-                                        _ = tokio::time::sleep(backoff) => {}
-                                    }
-                                    backoff = (backoff * 2).min(BACKOFF_MAX);
+            tokio::spawn(async move {
+                let mut backoff = BACKOFF_INITIAL;
+                let net_name = network_name.clone();
+                loop {
+                    if token.is_cancelled() {
+                        return;
+                    }
+                    tracing::info!(peer = %peer_id.fmt_short(), secs = backoff.as_secs(), "reconnecting in");
+                    tokio::select! {
+                        _ = token.cancelled() => return,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(BACKOFF_MAX);
 
-                                    match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
-                                        Ok(conn) => {
-                                            let (mut send, _) = match conn.open_bi().await {
-                                                Ok(bi) => bi,
-                                                Err(e) => {
-                                                    tracing::warn!(error = %e, "reconnect handshake failed");
-                                                    continue;
-                                                }
-                                            };
-                                            if let Err(e) = control::send_msg(
-                                                &mut send,
-                                                &ControlMsg::MeshHello {
-                                                    identity: my_identity,
-                                                    ip: my_ip,
-                                                    hostname: outgoing_hostname(&net_name),
-                                                    device_cert: None,
-                                                },
-                                            )
-                                            .await
-                                            {
-                                                tracing::warn!(error = %e, "reconnect MeshHello failed");
-                                                continue;
-                                            }
-                                            tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "reconnected to peer");
-                                            peers.add(peer_ip, peer_ipv6, conn.clone(), peer_id, &net_name);
-                                            // Spawn a fresh control listener on the new connection
-                                            // (the old one died when the connection dropped).
-                                            {
-                                                let cl_live = live_state.clone();
-                                                let cl_net_pubkey = cl_live.read().unwrap().network_public_key;
-                                                spawn_member_control_listener(
-                                                    conn.clone(),
-                                                    peer_id,
-                                                    token.clone(),
-                                                    cl_live,
-                                                    net_name.clone(),
-                                                    peers.clone(),
-                                                    ep.clone(),
-                                                    my_identity,
-                                                    cl_net_pubkey,
-                                                    promote_tx.clone(),
-                                                    reconverge_notify.clone(),
-                                                    pending_pongs.clone(),
-                                                );
-                                            }
-                                            forward::spawn_peer_reader(
-                                                conn,
-                                                peer_id,
-                                                peer_ip,
-                                                peer_ipv6,
-                                                net_name,
-                                                forward::ForwardCtx {
-                                                    tun_tx,
-                                                    disconnect_tx,
-                                                    token: token.clone(),
-                                                    stats,
-                                                },
-                                            );
-                                            return;
-                                        }
-                                        Err(e) => {
-                                            tracing::debug!(error = %e, "reconnect attempt failed");
-                                        }
-                                    }
+                    match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
+                        Ok(conn) => {
+                            let (mut send, _) = match conn.open_bi().await {
+                                Ok(bi) => bi,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "reconnect handshake failed");
+                                    continue;
                                 }
-                            });
+                            };
+                            if let Err(e) = control::send_msg(
+                                &mut send,
+                                &ControlMsg::MeshHello {
+                                    identity: my_identity,
+                                    ip: my_ip,
+                                    hostname: outgoing_hostname(&net_name),
+                                    device_cert: None,
+                                },
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %e, "reconnect MeshHello failed");
+                                continue;
+                            }
+                            tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "reconnected to peer");
+                            peers.add(peer_ip, peer_ipv6, conn.clone(), peer_id, &net_name);
+                            // Spawn a fresh control listener on the new connection
+                            // (the old one died when the connection dropped).
+                            {
+                                let cl_live = live_state.clone();
+                                let cl_net_pubkey = cl_live.read().unwrap().network_public_key;
+                                spawn_member_control_listener(
+                                    conn.clone(),
+                                    peer_id,
+                                    token.clone(),
+                                    cl_live,
+                                    net_name.clone(),
+                                    peers.clone(),
+                                    ep.clone(),
+                                    my_identity,
+                                    cl_net_pubkey,
+                                    promote_tx.clone(),
+                                    reconverge_notify.clone(),
+                                    pending_pongs.clone(),
+                                );
+                            }
+                            forward::spawn_peer_reader(
+                                conn,
+                                peer_id,
+                                peer_ip,
+                                peer_ipv6,
+                                net_name,
+                                forward::ForwardCtx {
+                                    tun_tx,
+                                    disconnect_tx,
+                                    token: token.clone(),
+                                    stats,
+                                },
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "reconnect attempt failed");
+                        }
+                    }
+                }
+            });
         }
     };
     tokio::spawn(reconnect_loop.instrument(span))

@@ -41,6 +41,13 @@ pub enum IpcMessage {
     Nuke {
         name: String,
         force: bool,
+        /// Withdraw the caller's own pending nuke proposal (NUKE-CONSENSUS).
+        #[serde(default)]
+        cancel: bool,
+        /// Second a specific proposer's proposal by short id, erroring if it
+        /// doesn't match an active one rather than silently proposing fresh.
+        #[serde(default)]
+        second: Option<String>,
     },
     /// Coordinator-only: remove a member from a closed network. Prunes it from the
     /// roster + approved list, republishes the signed blob, and disconnects it
@@ -195,6 +202,20 @@ pub struct NetworkStatus {
     /// the live-approval path. A full-tetron coordinator may still populate it.
     #[serde(default)]
     pub pending_requests: usize,
+    /// Active (unexpired) nuke proposals (NUKE-CONSENSUS), so members can see a
+    /// nuke is being considered before it executes. Empty on a solo-coordinator
+    /// network (nuke there is immediate, no proposal phase).
+    #[serde(default)]
+    pub nuke_proposals: Vec<NukeProposalInfo>,
+}
+
+/// One pending nuke proposal, as surfaced by `tetron status` (NUKE-CONSENSUS).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NukeProposalInfo {
+    /// Short id of the proposing coordinator (prefix of its full identity string).
+    pub short_id: String,
+    /// Unix-seconds timestamp of the proposal.
+    pub proposed_at: u64,
 }
 
 #[derive(
@@ -394,7 +415,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_join_with_invite_roundtrip() {
         let req = IpcMessage::Join {
@@ -407,10 +427,7 @@ mod tests {
         let bytes = rmp_serde::to_vec(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
         match decoded {
-            IpcMessage::Join {
-                invite,
-                ..
-            } => {
+            IpcMessage::Join { invite, .. } => {
                 assert_eq!(invite, Some(vec![1, 2, 3]));
             }
             _ => panic!("wrong variant"),

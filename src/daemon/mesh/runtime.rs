@@ -12,6 +12,9 @@ struct RestoredRoster {
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
+    /// Pending nuke proposals (NUKE-CONSENSUS), restored so a coordinator
+    /// restart doesn't silently drop an in-flight proposal.
+    nuke_proposals: BTreeMap<String, u64>,
     /// The restored blob's own generation (CONVERGE-005), or 0 if restored from
     /// the config fallback (no signed blob was reachable).
     generation: u64,
@@ -39,12 +42,14 @@ impl MeshManager {
         // Reusable join keys and invites are authoritative in the signed blob too.
         let mut reusable_keys = BTreeMap::new();
         let mut invites = BTreeMap::new();
+        let mut nuke_proposals = BTreeMap::new();
         let mut generation = 0u64;
         match self.restore_roster_from_blob(net_public_key).await {
             Ok(data) => {
                 suggested_firewall = data.suggested_firewall.clone();
                 reusable_keys = data.reusable_keys.clone();
                 invites = data.invites.clone();
+                nuke_proposals = data.nuke_proposals.clone();
                 generation = data.generation;
                 for m in &data.members {
                     let _ = member_list.add(m.clone());
@@ -111,6 +116,7 @@ impl MeshManager {
             suggested_firewall,
             reusable_keys,
             invites,
+            nuke_proposals,
             generation,
         }
     }
@@ -156,6 +162,7 @@ impl MeshManager {
             suggested_firewall,
             reusable_keys,
             invites,
+            nuke_proposals,
             generation,
         } = self
             .restore_member_roster(name, net_public_key, net_config, my_ip, &persisted_hostname)
@@ -176,6 +183,7 @@ impl MeshManager {
             subnet: self.identity.subnet(),
             reusable_keys,
             invites,
+            nuke_proposals,
         };
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
@@ -286,10 +294,25 @@ impl MeshManager {
         })
     }
 
+    /// Destroy a network (NUKE-CONSENSUS). A solo coordinator (no one to
+    /// second) nukes immediately, unchanged from the original behavior. With
+    /// two or more coordinators, this adds the caller's own proposal to the
+    /// signed blob instead of nuking outright; if that action itself brings
+    /// the count of distinct, unexpired proposers to two or more, this same
+    /// call executes the nuke immediately. `cancel` withdraws the caller's own
+    /// proposal. `second` optionally names (by short id) the specific proposal
+    /// being seconded, for an explicit error if it doesn't match an active one
+    /// rather than silently proposing fresh.
     #[tracing::instrument(skip(self), fields(net = name))]
-    pub(crate) async fn nuke_network(&self, name: &str, force: bool) -> IpcMessage {
-        // Check we're the coordinator and whether other members exist
-        let (is_coordinator, has_other_members) = {
+    pub(crate) async fn nuke_network(
+        &self,
+        name: &str,
+        force: bool,
+        cancel: bool,
+        second: Option<&str>,
+    ) -> IpcMessage {
+        let my_id = self.endpoint.id();
+        let (is_coordinator, has_other_members, coordinator_count) = {
             let handle = match self.networks.get(name) {
                 Some(h) => h,
                 None => {
@@ -299,19 +322,73 @@ impl MeshManager {
                 }
             };
             let state = handle.state.read().unwrap();
-            let my_id = self.endpoint.id();
             let is_coord = state
                 .members
                 .get(&my_id)
                 .map(|m| m.is_coordinator)
                 .unwrap_or(false);
             let others = state.members.all().len() > 1;
-            (is_coord, others)
+            let roster = state.roster();
+            (
+                is_coord,
+                others,
+                crate::membership::coordinator_count(&roster),
+            )
         };
 
         if !is_coordinator {
             return IpcMessage::Error {
                 message: "only the coordinator can nuke a network".to_string(),
+            };
+        }
+
+        if coordinator_count <= 1 {
+            if cancel || second.is_some() {
+                return IpcMessage::Error {
+                    message: "no consensus needed with a single coordinator; nuke runs immediately, nothing to cancel or second".to_string(),
+                };
+            }
+            if has_other_members && !force {
+                return IpcMessage::Error {
+                    message: "network has other members — use --force to destroy, or transfer ownership first".to_string(),
+                };
+            }
+            let (net_secret_key, tombstone_generation) = {
+                let handle = self.networks.get(name).unwrap();
+                let state = handle.state.read().unwrap();
+                (state.network_secret_key.clone(), state.generation + 1)
+            };
+            self.publish_nuke_tombstone(net_secret_key, tombstone_generation)
+                .await;
+            return self.leave_network(name).await;
+        }
+
+        // Two or more coordinators: consensus required.
+        if cancel {
+            let (dht_notify, snap_bytes) = {
+                let handle = self.networks.get(name).unwrap();
+                let mut state = handle.state.write().unwrap();
+                if state.nuke_proposals.remove(&my_id.to_string()).is_none() {
+                    return IpcMessage::Error {
+                        message: "you have no active nuke proposal on this network".to_string(),
+                    };
+                }
+                state.bump_generation_and_refresh();
+                (
+                    handle.dht_notify.clone(),
+                    state.snapshot.as_ref().map(|s| s.msgpack_bytes.clone()),
+                )
+            };
+            if let Some(bytes) = snap_bytes
+                && let Err(e) = self.blob_store.blobs().add_slice(&bytes).await
+            {
+                tracing::error!(error = %e, "nuke --cancel: add_slice failed");
+            }
+            if let Some(notify) = dht_notify {
+                notify.notify_one();
+            }
+            return IpcMessage::Ok {
+                message: format!("nuke proposal for '{name}' cancelled"),
             };
         }
 
@@ -321,36 +398,111 @@ impl MeshManager {
             };
         }
 
-        // Publish empty pkarr record. The tombstone must carry a strictly higher
-        // generation than whatever's live (CONVERGE-005) — otherwise a
-        // generation-aware reader would treat this erase as stale and ignore it.
-        let (net_secret_key, tombstone_generation) = {
+        let now = now_secs();
+        if let Some(short) = second {
             let handle = self.networks.get(name).unwrap();
             let state = handle.state.read().unwrap();
-            (state.network_secret_key.clone(), state.generation + 1)
-        };
-        if let Some(key) = net_secret_key
-            && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
-        {
-            let empty_hash = group_blob_hash(
-                tombstone_generation,
-                &MemberList::new(),
-                &ApprovedList::new(),
-                &SuggestedFirewall::default(),
-                None,
-                &BTreeMap::new(),
-                None,
-                &BTreeMap::new(),
-            );
             if let Err(e) =
-                dht::publish_network(&client, &key, &empty_hash, tombstone_generation, &[]).await
+                crate::membership::resolve_nuke_proposer(&state.nuke_proposals, now, short)
             {
-                tracing::warn!(error = %e, "failed to publish empty network record on nuke");
+                return IpcMessage::Error {
+                    message: format!("{e:#}"),
+                };
             }
         }
 
-        // Leave the network (handles cleanup, config removal, etc.)
+        let (dht_notify, net_secret_key, generation, active_count, snap_bytes) = {
+            let handle = self.networks.get(name).unwrap();
+            let mut state = handle.state.write().unwrap();
+            state.nuke_proposals.insert(my_id.to_string(), now);
+            state.bump_generation_and_refresh();
+            let active = crate::membership::active_nuke_proposers(&state.nuke_proposals, now).len();
+            (
+                handle.dht_notify.clone(),
+                state.network_secret_key.clone(),
+                state.generation,
+                active,
+                state.snapshot.as_ref().map(|s| s.msgpack_bytes.clone()),
+            )
+        };
+
+        if active_count < 2 {
+            // Not enough seconds yet: persist + publish the proposal itself,
+            // same as any other blob mutation (invite create, admin grant, ...).
+            if let Some(bytes) = snap_bytes
+                && let Err(e) = self.blob_store.blobs().add_slice(&bytes).await
+            {
+                tracing::error!(error = %e, "nuke propose: add_slice failed");
+            }
+            if let Some(notify) = dht_notify {
+                notify.notify_one();
+            }
+            return IpcMessage::Ok {
+                message: format!(
+                    "nuke proposed for '{name}' — {active_count}/2 coordinators required; have another coordinator run `tetron nuke {name}` to second"
+                ),
+            };
+        }
+
+        // This call itself reached consensus: execute immediately rather than
+        // waiting for the proposal-blob publish + a reconverge cycle.
+        self.publish_nuke_tombstone(net_secret_key, generation + 1)
+            .await;
         self.leave_network(name).await
+    }
+
+    /// Publish an empty (tombstone) pkarr record for a network, poisoning the
+    /// record so no one resolves it again. The tombstone must carry a strictly
+    /// higher generation than whatever's live (CONVERGE-005) — otherwise a
+    /// generation-aware reader would treat this erase as stale and ignore it.
+    ///
+    /// **Persists the empty blob's bytes to the local store before publishing
+    /// the DHT pointer** (found via live testing 2026-07-17): without this,
+    /// `resolve_network` still correctly signals the new (higher) generation
+    /// to remaining members, but `fetch_verified_blob` can never actually
+    /// fetch+verify content matching that hash from anywhere — the executing
+    /// coordinator is the only node that ever held it, in memory, and it's
+    /// gone the moment this function returns and the caller leaves. Remaining
+    /// members' `member_removed` (CONVERGE-003) check never fires, so they
+    /// never self-remove; they're left polling a generation bump they can
+    /// never resolve. This bug predates NUKE-CONSENSUS (the original
+    /// single-coordinator nuke had the same gap) but only surfaces when other
+    /// members are actually still present to notice — which is exactly
+    /// NUKE-CONSENSUS's normal case, unlike the original's typical
+    /// already-abandoned-network use.
+    ///
+    /// No-op if `net_secret_key` is `None` (shouldn't happen — callers only
+    /// reach this after an `is_coordinator` check — but publishing requires
+    /// the key, so this stays defensive rather than panicking).
+    async fn publish_nuke_tombstone(&self, net_secret_key: Option<SecretKey>, generation: u64) {
+        let Some(key) = net_secret_key else {
+            tracing::warn!("nuke: no network secret key available to publish tombstone");
+            return;
+        };
+        let Ok(client) = dht::create_pkarr_client(&self.endpoint) else {
+            tracing::warn!("nuke: failed to create pkarr client for tombstone publish");
+            return;
+        };
+        let empty_bytes = canonical_group_bytes(
+            generation,
+            &MemberList::new(),
+            &ApprovedList::new(),
+            &SuggestedFirewall::default(),
+            None,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        if let Err(e) = self.blob_store.blobs().add_slice(&empty_bytes).await {
+            tracing::error!(error = %e, "failed to persist empty tombstone blob");
+        }
+        let empty_hash = blake3::hash(&empty_bytes);
+        if let Err(e) = dht::publish_network(&client, &key, &empty_hash, generation, &[]).await {
+            tracing::warn!(error = %e, "failed to publish empty network record on nuke");
+        } else {
+            tracing::info!(generation, "published empty (tombstone) network record");
+        }
     }
 
     /// Remove a member from a closed network. Coordinator-only (any network-key

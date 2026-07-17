@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Nuke requires consensus on multi-coordinator networks (NUKE-CONSENSUS)**: `tetron nuke <net>` on a network with a single coordinator still destroys it immediately, unchanged. With two or more coordinators, a coordinator running `tetron nuke <net>` now proposes instead of nuking outright; the network is destroyed only once two distinct coordinators have proposed (a second coordinator running the same command seconds it) within a 24h window. `tetron nuke <net> --cancel` withdraws your own proposal; `tetron nuke <net> --second <short-id>` explicitly names the proposal being seconded. `tetron status` surfaces any pending proposal so members can see a nuke is being considered before it happens. Prevents a single compromised or reckless coordinator from unilaterally destroying a network nobody else agreed to lose.
+
+### Fixed
+
+- **Nuke tombstones are now actually fetchable by remaining members**: `tetron nuke` previously only ever published the empty record's `(hash, generation)` pointer to the DHT, never the actual bytes anywhere fetchable — the executing coordinator calls `leave_network` (closing its connections) immediately after, so it was typically the only node that ever held the content, and everyone else's `member_removed` (CONVERGE-003) self-removal check never fired. Predates NUKE-CONSENSUS (the original single-coordinator nuke had the same gap) but only surfaced with other members actually present to notice. A nuke tombstone's content is fully deterministic given just its generation, so every node now reconstructs and verifies it locally instead of ever needing to fetch it from anyone. Found and fixed via live 3-machine testing.
+- **Group poller no longer gets stuck forever on a coincidental generation tie**: a node's own unrelated local mutations (e.g. pruning a peer that gracefully left) could independently land its generation on the same number a different coordinator's mutations reached, purely by chance; the poller treated that tie as "nothing new" and silently stopped fetching for that network forever, even though the content genuinely differed. It now also fetches on an exact-generation tie when the hash differs, not just on a strictly newer generation. Found via live 3-machine testing.
+
 ## [0.1.6] - 2026-07-16
 
 ### Added

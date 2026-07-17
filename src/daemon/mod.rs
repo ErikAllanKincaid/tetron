@@ -99,8 +99,6 @@ pub use mesh::build_headless;
 /// written against `DaemonState` compile unchanged after the daemon refactor.
 pub type DaemonState = MeshManager;
 
-
-
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -216,6 +214,12 @@ pub(crate) struct NetworkState {
     /// validates redemptions against. Entries are removed on successful
     /// redemption (the blob is republished without the used invite).
     invites: BTreeMap<String, crate::membership::InviteEntry>,
+    /// Pending nuke proposals carried in the signed blob (NUKE-CONSENSUS),
+    /// keyed by proposer identity string. Synced from every freshly verified
+    /// blob purely for visibility (`tetron status` surfaces pending proposals);
+    /// the only code path that ever acts on this is the synchronous
+    /// `MeshManager::nuke_network` command handler, not reconverge.
+    pub(crate) nuke_proposals: BTreeMap<String, u64>,
     /// The network's resolved overlay subnet (from the signed `GroupBlob`, or the
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
@@ -259,6 +263,7 @@ impl NetworkState {
             &self.reusable_keys,
             self.blob_subnet(),
             &self.invites,
+            &self.nuke_proposals,
         );
         let hash = blake3::hash(&bytes);
         self.snapshot = Some(GroupSnapshot {
@@ -604,9 +609,7 @@ impl MeshManager {
                 h.cancel.clone(),
             )
         }; // DashMap ref dropped before the registration below.
-        self.register_coordinator_handler(
-            network, parts.0, parts.1, parts.2, parts.3, parts.4,
-        );
+        self.register_coordinator_handler(network, parts.0, parts.1, parts.2, parts.3, parts.4);
         self.refresh_alpns().await;
         tracing::info!(network, "promoted to coordinator accept handler");
     }
@@ -675,7 +678,9 @@ impl MeshManager {
             };
         }
         IpcMessage::Ok {
-            message: format!("operator set to uid {uid}; that user can now run tetron without sudo"),
+            message: format!(
+                "operator set to uid {uid}; that user can now run tetron without sudo"
+            ),
         }
     }
 
@@ -695,7 +700,11 @@ impl MeshManager {
                 transport,
                 subnet,
             } => {
-                let parsed = match subnet.as_deref().map(crate::membership::parse_cidr).transpose() {
+                let parsed = match subnet
+                    .as_deref()
+                    .map(crate::membership::parse_cidr)
+                    .transpose()
+                {
                     Ok(s) => s,
                     Err(e) => {
                         return IpcMessage::Error {
@@ -703,7 +712,8 @@ impl MeshManager {
                         };
                     }
                 };
-                self.create_network(mode, name, hostname, transport, parsed).await
+                self.create_network(mode, name, hostname, transport, parsed)
+                    .await
             }
             IpcMessage::Join {
                 network_key,
@@ -713,17 +723,19 @@ impl MeshManager {
                 invite,
                 ..
             } => {
-                self.join_network(
-                    &network_key,
-                    name.as_deref(),
-                    hostname,
-                    transport,
-                    invite,
-                )
-                .await
+                self.join_network(&network_key, name.as_deref(), hostname, transport, invite)
+                    .await
             }
             IpcMessage::Leave { name } => self.leave_network(&name).await,
-            IpcMessage::Nuke { name, force } => self.nuke_network(&name, force).await,
+            IpcMessage::Nuke {
+                name,
+                force,
+                cancel,
+                second,
+            } => {
+                self.nuke_network(&name, force, cancel, second.as_deref())
+                    .await
+            }
             IpcMessage::Kick { network, peer } => self.kick_member(&network, &peer).await,
             IpcMessage::Status => self.status(),
             IpcMessage::Up { hostname } => self.activate(hostname).await,
@@ -741,10 +753,9 @@ impl MeshManager {
                 self.invite_create(&network, expires.as_deref()).await
             }
             IpcMessage::InviteList { network } => self.invite_list(&network),
-            IpcMessage::InviteRevoke {
-                network,
-                invite_id,
-            } => self.invite_revoke(&network, &invite_id).await,
+            IpcMessage::InviteRevoke { network, invite_id } => {
+                self.invite_revoke(&network, &invite_id).await
+            }
             other => IpcMessage::Error {
                 message: format!("unexpected message: {:?}", other),
             },
@@ -860,6 +871,7 @@ mod accept_handler_tests {
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
         }))
     }
 
@@ -1049,7 +1061,6 @@ mod coordinator_dial_order_tests {
         });
         assert!(!super::admin_grant_key_valid(forged.to_bytes(), net_pubkey));
     }
-
 }
 
 #[cfg(test)]

@@ -2349,62 +2349,135 @@ class KickRequiresEndpointId(Requirement):
 class NukeRequiresConsensus(Requirement):
     """REQUIREMENT-ID: NUKE-CONSENSUS
 
-    Currently `tetron nuke <net>` can be run by any single coordinator and
-    immediately publishes an empty DHT record (poisoning the pkarr record)
-    and calls `leave_network`. This means a single compromised or reckless
-    coordinator can destroy the network irrecoverably.
+    `tetron nuke <net>` used to be runnable by any single coordinator,
+    immediately publishing an empty DHT record (poisoning the pkarr record)
+    and calling `leave_network`. This meant a single compromised or reckless
+    coordinator could destroy the network irrecoverably.
 
     Require at least two coordinators to approve a nuke, **unless there is
     only one coordinator** in the network. A solo coordinator has no one to
-    second and retains the current unilateral nuke behavior.
+    second and retains the original unilateral nuke behavior.
 
     Detection: count coordinators from the signed roster
-    (`Member.is_coordinator == true`). If total coordinators >= 2, the nuke
-    is a two-phase proposal; if exactly 1, the nuke proceeds immediately
-    (current behavior).
+    (`Member.is_coordinator == true`, `membership::coordinator_count`). If
+    total coordinators >= 2, the nuke is a two-phase proposal; if exactly 1,
+    the nuke proceeds immediately (original behavior, unchanged).
 
-    Two-phase flow (coordinators >= 2):
+    Implemented flow (coordinators >= 2) -- **command-driven only, no
+    automatic background trigger** (deliberately narrowed from an earlier
+    draft of this spec that had any coordinator's reconverge/poller loop act
+    on an observed blob; see "Scoped down" below):
 
-    1. Add a `nuke_proposals: BTreeMap<String, u64>` field to `GroupBlob`
-       (keyed by coordinator identity hex via `EndpointId::fmt_short()`,
-       value = Unix timestamp of the proposal). `#[serde(default)]` so old
-       blobs without the field are backward-compatible.
+    1. `GroupBlob.nuke_proposals: BTreeMap<String, u64>`, keyed by the
+       proposing coordinator's **full identity string** (not
+       `EndpointId::fmt_short()` as originally drafted -- a map key must be
+       collision-free, and two coordinators' short ids could theoretically
+       collide; short ids are used only for CLI display/matching via
+       `membership::resolve_nuke_proposer`). Value is the Unix-seconds
+       proposal timestamp. `#[serde(default, skip_serializing_if =
+       "BTreeMap::is_empty")]`, matching `reusable_keys`/`invites`'s
+       convention, so old blobs decode unchanged and an empty map serializes
+       to nothing.
 
-    2. `tetron nuke <net>` on a coordinator adds the coordinator's own entry
-       to `nuke_proposals` and republishes the blob (does NOT publish the
-       empty DHT record yet). The coordinator announces the proposal via the
-       existing `MemberSync` broadcast so other coordinators reconverge
-       quickly.
+    2. `tetron nuke <net>` on a coordinator (`MeshManager::nuke_network`)
+       adds the coordinator's own entry to `nuke_proposals`, bumps the
+       generation, and checks the *local* result immediately:
+       - If that addition itself brings the count of distinct, unexpired
+         proposers to two or more (`membership::nuke_consensus_reached`),
+         this same call executes the nuke right there -- publishes the empty
+         tombstone record (`MeshManager::publish_nuke_tombstone`) and calls
+         `leave_network` -- synchronously, no waiting on reconverge.
+       - Otherwise it persists + publishes the proposal blob (same
+         persist-then-notify pattern as `invite_create`/`invite_revoke`) and
+         returns "N/2 coordinators required".
 
-    3. Other coordinators see the proposal on reconverge. To second, they
-       run `tetron nuke <net>` (same command -- the daemon checks if a
-       proposal from another coordinator already exists and seconds it).
-       A dedicated `tetron nuke <net> --second <proposer-id>` subcommand
-       allows seconding by short-id when the roster has >2 coordinators.
+    3. `--second <short-id>` (`membership::resolve_nuke_proposer`) validates
+       the named proposal is currently active before proceeding identically
+       to a bare `tetron nuke <net>` -- an explicit safety check when there
+       are more than two coordinators, not a different code path.
 
-    4. Any coordinator processing a blob with >= 2 unique proposer identities
-       in `nuke_proposals` executes the actual nuke:
-       - Publish empty DHT record (existing code at `runtime.rs:318-330`)
-       - Call `leave_network` (existing code at `runtime.rs:333`)
-       - Optionally broadcast `NukeNow` control message so connected peers
-         learn immediately rather than waiting for the 60s group poller.
+    4. `tetron nuke <net> --cancel` removes the caller's own entry from
+       `nuke_proposals` and republishes (not destructive, no consensus check).
 
-    5. Proposals should auto-expire (e.g., ttl 24h) to prevent stale
-       proposals from blocking future nuke attempts. A coordinator can also
-       cancel their own proposal with `tetron nuke --cancel`.
+    5. Proposals auto-expire via a 24h TTL
+       (`membership::NUKE_PROPOSAL_TTL_SECS`,
+       `membership::active_nuke_proposers`) -- filtered at read time
+       (consensus check, `--second` resolution, `tetron status` display), not
+       actively pruned from the map on mutation.
 
-    6. Edge case: if the proposing coordinator goes offline before a second
-       is obtained, another coordinator can second by referring to the
-       proposal in the blob. The proposal persists in the blob for its TTL.
+    6. `tetron status` surfaces active (unexpired) pending proposals
+       (`NetworkStatus.nuke_proposals`, `ipc::NukeProposalInfo`) so members
+       can see a nuke is being considered. This is synced into
+       `NetworkState.nuke_proposals` on every reconverge
+       (`reconverge_and_apply`, `spawn_group_poller`) -- but purely for
+       display; see "Scoped down" below.
 
-    7. `tetron status` should expose pending nuke proposals so members know
-       a nuke is being considered.
+    **Scoped down from the original draft (2026-07-17, before
+    implementation):** an earlier version of this spec had a coordinator's
+    background reconverge/poller loop independently notice an
+    already-consensus-reached blob (e.g. a third coordinator who never ran
+    `tetron nuke` at all) and execute the tombstone-publish on its own. That
+    was deliberately cut: verifying an automatic, background-triggered,
+    irreversible action needs the same kind of live multi-coordinator race
+    testing CONVERGE-001 needed across two rounds before it was actually
+    correct, and the payoff was narrow. What remains is strictly
+    command-driven: the *only* code path that can ever publish the
+    destructive tombstone is the synchronous `nuke_network` handler. The
+    trade: two coordinators proposing at nearly the same instant (before
+    either sees the other's write) can leave the blob showing 2 valid
+    proposers with nobody having triggered execution -- resolved by either
+    coordinator running `tetron nuke` once more, which then sees the merged
+    count and finishes it. A liveness gap, not a safety gap -- it fails
+    toward *not* destroying the network automatically, not toward an
+    unexpected automatic destruction.
 
     Found: 2026-07-16, during multi-coordinator audit. Race C (no coordinator
     revocation) makes nuke the only way to remove a compromised coordinator.
     Requiring consensus prevents a single key holder from destroying the
     network, while the solo-coordinator exception avoids locking out networks
     that have never promoted a co-coordinator.
+
+    **Two bugs found and fixed via live 3-machine testing, 2026-07-17**
+    (neither could have been caught by unit tests alone -- both are
+    distributed-convergence failures that only manifest with real network
+    latency and real coordinator restarts):
+
+    1. The tombstone's `(hash, generation)` pointer reached the DHT
+       correctly, but the actual empty-blob *bytes* were never persisted
+       anywhere fetchable -- the executing coordinator calls `leave_network`
+       (closing its connections) immediately after publishing, so it was
+       typically the only node that ever held them, and every other node's
+       `fetch_verified_blob` attempt failed forever ("could not fetch
+       updated group blob from any peer or seed"). `member_removed`
+       (CONVERGE-003) never fired for remaining members. Predates
+       NUKE-CONSENSUS (the original single-coordinator nuke had the
+       identical gap) but only surfaces with other members present to
+       notice the failure. Fixed by recognizing that a tombstone's content
+       is fully deterministic given just its generation (always empty
+       members/approved/etc.) -- `membership::try_decode_tombstone`
+       reconstructs and verifies it locally, tried before ever attempting a
+       peer fetch, sidestepping the distribution problem entirely.
+
+    2. `spawn_group_poller`'s generation comparison treated an exact tie
+       (`remote_generation <= current_generation`) as "nothing new" even
+       when the hash differed. This is a general liveness bug, not
+       nuke-specific: a node's own unrelated local mutations (e.g. pruning
+       a peer that gracefully left) can independently advance its
+       generation to the same number a different coordinator's mutations
+       reached, purely by coincidence -- observed twice in this session via
+       two different mechanisms. Once tied, the node would never fetch
+       again for that network, regardless of how different the actual
+       content became. Fixed: `poller_should_fetch` now also fetches on an
+       exact-generation tie if the hash differs; a tie with a matching hash
+       still correctly skips as a no-op.
+
+    A third, separate, pre-existing issue was found during this testing but
+    deliberately **not** fixed here (needs its own dedicated design, not a
+    tail-end change to this spec): a coordinator's unconditional first
+    publish after restart (`dht_read_before_write`'s `if
+    last_published.is_none() { return true; }`) can resurrect stale state
+    if that restart's restore fell back to local config (DHT/blob
+    unreachable). Logged as a new TODO, out of scope for NUKE-CONSENSUS.
     """
     req_id = "NUKE-CONSENSUS"
 

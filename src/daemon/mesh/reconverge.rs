@@ -9,6 +9,33 @@
 
 use super::super::*;
 
+/// Whether [`spawn_group_poller`] should fetch and adopt a freshly resolved
+/// DHT record, given its `(hash, generation)` against this node's current
+/// state. Generation is the authority (CONVERGE-005), not raw hash equality:
+/// a DHT record at a generation we've already passed has nothing new for us,
+/// even if our local hash momentarily differs (e.g. a pending local mutation
+/// not yet published) — only a strictly higher generation is normally worth
+/// the fetch.
+///
+/// **Except at an exact tie with a genuinely different hash**, which is
+/// worth fetching too (found via live testing, 2026-07-17): this node's own
+/// unrelated local mutations (e.g. pruning departed peers) can independently
+/// advance its generation to the same number another coordinator's
+/// mutations reached, entirely by coincidence. Treating "equal" as "nothing
+/// new" in that case gets this node stuck polling forever — never noticing,
+/// for example, that the network was nuked by someone else while it was
+/// doing its own unrelated bookkeeping. A tie with a matching hash really is
+/// a no-op and still skips.
+fn poller_should_fetch(
+    remote_generation: u64,
+    remote_hash: blake3::Hash,
+    current_generation: u64,
+    current_hash: Option<blake3::Hash>,
+) -> bool {
+    !(remote_generation < current_generation
+        || (remote_generation == current_generation && Some(remote_hash) == current_hash))
+}
+
 /// Resolve the network's *signed* group-blob hash (and seed peers) from the
 /// pkarr record. This is the sole authority for the roster.
 pub(crate) async fn resolve_signed(
@@ -82,7 +109,7 @@ pub(crate) async fn reconverge_and_apply(
         ..
     } = ctx;
     let current = state.read().unwrap().snapshot.as_ref().map(|s| s.hash);
-    let Some((signed, _remote_generation, seeds)) = resolve_signed(endpoint, net_pubkey).await
+    let Some((signed, remote_generation, seeds)) = resolve_signed(endpoint, net_pubkey).await
     else {
         tracing::debug!(network = %network_name, "reconverge: signed record unavailable");
         return;
@@ -91,11 +118,23 @@ pub(crate) async fn reconverge_and_apply(
         // Already converged on the signed hash; nothing to apply.
         return;
     }
-    let Some(data) =
-        fetch_verified_blob(endpoint, blob_store, peers, signed, network_name, &seeds).await
-    else {
-        tracing::warn!(network = %network_name, "reconverge: could not fetch verified blob");
-        return;
+    // A nuke tombstone is fully deterministic given just its generation, so
+    // check for that locally before ever attempting a peer fetch — the
+    // publishing coordinator leaves immediately after publishing and is
+    // typically the only node that ever held the bytes (see
+    // `membership::try_decode_tombstone`).
+    let data = match crate::membership::try_decode_tombstone(signed, remote_generation) {
+        Some(tombstone) => tombstone,
+        None => {
+            let Some(data) =
+                fetch_verified_blob(endpoint, blob_store, peers, signed, network_name, &seeds)
+                    .await
+            else {
+                tracing::warn!(network = %network_name, "reconverge: could not fetch verified blob");
+                return;
+            };
+            data
+        }
     };
     // We are no longer in the authoritative roster (kicked, or a casualty of
     // the CONVERGE-001 publish race): leave locally instead of silently
@@ -137,6 +176,10 @@ pub(crate) async fn reconverge_and_apply(
         s.members = MemberList::from_members(tiebroken);
         s.approved = ApprovedList::from_entries(data.approved.clone());
         s.suggested_firewall = data.suggested_firewall.clone();
+        // NUKE-CONSENSUS: synced purely for `tetron status` visibility. Nothing
+        // reconverge-driven acts on this — the only place a nuke ever executes
+        // is the synchronous `MeshManager::nuke_network` command handler.
+        s.nuke_proposals = data.nuke_proposals.clone();
         s.refresh_snapshot();
         s.roster()
     };
@@ -249,9 +292,9 @@ pub(crate) fn spawn_group_poller(
             }
             tracing::debug!(network = %network_name, "group poller tick");
 
-            let current_generation = {
+            let (current_generation, current_hash) = {
                 let s = state.read().unwrap();
-                s.generation
+                (s.generation, s.snapshot.as_ref().map(|snap| snap.hash))
             };
 
             let (remote_hash, remote_generation, seed_peers) =
@@ -263,12 +306,12 @@ pub(crate) fn spawn_group_poller(
                     }
                 };
 
-            // Generation is the authority (CONVERGE-005), not raw hash equality:
-            // a DHT record at a generation we've already seen or passed has
-            // nothing new for us, even if our local hash momentarily differs
-            // (e.g. a pending local mutation not yet published). Only a
-            // strictly higher generation is worth the fetch.
-            if remote_generation <= current_generation {
+            if !poller_should_fetch(
+                remote_generation,
+                remote_hash,
+                current_generation,
+                current_hash,
+            ) {
                 continue;
             }
 
@@ -279,24 +322,36 @@ pub(crate) fn spawn_group_poller(
                 "group blob changed"
             );
 
-            // Use the same peer+seed fallback fetch as reconverge_and_apply
-            // (fetch_verified_blob) instead of only trying live PeerTable
-            // connections — the poller's own hand-rolled fetch used to give up
-            // ("could not fetch updated group blob from any peer") even with a
-            // live mesh connection to the same peer, since it never fell back
-            // to the DHT record's seed peers.
-            let Some(data) = fetch_verified_blob(
-                &endpoint,
-                &blob_store,
-                &peers,
-                remote_hash,
-                &network_name,
-                &seed_peers,
-            )
-            .await
-            else {
-                tracing::warn!("could not fetch updated group blob from any peer or seed");
-                continue;
+            // A nuke tombstone is fully deterministic given just its
+            // generation — check locally before ever attempting a peer fetch
+            // (see `membership::try_decode_tombstone`; the publishing
+            // coordinator leaves immediately after, so it's typically the
+            // only node that ever held the bytes).
+            let data = match crate::membership::try_decode_tombstone(remote_hash, remote_generation)
+            {
+                Some(tombstone) => tombstone,
+                None => {
+                    // Use the same peer+seed fallback fetch as reconverge_and_apply
+                    // (fetch_verified_blob) instead of only trying live PeerTable
+                    // connections — the poller's own hand-rolled fetch used to give up
+                    // ("could not fetch updated group blob from any peer") even with a
+                    // live mesh connection to the same peer, since it never fell back
+                    // to the DHT record's seed peers.
+                    let Some(data) = fetch_verified_blob(
+                        &endpoint,
+                        &blob_store,
+                        &peers,
+                        remote_hash,
+                        &network_name,
+                        &seed_peers,
+                    )
+                    .await
+                    else {
+                        tracing::warn!("could not fetch updated group blob from any peer or seed");
+                        continue;
+                    };
+                    data
+                }
             };
 
             // Reconcile: find removed peers
@@ -333,6 +388,8 @@ pub(crate) fn spawn_group_poller(
                 s.members = MemberList::from_members(data.members.clone());
                 s.approved = ApprovedList::from_entries(data.approved.clone());
                 s.suggested_firewall = data.suggested_firewall.clone();
+                // NUKE-CONSENSUS: visibility only, same as reconverge_and_apply.
+                s.nuke_proposals = data.nuke_proposals.clone();
                 s.refresh_snapshot();
             }
         }
@@ -346,4 +403,41 @@ pub(crate) fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h(b: u8) -> blake3::Hash {
+        blake3::hash(&[b])
+    }
+
+    #[test]
+    fn poller_fetches_strictly_newer_generation() {
+        assert!(poller_should_fetch(5, h(1), 4, Some(h(2))));
+    }
+
+    #[test]
+    fn poller_skips_strictly_older_generation() {
+        assert!(!poller_should_fetch(4, h(1), 5, Some(h(2))));
+    }
+
+    #[test]
+    fn poller_skips_matching_tie() {
+        assert!(!poller_should_fetch(5, h(1), 5, Some(h(1))));
+    }
+
+    #[test]
+    fn poller_fetches_diverged_tie() {
+        // The tie-fix (2026-07-17): same generation, different hash, must
+        // still be fetched -- otherwise a node whose own unrelated mutations
+        // happened to land on the same generation number gets stuck forever.
+        assert!(poller_should_fetch(5, h(1), 5, Some(h(2))));
+    }
+
+    #[test]
+    fn poller_fetches_when_no_local_snapshot_yet() {
+        assert!(poller_should_fetch(5, h(1), 5, None));
+    }
 }

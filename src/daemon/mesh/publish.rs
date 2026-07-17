@@ -98,6 +98,7 @@ pub(crate) fn spawn_network_publisher(
                             &s.reusable_keys,
                             s.blob_subnet(),
                             &s.invites,
+                            &s.nuke_proposals,
                         )
                     });
                 (s.generation, hash)
@@ -176,6 +177,7 @@ pub(crate) fn spawn_lazy_publisher(
                             &s.reusable_keys,
                             s.blob_subnet(),
                             &s.invites,
+                            &s.nuke_proposals,
                         )
                     });
                 (s.generation, hash)

@@ -240,6 +240,7 @@ impl MeshManager {
             subnet,
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
         })
     }
 
@@ -394,11 +395,8 @@ impl MeshManager {
             // Add invite to blob state, refresh snapshot, then drop lock.
             let snapshot_data = {
                 let mut s = state.write().unwrap();
-                let (key, _entry) = crate::membership::InviteEntry::from_secret(
-                    &secret,
-                    now_secs(),
-                    7 * 24 * 3600,
-                );
+                let (key, _entry) =
+                    crate::membership::InviteEntry::from_secret(&secret, now_secs(), 7 * 24 * 3600);
                 s.invites.insert(key, _entry);
                 s.bump_generation_and_refresh();
                 s.snapshot
@@ -684,6 +682,7 @@ impl MeshManager {
             subnet: Some(config::node_subnet()),
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
         })
     }
 
@@ -842,6 +841,7 @@ impl MeshManager {
                 subnet: crate::membership::resolve_subnet(data.subnet),
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
+                nuke_proposals: data.nuke_proposals.clone(),
             };
             ns.refresh_snapshot();
             Arc::new(std::sync::RwLock::new(ns))
@@ -892,7 +892,7 @@ impl MeshManager {
                     let fb = state_from_blob();
                     (fb, Arc::new(tokio::sync::Notify::new()))
                 })
-            },
+            }
             Err(e) => {
                 // Coordinator offline at restore: register from the blob so the
                 // network stays live; the reconnect loop dials it back once it
@@ -1001,6 +1001,7 @@ impl MeshManager {
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
+                nuke_proposals: data.nuke_proposals.clone(),
                 generation: data.generation,
                 transport: ctx.transport.clone(),
                 initial,
@@ -1147,9 +1148,10 @@ impl MeshManager {
         net_pubkey: EndpointId,
     ) -> Result<crate::membership::GroupBlob> {
         let pkarr_client = dht::create_pkarr_client(&self.endpoint)?;
-        let (expected_hash, _generation, seed_peers) = dht::resolve_network(&pkarr_client, net_pubkey)
-            .await
-            .context("resolve pkarr record for roster restore")?;
+        let (expected_hash, _generation, seed_peers) =
+            dht::resolve_network(&pkarr_client, net_pubkey)
+                .await
+                .context("resolve pkarr record for roster restore")?;
         let blob_hash = iroh_blobs::Hash::from_bytes(*expected_hash.as_bytes());
 
         // Local blob store first: the coordinator stored these bytes before
@@ -1297,6 +1299,7 @@ impl MeshManager {
                 subnet: crate::membership::resolve_subnet(None),
                 reusable_keys: Default::default(),
                 invites: Default::default(),
+                nuke_proposals: Default::default(),
             }));
             let _ = live_state_tx.send(dummy_state);
             let _ = reconverge_notify_tx.send(Arc::new(tokio::sync::Notify::new()));
@@ -1348,6 +1351,7 @@ impl MeshManager {
                 subnet: joined_subnet,
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
+                nuke_proposals: data.nuke_proposals.clone(),
             };
             ns.refresh_snapshot();
             let live_state = Arc::new(std::sync::RwLock::new(ns));
