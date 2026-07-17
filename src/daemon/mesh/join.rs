@@ -37,17 +37,12 @@ enum HandshakeOutcome {
 /// By-value parameters for one [`join_mesh_shared`] handshake, grouped so the
 /// function's argument list stays manageable. These are all decided once, at the
 /// call site, per join: the joiner's chosen hostname, the invite secret
-/// it presents, the blob-derived `suggested_firewall`/`reusable_keys` it
-/// inherits, and whether this is a fresh join or a reconnect.
+/// it presents, the blob-derived `reusable_keys` it inherits, and whether
+/// this is a fresh join or a reconnect.
 pub(crate) struct JoinParams {
     pub(crate) my_hostname: Option<String>,
     pub(crate) net_pubkey: EndpointId,
     pub(crate) invite_secret: Option<Vec<u8>>,
-    /// From the fetched blob: the current coordinator-suggested firewall rules.
-    /// Retained for wire compatibility with full tetron (D1) — carried into the
-    /// member's state and republished verbatim, but not acted on (the userspace
-    /// firewall was removed, MINIMAL-010).
-    pub(crate) suggested_firewall: SuggestedFirewall,
     /// From the fetched blob: reusable join keys, so this node can validate
     /// redemptions if it later holds the network key (HA admission).
     pub(crate) reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
@@ -105,7 +100,6 @@ pub(crate) async fn join_mesh_shared(
         my_hostname,
         net_pubkey,
         invite_secret,
-        suggested_firewall,
         reusable_keys,
         invites,
         nuke_proposals,
@@ -191,7 +185,6 @@ pub(crate) async fn join_mesh_shared(
         approved,
         net_pubkey,
         network_name,
-        suggested_firewall,
         reusable_keys,
         invites,
         nuke_proposals,
@@ -305,7 +298,7 @@ async fn send_reconnect_hello(
 }
 
 /// Build the in-memory `NetworkState` cell for a joined member from the admitted
-/// roster + blob-derived firewall/keys, refresh its snapshot, and seed the local
+/// roster + blob-derived keys, refresh its snapshot, and seed the local
 /// blob store with those bytes.
 #[allow(clippy::too_many_arguments)]
 async fn build_member_state(
@@ -313,7 +306,6 @@ async fn build_member_state(
     approved: Vec<ApprovedEntry>,
     net_pubkey: EndpointId,
     network_name: &str,
-    suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
     nuke_proposals: BTreeMap<String, u64>,
@@ -329,7 +321,6 @@ async fn build_member_state(
         network_public_key: net_pubkey,
         network_name: Some(network_name.to_string()),
         mode: GroupMode::Restricted,
-        suggested_firewall,
         // SUBNET-010: single-TUN node — subnet comes from the persisted node
         // cache (set when this network was joined; default until then), not the
         // network record.

@@ -9,7 +9,6 @@ use std::sync::RwLock;
 struct RestoredRoster {
     members: MemberList,
     approved: ApprovedList,
-    suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
     /// Pending nuke proposals (NUKE-CONSENSUS), restored so a coordinator
@@ -22,8 +21,8 @@ struct RestoredRoster {
 
 impl MeshManager {
     /// Rebuild a network's roster for a coordinator restart. Prefers the
-    /// published, network-key-signed `GroupBlob` (members + approved + suggested
-    /// firewall + reusable keys); if the DHT is unreachable, falls back to the
+    /// published, network-key-signed `GroupBlob` (members + approved +
+    /// reusable keys); if the DHT is unreachable, falls back to the
     /// last-persisted config roster (which may be stale). Always ensures this
     /// node is present as a coordinator member.
     async fn restore_member_roster(
@@ -36,17 +35,13 @@ impl MeshManager {
     ) -> RestoredRoster {
         let mut member_list = MemberList::new();
         let mut approved_list = ApprovedList::new();
-        // `suggested_firewall` is authoritative in the signed blob; fall back to
-        // an empty set only if the blob can't be fetched.
-        let mut suggested_firewall = SuggestedFirewall::default();
-        // Reusable join keys and invites are authoritative in the signed blob too.
+        // Reusable join keys and invites are authoritative in the signed blob.
         let mut reusable_keys = BTreeMap::new();
         let mut invites = BTreeMap::new();
         let mut nuke_proposals = BTreeMap::new();
         let mut generation = 0u64;
         match self.restore_roster_from_blob(net_public_key).await {
             Ok(data) => {
-                suggested_firewall = data.suggested_firewall.clone();
                 reusable_keys = data.reusable_keys.clone();
                 invites = data.invites.clone();
                 nuke_proposals = data.nuke_proposals.clone();
@@ -113,7 +108,6 @@ impl MeshManager {
         RestoredRoster {
             members: member_list,
             approved: approved_list,
-            suggested_firewall,
             reusable_keys,
             invites,
             nuke_proposals,
@@ -159,7 +153,6 @@ impl MeshManager {
         let RestoredRoster {
             members: member_list,
             approved: approved_list,
-            suggested_firewall,
             reusable_keys,
             invites,
             nuke_proposals,
@@ -177,7 +170,6 @@ impl MeshManager {
             network_public_key: net_public_key,
             network_name: Some(name.to_string()),
             mode,
-            suggested_firewall,
             // SUBNET-010: single-TUN node — use the provider's operative subnet
             // (built from the persisted node cache at bootstrap).
             subnet: self.identity.subnet(),
@@ -487,7 +479,6 @@ impl MeshManager {
             generation,
             &MemberList::new(),
             &ApprovedList::new(),
-            &SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,

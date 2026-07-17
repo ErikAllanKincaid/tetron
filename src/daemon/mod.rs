@@ -78,7 +78,6 @@ use crate::transport;
 // is a `VpnService` fd supplied from Kotlin.
 #[cfg(not(target_os = "android"))]
 use crate::tun;
-use tetron_proto::SuggestedFirewall;
 
 // `MeshManager`'s IPC operations are split by domain into the `mesh/` submodule;
 // see `mesh/mod.rs`. Each holds an additional `impl MeshManager` block. Nested a
@@ -198,11 +197,6 @@ pub(crate) struct NetworkState {
     /// Access mode (open auto-admits; restricted gates unknown joiners). Only the
     /// coordinator's accept path consults this; members default to `Restricted`.
     mode: GroupMode,
-    /// Coordinator-suggested firewall rules carried in the blob (keyed by subject
-    /// hostname). Retained for wire compatibility with full tetron (D1): the
-    /// field is carried through the `GroupBlob` verbatim on republish but is not
-    /// acted on — the userspace firewall was removed (MINIMAL-010).
-    suggested_firewall: SuggestedFirewall,
     /// Reusable join keys carried in the signed blob (keyed by hex
     /// `blake3(secret)`). On a network-key holder this is what it publishes and
     /// validates redemptions against; on a plain member it is what it last
@@ -258,7 +252,6 @@ impl NetworkState {
             self.generation,
             &self.members,
             &self.approved,
-            &self.suggested_firewall,
             self.network_name.as_deref(),
             &self.reusable_keys,
             self.blob_subnet(),
@@ -867,7 +860,6 @@ mod accept_handler_tests {
             network_public_key: net_pub,
             network_name: Some("test-net".to_string()),
             mode: GroupMode::Restricted,
-            suggested_firewall: SuggestedFirewall::default(),
             subnet: default_subnet(),
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),

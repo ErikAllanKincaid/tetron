@@ -276,11 +276,10 @@ const MAX_FRAME_LEN: usize = 1_048_576;
 ///
 /// Structs are serialized with `to_vec_named` (field-name maps, not positional
 /// arrays) — required for correctness when a struct uses `skip_serializing_if`:
-/// with positional arrays, skipping a field shifts later fields into the wrong
-/// slot on decode (e.g. `HostSuggestions` with `default: None` + non-empty
-/// `allows` misaligns and fails with "invalid type: map, expected a string").
-/// The decoder (`from_slice`) handles both named and unnamed representations,
-/// so it's forward-compatible with older peers.
+/// with positional arrays, skipping an earlier optional field shifts later
+/// fields into the wrong slot on decode. The decoder (`from_slice`) handles
+/// both named and unnamed representations, so it's forward-compatible with
+/// older peers.
 pub struct MsgpackCodec<T> {
     framed: LengthDelimitedCodec,
     _t: PhantomData<T>,

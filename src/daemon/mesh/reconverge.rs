@@ -2,10 +2,6 @@
 //! fetch + verify the `GroupBlob`, re-seat IP collisions, then apply the roster
 //! to DNS. The 60s group poller and the peer-cleanup-adjacent helpers that drive
 //! reconvergence live here.
-//!
-//! The blob's `suggested_firewall` field is carried through verbatim for wire
-//! compatibility with full tetron (D1) but is not acted on — the userspace
-//! firewall was removed (MINIMAL-010); packet filtering is the host firewall's job.
 
 use super::super::*;
 
@@ -175,7 +171,6 @@ pub(crate) async fn reconverge_and_apply(
         s.generation = data.generation;
         s.members = MemberList::from_members(tiebroken);
         s.approved = ApprovedList::from_entries(data.approved.clone());
-        s.suggested_firewall = data.suggested_firewall.clone();
         // NUKE-CONSENSUS: synced purely for `tetron status` visibility. Nothing
         // reconverge-driven acts on this — the only place a nuke ever executes
         // is the synchronous `MeshManager::nuke_network` command handler.
@@ -369,15 +364,12 @@ pub(crate) fn spawn_group_poller(
                 break;
             }
 
-            // Update state from the freshly verified blob. The blob's
-            // `suggested_firewall` is carried through verbatim (D1 wire compat)
-            // but not acted on — the userspace firewall was removed (MINIMAL-010).
+            // Update state from the freshly verified blob.
             {
                 let mut s = state.write().unwrap();
                 s.generation = data.generation;
                 s.members = MemberList::from_members(data.members.clone());
                 s.approved = ApprovedList::from_entries(data.approved.clone());
-                s.suggested_firewall = data.suggested_firewall.clone();
                 // NUKE-CONSENSUS: visibility only, same as reconverge_and_apply.
                 s.nuke_proposals = data.nuke_proposals.clone();
                 s.refresh_snapshot();

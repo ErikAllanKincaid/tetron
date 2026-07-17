@@ -6,9 +6,7 @@
 
 pub mod firewall;
 pub mod ipc;
-pub mod policy;
 mod types;
 
 pub use firewall::{Action, Direction, Protocol};
-pub use policy::{HostSuggestions, SuggestedFirewall};
 pub use types::{GroupMode, TransportMode};

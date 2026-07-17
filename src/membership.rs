@@ -12,7 +12,6 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use anyhow::{Result, bail};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use tetron_proto::SuggestedFirewall;
 
 use crate::control::DeviceCert;
 
@@ -447,27 +446,6 @@ pub fn derive_ip_with_index(identity: &EndpointId, index: u32, subnet: Subnet) -
     Ipv4Addr::from(base | host_bits)
 }
 
-/// The reserved virtual IPv4 at a fixed host offset within `subnet`. Full
-/// tetron runs its Magic DNS resolver here; tetron removed Magic DNS
-/// (MINIMAL-012) but keeps the address reserved for **wire compatibility (D1)**:
-/// a full-tetron node on a shared network routes this address to its own
-/// resolver, so it must never be handed to a member. The `0x0064_6435` offset
-/// reproduces the historical resolver address for the default subnet and yields
-/// a stable, distinct in-subnet address for any /24-or-larger custom subnet.
-pub fn magic_dns_v4(subnet: Subnet) -> Ipv4Addr {
-    let (base_addr, prefix) = subnet;
-    let host_mask = subnet_host_mask(prefix);
-    let base = u32::from(base_addr) & !host_mask;
-    let host = 0x0064_6435 & host_mask;
-    Ipv4Addr::from(base | host)
-}
-
-/// True if `ip` is reserved and must never be assigned to a member
-/// (currently the reserved resolver address, which is subnet-relative).
-fn is_reserved_ipv4(ip: Ipv4Addr, subnet: Subnet) -> bool {
-    ip == magic_dns_v4(subnet)
-}
-
 /// Finds the lowest collision index whose derived IPv4 is free in `members`.
 ///
 /// An IP is considered free if no *different* identity holds it — a re-add of
@@ -477,10 +455,6 @@ pub fn assign_ip(members: &MemberList, identity: &EndpointId, subnet: Subnet) ->
     let mut index = 0u32;
     loop {
         let ip = derive_ip_with_index(identity, index, subnet);
-        if is_reserved_ipv4(ip, subnet) {
-            index += 1;
-            continue;
-        }
         match members.get_by_ip(ip) {
             Some(existing) if existing.identity != *identity => index += 1,
             _ => return (ip, index),
@@ -583,9 +557,8 @@ pub struct InviteEntry {
 }
 
 /// The single authoritative blob for a network, published by the coordinator.
-/// Contains all state a joiner needs: members, the approved list, the
-/// (wire-compat) suggested-firewall field, reusable join keys, and single-use
-/// invite entries.
+/// Contains all state a joiner needs: members, the approved list, reusable
+/// join keys, and single-use invite entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupBlob {
     /// Monotonic version, incremented on every local content mutation (admit,
@@ -597,13 +570,6 @@ pub struct GroupBlob {
     pub generation: u64,
     pub members: Vec<Member>,
     pub approved: Vec<ApprovedEntry>,
-    /// Coordinator-suggested firewall rules, keyed by subject hostname. Retained
-    /// for wire compatibility with full tetron (D1): tetron removed the
-    /// userspace firewall (MINIMAL-010), so it carries this field through the
-    /// blob verbatim on republish but never acts on it. A full-tetron
-    /// coordinator can still populate it. `BTreeMap` keys keep the encoding canonical.
-    #[serde(default, skip_serializing_if = "SuggestedFirewall::is_empty")]
-    pub suggested_firewall: SuggestedFirewall,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The network-wide overlay IPv4 subnet as `(base, prefix)`, serialized as a
@@ -817,14 +783,12 @@ impl GroupBlob {
 
 /// Produces a deterministic msgpack encoding of a group blob.
 /// Members and approved entries are sorted by identity string to ensure
-/// identical output regardless of HashMap iteration order; the suggested
-/// firewall is a `BTreeMap`, so it is already canonically ordered.
+/// identical output regardless of HashMap iteration order.
 #[allow(clippy::too_many_arguments)]
 pub fn canonical_group_bytes(
     generation: u64,
     members: &MemberList,
     approved: &ApprovedList,
-    suggested_firewall: &SuggestedFirewall,
     name: Option<&str>,
     reusable_keys: &BTreeMap<String, ReusableKey>,
     subnet: Option<Subnet>,
@@ -841,7 +805,6 @@ pub fn canonical_group_bytes(
         generation,
         members: sorted_members,
         approved: sorted_approved,
-        suggested_firewall: suggested_firewall.clone(),
         name: name.map(|s| s.to_string()),
         subnet,
         reusable_keys: reusable_keys.clone(),
@@ -856,7 +819,6 @@ pub fn group_blob_hash(
     generation: u64,
     members: &MemberList,
     approved: &ApprovedList,
-    suggested_firewall: &SuggestedFirewall,
     name: Option<&str>,
     reusable_keys: &BTreeMap<String, ReusableKey>,
     subnet: Option<Subnet>,
@@ -867,7 +829,6 @@ pub fn group_blob_hash(
         generation,
         members,
         approved,
-        suggested_firewall,
         name,
         reusable_keys,
         subnet,
@@ -903,7 +864,6 @@ pub fn try_decode_tombstone(signed: blake3::Hash, generation: u64) -> Option<Gro
         generation,
         &MemberList::new(),
         &ApprovedList::new(),
-        &SuggestedFirewall::default(),
         None,
         &BTreeMap::new(),
         None,
@@ -932,11 +892,6 @@ pub fn validate_member(member: &Member, subnet: Subnet) -> Result<()> {
         "member ip {} does not match identity-derived ip {}",
         member.ip,
         expected,
-    );
-    anyhow::ensure!(
-        !is_reserved_ipv4(member.ip, subnet),
-        "member IP {} is the reserved Magic DNS address",
-        member.ip
     );
     ensure_in_cgnat_range(member.ip, subnet)
 }
@@ -1537,7 +1492,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1548,7 +1502,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1568,7 +1521,6 @@ mod tests {
                 0,
                 &m1,
                 &approved,
-                &tetron_proto::SuggestedFirewall::default(),
                 None,
                 &BTreeMap::new(),
                 None,
@@ -1579,7 +1531,6 @@ mod tests {
                 0,
                 &m2,
                 &approved,
-                &tetron_proto::SuggestedFirewall::default(),
                 None,
                 &BTreeMap::new(),
                 None,
@@ -1597,7 +1548,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1609,7 +1559,6 @@ mod tests {
             0,
             &members2,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1642,7 +1591,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1662,7 +1610,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1673,7 +1620,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1713,7 +1659,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -1743,12 +1688,10 @@ mod tests {
             })
             .unwrap();
         let approved = ApprovedList::new();
-        let sf = tetron_proto::SuggestedFirewall::default();
         let bytes = canonical_group_bytes(
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -1759,7 +1702,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -1790,12 +1732,10 @@ mod tests {
             })
             .unwrap();
         let approved = ApprovedList::new();
-        let sf = tetron_proto::SuggestedFirewall::default();
         let bytes = canonical_group_bytes(
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -1807,7 +1747,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -1819,71 +1758,10 @@ mod tests {
     }
 
     #[test]
-    fn test_suggested_firewall_canonical_and_hashed() {
-        use tetron_proto::{HostSuggestions, SuggestedFirewall};
-        let members = make_member_list(&[1, 2]);
-        let approved = ApprovedList::new();
-        let mut sf = SuggestedFirewall::new();
-        let mut hs = HostSuggestions::default();
-        hs.allows
-            .insert("peer-a".to_string(), "9000,8123".to_string());
-        sf.insert("subject".to_string(), hs);
-
-        // Deterministic: BTreeMap keys canonicalize regardless of insert order.
-        let a = canonical_group_bytes(
-            0,
-            &members,
-            &approved,
-            &sf,
-            None,
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        );
-        let b = canonical_group_bytes(
-            0,
-            &members,
-            &approved,
-            &sf,
-            None,
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        );
-        assert_eq!(a, b);
-
-        // Suggestions are part of the signed content, so they change the hash.
-        let h_empty = group_blob_hash(
-            0,
-            &members,
-            &approved,
-            &SuggestedFirewall::new(),
-            None,
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        );
-        let h_sf = group_blob_hash(
-            0,
-            &members,
-            &approved,
-            &sf,
-            None,
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        );
-        assert_ne!(h_empty, h_sf);
-    }
-
-    #[test]
-    fn test_old_blob_without_suggested_firewall_decodes() {
-        // A blob serialized before suggested firewall existed (no
-        // `suggested_firewall` key) must still decode, defaulting it empty.
+    fn test_old_blob_without_optional_fields_decodes() {
+        // A blob serialized before any of the later optional fields existed
+        // (reusable_keys, invites, nuke_proposals, subnet, the now-removed
+        // suggested_firewall) must still decode, defaulting them all.
         #[derive(Serialize)]
         struct OldBlob {
             members: Vec<Member>,
@@ -1899,8 +1777,6 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&old).unwrap();
         let blob = decode_group_blob(&bytes).unwrap();
         assert_eq!(blob.members.len(), 2);
-        assert!(blob.suggested_firewall.is_empty());
-        // A pre-reusable-keys blob decodes with an empty reusable_keys map.
         assert!(blob.reusable_keys.is_empty());
     }
 
@@ -1933,7 +1809,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &SuggestedFirewall::default(),
             None,
             &keys,
             None,
@@ -1955,7 +1830,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &SuggestedFirewall::default(),
             None,
             &empty,
             None,
@@ -1971,7 +1845,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &SuggestedFirewall::default(),
             None,
             &keys,
             None,
@@ -1986,7 +1859,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &SuggestedFirewall::default(),
             None,
             &keys,
             None,
@@ -2066,7 +1938,6 @@ mod tests {
                 generation: 0,
                 members: vec![],
                 approved: vec![],
-                suggested_firewall: SuggestedFirewall::default(),
                 name: None,
                 subnet: None,
                 reusable_keys: keys,
@@ -2184,16 +2055,15 @@ mod tests {
     #[test]
     fn validate_member_accepts_all_derived_ips_in_range() {
         // Every derive_ip() output for a spread of identities must pass validation,
-        // as long as the IP does not collide with a reserved address (.0, .1, or
-        // the subnet-relative magic-DNS address). With the default /24 there are 253
-        // usable host addresses; we skip seeds that land on one of the 3 reserved.
+        // as long as the IP does not collide with the reserved network (.0) or
+        // gateway (.1) address. With the default /24 there are 254 usable host
+        // addresses; we skip seeds that land on one of the 2 reserved.
         let mut validated = 0u32;
         let mut seed: u8 = 0;
         loop {
             let id = test_id(seed);
             let ip = derive_ip(&id, default_subnet());
-            if !is_reserved_ipv4(ip, default_subnet())
-                && ip != Ipv4Addr::new(10, 88, 0, 0)  // network
+            if ip != Ipv4Addr::new(10, 88, 0, 0)  // network
                 && ip != Ipv4Addr::new(10, 88, 0, 1)
             // gateway
             {
@@ -2241,7 +2111,6 @@ mod tests {
             generation: 0,
             members: vec![bad_member],
             approved: vec![],
-            suggested_firewall: Default::default(),
             name: None,
             subnet: None,
             reusable_keys: BTreeMap::new(),
@@ -2270,7 +2139,6 @@ mod tests {
             generation: 0,
             members: vec![bad_member],
             approved: vec![],
-            suggested_firewall: Default::default(),
             name: None,
             subnet: None,
             reusable_keys: BTreeMap::new(),
@@ -2437,39 +2305,6 @@ mod tests {
         assert!(validate_no_duplicate_ips(&resolved).is_ok());
     }
 
-    #[test]
-    fn is_reserved_ipv4_covers_magic_dns() {
-        // The predicate test isolates the guard: it fails if anyone removes the
-        // magic DNS IP from the reserved set, independent of IP-derivation.
-        assert!(is_reserved_ipv4(
-            magic_dns_v4(default_subnet()),
-            default_subnet()
-        ));
-        assert!(!is_reserved_ipv4(
-            Ipv4Addr::new(100, 64, 0, 7),
-            default_subnet()
-        ));
-    }
-
-    #[test]
-    fn validate_member_rejects_magic_dns_ip() {
-        // Behavioral guard; the predicate test above is the one that isolates it.
-        let mut kb = [0u8; 32];
-        kb[0] = 9;
-        let id = iroh::SecretKey::from(kb).public();
-        let m = Member {
-            identity: id,
-            ip: magic_dns_v4(default_subnet()),
-            collision_index: 0,
-            is_coordinator: false,
-            hostname: None,
-            user_identity: None,
-            device_cert: None,
-            last_seen: None,
-        };
-        assert!(validate_member(&m, default_subnet()).is_err());
-    }
-
     // --- configurable subnet (SUBNET-003/004/005/007) ------------------------
 
     // A custom subnet distinct from BOTH the default (10.88.0.0/24) and the
@@ -2545,18 +2380,6 @@ mod tests {
     }
 
     #[test]
-    fn magic_dns_is_subnet_relative_and_back_compatible() {
-        // For 100.64.0.0/10 the offset reproduces the historical 100.100.100.53
-        // resolver address — a property of that range, not of the default.
-        assert_eq!(
-            magic_dns_v4((Ipv4Addr::new(100, 64, 0, 0), 10)),
-            Ipv4Addr::new(100, 100, 100, 53)
-        );
-        // For any subnet it stays inside the range.
-        assert!(ip_in_subnet(magic_dns_v4(CUSTOM), CUSTOM));
-    }
-
-    #[test]
     fn parse_cidr_roundtrips_and_rejects_garbage() {
         assert_eq!(parse_cidr("10.99.0.0/16").unwrap(), CUSTOM);
         assert!(parse_cidr("10.99.0.0").is_err());
@@ -2571,7 +2394,6 @@ mod tests {
             0,
             &members,
             &ApprovedList::new(),
-            &SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             Some(CUSTOM),
@@ -2713,12 +2535,10 @@ mod tests {
         // matching `reusable_keys`/`invites`'s `skip_serializing_if` convention.
         let members = make_member_list(&[1]);
         let approved = ApprovedList::new();
-        let sf = tetron_proto::SuggestedFirewall::default();
         let empty_bytes = canonical_group_bytes(
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -2733,7 +2553,6 @@ mod tests {
             0,
             &members,
             &approved,
-            &sf,
             None,
             &BTreeMap::new(),
             None,
@@ -2752,7 +2571,6 @@ mod tests {
             7,
             &MemberList::new(),
             &ApprovedList::new(),
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -2774,7 +2592,6 @@ mod tests {
             7,
             &MemberList::new(),
             &ApprovedList::new(),
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,
@@ -2792,7 +2609,6 @@ mod tests {
             7,
             &members,
             &ApprovedList::new(),
-            &tetron_proto::SuggestedFirewall::default(),
             None,
             &BTreeMap::new(),
             None,

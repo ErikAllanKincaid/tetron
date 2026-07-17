@@ -1568,6 +1568,38 @@ class RemoveFirewall(Requirement):
     with the nftables equivalent. Wire compat (D1): GroupBlob keeps its
     suggested_firewall field; reconverge ignores it and coordinator republish
     preserves it verbatim; ray-proto policy.rs/firewall.rs wire types stay.
+
+    **Follow-up, 2026-07-17:** `GroupBlob.suggested_firewall` and
+    `tetron-proto`'s `policy.rs` (`SuggestedFirewall`/`HostSuggestions`) were
+    kept at the time for D1 wire compat -- a full-torpedo coordinator's
+    suggestions carried through the blob verbatim, never acted on. RENAME-M02
+    subsequently severed D1 (see that requirement's own addendum), which
+    initially got this pair classified as "lower-confidence, lower-urgency"
+    to remove (their justification rested on a weaker, contrived
+    cross-product-key-migration scenario rather than RENAME-M02's flat ALPN
+    impossibility). On reflection that distinction didn't hold up: the
+    feature these fields served was already fully gone by this requirement,
+    so neither one did anything in tetron regardless of D1 -- keeping them
+    only added a wire-format field and a whole crate module for no purpose
+    tetron itself has. Removed as part of the same follow-up pass as
+    RENAME-M02's D1 cleanup: `GroupBlob.suggested_firewall` (and its
+    threading through `canonical_group_bytes`/`group_blob_hash`,
+    `NetworkState`, `JoinParams`, `RestoredRoster`, restore/reconverge
+    adoption), plus `tetron-proto/src/policy.rs` in its entirety (deleted --
+    nothing else in the workspace consumed `SuggestedFirewall`/
+    `HostSuggestions`) and its `lib.rs` re-export.
+
+    `tetron-proto/src/firewall.rs` (`Action`/`Direction`/`Protocol` enums)
+    was audited at the same time and found to be a *separate*, independently
+    dead remnant of this same requirement -- its own doc comment names the
+    firewall IPC types (`FirewallState`, `FirewallRuleView`, `FirewallAdd`,
+    `FirewallDefault`) this requirement already removed, and `policy.rs`
+    never actually imported from it (`HostSuggestions.allows` used raw
+    strings, not these enums). Flagged but deliberately not removed in this
+    pass, matching the same scope discipline applied to `membership.rs`'s
+    already-`#[allow(dead_code)]`-marked `policy_for_mode`/`OpenPolicy` --
+    both are pre-existing, unrelated dead code discovered as a side effect,
+    not part of what was being cleaned up.
     """
     req_id = "MINIMAL-010"
 
@@ -1606,6 +1638,19 @@ class RemoveMagicDns(Requirement):
     /etc/hosts' job (or a script over `status --json`). Hostnames remain in
     the roster (wire compat, status display). The daemon's host footprint
     shrinks to: TUN device, routes, config dir, log dir, unix socket.
+
+    **Follow-up, 2026-07-17:** at the time this shipped, `membership::
+    magic_dns_v4(subnet)` and the `is_reserved_ipv4` check that kept it out
+    of the member IP pool were deliberately retained for D1 wire compat (a
+    full-torpedo node on a shared network routes that address to its own
+    resolver). RENAME-M02 subsequently severed D1 -- see that requirement's
+    own addendum -- making the reservation's justification moot the same way
+    it made the other D1-compat branches moot. Removed as part of the same
+    cleanup pass: `magic_dns_v4`, `is_reserved_ipv4`, the skip-logic in
+    `assign_ip`, and the reserved-IP check in `validate_member`, plus their
+    three dedicated tests. `assign_ip` now only avoids IPs already held by a
+    different member; `validate_member` only checks the CGNAT range and the
+    network/gateway reservations.
     """
     req_id = "MINIMAL-012"
 
@@ -1766,14 +1811,23 @@ class ProductIdentityRenamed(Requirement):
       can never be `Some` for any reachable peer once the two branches above
       are gone, so the exemption could never fire.
 
-    **Not removed, deliberately left in place** (see CON-M02's own note that
-    only the ALPN-level connectivity was retired, not every trace of the
-    fork boundary): `GroupBlob.suggested_firewall` carry-through, the
-    `magic_dns_v4` reserved-address logic, and `GroupBlob.reusable_keys`
-    admission-time validation. The first two are passive struct
-    fields/reserved constants (cheap to keep, and their "dead" argument rests
-    on a weaker, contrived cross-product-key-migration scenario rather than
-    flat impossibility). The third is *not* dead weight at all -- the
+    **Not removed here, deliberately left in place at the time:**
+    `GroupBlob.suggested_firewall` carry-through and the `magic_dns_v4`
+    reserved-address logic were initially kept back as "lower-confidence,
+    lower-urgency" -- their "dead" argument rested on a weaker, contrived
+    cross-product-key-migration scenario rather than this requirement's flat
+    ALPN-level impossibility. On reflection (prompted by a follow-up
+    question) that distinction didn't actually hold up: the *feature* each
+    one served (the userspace firewall, Magic DNS) was already fully removed
+    by MINIMAL-010/MINIMAL-012 respectively, so neither one does anything in
+    tetron regardless of D1 -- keeping them added complexity for no purpose
+    tetron itself has. `magic_dns_v4` was removed the same day in a follow-up
+    pass (see MINIMAL-012's own addendum); `suggested_firewall` was reviewed
+    on the same pass and evaluated separately (see MINIMAL-010's own
+    addendum for its outcome).
+
+    **Also not removed, but for a different reason -- not dead weight at
+    all:** `GroupBlob.reusable_keys` admission-time validation. The
     validation logic is product-agnostic (it just checks a presented secret
     against `GroupBlob.reusable_keys`) and is the exact substrate a future
     tetron-native `--reusable` invite flag would need; only its doc comment's
