@@ -10,9 +10,14 @@ Electric ray *Tetronarce californica*
 
 ```bash
 sudo tetron up                          # start the node (installs the service)
-tetron create --hostname alice          # you are the coordinator; prints an invite key
-tetron join <invite-key> --hostname bob # a second machine joins using the invite key
-ping 10.88.x.y                          # reach each other by mesh IP from `tetron status`
+tetron create --hostname alice          # you are the coordinator; output includes an invite key
+# next: tetron join <invite-key>        # <- copy this from the output, run it on the next machine
+
+sudo tetron up                          # on a second machine:
+tetron join <invite-key> --hostname bob # paste the invite key from step 1's output
+
+tetron status                           # either machine: mesh IPs, hostnames, traffic
+ping 10.88.x.y                          # reach the other node by its mesh IP
 ```
 
 [![License: MPL 2.0](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE)
