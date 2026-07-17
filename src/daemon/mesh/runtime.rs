@@ -221,14 +221,37 @@ impl MeshManager {
             cancel.clone(),
         );
 
+        // Insert the network before dialing its members (DIAL-001), not after:
+        // `dial_all_members` used to run first, so a `tetron status` in the
+        // ~150ms-or-more window before it finished (routinely hit right after
+        // `sudo tetron restart`) reported no active networks at all, even
+        // though the local restore (and config on disk) was already complete.
+        // The accept handler is already registered above, so return traffic
+        // is handled regardless of dial order.
+        let handle = NetworkHandle {
+            name: name.to_string(),
+            network_key: net_public_key,
+            role: NetworkRole::Coordinator,
+            my_ip,
+            state: state.clone(),
+            dht_notify: Some(dht_notify),
+            cancel: cancel.clone(),
+            tasks,
+            disconnect_tx: disconnect_tx.clone(),
+        };
+        self.networks.insert(name.to_string(), handle);
+        self.refresh_alpns().await;
+
+        tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network restored (coordinator)");
+
         // Full mesh: proactively dial every known member so a restarting
         // coordinator/co-coordinator reconnects to peers that haven't (yet)
         // dialed in. Without this, a co-coordinator that comes back up only
         // learns about peers that connect *to it*; it never dials out, so two
         // co-coordinators restarting together can each show the other as
-        // offline until one is manually disturbed. Done before the handle
-        // takes ownership of `state`/`cancel`/`disconnect_tx`; the accept
-        // handler is already registered so return traffic is handled.
+        // offline until one is manually disturbed. Now concurrent and
+        // timeout-bounded (DIAL-001), so this never scales with roster size or
+        // hangs on a single dead peer.
         let members_to_dial: Vec<Member> = state
             .read()
             .unwrap()
@@ -245,26 +268,10 @@ impl MeshManager {
             self.identity.local_identity(),
             my_ip,
             persisted_hostname.clone(),
-            disconnect_tx.clone(),
-            cancel.clone(),
+            disconnect_tx,
+            cancel,
         )
         .await;
-
-        let handle = NetworkHandle {
-            name: name.to_string(),
-            network_key: net_public_key,
-            role: NetworkRole::Coordinator,
-            my_ip,
-            state,
-            dht_notify: Some(dht_notify),
-            cancel,
-            tasks,
-            disconnect_tx,
-        };
-        self.networks.insert(name.to_string(), handle);
-        self.refresh_alpns().await;
-
-        tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network restored (coordinator)");
 
         Ok(IpcMessage::Created {
             name: name.to_string(),

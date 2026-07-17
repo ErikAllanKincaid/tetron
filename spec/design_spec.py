@@ -2408,3 +2408,75 @@ class NukeRequiresConsensus(Requirement):
     """
     req_id = "NUKE-CONSENSUS"
 
+
+# --------------------------------------------------------------------------
+# DIAL-001: background, concurrent, timeout-bounded roster dials
+# --------------------------------------------------------------------------
+
+class BackgroundConcurrentBoundedDials(Requirement):
+    """REQUIREMENT-ID: DIAL-001
+
+    Three related dial-blocking gaps, identified while triaging upstream
+    rayfish fixes (02dd60e, fe3f3c0, b26c26b) against tetron's current
+    `join.rs`/`create_join.rs`/`runtime.rs` and confirmed still present by
+    direct code inspection — not assumed from the upstream commit messages:
+
+    1. `join_mesh_shared`'s `connect_to_roster_peers` (member join/reconnect)
+       dialed the rest of the roster serially and `.await`ed the whole loop
+       before the join completed. A single unreachable roster member (a
+       stale, offline device still listed) blocked the *entire* join/reconnect
+       on iroh's uncapped internal handshake timeout before any other peer
+       connected — even though the coordinator link was already up and the
+       network was otherwise usable.
+
+    2. `dial_all_members` (the coordinator-restore full-mesh dial, used by
+       both `create_network_inner` and `restore_coordinator_network`) was a
+       plain serial `for member in members { ...await... }` loop with no
+       timeout at all — confirmed by direct read, not inherited from
+       upstream's history. Restore time scaled linearly with roster size and
+       could stall indefinitely on one dead peer.
+
+    3. `restore_coordinator_network` `.await`ed that entire serial,
+       unbounded `dial_all_members` call *before* `self.networks.insert(...)`
+       — confirmed by reading the function directly. `tetron status` run in
+       that window (routinely triggered right after `sudo tetron restart`)
+       reported no active networks at all, even though the config and local
+       roster were completely intact, for as long as the slowest/least
+       reachable roster member took to resolve.
+
+    Fix, applied together since all three are faces of the same root cause
+    (serial + unbounded dialing blocking usability):
+
+    - `connect_to_roster_peers` becomes `spawn_roster_peer_dials`: the
+      coordinator/initial peer link is registered synchronously (as before),
+      then the rest of the roster dials concurrently in a spawned background
+      task (`futures::stream::FuturesUnordered`), each bounded by
+      `MESH_PEER_DIAL_TIMEOUT` (30s — generous since it's off the boot path)
+      and cancellation-aware via the network's token. The join/reconnect
+      completes as soon as the initial link is up; peer links fill in as they
+      connect, and the existing reconnect loop recovers any that time out.
+    - `dial_all_members` gains the same `FuturesUnordered` concurrency and a
+      `DIAL_TIMEOUT` (10s — tighter, since this dial runs proactively on
+      every restore regardless of whether a peer will ever answer, and the
+      per-peer reconnect loop is the real recovery path either way, not this
+      one-shot proactive dial).
+    - `restore_coordinator_network` inserts the `NetworkHandle` into
+      `self.networks` before the (now backgrounded, non-blocking-in-spirit
+      but still practically fast) `dial_all_members` call, so the network is
+      visible to `tetron status`/IPC as soon as local restore completes,
+      matching the ordering `create_network_inner` already effectively gets
+      for free.
+
+    tetron's dials never carry a real `DeviceCert` (device pairing was
+    removed by MINIMAL-004; `device_cert: None` is hardcoded at every
+    `MeshHello` site already), so unlike the upstream commits this fix
+    carries no device-cert plumbing — one parameter fewer throughout.
+
+    Found: 2026-07-16, triaging rayfish commits 02dd60e/fe3f3c0/b26c26b for
+    tetron applicability. All three confirmed missing by direct code
+    inspection of tetron's current `join.rs`/`create_join.rs`/`runtime.rs`,
+    not assumed from upstream history — tetron's fork point and subsequent
+    MINIMAL-* rewrites make no guarantee upstream fixes were ever inherited.
+    """
+    req_id = "DIAL-001"
+
