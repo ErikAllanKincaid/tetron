@@ -26,6 +26,7 @@ android/keystore.properties
 .env.local
 *.key
 secrets/
+/DO-NOT-COMMIT/
 
 # Android Studio / IntelliJ project settings
 android/.idea/
