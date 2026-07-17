@@ -120,7 +120,9 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 
 ## Hardening
 
-- **KICK-REQUIRES-ID: tetron kick requires endpoint-id only (no hostname/IP resolution)**: `tetron kick` currently accepts hostname, mesh IP, or short id (via `resolve_peer_name`). For a destructive action like kicking, the peer should be identified by its cryptographic identity only -- human-friendly names are ambiguous and a kick by the wrong name is disruptive. Change `kick_member` to call `resolve_short_id_any_network` directly instead of `resolve_peer_name`. Update CLI help text, docs/HOWTO.md, and README.md to show only the short-id form. `admin add` keeps the friendly resolution.
+- **KICK-REQUIRES-ID -- DONE (committed 7f20311, before this file was last touched)**: `kick_member` (`runtime.rs`) already calls `resolve_short_id_any_network` directly, not `resolve_peer_name` -- verified live in this session (`tetron kick converge-test x10sra` correctly failed with "could not resolve peer", the short id worked). This entry was stale; nothing left to do here. `admin add` keeps the friendly hostname/IP/short-id resolution via `resolve_peer_name`, which is correct for a non-destructive grant.
+
+- **Kick-vs-close-code membership authority (from rayfish 1c193b9)**: `DisconnectEvent.intentional` is `true` for both `LEAVE_CODE` and `KICK_CODE` (`forward.rs:314-319`), and `coordinator.rs`'s peer cleanup treats `intentional == true` as authoritative for pruning the roster. Since `prune_departed_peers` runs on every node (not just the coordinator) and closes connections with `KICK_CODE` whenever its local roster momentarily disagrees, a transient convergence hiccup could still cause a coordinator to wrongly evict a real member -- via connection-close inference rather than a stale publish, but the same underlying principle CONVERGE-005 established (generation/signed-record is the only source of truth) applies here too. Fix: an explicit, network-scoped, signed-record-confirmed kick message (mirroring rayfish's `ControlMsg::KickedFromNetwork`) instead of inferring membership changes from a close code. Next up after DIAL-001.
 
 ## High priority
 
@@ -196,6 +198,12 @@ development-environment fingerprints. Every file that is internal (spec,
   **Found:** 2026-07-16, consequence of CONVERGE-001.
 
 - **CONVERGE-006: Member boot-restore had no config fallback**: Fixed (see spec `CONVERGE-006`). `join_network_inner`'s boot-restore call (`initial=false`) now falls back to a `GroupBlob` built from the persisted `NetworkConfig` roster when `resolve_and_fetch_blob` fails (pkarr unreachable, no dialable seed peer), matching the config-fallback the coordinator restore path already had. Verified live on X10SRA: blocked the pkarr relay via iptables/ip6tables DROP across a full daemon restart — the fallback fired, and the member fully reconnected to both peers (direct, 0% ping loss) using the fallback roster to dial the coordinator, since DHT reachability is only needed to *resolve* the peer, not to talk to it once dialed. Superseded the original CONVERGE-004 write-up below, which was based on an incomplete diagnosis.
+
+- **DIAL-001: Serial, unbounded roster dials stalled join/restore and hid status**: Fixed (see spec `DIAL-001`). Found while triaging upstream rayfish commits 02dd60e/fe3f3c0/b26c26b for tetron applicability — all three confirmed still present by direct code inspection (not assumed from upstream). `connect_to_roster_peers` (member join/reconnect) and `dial_all_members` (coordinator full-mesh dial) were both serial, `.await`ed loops with no timeout; `restore_coordinator_network` awaited the latter *before* `self.networks.insert(...)`, so `tetron status` right after `sudo tetron restart` reported no active networks at all for as long as the slowest roster member took to (fail to) answer.
+
+  Fix: `connect_to_roster_peers` → `spawn_roster_peer_dials`, backgrounded and concurrent (`FuturesUnordered`), bounded by `MESH_PEER_DIAL_TIMEOUT` (30s); `dial_all_members` gains the same concurrency plus a `DIAL_TIMEOUT` (10s); `restore_coordinator_network` now inserts the handle before dialing. tetron carries no `device_cert` plumbing for this (pairing removed by MINIMAL-004, `device_cert: None` already hardcoded everywhere) — one parameter fewer than upstream.
+
+  Verified live on 3 bare-metal machines: stopped xps's daemon, restarted aorus (coordinator) — `tetron status` showed the correct 3-member roster immediately, and the debug log confirmed the dial to xps timed out at exactly the configured 10s instead of hanging. Restarted x10sra (member) with xps still down — reconnection to aorus completed within ~2s, dead-peer dial logged and handled in the background without blocking anything.
 
 ### OPEN
 
