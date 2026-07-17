@@ -122,6 +122,11 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 
 - **KICK-REQUIRES-ID -- DONE (committed 7f20311, before this file was last touched)**: `kick_member` (`runtime.rs`) already calls `resolve_short_id_any_network` directly, not `resolve_peer_name` -- verified live in this session (`tetron kick converge-test x10sra` correctly failed with "could not resolve peer", the short id worked). This entry was stale; nothing left to do here. `admin add` keeps the friendly hostname/IP/short-id resolution via `resolve_peer_name`, which is correct for a non-destructive grant.
 
+- **NUKE-CONSENSUS: `tetron nuke` should require multi-coordinator consensus, not implemented yet**: `tetron nuke <net>` is destructive and irrecoverable (publishes an empty DHT record, poisoning the pkarr record, then leaves) -- currently any single coordinator can run it unilaterally. Should require at least two coordinators to agree, **unless there is only one coordinator** (a solo coordinator retains unilateral nuke -- nobody to second, and no way to lock out a network that never promoted a co-coordinator).
+
+  Full design already spec'd (see spec `NUKE-CONSENSUS` in `spec/design_spec.py`, committed 3e82e9b as a pure spec commit -- **no implementation yet**): a `nuke_proposals: BTreeMap<String, u64>` field on `GroupBlob` (coordinator identity -> proposal timestamp); `tetron nuke` adds/seconds a proposal and republishes rather than nuking immediately when 2+ coordinators exist; any coordinator that sees 2+ unique proposers in `nuke_proposals` executes the actual nuke; proposals auto-expire (24h) and can be cancelled (`tetron nuke --cancel`); `tetron status` should surface pending proposals.
+
+  **Found:** 2026-07-16, during multi-coordinator audit (Race C: no coordinator revocation makes nuke the only way to remove a compromised coordinator, so a single key holder being able to unilaterally destroy the network instead is a real risk).
 
 ## High priority
 
