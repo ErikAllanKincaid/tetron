@@ -2,6 +2,7 @@
 /ray-proto/target
 /docs/upstream
 .superpowers
+.claude/
 
 # Android build outputs / local config
 android/.gradle/
