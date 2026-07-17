@@ -122,7 +122,6 @@ No WebSocket streaming needed for basic use -- poll `Status` every few seconds.
 
 - **KICK-REQUIRES-ID -- DONE (committed 7f20311, before this file was last touched)**: `kick_member` (`runtime.rs`) already calls `resolve_short_id_any_network` directly, not `resolve_peer_name` -- verified live in this session (`tetron kick converge-test x10sra` correctly failed with "could not resolve peer", the short id worked). This entry was stale; nothing left to do here. `admin add` keeps the friendly hostname/IP/short-id resolution via `resolve_peer_name`, which is correct for a non-destructive grant.
 
-- **Kick-vs-close-code membership authority (from rayfish 1c193b9)**: `DisconnectEvent.intentional` is `true` for both `LEAVE_CODE` and `KICK_CODE` (`forward.rs:314-319`), and `coordinator.rs`'s peer cleanup treats `intentional == true` as authoritative for pruning the roster. Since `prune_departed_peers` runs on every node (not just the coordinator) and closes connections with `KICK_CODE` whenever its local roster momentarily disagrees, a transient convergence hiccup could still cause a coordinator to wrongly evict a real member -- via connection-close inference rather than a stale publish, but the same underlying principle CONVERGE-005 established (generation/signed-record is the only source of truth) applies here too. Fix: an explicit, network-scoped, signed-record-confirmed kick message (mirroring rayfish's `ControlMsg::KickedFromNetwork`) instead of inferring membership changes from a close code. Next up after DIAL-001.
 
 ## High priority
 
@@ -204,6 +203,12 @@ development-environment fingerprints. Every file that is internal (spec,
   Fix: `connect_to_roster_peers` → `spawn_roster_peer_dials`, backgrounded and concurrent (`FuturesUnordered`), bounded by `MESH_PEER_DIAL_TIMEOUT` (30s); `dial_all_members` gains the same concurrency plus a `DIAL_TIMEOUT` (10s); `restore_coordinator_network` now inserts the handle before dialing. tetron carries no `device_cert` plumbing for this (pairing removed by MINIMAL-004, `device_cert: None` already hardcoded everywhere) — one parameter fewer than upstream.
 
   Verified live on 3 bare-metal machines: stopped xps's daemon, restarted aorus (coordinator) — `tetron status` showed the correct 3-member roster immediately, and the debug log confirmed the dial to xps timed out at exactly the configured 10s instead of hanging. Restarted x10sra (member) with xps still down — reconnection to aorus completed within ~2s, dead-peer dial logged and handled in the background without blocking anything.
+
+- **CONVERGE-007: A kick-coded connection close never mutates the roster**: Fixed (see spec `CONVERGE-007`). Found triaging the applicable slice of rayfish 1c193b9 (device-pairing parts N/A, removed by MINIMAL-004). `DisconnectEvent.intentional` was `true` for both `LEAVE_CODE` and `KICK_CODE`, and `coordinator.rs`'s cleanup treated that as authority to prune the roster — but `prune_departed_peers` (CONVERGE-005) sends `KICK_CODE` from *any* node whenever its own local roster momentarily disagrees, not just on a real kick, so a transient convergence race could cause a false eviction via connection-close inference. `tetron kick`'s actual path (`remove_member_roster_only` + `finalize_removal`) was never the problem; this was a second, redundant, incorrect path to the same mutation.
+
+  Fix: `DisconnectEvent.intentional: bool` → `CloseReason` enum (`Left`/`Kicked`/`Other`) with `prunes_member()` true only for `Left`. Roster pruning and the reconnect loop's "peer left" fast-skip both narrow to `Left` only; a `Kicked` close falls through to the existing `pruned_peers` check, which is already the correct signed-roster-driven arbiter.
+
+  Verified live on 3 bare-metal machines: `tetron leave` still correctly prunes via `reason=Left`; `tetron kick` still works end to end — the kicked node sees `reason=Kicked`, briefly retries (falls through the fast-skip as designed), then CONVERGE-003's poller detects the removal and cleanly leaves within ~22s, same as before this fix.
 
 ### OPEN
 
