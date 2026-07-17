@@ -24,17 +24,25 @@ use super::super::*;
 /// generation is left alone rather than fought over: the loser's own next
 /// local mutation bumps its generation past the tie and wins outright next
 /// time, rather than the two publishers flip-flopping.
-async fn dht_read_before_write(
+///
+/// **Always does the real comparison — no "first publish" bypass** (removed
+/// 2026-07-17, found via live testing): a previous version treated a
+/// caller's first-ever publish attempt (no `last_published` yet) as
+/// automatically safe, unconditionally overwriting whatever was actually on
+/// the DHT. That was fine for a genuinely brand-new network (nothing to
+/// compare against — the `Err` arm below already handles that correctly),
+/// but for a coordinator whose restore fell back to stale local config
+/// (DHT/blob unreachable at restart), its very first publish attempt could
+/// resurrect that stale state over a concurrently-mutated (or even already
+/// nuked) record. Removing the bypass unifies "first publish" and "any
+/// subsequent publish" onto one path: always compare against what's
+/// actually live first.
+pub(crate) async fn dht_read_before_write(
     client: &PkarrRelayClient,
     net_pubkey: EndpointId,
     local_generation: u64,
     local_hash: blake3::Hash,
-    last_published: Option<blake3::Hash>,
 ) -> bool {
-    if last_published.is_none() {
-        // First publish for this coordinator — always proceed.
-        return true;
-    }
     match crate::dht::resolve_network(client, net_pubkey).await {
         Ok((dht_hash, dht_generation, _)) => match local_generation.cmp(&dht_generation) {
             std::cmp::Ordering::Greater => true,
@@ -80,7 +88,6 @@ pub(crate) fn spawn_network_publisher(
 ) -> JoinHandle<()> {
     let net_pubkey = net_secret_key.public();
     tokio::spawn(async move {
-        let mut last_published: Option<blake3::Hash> = None;
         loop {
             let (generation, hash) = {
                 let s = state.read().unwrap();
@@ -103,7 +110,7 @@ pub(crate) fn spawn_network_publisher(
                     });
                 (s.generation, hash)
             };
-            if dht_read_before_write(&client, net_pubkey, generation, hash, last_published).await {
+            if dht_read_before_write(&client, net_pubkey, generation, hash).await {
                 let mut seed_peers: Vec<EndpointId> = peers
                     .peers_for_network(&network_name)
                     .into_iter()
@@ -124,7 +131,6 @@ pub(crate) fn spawn_network_publisher(
                 {
                     Ok(()) => {
                         tracing::info!(peers = seed_peers.len(), "published network record");
-                        last_published = Some(hash);
                     }
                     Err(e) => tracing::warn!(error = %e, "failed to publish network record"),
                 }
@@ -185,8 +191,7 @@ pub(crate) fn spawn_lazy_publisher(
             // Only attempt publish if the hash changed since our last publish
             // AND the read-before-write guard passes (CONVERGE-005).
             if last_published != Some(hash)
-                && dht_read_before_write(&client, net_pubkey, generation, hash, last_published)
-                    .await
+                && dht_read_before_write(&client, net_pubkey, generation, hash).await
             {
                 let mut seed_peers: Vec<EndpointId> = peers
                     .peers_for_network(&network_name)

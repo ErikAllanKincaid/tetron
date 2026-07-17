@@ -53,6 +53,18 @@ impl MeshManager {
     /// store, and publish the network-key-signed pkarr record (blob hash + this
     /// endpoint as the seed peer). Shared by network creation and coordinator
     /// restore — both seal a freshly built `NetworkState` and announce it.
+    ///
+    /// **Goes through the same read-before-write guard as the periodic
+    /// publishers** (found via live testing, 2026-07-17): a restore whose
+    /// `NetworkState` came from a stale-config fallback (DHT/blob
+    /// unreachable at restart) must not unconditionally overwrite whatever
+    /// is actually live on the DHT — that could resurrect superseded, or
+    /// even already-nuked, state. For a genuinely brand-new network there's
+    /// nothing to compare against yet, so the guard passes harmlessly (one
+    /// extra resolve attempt, same as any other coordinator's first-ever
+    /// publish now goes through). If the guard defers, the group poller
+    /// picks up the actually-current state on its next tick — the daemon's
+    /// in-memory view is briefly the restored one, not the DHT's, until then.
     pub(crate) async fn seal_and_publish(
         &self,
         net_state: &mut NetworkState,
@@ -70,6 +82,15 @@ impl MeshManager {
                 .as_ref()
                 .map(|s| s.hash)
                 .expect("snapshot set");
+            let net_pubkey = net_secret_key.public();
+            if !dht_read_before_write(&pkarr_client, net_pubkey, net_state.generation, blob_hash)
+                .await
+            {
+                tracing::info!(
+                    "seal_and_publish: DHT already at current/newer state; skipping publish"
+                );
+                return;
+            }
             if let Err(e) = dht::publish_network(
                 &pkarr_client,
                 net_secret_key,

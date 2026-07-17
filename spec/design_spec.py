@@ -2621,3 +2621,73 @@ class CloseCodeNeverMutatesRoster(Requirement):
     """
     req_id = "CONVERGE-007"
 
+
+# --------------------------------------------------------------------------
+# CONVERGE-008: no unconditional "first publish" bypass -- always
+# read-before-write, even on a coordinator's very first publish attempt
+# --------------------------------------------------------------------------
+
+class NoUnconditionalFirstPublish(Requirement):
+    """REQUIREMENT-ID: CONVERGE-008
+
+    `dht_read_before_write` (CONVERGE-005's generation-authoritative publish
+    guard) had a bypass: `if last_published.is_none() { return true; }` --
+    a caller's very first publish attempt (no locally-tracked prior publish
+    yet) always proceeded unconditionally, skipping the DHT comparison
+    entirely. This was meant for the genuinely-new-network case (nothing to
+    compare against), which the guard's own `Err` arm (no DHT record found)
+    already handles correctly on its own -- the bypass was never actually
+    load-bearing for that case.
+
+    What it was actually doing, unintentionally: `seal_and_publish` (shared
+    by `create_network_inner` and `restore_coordinator_network`) calls
+    `dht::publish_network` directly -- with no read-before-write guard at
+    all -- immediately at restore time, before the periodic publisher loop
+    (which does have the guard, but only after its own first-iteration
+    bypass) even starts. `restore_member_roster` falls back to stale local
+    config when the DHT/blob is unreachable at restart ("could not restore
+    roster from DHT blob; falling back to config"). Combine the two: a
+    coordinator restarting under flaky DHT connectivity restores a
+    possibly-stale roster, then `seal_and_publish` unconditionally
+    republishes it, potentially overwriting a concurrently-mutated (or even
+    already-nuked, see NUKE-CONSENSUS) DHT record with old, wrong content.
+
+    Fix: removed the bypass from `dht_read_before_write` entirely (now
+    `pub(crate)`, no `last_published` parameter -- it always does the real
+    generation/hash comparison, with the existing `Err` arm still covering
+    "nothing published yet"). `seal_and_publish` now goes through the same
+    guard before its `dht::publish_network` call, instead of calling it
+    unconditionally; if the guard defers, the (already generation-authoritative)
+    group poller picks up the real current state on its next tick. For a
+    genuinely brand-new network this adds one harmless extra `resolve_network`
+    round-trip (always `Err`, guard passes). `spawn_network_publisher`'s
+    `last_published` local variable is now unused for gating (removed);
+    `spawn_lazy_publisher` keeps its own `last_published` check as a
+    separate, still-valid optimization (skip even attempting a DHT
+    round-trip when the local hash hasn't changed) -- that check is
+    independent of what the guard itself does internally.
+
+    This does not touch the established pattern used by one-shot,
+    fresh-local-mutation publishes (`invite_create`, `invite_revoke`, kick,
+    `admin_add`'s `store_and_publish_group`) -- those correctly publish
+    unconditionally because they *are* the authoritative new state (a local
+    mutation just happened), unlike a restore, which may or may not reflect
+    reality depending on whether the DHT fetch that fed it actually
+    succeeded.
+
+    Found: 2026-07-17, as a side effect of NUKE-CONSENSUS live testing --
+    repeated manual daemon restarts (for redeploying binaries mid-test) on
+    the original coordinator collided with this, resurrecting a stale
+    record and getting the node stuck comparing against its own
+    resurrected write rather than the real state. Deliberately deferred out
+    of the NUKE-CONSENSUS commit (needed its own scoped fix + live
+    validation, not a tail-end change to an already-large feature PR).
+
+    Live validation needed before trusting this in production, same bar as
+    CONVERGE-001/NUKE-CONSENSUS: restart a coordinator with the DHT/blob
+    deliberately blocked (falls back to stale config), verify it does not
+    clobber a concurrently-mutated (or nuked) record once connectivity
+    returns.
+    """
+    req_id = "CONVERGE-008"
+
