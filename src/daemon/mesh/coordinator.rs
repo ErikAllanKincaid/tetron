@@ -89,18 +89,16 @@ pub(crate) fn spawn_peer_cleanup(
 }
 
 /// Coordinator-side per-member control reader. Continuously accepts control
-/// streams from one member, answers `Ping`/`Pong`, and captures a full-tetron
-/// peer's device cert off its `MeshHello` (D1 wire compat — kept in the roster
-/// verbatim). Hostname is fixed at join (MINIMAL-014 removed rename
-/// propagation), so a `MeshHello` hostname is no longer acted on. Runs until the
-/// network token is cancelled or the connection drops.
+/// streams from one member and answers `Ping`/`Pong`; every other message
+/// (including `MeshHello` — hostname is fixed at join, MINIMAL-014 removed
+/// rename propagation) is received but not acted on. Runs until the network
+/// token is cancelled or the connection drops.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_coordinator_control_reader(
     conn: Connection,
     remote_id: EndpointId,
     _peer_ip: Ipv4Addr,
     _network_name: String,
-    state: SharedNetworkState,
     token: CancellationToken,
     // Fires the waiting `tetron ping` handler when a matching `Pong` arrives.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
@@ -142,32 +140,10 @@ pub(crate) fn spawn_coordinator_control_reader(
                     }
                     continue;
                 }
-                // Pairing (MINIMAL-004) and invite minting/gossip (MINIMAL-013)
-                // were removed; tolerate these from full-tetron peers instead of
-                // erroring the connection (D1 wire compat: decode and ignore).
-                ControlMsg::Unpaired
-                | ControlMsg::CertRefresh { .. }
-                | ControlMsg::InviteShare { .. }
-                | ControlMsg::InviteUsed { .. } => continue,
+                // Every other control message (including MeshHello — its
+                // hostname is inert since MINIMAL-014 fixed hostname at join)
+                // is received but not acted on here.
                 _ => {}
-            }
-            let ControlMsg::MeshHello { device_cert, .. } = msg else {
-                continue;
-            };
-
-            // Store a verified device cert in the roster verbatim so full-tetron
-            // peers keep their multi-device metadata (tetron does no revocation
-            // checking; pairing was removed by MINIMAL-004). The MeshHello's
-            // hostname is ignored — hostname is fixed at join (MINIMAL-014).
-            if let Some(ref cert) = device_cert
-                && cert.verify()
-                && cert.device_key == remote_id
-            {
-                let mut s = state.write().unwrap();
-                if let Some(m) = s.members.get_mut(&remote_id) {
-                    m.user_identity = Some(cert.user_identity);
-                    m.device_cert = Some(cert.clone());
-                }
             }
         }
     });

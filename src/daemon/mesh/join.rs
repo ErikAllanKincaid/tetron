@@ -767,15 +767,6 @@ fn spawn_member_control_listener(
                                         let _ = tx.send(());
                                     }
                                 }
-                                // Pairing (MINIMAL-004) and invite minting/gossip
-                                // (MINIMAL-013) are removed; tolerate a
-                                // full-tetron coordinator's pairing + invite
-                                // control messages (D1 wire compat: decode and
-                                // ignore, never error).
-                                ControlMsg::Unpaired
-                                | ControlMsg::CertRefresh { .. }
-                                | ControlMsg::InviteShare { .. }
-                                | ControlMsg::InviteUsed { .. } => {}
                                 _ => {}
                             }
                         }

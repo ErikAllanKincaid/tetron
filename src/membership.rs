@@ -2707,8 +2707,9 @@ mod tests {
 
     #[test]
     fn nuke_proposals_field_roundtrips_and_defaults_empty() {
-        // Old blobs without the field must still decode (D1/back-compat), and a
-        // blob with no proposals must not serialize the (empty) field at all —
+        // Old blobs without the field must still decode (back-compat with
+        // pre-NUKE-CONSENSUS blobs, not D1), and a blob with no proposals
+        // must not serialize the (empty) field at all —
         // matching `reusable_keys`/`invites`'s `skip_serializing_if` convention.
         let members = make_member_list(&[1]);
         let approved = ApprovedList::new();

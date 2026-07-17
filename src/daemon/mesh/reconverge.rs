@@ -207,19 +207,9 @@ pub(crate) fn prune_departed_peers(
     my_identity: EndpointId,
 ) {
     for (peer_id, ip, conn) in peers.peers_for_network_with_conn(network_name) {
-        // Membership is by roster identity, which for a paired full-tetron peer
-        // is its user identity, not the transport id the PeerTable is keyed on.
-        // We keep no device→user map, but such a roster entry carries the peer's
-        // device cert, so match its `device_key` against the transport id (D1
-        // wire compat: never prune a paired full node that is still a member).
         let still_member = {
             let s = state.read().unwrap();
-            s.members.all().iter().any(|m| {
-                m.identity == peer_id
-                    || m.device_cert
-                        .as_ref()
-                        .is_some_and(|c| c.device_key == peer_id)
-            })
+            s.members.all().iter().any(|m| m.identity == peer_id)
         };
         if still_member || peer_id == my_identity {
             continue;

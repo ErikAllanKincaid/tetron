@@ -1735,6 +1735,50 @@ class ProductIdentityRenamed(Requirement):
     - LICENSE (MPL-2.0).
     - git history (the rename is a commit in the existing chain).
     - The tetron-proto crate name was set by RENAME-M01; it stays.
+
+    **Follow-up dead-code cleanup, 2026-07-17:** this ALPN-prefix change is
+    what actually severs D1 -- iroh negotiates the ALPN during the QUIC
+    handshake, so a tetron node and a full torpedo node share no common
+    protocol and cannot connect at all, at any level (control or data plane).
+    Several "D1 wire compat: decode and ignore" code paths written *before*
+    this requirement shipped were never revisited afterward to check whether
+    they were still reachable. Audited every `D1` reference in `src/` and
+    `tetron-proto/src/` (2026-07-17) and removed the ones gated on receiving
+    a message over an established mesh-ALPN connection -- mathematically
+    unreachable now, not just unlikely:
+
+    - `ControlMsg::Unpaired`/`CertRefresh`/`InviteShare`/`InviteUsed`
+      decode-and-ignore arms (`join.rs`, `coordinator.rs`) -- fell through to
+      the existing catch-all with identical (no-op) behavior.
+    - `MeshHello.device_cert` capture into the roster
+      (`spawn_coordinator_control_reader` in `coordinator.rs`) -- the whole
+      point of that block was storing a cert only a full torpedo peer would
+      ever send; removed along with the now-unused `state` parameter it
+      required (updated both call sites in `accept.rs`).
+    - `GroupMode::Open` auto-admit in `CoordinatorAcceptState::handle_connection`
+      (`accept.rs`) -- tetron itself can never create an open network
+      (MINIMAL-013), and a tetron node could only ever encounter one by
+      connecting to a full-torpedo coordinator, which is what this
+      requirement makes impossible.
+    - The `device_key`-matching prune exemption in `prune_departed_peers`
+      (`reconverge.rs`) -- exempted a peer from pruning if the roster's
+      `Member.device_cert.device_key` matched its transport id; `device_cert`
+      can never be `Some` for any reachable peer once the two branches above
+      are gone, so the exemption could never fire.
+
+    **Not removed, deliberately left in place** (see CON-M02's own note that
+    only the ALPN-level connectivity was retired, not every trace of the
+    fork boundary): `GroupBlob.suggested_firewall` carry-through, the
+    `magic_dns_v4` reserved-address logic, and `GroupBlob.reusable_keys`
+    admission-time validation. The first two are passive struct
+    fields/reserved constants (cheap to keep, and their "dead" argument rests
+    on a weaker, contrived cross-product-key-migration scenario rather than
+    flat impossibility). The third is *not* dead weight at all -- the
+    validation logic is product-agnostic (it just checks a presented secret
+    against `GroupBlob.reusable_keys`) and is the exact substrate a future
+    tetron-native `--reusable` invite flag would need; only its doc comment's
+    "D1 compat" framing was stale, now corrected to describe it as dormant
+    infrastructure rather than full-torpedo interop.
     """
     req_id = "RENAME-M02"
 

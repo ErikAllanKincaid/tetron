@@ -43,7 +43,6 @@ impl CoordinatorAcceptState {
         let token = self.token.clone();
         let disconnect_tx = self.disconnect_tx.clone();
         let network = self.network_name.clone();
-        let state = self.state.clone();
         let pending_pongs = self.pending_pongs.clone();
         let ctx = self.ctx.clone();
         tokio::spawn(async move {
@@ -53,7 +52,6 @@ impl CoordinatorAcceptState {
                 remote_id,
                 peer_ip,
                 network.clone(),
-                state,
                 token.clone(),
                 pending_pongs,
             );
@@ -140,17 +138,16 @@ impl CoordinatorAcceptState {
             return;
         }
 
-        // Unknown peer, no invite: open networks auto-admit (D1 compat);
-        // closed networks (always, for tetron) deny immediately. The only
-        // enrollment method after LIVE-001 is an invite key.
-        if self.state.read().unwrap().mode == GroupMode::Open {
-            self.admit_peer(conn, send, remote_id, peer_ip, hostname, device_cert, false)
-                .await;
-        } else {
-            tracing::warn!(peer = %remote_id.fmt_short(), "no invite presented; denied");
-            self.deny(&conn, send, "a valid invite key is required to join".to_string())
-                .await;
-        }
+        // Unknown peer, no invite: always denied. The only enrollment method
+        // after LIVE-001 is an invite key — tetron itself can never create an
+        // open network (MINIMAL-013), and a tetron node could only encounter
+        // one by connecting to a full-tetron coordinator, which the ALPN
+        // split makes impossible (D1 severed by RENAME-M02). `GroupMode::Open`
+        // auto-admit accordingly has no reachable path left; removed
+        // 2026-07-17 rather than left as unreachable dead code.
+        tracing::warn!(peer = %remote_id.fmt_short(), "no invite presented; denied");
+        self.deny(&conn, send, "a valid invite key is required to join".to_string())
+            .await;
     }
 
     /// Admit (or reject) an unknown peer that presented an invite `secret`.
@@ -159,8 +156,16 @@ impl CoordinatorAcceptState {
     /// matches a valid (not revoked, not expired) invite entry, the entry is
     /// removed from the blob, `dht_notify` is pulsed (so the background publisher
     /// republishes the updated blob, burning the invite), and the peer is admitted.
-    /// Falls back to `GroupBlob.reusable_keys` for D1 compat with full-tetron
-    /// reusable keys.
+    /// Falls back to `GroupBlob.reusable_keys` if the secret isn't a single-use
+    /// invite. tetron's own CLI has no way to mint a reusable key today (no
+    /// `--reusable` flag on `tetron invite create` — see the trust-driven
+    /// admission model: a coordinator vouches per-join, not via a standing
+    /// credential), so this validation path is currently dormant, not D1
+    /// wire compat — that scenario (a full-tetron coordinator minting one) is
+    /// unreachable since RENAME-M02 severed the ALPN. Kept as the substrate
+    /// for a possible future tetron-native reusable-key feature, which the
+    /// validation logic here (product-agnostic: it just checks a presented
+    /// secret against the blob) already supports without changes.
     ///
     /// **Replay race:** there is a narrow window between removing the invite from
     /// our local blob copy and the updated blob propagating to other coordinators
@@ -213,7 +218,8 @@ impl CoordinatorAcceptState {
             return;
         }
 
-        // Phase 2: fall back to GroupBlob reusable keys (D1 compat).
+        // Phase 2: fall back to GroupBlob reusable keys (currently dormant --
+        // see the doc comment above).
         let reusable_id = {
             let s = self.state.read().unwrap();
             crate::membership::validate_reusable_key(&s.reusable_keys, &secret, now_secs())
@@ -392,9 +398,8 @@ impl CoordinatorAcceptState {
         Ok((peer_ip, collision_index, final_hostname))
     }
 
-    /// Register an admitted member in the peer table and start its control reader
-    /// (so a later rename via `MeshHello` propagates immediately, not only after a
-    /// reconnect) plus its inbound data-plane reader.
+    /// Register an admitted member in the peer table and start its control
+    /// reader (answers `Ping`/`Pong`) plus its inbound data-plane reader.
     fn spawn_admitted_member_tasks(
         &self,
         conn: Connection,
@@ -415,7 +420,6 @@ impl CoordinatorAcceptState {
             remote_id,
             peer_ip,
             self.network_name.clone(),
-            self.state.clone(),
             self.token.clone(),
             self.pending_pongs.clone(),
         );
