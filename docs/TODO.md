@@ -181,26 +181,35 @@ development-environment fingerprints. Every file that is internal (spec,
 
 - **SUBNET-BUG-001: TUN created with local subnet, not network subnet, silently breaking data plane**: Fixed in fa29ef9. Join now rejects with a clear error when the network's subnet differs from the node's configured subnet. Verified in e2e test on 2026-07-16 across 4 nodes.
 
+- **CONVERGE-003: Removed member never cleans up locally (ghost member)**: Fixed (see spec `CONVERGE-003`). A node dropped from the roster (kicked, or a CONVERGE-001 casualty) now leaves the network locally — token cancelled, config deleted, `tetron status` stops lying about a healthy membership — instead of silently redialing forever. Verified live on 3 bare-metal machines (590i-aorus-ultra, xps-17-9720, X10SRA) 2026-07-16: an explicit `tetron kick` correctly triggered local teardown on the kicked node within ~1 poller cycle, and a second, organic recurrence of CONVERGE-001 (below) during the same session was also handled cleanly by the fix rather than producing another ghost.
+
 ### OPEN
 
-- **CONVERGE-001: Co-coordinator publish race with original coordinator**: When a promoted co-coordinator admits new members and publishes an updated blob to the DHT, the original coordinator may overwrite it with a stale blob (on its 300s periodic publish). Cascade:
+- **CONVERGE-001: Co-coordinator publish race with original coordinator — NOT fully closed by a9b0afa/6b2954d**: When a promoted co-coordinator admits new members and publishes an updated blob to the DHT, the original coordinator may overwrite it with a stale blob (on its 300s periodic publish). Cascade:
   1. Co-coordinator publishes updated blob (members: aorus, xps, x10sra, xeon40)
   2. Original coordinator's 300s timer fires, publishes stale blob (members: aorus, xps only)
   3. Co-coordinator's 60s poller sees DHT hash regressed, fetches old blob, overwrites in-memory state
   4. Members admitted by co-coordinator vanish from both coordinators
 
-  Root cause: multiple coordinators publish to the same DHT key without coordination. The lazy publisher on co-coordinators has no `dht_notify` handle. The original coordinator's publisher uses NOTIFY + 300s timer.
+  Root cause: multiple coordinators publish to the same DHT key without coordination. The read-before-write guard (a9b0afa) only checks "did the hash change under me" — it has no logical/version clock, so it cannot tell an objectively-stale-but-later-written blob from a genuinely newer one. Once a co-coordinator's publish attempt sees a DHT hash it doesn't recognize, it defers to that hash *permanently* (every future publish attempt sees the same "mismatch" and skips), even if its own local state is actually the correct, newer one. Compounding this: `spawn_group_poller`'s blob-fetch only tries live `PeerTable` connections via the `iroh-blobs` ALPN and has no seed-peer fallback (unlike `reconverge_and_apply`'s `fetch_verified_blob`, which tries both) — observed failing with "could not fetch updated group blob from any peer" even while a live mesh connection to the same peer was up and passing traffic, so a coordinator can notice the hash changed and still never converge on it.
 
-  **Workaround:** restart original coordinator after members join via co-coordinator.
-  **Fix ideas:** (a) read-before-write DHT record (fetch current hash, only publish if newer), (b) single-writer model (only original coordinator publishes to DHT), (c) co-coordinators provide blob via iroh-blobs only, never publish.
+  **Reproduced again 2026-07-16 (later in the session, after a9b0afa + 6b2954d were live)**: x10sra admitted by xps twice; both times the DHT settled on a 2-member blob that excluded it, confirmed via `member_removed` triggering CONVERGE-003's cleanup rather than a ghost — i.e. the race itself is still very much live, only its worst symptom (the ghost member) is now handled.
 
-  **Severity:** high -- breaks mesh convergence when using co-coordinator admission.
+  **Workaround:** restart the original coordinator (its restore-on-boot fetch path uses seeds and tends to pick up the correct blob more reliably than the ongoing poller) after members join via co-coordinator.
+  **Fix ideas:** (a) a monotonic version/generation counter in the signed `GroupBlob` so publishers and pollers can tell newer from stale regardless of write order (the real fix — hash-equality alone cannot do this), (b) give `spawn_group_poller` the same seed-peer fallback `fetch_verified_blob` already has, (c) single-writer model (only the original coordinator publishes to DHT), (d) co-coordinators provide blob via iroh-blobs only, never publish.
+
+  **Severity:** high -- breaks mesh convergence when using co-coordinator admission. Priority follow-up: this is the next thing to fix, now that CONVERGE-003 keeps its symptom from causing silent data-plane failures.
   **Found:** 2026-07-16, e2e test with aorus (original) + xps (co-coordinator).
 
 - **CONVERGE-002: Stale DHT restore on coordinator restart**: When a coordinator restarts after the DHT record was overwritten with a stale blob (CONVERGE-001), `restore_coordinator_network` fails with "group blob not found locally or at any seed peer" and falls back to the config, producing a roster with only the coordinator itself. Other members are denied with "no invite presented" because the coordinator does not recognize them.
 
   **Severity:** high -- can orphan the network.
   **Found:** 2026-07-16, consequence of CONVERGE-001.
+
+- **CONVERGE-004: Group poller never spawned on boot-time member reconnect**: `connect_all_networks`' member-rejoin-via-DHT-lookup path (used when a daemon restarts with a persisted, non-coordinator network) only spawns `spawn_reconnect_loop` — never a group poller, and never `reconverge_and_apply` either (that only runs via a live `MemberSync`/`BlobUpdated` control-message trigger, which a member with a flapping/denied connection may never receive). A member whose roster membership was lost while its daemon was down (or that never manages a stable connection after boot) has no path to ever notice, and just redials forever with no route to CONVERGE-003's cleanup. Only a fresh `finalize_join` (a live `tetron join`) currently gets a poller.
+
+  **Severity:** medium -- narrows CONVERGE-003's fix to nodes with at least one live connection or a fresh join; a node stuck in this exact boot-reconnect path stays a ghost.
+  **Found:** 2026-07-16, while verifying CONVERGE-003 on X10SRA after a daemon restart.
 
 ## Procedural Notes (from e2e test 2026-07-16)
 

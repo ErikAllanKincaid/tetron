@@ -73,6 +73,7 @@ pub(crate) async fn reconverge_and_apply(
     // these was removed in MINIMAL-014).
     _alpn: &[u8],
     _my_ip: Ipv4Addr,
+    left_tx: &mpsc::Sender<String>,
 ) {
     let MeshCtx {
         peers,
@@ -95,6 +96,14 @@ pub(crate) async fn reconverge_and_apply(
         tracing::warn!(network = %network_name, "reconverge: could not fetch verified blob");
         return;
     };
+    // We are no longer in the authoritative roster (kicked, or a casualty of
+    // the CONVERGE-001 publish race): leave locally instead of silently
+    // applying a roster that excludes us (CONVERGE-003).
+    if member_removed(&data.members, &data.approved, my_identity) {
+        tracing::warn!(network = %network_name, "we have been removed from the network");
+        let _ = left_tx.send(network_name.to_string()).await;
+        return;
+    }
     // Two coordinators can independently admit a fresh joiner at the same
     // collision index, producing a roster with duplicate IPs. Resolve it
     // deterministically (lowest identity keeps the slot, others re-roll) before
@@ -189,6 +198,18 @@ pub(crate) fn reconcile_local_hostname(
     }
 }
 
+/// Whether `my_id` is still present in a freshly-fetched roster, as either a
+/// full member or a pending-approval entry. Shared by `spawn_group_poller` and
+/// `reconverge_and_apply` (CONVERGE-003) so both self-removal checks agree.
+fn member_removed(
+    members: &[crate::membership::Member],
+    approved: &[ApprovedEntry],
+    my_id: EndpointId,
+) -> bool {
+    !members.iter().any(|m| m.identity == my_id) && !approved.iter().any(|a| a.identity == my_id)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_group_poller(
     client: PkarrRelayClient,
     net_pubkey: EndpointId,
@@ -197,16 +218,19 @@ pub(crate) fn spawn_group_poller(
     ctx: MeshCtx,
     network_name: String,
     token: CancellationToken,
+    left_tx: mpsc::Sender<String>,
 ) -> JoinHandle<()> {
     let MeshCtx {
         peers, blob_store, ..
     } = ctx;
+    tracing::info!(network = %network_name, "group poller spawned");
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {},
             }
+            tracing::debug!(network = %network_name, "group poller tick");
 
             let current_hash = {
                 let s = state.read().unwrap();
@@ -291,10 +315,9 @@ pub(crate) fn spawn_group_poller(
             }
 
             let my_id = endpoint.id();
-            if !new_member_ids.contains(&my_id)
-                && !data.approved.iter().any(|a| a.identity == my_id)
-            {
-                tracing::warn!("we have been removed from the network");
+            if member_removed(&data.members, &data.approved, my_id) {
+                tracing::warn!(network = %network_name, "we have been removed from the network");
+                let _ = left_tx.send(network_name.clone()).await;
                 break;
             }
 

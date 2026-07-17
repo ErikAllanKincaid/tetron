@@ -1184,6 +1184,72 @@ class StaleDhtRestore(Requirement):
     req_id = "CONVERGE-002"
 
 
+# --------------------------------------------------------------------------
+# CONVERGE-003: Removed member never cleans up locally (ghost member)
+# --------------------------------------------------------------------------
+
+class SelfRemovalNoCleanup(Requirement):
+    """REQUIREMENT-ID: CONVERGE-003
+
+    A node that is dropped from the authoritative roster (kicked, or a
+    casualty of the CONVERGE-001 publish race) never tears itself down
+    locally. Two code paths detect "we are no longer a member":
+
+    1. `spawn_group_poller`'s 60s tick: on detecting self-removal it logs
+       `we have been removed from the network` and `break`s its own loop —
+       nothing else. The reconnect loop keeps running.
+    2. `reconverge_and_apply` (the debounced worker driven by `MemberSync`/
+       `BlobUpdated` triggers — the path a live `tetron kick` actually
+       exercises, well before the 60s poller would notice): it has *no*
+       self-removal check at all. It silently applies a roster that
+       excludes the local node, with no detection, warning, or cleanup.
+
+    Neither path stops `spawn_reconnect_loop`, removes the network from
+    persisted config, or updates `tetron status`. The observable result: a
+    removed node keeps its stale config and keeps redialing coordinators,
+    each attempt denied with "no invite presented" (it is a fresh unknown
+    peer as far as `CoordinatorAcceptState::handle_connection` is
+    concerned) in a tight ~5-6s crash loop — while its own `tetron status`
+    keeps reporting a healthy, fully-connected membership indefinitely. No
+    ping, no ssh, no traffic of any kind actually moves, and nothing
+    anywhere logs an error a user would see. This is the same class of
+    silent data-plane failure as SUBNET-BUG-001, and it also means a
+    legitimately `tetron kick`-ed member was never actually cleaned up
+    locally — closing its connection with `KICK_CODE` alone does not stop
+    it from redialing forever.
+
+    Fix: extract a shared `member_removed(members, approved, my_id)` check
+    used by both `spawn_group_poller` and `reconverge_and_apply`. On
+    detecting self-removal, signal the network name over a new `left_tx`/
+    `left_rx` mpsc channel (mirroring the existing `promote_tx`/
+    `promote_rx` AdminGrant-promotion signal — background tasks hold only
+    field clones, not the full `MeshManager`, so they hand off to the main
+    daemon loop that does). `serve_ipc` drains `left_rx` and calls
+    `MeshManager::handle_removed_from_network`, which runs the same
+    teardown as `tetron leave` (cancel the network's token — stopping the
+    reconnect loop, poller, and publisher in one step since they all select
+    on it — drop peers, unregister the ALPN, delete the network from
+    config). `reconverge_and_apply` checks self-removal *before* applying
+    the fetched roster to local state, so it never installs a self-less
+    membership list in the first place.
+
+    Out of scope for this fix: the CONVERGE-001 publish race itself can
+    still let an objectively-stale-but-later-written blob win over a
+    genuinely newer admission (no logical/version clock arbitrates the
+    two) — that is the root cause of *why* a member can be wrongly
+    dropped, tracked separately in docs/TODO.md. This fix addresses the
+    local cleanup once removal is (correctly or incorrectly) detected, not
+    the DHT race that produces a false removal.
+
+    Found: 2026-07-16, network "converge-test" — X10SRA admitted by
+    co-coordinator xps-17-9720, then lost to a CONVERGE-001-style stale
+    publish from the original coordinator (590i-aorus-ultra); X10SRA's own
+    `tetron status` kept reporting it as a healthy 3-member network for
+    25+ minutes with zero working connectivity.
+    """
+    req_id = "CONVERGE-003"
+
+
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #

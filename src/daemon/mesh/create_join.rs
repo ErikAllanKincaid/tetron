@@ -118,6 +118,7 @@ impl MeshManager {
                 self.mesh_ctx(),
                 name.to_string(),
                 cancel.clone(),
+                self.left_tx.clone(),
             ));
         }
 
@@ -914,6 +915,7 @@ impl MeshManager {
             disconnect_tx.clone(),
             cancel.clone(),
             self.promote_tx.clone(),
+            self.left_tx.clone(),
             self.protocol_router.pending_pongs.clone(),
         )
         .await
@@ -1008,6 +1010,7 @@ impl MeshManager {
                 self.mesh_ctx(),
                 display_name.to_string(),
                 cancel.clone(),
+                self.left_tx.clone(),
             ));
         }
 

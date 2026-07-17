@@ -66,8 +66,14 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
         .unwrap()
         .take()
         .expect("promote_rx present after build");
+    let left_rx = daemon
+        .left_rx
+        .lock()
+        .unwrap()
+        .take()
+        .expect("left_rx present after build");
 
-    let result = serve_ipc(&daemon, promote_rx, token).await;
+    let result = serve_ipc(&daemon, promote_rx, left_rx, token).await;
 
     // Save one final cache snapshot before tearing down connections, so the
     // most recent peer addresses survive a restart (CACHE-001).
@@ -196,6 +202,8 @@ async fn build_daemon(
     // Promotion channel: a co-coordinator's control reader signals the main
     // daemon loop to swap in the coordinator accept handler on `AdminGrant`.
     let (promote_tx, promote_rx) = mpsc::channel::<String>(16);
+    // Self-removal channel (CONVERGE-003): mirrors the promotion channel above.
+    let (left_tx, left_rx) = mpsc::channel::<String>(16);
     let daemon = Arc::new(MeshManager {
         endpoint: ep,
         identity,
@@ -213,6 +221,8 @@ async fn build_daemon(
         active: active.clone(),
 
         promote_tx,
+        left_rx: std::sync::Mutex::new(Some(left_rx)),
+        left_tx,
     });
 
     // --- Accept loop (ALPN dispatch) ---
@@ -229,6 +239,7 @@ async fn build_daemon(
 async fn serve_ipc(
     daemon: &Arc<MeshManager>,
     mut promote_rx: mpsc::Receiver<String>,
+    mut left_rx: mpsc::Receiver<String>,
     token: CancellationToken,
 ) -> Result<()> {
     let socket_path = ipc::socket_path();
@@ -256,6 +267,12 @@ async fn serve_ipc(
             // inline in the loop is fine.
             Some(net) = promote_rx.recv() => {
                 daemon.promote_to_coordinator(&net).await;
+            }
+            // A network's poller or reconverge worker detected that the local
+            // node is no longer in the authoritative roster (CONVERGE-003):
+            // leave it locally instead of redialing forever.
+            Some(net) = left_rx.recv() => {
+                daemon.handle_removed_from_network(&net).await;
             }
             result = listener.accept() => match result {
                 Ok((stream, _)) => {

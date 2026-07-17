@@ -660,6 +660,19 @@ impl MeshManager {
         true
     }
 
+    /// Leave `name` locally after a network's poller or reconverge worker
+    /// (CONVERGE-003) determined the local node is no longer in the
+    /// authoritative roster — kicked, or dropped by a stale publish race.
+    /// Runs the same teardown as a manual `tetron leave`: without it the
+    /// reconnect loop would keep redialing coordinators that now correctly
+    /// deny us, forever, while `tetron status` kept reporting a healthy
+    /// membership.
+    #[tracing::instrument(skip(self), fields(net = name))]
+    pub(crate) async fn handle_removed_from_network(&self, name: &str) {
+        tracing::warn!(network = %name, "no longer a member of this network; leaving locally");
+        self.leave_network(name).await;
+    }
+
     /// Part of the embedding API (used by `ray-mobile` and future embedders):
     #[tracing::instrument(skip(self), fields(net = name))]
     pub async fn leave_network(&self, name: &str) -> IpcMessage {

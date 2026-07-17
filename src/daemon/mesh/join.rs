@@ -75,6 +75,10 @@ pub(crate) async fn join_mesh_shared(
     // here after persisting an `AdminGrant` key, so the daemon loop can swap in
     // the coordinator accept handler (see `MeshManager::promote_to_coordinator`).
     promote_tx: mpsc::Sender<String>,
+    // Self-removal signal (CONVERGE-003): the debounced reconverge worker sends
+    // this network's name here if it discovers we've been dropped from the
+    // authoritative roster, so the daemon loop can leave it locally.
+    left_tx: mpsc::Sender<String>,
     // Shared with the router; lets the member control reader resolve `tetron ping`
     // Pongs back to the waiting handler.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
@@ -193,6 +197,7 @@ pub(crate) async fn join_mesh_shared(
         net_pubkey,
         alpn.to_vec(),
         my_ip,
+        left_tx.clone(),
     );
 
     spawn_member_control_listener(
@@ -524,6 +529,7 @@ fn spawn_reconverge_worker(
     net_pubkey_w: EndpointId,
     alpn_w: Vec<u8>,
     my_ip_w: Ipv4Addr,
+    left_tx: mpsc::Sender<String>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -547,6 +553,7 @@ fn spawn_reconverge_worker(
                 my_identity_w,
                 &alpn_w,
                 my_ip_w,
+                &left_tx,
             )
             .await;
         }

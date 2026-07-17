@@ -355,6 +355,18 @@ pub struct MeshManager {
     /// clones (not the full `MeshManager`), so it can't promote itself — hence
     /// the channel hand-off to the loop that does hold the `Arc<MeshManager>`.
     promote_tx: mpsc::Sender<String>,
+    /// Self-removal-channel receiver drained by [`serve_ipc`]. Mirrors
+    /// `promote_rx`: stored here so the headless builder can construct the
+    /// daemon and hand the receiver back to [`run_daemon`] afterwards.
+    left_rx: std::sync::Mutex<Option<mpsc::Receiver<String>>>,
+    /// Self-removal signal (CONVERGE-003): a network's group poller or
+    /// debounced reconverge worker sends the network name here on detecting
+    /// that the local node is no longer in the authoritative roster, and the
+    /// main daemon loop ([`serve_ipc`]) drains it into
+    /// [`MeshManager::handle_removed_from_network`]. Same rationale as
+    /// `promote_tx`: those background tasks hold only field clones, not the
+    /// full `MeshManager`, so they hand off to the loop that does.
+    left_tx: mpsc::Sender<String>,
 }
 
 /// Map key-holding status to a [`NetworkRole`].
