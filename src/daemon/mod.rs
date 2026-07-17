@@ -185,6 +185,12 @@ struct GroupSnapshot {
 pub(crate) type SharedNetworkState = Arc<RwLock<NetworkState>>;
 
 pub(crate) struct NetworkState {
+    /// Monotonic blob version (CONVERGE-005). Bumped by
+    /// [`NetworkState::bump_generation_and_refresh`] on every local content
+    /// mutation; set directly (never bumped) when adopting a freshly fetched,
+    /// verified blob during reconverge, so it always reflects that blob's own
+    /// generation rather than this node's local mutation count.
+    generation: u64,
     members: MemberList,
     approved: ApprovedList,
     snapshot: Option<GroupSnapshot>,
@@ -239,8 +245,13 @@ impl NetworkState {
             .collect()
     }
 
+    /// Recompute the blob snapshot (hash + bytes) from the current fields as-is
+    /// — does not touch `generation`. Use this when adopting a freshly fetched,
+    /// verified blob (set `generation` from it first) or from
+    /// `bump_generation_and_refresh` for a local mutation.
     fn refresh_snapshot(&mut self) {
         let bytes = canonical_group_bytes(
+            self.generation,
             &self.members,
             &self.approved,
             &self.suggested_firewall,
@@ -254,6 +265,15 @@ impl NetworkState {
             hash,
             msgpack_bytes: bytes,
         });
+    }
+
+    /// Recompute the blob snapshot after a genuine local content mutation
+    /// (admit, kick, invite create/revoke, admin grant, ...): increments
+    /// `generation` first so every publisher/poller can tell this is newer than
+    /// whatever it last saw, regardless of DHT write order (CONVERGE-005).
+    fn bump_generation_and_refresh(&mut self) {
+        self.generation += 1;
+        self.refresh_snapshot();
     }
 
     /// The subnet as it should appear in the published blob: `None` for the
@@ -828,6 +848,7 @@ mod accept_handler_tests {
         let net_secret = SecretKey::from_bytes(&[1u8; 32]);
         let net_pub = net_secret.public();
         Arc::new(RwLock::new(NetworkState {
+            generation: 0,
             members: MemberList::new(),
             approved: ApprovedList::new(),
             snapshot: None,

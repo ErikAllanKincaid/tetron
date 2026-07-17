@@ -4,45 +4,62 @@
 
 use super::super::*;
 
-/// Read-before-write guard for DHT publishing. Returns `true` if the caller
-/// should proceed with publishing `local_hash`, `false` if the DHT already has
-/// a different (presumably newer) blob that the group poller should reconcile.
+/// Read-before-write guard for DHT publishing (CONVERGE-005). Returns `true`
+/// if the caller should proceed with publishing `(local_generation,
+/// local_hash)`.
 ///
-/// The rule: publish if we have never published before (`last_published` is
-/// `None`), OR the DHT record matches our `last_published` hash (no one else
-/// changed it since we did), OR the DHT has no record yet. Skip if the DHT
-/// hash differs from `last_published` — another coordinator published a newer
-/// blob (CONVERGE-001).
+/// CONVERGE-001's original guard compared raw hashes: it could tell "did the
+/// DHT change under me" but not "is that change actually newer" — so an
+/// out-of-date coordinator's periodic republish could permanently win over a
+/// co-coordinator's fresher admission just by writing later, and once a
+/// publisher saw a hash it didn't recognize it deferred to it *forever*, even
+/// when its own state was objectively the correct, newer one.
+///
+/// Generation is the authority now, not write order: publish whenever the DHT
+/// is at a strictly lower generation than ours (regardless of whether we
+/// recognize its hash), defer whenever it's at a strictly higher one. Only at
+/// an exact generation tie (two coordinators independently mutated from the
+/// same base) does a hash comparison arbitrate — and only to detect an
+/// already-published no-op. A genuine tie with different content at the same
+/// generation is left alone rather than fought over: the loser's own next
+/// local mutation bumps its generation past the tie and wins outright next
+/// time, rather than the two publishers flip-flopping.
 async fn dht_read_before_write(
     client: &PkarrRelayClient,
     net_pubkey: EndpointId,
+    local_generation: u64,
     local_hash: blake3::Hash,
     last_published: Option<blake3::Hash>,
 ) -> bool {
-    let Some(lp) = last_published else {
+    if last_published.is_none() {
         // First publish for this coordinator — always proceed.
         return true;
-    };
+    }
     match crate::dht::resolve_network(client, net_pubkey).await {
-        Ok((dht_hash, _)) => {
-            if dht_hash == lp {
-                // DHT still points to our last published blob — safe to publish.
-                true
-            } else if dht_hash == local_hash {
-                // DHT already matches our local state — no-op, skip publish.
-                false
-            } else {
-                // DHT has a different hash — another coordinator published a
-                // newer blob. Don't overwrite; the group poller will reconcile.
+        Ok((dht_hash, dht_generation, _)) => match local_generation.cmp(&dht_generation) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => {
                 tracing::info!(
-                    dht_hash = %dht_hash,
-                    local_hash = %local_hash,
-                    last_published = %lp,
-                    "DHT record changed externally; skipping publish (reconverge will pick up)"
+                    dht_generation,
+                    local_generation,
+                    "DHT record is at a newer generation; skipping publish (reconverge will pick up)"
                 );
                 false
             }
-        }
+            std::cmp::Ordering::Equal => {
+                if dht_hash == local_hash {
+                    false
+                } else {
+                    tracing::info!(
+                        dht_hash = %dht_hash,
+                        local_hash = %local_hash,
+                        generation = local_generation,
+                        "DHT record diverged at the same generation (concurrent mutation); leaving it — next local mutation will move past the tie"
+                    );
+                    false
+                }
+            }
+        },
         Err(_) => {
             // No DHT record yet — safe to publish.
             true
@@ -65,13 +82,15 @@ pub(crate) fn spawn_network_publisher(
     tokio::spawn(async move {
         let mut last_published: Option<blake3::Hash> = None;
         loop {
-            let hash = {
+            let (generation, hash) = {
                 let s = state.read().unwrap();
-                s.snapshot
+                let hash = s
+                    .snapshot
                     .as_ref()
                     .map(|snap| snap.hash)
                     .unwrap_or_else(|| {
                         group_blob_hash(
+                            s.generation,
                             &s.members,
                             &s.approved,
                             &s.suggested_firewall,
@@ -80,9 +99,10 @@ pub(crate) fn spawn_network_publisher(
                             s.blob_subnet(),
                             &s.invites,
                         )
-                    })
+                    });
+                (s.generation, hash)
             };
-            if dht_read_before_write(&client, net_pubkey, hash, last_published).await {
+            if dht_read_before_write(&client, net_pubkey, generation, hash, last_published).await {
                 let mut seed_peers: Vec<EndpointId> = peers
                     .peers_for_network(&network_name)
                     .into_iter()
@@ -96,6 +116,7 @@ pub(crate) fn spawn_network_publisher(
                     &client,
                     &net_secret_key,
                     &hash,
+                    generation,
                     &seed_peers,
                 )
                 .await
@@ -139,13 +160,15 @@ pub(crate) fn spawn_lazy_publisher(
     tokio::spawn(async move {
         let mut last_published: Option<blake3::Hash> = None;
         loop {
-            let hash = {
+            let (generation, hash) = {
                 let s = state.read().unwrap();
-                s.snapshot
+                let hash = s
+                    .snapshot
                     .as_ref()
                     .map(|snap| snap.hash)
                     .unwrap_or_else(|| {
                         group_blob_hash(
+                            s.generation,
                             &s.members,
                             &s.approved,
                             &s.suggested_firewall,
@@ -154,12 +177,14 @@ pub(crate) fn spawn_lazy_publisher(
                             s.blob_subnet(),
                             &s.invites,
                         )
-                    })
+                    });
+                (s.generation, hash)
             };
             // Only attempt publish if the hash changed since our last publish
-            // AND the read-before-write guard passes (CONVERGE-001).
+            // AND the read-before-write guard passes (CONVERGE-005).
             if last_published != Some(hash)
-                && dht_read_before_write(&client, net_pubkey, hash, last_published).await
+                && dht_read_before_write(&client, net_pubkey, generation, hash, last_published)
+                    .await
             {
                 let mut seed_peers: Vec<EndpointId> = peers
                     .peers_for_network(&network_name)
@@ -173,6 +198,7 @@ pub(crate) fn spawn_lazy_publisher(
                     &client,
                     &net_secret_key,
                     &hash,
+                    generation,
                     &seed_peers,
                 )
                 .await
@@ -202,7 +228,7 @@ pub(crate) async fn update_snapshot_and_publish(
 ) {
     let snap_bytes = {
         let mut s = state.write().unwrap();
-        s.refresh_snapshot();
+        s.bump_generation_and_refresh();
         s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
     };
     if let Some(bytes) = snap_bytes
@@ -219,13 +245,14 @@ impl MeshManager {
     /// Store the current group snapshot as a blob and re-publish the pkarr record
     /// so members reconcile the new membership (used after `tetron accept`).
     pub(crate) async fn store_and_publish_group(&self, network: &str) {
-        let (hash, net_key, snap_bytes) = {
+        let (hash, generation, net_key, snap_bytes) = {
             let Some(handle) = self.networks.get(network) else {
                 return;
             };
             let s = handle.state.read().unwrap();
             (
                 s.snapshot.as_ref().map(|x| x.hash),
+                s.generation,
                 s.network_secret_key.clone(),
                 s.snapshot.as_ref().map(|x| x.msgpack_bytes.clone()),
             )
@@ -247,7 +274,9 @@ impl MeshManager {
             seed_peers.push(self.endpoint.id());
             seed_peers.sort_by_key(|id| id.to_string());
             seed_peers.dedup();
-            if let Err(e) = dht::publish_network(&client, &key, &hash, &seed_peers).await {
+            if let Err(e) =
+                dht::publish_network(&client, &key, &hash, generation, &seed_peers).await
+            {
                 tracing::warn!(error = %e, "failed to publish network record after accept");
             }
         }

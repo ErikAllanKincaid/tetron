@@ -189,7 +189,7 @@ impl CoordinatorAcceptState {
             {
                 let mut s = self.state.write().unwrap();
                 s.invites.remove(&hash);
-                s.refresh_snapshot();
+                s.bump_generation_and_refresh();
             }
             // Pulse the publisher so the updated blob is signed + published.
             if let Some(ref notify) = self.dht_notify {
@@ -294,7 +294,7 @@ impl CoordinatorAcceptState {
                 collision_index,
                 last_seen: Some(crate::membership::now_secs()),
             });
-            s.refresh_snapshot();
+            s.bump_generation_and_refresh();
             s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
         };
         if let Some(bytes) = snap_bytes {
@@ -555,7 +555,7 @@ impl MemberAcceptState {
                 collision_index: member_idx,
                 last_seen: Some(crate::membership::now_secs()),
             });
-            s.refresh_snapshot();
+            s.bump_generation_and_refresh();
             (
                 s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone()),
                 member_ip,

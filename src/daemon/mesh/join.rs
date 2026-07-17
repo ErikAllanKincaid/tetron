@@ -54,6 +54,12 @@ pub(crate) struct JoinParams {
     /// From the fetched blob: single-use invite entries, so this node can mint
     /// invites and validate redemptions if it later holds the network key.
     pub(crate) invites: BTreeMap<String, crate::membership::InviteEntry>,
+    /// From the fetched blob: its generation (CONVERGE-005), adopted directly
+    /// into the joiner's initial `NetworkState` (never bumped — this node hasn't
+    /// mutated anything yet). Only load-bearing if this node later publishes
+    /// (promoted to co-coordinator); a plain member's own generation is
+    /// otherwise cosmetic and self-corrects on the next reconverge.
+    pub(crate) generation: u64,
     /// Per-network transport preference (None = default, Some(Tor) = Tor routed).
     pub(crate) transport: Option<TransportMode>,
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
@@ -99,6 +105,7 @@ pub(crate) async fn join_mesh_shared(
         suggested_firewall,
         reusable_keys,
         invites,
+        generation,
         transport,
         initial,
     } = params;
@@ -179,6 +186,7 @@ pub(crate) async fn join_mesh_shared(
         suggested_firewall,
         reusable_keys,
         invites,
+        generation,
         &blob_store,
     )
     .await;
@@ -299,9 +307,11 @@ async fn build_member_state(
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
+    generation: u64,
     blob_store: &FsStore,
 ) -> SharedNetworkState {
     let mut ns = NetworkState {
+        generation,
         members: MemberList::from_members(members),
         approved: ApprovedList::from_entries(approved),
         snapshot: None,
@@ -486,7 +496,7 @@ async fn perform_join_handshake(
                 // persisted roster rather than trusting peer-supplied membership.
                 tracing::info!(network = %network_name, "reconnected via peer; reconverging from signed record");
                 match resolve_signed(ep, net_pubkey).await {
-                    Some((signed, seeds)) => {
+                    Some((signed, _generation, seeds)) => {
                         match fetch_verified_blob(
                             ep,
                             blob_store,

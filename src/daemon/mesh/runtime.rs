@@ -12,6 +12,9 @@ struct RestoredRoster {
     suggested_firewall: SuggestedFirewall,
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
+    /// The restored blob's own generation (CONVERGE-005), or 0 if restored from
+    /// the config fallback (no signed blob was reachable).
+    generation: u64,
 }
 
 impl MeshManager {
@@ -36,11 +39,13 @@ impl MeshManager {
         // Reusable join keys and invites are authoritative in the signed blob too.
         let mut reusable_keys = BTreeMap::new();
         let mut invites = BTreeMap::new();
+        let mut generation = 0u64;
         match self.restore_roster_from_blob(net_public_key).await {
             Ok(data) => {
                 suggested_firewall = data.suggested_firewall.clone();
                 reusable_keys = data.reusable_keys.clone();
                 invites = data.invites.clone();
+                generation = data.generation;
                 for m in &data.members {
                     let _ = member_list.add(m.clone());
                 }
@@ -106,6 +111,7 @@ impl MeshManager {
             suggested_firewall,
             reusable_keys,
             invites,
+            generation,
         }
     }
 
@@ -150,11 +156,13 @@ impl MeshManager {
             suggested_firewall,
             reusable_keys,
             invites,
+            generation,
         } = self
             .restore_member_roster(name, net_public_key, net_config, my_ip, &persisted_hostname)
             .await;
 
         let mut net_state = NetworkState {
+            generation,
             members: member_list,
             approved: approved_list,
             snapshot: None,
@@ -306,16 +314,19 @@ impl MeshManager {
             };
         }
 
-        // Publish empty pkarr record
-        let net_secret_key = {
+        // Publish empty pkarr record. The tombstone must carry a strictly higher
+        // generation than whatever's live (CONVERGE-005) — otherwise a
+        // generation-aware reader would treat this erase as stale and ignore it.
+        let (net_secret_key, tombstone_generation) = {
             let handle = self.networks.get(name).unwrap();
             let state = handle.state.read().unwrap();
-            state.network_secret_key.clone()
+            (state.network_secret_key.clone(), state.generation + 1)
         };
         if let Some(key) = net_secret_key
             && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
         {
             let empty_hash = group_blob_hash(
+                tombstone_generation,
                 &MemberList::new(),
                 &ApprovedList::new(),
                 &SuggestedFirewall::default(),
@@ -324,7 +335,9 @@ impl MeshManager {
                 None,
                 &BTreeMap::new(),
             );
-            if let Err(e) = dht::publish_network(&client, &key, &empty_hash, &[]).await {
+            if let Err(e) =
+                dht::publish_network(&client, &key, &empty_hash, tombstone_generation, &[]).await
+            {
                 tracing::warn!(error = %e, "failed to publish empty network record on nuke");
             }
         }

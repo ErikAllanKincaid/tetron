@@ -97,7 +97,7 @@ impl MeshManager {
             };
             let mut s = handle.state.write().unwrap();
             crate::membership::mark_coordinator(&mut s.members, &identity);
-            s.refresh_snapshot();
+            s.bump_generation_and_refresh();
         }
         self.store_and_publish_group(network).await;
 

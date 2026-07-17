@@ -1250,6 +1250,87 @@ class SelfRemovalNoCleanup(Requirement):
     req_id = "CONVERGE-003"
 
 
+# --------------------------------------------------------------------------
+# CONVERGE-005: Monotonic generation counter closes the CONVERGE-001 publish
+# race at its root (raw hash comparison could not tell newer from stale)
+# --------------------------------------------------------------------------
+
+class MonotonicBlobGeneration(Requirement):
+    """REQUIREMENT-ID: CONVERGE-005
+
+    CONVERGE-001's read-before-write guard (a9b0afa) compared raw DHT hashes:
+    it could tell "did the record change under me" but not "is that change
+    actually newer." Reproduced live twice more on 2026-07-16 with a9b0afa +
+    6b2954d already deployed: once a publisher saw a DHT hash it didn't
+    recognize, it deferred to that hash *permanently* — every subsequent
+    publish attempt saw the same "mismatch" and skipped, even when the
+    publisher's own state was objectively the correct, newer one (it had just
+    admitted a member the DHT's blob didn't know about). A slower coordinator's
+    stale periodic republish could out-write a co-coordinator's fresher
+    admission purely by landing in the DHT later, permanently burying the
+    newer state. Root cause: no logical clock, only wall-clock write order.
+
+    A second, compounding gap: `spawn_group_poller`'s blob-fetch only tried
+    live `PeerTable` connections over the `iroh-blobs` ALPN, with no seed-peer
+    fallback (unlike `reconverge_and_apply`'s `fetch_verified_blob`, which
+    tries both). Observed failing with "could not fetch updated group blob
+    from any peer" even while a live, traffic-passing mesh connection to the
+    same peer was up — so a coordinator could detect a hash change and still
+    never converge on it.
+
+    Fix: add `generation: u64` to `GroupBlob` (msgpack, `#[serde(default)]`
+    for pre-generation compatibility) and to the signed pkarr network record
+    (`g,<n>` TXT field, mirroring the existing `g,<n>` cert-generation-floor
+    record in `dht.rs` — same pattern, same file, already precedented).
+    `NetworkState` carries the same field: `refresh_snapshot()` recomputes
+    hash/bytes from whatever generation is already set (adopting a fetched
+    blob sets it directly, never bumped); a new `bump_generation_and_refresh()`
+    increments it first, called from every genuine *local* content mutation
+    (admit, kick, invite create/revoke, admin grant) instead of plain
+    `refresh_snapshot()`.
+
+    `dht_read_before_write` (`publish.rs`) is rewritten around generation, not
+    hash: publish whenever the DHT sits at a strictly lower generation than
+    ours (regardless of whether we recognize its hash — this is the actual
+    fix, closing the permanent-wedge failure mode), defer whenever it's
+    strictly higher. An exact generation tie (two coordinators independently
+    mutated from the same base) is left alone rather than fought over — the
+    loser's own next local mutation bumps past the tie and wins outright,
+    rather than the two publishers flip-flopping forever. `spawn_group_poller`
+    now gates its fetch on `remote_generation > current_generation` (not raw
+    hash inequality) and fetches via `fetch_verified_blob` (peer + seed
+    fallback) instead of its own live-peer-only loop, closing the second gap.
+    `reconverge_and_apply` adds a defense-in-depth downgrade guard: a freshly
+    fetched blob is only applied if `data.generation >= current_generation`,
+    so a lagging seed peer's stale copy can never regress local state even if
+    it happens to still verify against a signed hash.
+
+    Verified live on 3 bare-metal machines (590i-aorus-ultra, xps-17-9720,
+    X10SRA), reproducing the exact scenario that wedged permanently before
+    this fix (co-coordinator xps admits x10sra while original coordinator
+    aorus is offline/stale): aorus's log shows
+    `group blob changed current_generation=0 remote_generation=3` and
+    correctly fetches and applies the 3-member blob within one 60s poller
+    cycle, with zero manual restart — where it previously stayed wedged at 2
+    members indefinitely. Re-ran a `tetron kick` afterward to confirm
+    CONVERGE-003's cleanup-on-removal still fires correctly alongside the new
+    generation logic (it does, and faster — MemberSync-triggered rather than
+    poller-bound).
+
+    Out of scope: an exact generation tie with genuinely divergent content
+    (two coordinators admitting different members from the same base
+    generation) is not merged — one side's mutation is deferred until its own
+    next local change bumps past the tie. A true CRDT merge is not attempted;
+    this is judged sufficient since admission itself is idempotent (a deferred
+    admit can simply be retried).
+
+    Found: 2026-07-16, network "converge-test" across 590i-aorus-ultra,
+    xps-17-9720, X10SRA — the CONVERGE-001 race reproduced twice more with its
+    original fix already deployed, prompting the root-cause fix here.
+    """
+    req_id = "CONVERGE-005"
+
+
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #

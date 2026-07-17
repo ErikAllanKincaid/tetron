@@ -69,20 +69,26 @@ pub fn create_pkarr_client(ep: &Endpoint) -> Result<PkarrRelayClient> {
 
 /// Encodes a network record into a signed pkarr packet.
 ///
-/// The record contains the group blob hash, a list of seed peers, and the
-/// publishing coordinator's mesh protocol version (`m,<v>` =
-/// [`transport::MESH_PROTOCOL_VERSION`]). The version lets a joiner detect an
-/// incompatible mesh protocol *before* dialing (where the versioned ALPN would
-/// otherwise reject it opaquely), so it can surface a precise "incompatible
-/// version" error. The record is network-key-signed, so the version can't be spoofed.
+/// The record contains the group blob hash, its generation (`g,<n>` —
+/// CONVERGE-005: a monotonic counter that lets a read-before-write guard tell a
+/// genuinely newer blob from an objectively-stale one regardless of DHT write
+/// order, mirroring the existing `g,<n>` cert-generation-floor record), a list
+/// of seed peers, and the publishing coordinator's mesh protocol version
+/// (`m,<v>` = [`transport::MESH_PROTOCOL_VERSION`]). The version lets a joiner
+/// detect an incompatible mesh protocol *before* dialing (where the versioned
+/// ALPN would otherwise reject it opaquely), so it can surface a precise
+/// "incompatible version" error. The record is network-key-signed, so neither
+/// field can be spoofed.
 pub fn encode_network_record(
     key: &SecretKey,
     blob_hash: &blake3::Hash,
+    generation: u64,
     seed_peers: &[EndpointId],
 ) -> Result<SignedPacket> {
     let mut values = vec![
         RECORD_VERSION.to_string(),
         format!("h,{blob_hash}"),
+        format!("g,{generation}"),
         format!("m,{}", crate::transport::MESH_PROTOCOL_VERSION),
     ];
     for peer in seed_peers {
@@ -103,7 +109,7 @@ pub fn mesh_version_from_record(packet: &SignedPacket) -> Option<u32> {
         .find_map(|r| r.strip_prefix("m,").and_then(|v| v.parse::<u32>().ok()))
 }
 
-pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec<EndpointId>)> {
+pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, u64, Vec<EndpointId>)> {
     let records = packet.txt_records(RECORD_NAME);
     ensure!(!records.is_empty(), "no network records found");
     ensure!(
@@ -113,6 +119,10 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
     );
 
     let mut blob_hash = None;
+    // Missing `g,` (a record published before CONVERGE-005) decodes as
+    // generation 0 — the lowest possible, so a generation-aware guard treats an
+    // old-format record as behind anything with a real generation.
+    let mut generation = 0u64;
     let mut peers = Vec::new();
 
     for record in &records[1..] {
@@ -122,6 +132,8 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
                     .parse::<blake3::Hash>()
                     .context("invalid blob hash")?,
             );
+        } else if let Some(gen_str) = record.strip_prefix("g,") {
+            generation = gen_str.parse::<u64>().context("invalid generation")?;
         } else if let Some(id_str) = record.strip_prefix("p,") {
             peers.push(
                 id_str
@@ -131,7 +143,7 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, Vec
         }
     }
 
-    Ok((blob_hash.context("missing blob hash (h,)")?, peers))
+    Ok((blob_hash.context("missing blob hash (h,)")?, generation, peers))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,9 +184,10 @@ pub async fn publish_network(
     client: &PkarrRelayClient,
     key: &SecretKey,
     blob_hash: &blake3::Hash,
+    generation: u64,
     seed_peers: &[EndpointId],
 ) -> Result<()> {
-    let packet = encode_network_record(key, blob_hash, seed_peers)?;
+    let packet = encode_network_record(key, blob_hash, generation, seed_peers)?;
     client
         .publish(&packet)
         .await
@@ -198,7 +211,7 @@ pub async fn resolve_network_packet(
 pub async fn resolve_network(
     client: &PkarrRelayClient,
     network_pubkey: EndpointId,
-) -> Result<(blake3::Hash, Vec<EndpointId>)> {
+) -> Result<(blake3::Hash, u64, Vec<EndpointId>)> {
     let packet = resolve_network_packet(client, network_pubkey).await?;
     decode_network_record(&packet)
 }
@@ -258,9 +271,11 @@ mod tests {
             SecretKey::generate().public(),
             SecretKey::generate().public(),
         ];
-        let packet = encode_network_record(&key, &hash, &peers).unwrap();
-        let (decoded_hash, decoded_peers) = decode_network_record(&packet).unwrap();
+        let packet = encode_network_record(&key, &hash, 7, &peers).unwrap();
+        let (decoded_hash, decoded_generation, decoded_peers) =
+            decode_network_record(&packet).unwrap();
         assert_eq!(decoded_hash, hash);
+        assert_eq!(decoded_generation, 7);
         assert_eq!(decoded_peers, peers);
     }
 
@@ -268,8 +283,8 @@ mod tests {
     fn network_record_empty_peers() {
         let key = SecretKey::generate();
         let hash = blake3::hash(b"test");
-        let packet = encode_network_record(&key, &hash, &[]).unwrap();
-        let (decoded_hash, decoded_peers) = decode_network_record(&packet).unwrap();
+        let packet = encode_network_record(&key, &hash, 0, &[]).unwrap();
+        let (decoded_hash, _generation, decoded_peers) = decode_network_record(&packet).unwrap();
         assert_eq!(decoded_hash, hash);
         assert!(decoded_peers.is_empty());
     }
@@ -278,7 +293,7 @@ mod tests {
     fn network_record_carries_mesh_version() {
         let key = SecretKey::generate();
         let hash = blake3::hash(b"test");
-        let packet = encode_network_record(&key, &hash, &[]).unwrap();
+        let packet = encode_network_record(&key, &hash, 0, &[]).unwrap();
         // A fresh record advertises this build's mesh protocol version, and the
         // standard hash/peers decode is unaffected by the added field.
         assert_eq!(
@@ -299,10 +314,21 @@ mod tests {
     }
 
     #[test]
+    fn generation_defaults_to_zero_on_older_record() {
+        // A record published before CONVERGE-005 added the `g,` field.
+        let key = SecretKey::generate();
+        let hash = blake3::hash(b"test");
+        let values = vec![RECORD_VERSION.to_string(), format!("h,{hash}")];
+        let packet = SignedPacket::from_txt_strings(&key, RECORD_NAME, values, RECORD_TTL).unwrap();
+        let (_hash, generation, _peers) = decode_network_record(&packet).unwrap();
+        assert_eq!(generation, 0);
+    }
+
+    #[test]
     fn record_version_check() {
         let key = SecretKey::generate();
         let hash = blake3::hash(b"test");
-        let packet = encode_network_record(&key, &hash, &[]).unwrap();
+        let packet = encode_network_record(&key, &hash, 0, &[]).unwrap();
         let records = packet.txt_records("_tetron");
         assert_eq!(records[0], "v1");
     }

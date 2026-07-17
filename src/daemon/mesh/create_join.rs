@@ -65,6 +65,7 @@ impl MeshManager {
                 &pkarr_client,
                 net_secret_key,
                 &blob_hash,
+                net_state.generation,
                 &[self.endpoint.id()],
             )
             .await
@@ -218,6 +219,7 @@ impl MeshManager {
         }
 
         Ok(NetworkState {
+            generation: 0,
             members: member_list,
             approved,
             snapshot: None,
@@ -389,17 +391,20 @@ impl MeshManager {
                     7 * 24 * 3600,
                 );
                 s.invites.insert(key, _entry);
-                s.refresh_snapshot();
-                s.snapshot.as_ref().map(|sn| (sn.msgpack_bytes.clone(), sn.hash))
+                s.bump_generation_and_refresh();
+                s.snapshot
+                    .as_ref()
+                    .map(|sn| (sn.msgpack_bytes.clone(), sn.hash, s.generation))
             };
             // Publish the updated blob (lock-free).
-            if let Some((snap_bytes, snap_hash)) = snapshot_data {
+            if let Some((snap_bytes, snap_hash, snap_generation)) = snapshot_data {
                 let _ = self.blob_store.blobs().add_slice(&snap_bytes).await;
                 if let Ok(pkarr_client) = crate::dht::create_pkarr_client(&self.endpoint) {
                     let _ = crate::dht::publish_network(
                         &pkarr_client,
                         &net_secret_key,
                         &snap_hash,
+                        snap_generation,
                         &[self.endpoint.id()],
                     )
                     .await;
@@ -579,7 +584,7 @@ impl MeshManager {
             );
         }
 
-        let (expected_hash, peer_ids) =
+        let (expected_hash, _generation, peer_ids) =
             dht::decode_network_record(&record).context("invalid network record")?;
         if peer_ids.is_empty() {
             anyhow::bail!("no peers found in network record");
@@ -740,6 +745,7 @@ impl MeshManager {
         // never blocks on (or dies with) the coordinator handshake.
         let state_from_blob = || {
             let mut ns = NetworkState {
+                generation: data.generation,
                 members: MemberList::from_members(data.members.clone()),
                 approved: ApprovedList::from_entries(data.approved.clone()),
                 snapshot: None,
@@ -909,6 +915,7 @@ impl MeshManager {
                 suggested_firewall: data.suggested_firewall.clone(),
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
+                generation: data.generation,
                 transport: ctx.transport.clone(),
                 initial,
             },
@@ -1054,7 +1061,7 @@ impl MeshManager {
         net_pubkey: EndpointId,
     ) -> Result<crate::membership::GroupBlob> {
         let pkarr_client = dht::create_pkarr_client(&self.endpoint)?;
-        let (expected_hash, seed_peers) = dht::resolve_network(&pkarr_client, net_pubkey)
+        let (expected_hash, _generation, seed_peers) = dht::resolve_network(&pkarr_client, net_pubkey)
             .await
             .context("resolve pkarr record for roster restore")?;
         let blob_hash = iroh_blobs::Hash::from_bytes(*expected_hash.as_bytes());
@@ -1135,7 +1142,8 @@ impl MeshManager {
         tracing::info!(network = %network_name, "trying DHT fallback");
 
         let pkarr_client = dht::create_pkarr_client(&self.endpoint)?;
-        let (expected_hash, _peer_ids) = dht::resolve_network(&pkarr_client, net_pubkey).await?;
+        let (expected_hash, _generation, _peer_ids) =
+            dht::resolve_network(&pkarr_client, net_pubkey).await?;
 
         let my_identity = self.identity.local_identity();
         let blob_hash = iroh_blobs::Hash::from_bytes(*expected_hash.as_bytes());
@@ -1191,6 +1199,7 @@ impl MeshManager {
             let (live_state_tx, live_state_rx) = tokio::sync::oneshot::channel();
             let (reconverge_notify_tx, reconverge_notify_rx) = tokio::sync::oneshot::channel();
             let dummy_state = Arc::new(std::sync::RwLock::new(NetworkState {
+                generation: 0,
                 members: crate::membership::MemberList::new(),
                 approved: crate::membership::ApprovedList::new(),
                 snapshot: None,
@@ -1241,6 +1250,7 @@ impl MeshManager {
                 tracing::warn!(error = %e, "failed to persist node subnet on join");
             }
             let mut ns = NetworkState {
+                generation: data.generation,
                 members: MemberList::from_members(data.members),
                 approved: ApprovedList::from_entries(data.approved),
                 snapshot: None,

@@ -55,7 +55,7 @@ impl MeshManager {
             };
             let mut s = handle.state.write().unwrap();
             s.invites.insert(key, entry);
-            s.refresh_snapshot();
+            s.bump_generation_and_refresh();
             s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
         };
 
@@ -133,7 +133,7 @@ impl MeshManager {
                     message: format!("{e:#}"),
                 };
             }
-            s.refresh_snapshot();
+            s.bump_generation_and_refresh();
             (
                 handle.dht_notify.clone(),
                 s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone()),

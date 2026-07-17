@@ -586,6 +586,13 @@ pub struct InviteEntry {
 /// invite entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupBlob {
+    /// Monotonic version, incremented on every local content mutation (admit,
+    /// kick, invite create/revoke, admin grant, ...). Lets any node tell a
+    /// genuinely newer blob from an objectively-stale one regardless of DHT
+    /// write order — plain hash comparison cannot do this (CONVERGE-005).
+    /// `#[serde(default)]` keeps pre-generation blobs decodable as generation 0.
+    #[serde(default)]
+    pub generation: u64,
     pub members: Vec<Member>,
     pub approved: Vec<ApprovedEntry>,
     /// Coordinator-suggested firewall rules, keyed by subject hostname. Retained
@@ -745,7 +752,9 @@ impl GroupBlob {
 /// Members and approved entries are sorted by identity string to ensure
 /// identical output regardless of HashMap iteration order; the suggested
 /// firewall is a `BTreeMap`, so it is already canonically ordered.
+#[allow(clippy::too_many_arguments)]
 pub fn canonical_group_bytes(
+    generation: u64,
     members: &MemberList,
     approved: &ApprovedList,
     suggested_firewall: &SuggestedFirewall,
@@ -761,6 +770,7 @@ pub fn canonical_group_bytes(
     sorted_approved.sort_by_key(|a| a.identity.to_string());
 
     let data = GroupBlob {
+        generation,
         members: sorted_members,
         approved: sorted_approved,
         suggested_firewall: suggested_firewall.clone(),
@@ -772,7 +782,9 @@ pub fn canonical_group_bytes(
     rmp_serde::to_vec_named(&data).expect("msgpack serialize")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn group_blob_hash(
+    generation: u64,
     members: &MemberList,
     approved: &ApprovedList,
     suggested_firewall: &SuggestedFirewall,
@@ -782,6 +794,7 @@ pub fn group_blob_hash(
     invites: &BTreeMap<String, InviteEntry>,
 ) -> blake3::Hash {
     let bytes = canonical_group_bytes(
+        generation,
         members,
         approved,
         suggested_firewall,
@@ -1412,6 +1425,7 @@ mod tests {
         let members = make_member_list(&[1, 2, 3]);
         let approved = ApprovedList::new();
         let a = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1420,6 +1434,7 @@ mod tests {
             &BTreeMap::new(),
         );
         let b = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1437,6 +1452,7 @@ mod tests {
         let approved = ApprovedList::new();
         assert_eq!(
             canonical_group_bytes(
+                0,
                 &m1,
                 &approved,
                 &tetron_proto::SuggestedFirewall::default(),
@@ -1445,6 +1461,7 @@ mod tests {
                 &BTreeMap::new(),
             ),
             canonical_group_bytes(
+                0,
                 &m2,
                 &approved,
                 &tetron_proto::SuggestedFirewall::default(),
@@ -1460,6 +1477,7 @@ mod tests {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
         let h1 = group_blob_hash(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1469,6 +1487,7 @@ mod tests {
         );
         let members2 = make_member_list(&[1, 2, 3]);
         let h2 = group_blob_hash(
+            0,
             &members2,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1499,6 +1518,7 @@ mod tests {
             .unwrap();
 
         let bytes = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1516,6 +1536,7 @@ mod tests {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
         let bytes = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1524,6 +1545,7 @@ mod tests {
             &BTreeMap::new(),
         );
         let hash = group_blob_hash(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1561,6 +1583,7 @@ mod tests {
         let members = make_member_list(&[1, 2]);
         let approved = ApprovedList::new();
         let bytes = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &tetron_proto::SuggestedFirewall::default(),
@@ -1592,8 +1615,8 @@ mod tests {
             .unwrap();
         let approved = ApprovedList::new();
         let sf = tetron_proto::SuggestedFirewall::default();
-        let bytes = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
-        let hash = group_blob_hash(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let bytes = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let hash = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, Some(12345));
     }
@@ -1619,9 +1642,9 @@ mod tests {
             .unwrap();
         let approved = ApprovedList::new();
         let sf = tetron_proto::SuggestedFirewall::default();
-        let bytes = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let bytes = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
         assert!(!String::from_utf8_lossy(&bytes).contains("last_seen"));
-        let hash = group_blob_hash(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let hash = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, None);
     }
@@ -1638,12 +1661,13 @@ mod tests {
         sf.insert("subject".to_string(), hs);
 
         // Deterministic: BTreeMap keys canonicalize regardless of insert order.
-        let a = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
-        let b = canonical_group_bytes(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let a = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let b = canonical_group_bytes(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
         assert_eq!(a, b);
 
         // Suggestions are part of the signed content, so they change the hash.
         let h_empty = group_blob_hash(
+            0,
             &members,
             &approved,
             &SuggestedFirewall::new(),
@@ -1651,7 +1675,7 @@ mod tests {
             &BTreeMap::new(), None,
             &BTreeMap::new(),
         );
-        let h_sf = group_blob_hash(&members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
+        let h_sf = group_blob_hash(0, &members, &approved, &sf, None, &BTreeMap::new(), None, &BTreeMap::new());
         assert_ne!(h_empty, h_sf);
     }
 
@@ -1705,6 +1729,7 @@ mod tests {
         keys.insert(hash, key);
 
         let bytes = canonical_group_bytes(
+            0,
             &members,
             &approved,
             &SuggestedFirewall::default(),
@@ -1724,6 +1749,7 @@ mod tests {
         let approved = ApprovedList::new();
         let empty = BTreeMap::new();
         let h0 = group_blob_hash(
+            0,
             &members,
             &approved,
             &SuggestedFirewall::default(),
@@ -1737,6 +1763,7 @@ mod tests {
         let mut keys = BTreeMap::new();
         keys.insert(hash.clone(), key);
         let h1 = group_blob_hash(
+            0,
             &members,
             &approved,
             &SuggestedFirewall::default(),
@@ -1749,6 +1776,7 @@ mod tests {
         // Revoking is a content change → the hash must change again so peers reconverge.
         keys.get_mut(&hash).unwrap().revoked = true;
         let h2 = group_blob_hash(
+            0,
             &members,
             &approved,
             &SuggestedFirewall::default(),
@@ -1826,6 +1854,7 @@ mod tests {
             let mut keys = BTreeMap::new();
             keys.insert(hash, key);
             GroupBlob {
+                generation: 0,
                 members: vec![],
                 approved: vec![],
                 suggested_firewall: SuggestedFirewall::default(),
@@ -1996,6 +2025,7 @@ mod tests {
             last_seen: None,
         };
         let blob = GroupBlob {
+            generation: 0,
             members: vec![bad_member],
             approved: vec![],
             suggested_firewall: Default::default(),
@@ -2023,6 +2053,7 @@ mod tests {
             last_seen: None,
         };
         let blob = GroupBlob {
+            generation: 0,
             members: vec![bad_member],
             approved: vec![],
             suggested_firewall: Default::default(),
@@ -2304,6 +2335,7 @@ mod tests {
     fn group_blob_subnet_survives_roundtrip() {
         let members = make_member_list_in(&[1, 2], CUSTOM);
         let bytes = canonical_group_bytes(
+            0,
             &members,
             &ApprovedList::new(),
             &SuggestedFirewall::default(),

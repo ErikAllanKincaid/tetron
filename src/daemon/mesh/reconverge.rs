@@ -14,7 +14,7 @@ use super::super::*;
 pub(crate) async fn resolve_signed(
     endpoint: &Endpoint,
     net_pubkey: EndpointId,
-) -> Option<(blake3::Hash, Vec<EndpointId>)> {
+) -> Option<(blake3::Hash, u64, Vec<EndpointId>)> {
     let client = dht::create_pkarr_client(endpoint).ok()?;
     dht::resolve_network(&client, net_pubkey).await.ok()
 }
@@ -82,7 +82,8 @@ pub(crate) async fn reconverge_and_apply(
         ..
     } = ctx;
     let current = state.read().unwrap().snapshot.as_ref().map(|s| s.hash);
-    let Some((signed, seeds)) = resolve_signed(endpoint, net_pubkey).await else {
+    let Some((signed, _remote_generation, seeds)) = resolve_signed(endpoint, net_pubkey).await
+    else {
         tracing::debug!(network = %network_name, "reconverge: signed record unavailable");
         return;
     };
@@ -104,6 +105,21 @@ pub(crate) async fn reconverge_and_apply(
         let _ = left_tx.send(network_name.to_string()).await;
         return;
     }
+    // Defense in depth (CONVERGE-005): never let a fetch from a lagging seed
+    // peer downgrade local state below what we already hold. The publish-side
+    // guard should prevent an actually-stale blob from ever reaching the DHT,
+    // but a seed peer's own blob store can lag behind the DHT record it's
+    // serving against.
+    let current_generation = state.read().unwrap().generation;
+    if data.generation < current_generation {
+        tracing::debug!(
+            network = %network_name,
+            fetched = data.generation,
+            current = current_generation,
+            "fetched blob is older than local state; ignoring"
+        );
+        return;
+    }
     // Two coordinators can independently admit a fresh joiner at the same
     // collision index, producing a roster with duplicate IPs. Resolve it
     // deterministically (lowest identity keeps the slot, others re-roll) before
@@ -117,6 +133,7 @@ pub(crate) async fn reconverge_and_apply(
     }
     let roster = {
         let mut s = state.write().unwrap();
+        s.generation = data.generation;
         s.members = MemberList::from_members(tiebroken);
         s.approved = ApprovedList::from_entries(data.approved.clone());
         s.suggested_firewall = data.suggested_firewall.clone();
@@ -232,67 +249,53 @@ pub(crate) fn spawn_group_poller(
             }
             tracing::debug!(network = %network_name, "group poller tick");
 
-            let current_hash = {
+            let current_generation = {
                 let s = state.read().unwrap();
-                s.snapshot.as_ref().map(|snap| snap.hash)
+                s.generation
             };
 
-            let (remote_hash, _seed_peers) = match dht::resolve_network(&client, net_pubkey).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!(error = %e, "group poll failed");
-                    continue;
-                }
-            };
+            let (remote_hash, remote_generation, seed_peers) =
+                match dht::resolve_network(&client, net_pubkey).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "group poll failed");
+                        continue;
+                    }
+                };
 
-            if current_hash == Some(remote_hash) {
+            // Generation is the authority (CONVERGE-005), not raw hash equality:
+            // a DHT record at a generation we've already seen or passed has
+            // nothing new for us, even if our local hash momentarily differs
+            // (e.g. a pending local mutation not yet published). Only a
+            // strictly higher generation is worth the fetch.
+            if remote_generation <= current_generation {
                 continue;
             }
 
-            tracing::info!(old = ?current_hash, new = %remote_hash, "group blob changed");
+            tracing::info!(
+                current_generation,
+                remote_generation,
+                new_hash = %remote_hash,
+                "group blob changed"
+            );
 
-            let blob_hash = iroh_blobs::Hash::from_bytes(*remote_hash.as_bytes());
-
-            let peer_ids: Vec<EndpointId> = peers
-                .peers_for_network(&network_name)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
-
-            let mut new_data = None;
-            for peer_id in &peer_ids {
-                let conn = match transport::connect_to_peer_with_alpn(
-                    &endpoint,
-                    *peer_id,
-                    iroh_blobs::protocol::ALPN,
-                )
-                .await
-                {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if blob_store
-                    .remote()
-                    .fetch(conn, HashAndFormat::raw(blob_hash))
-                    .await
-                    .is_err()
-                {
-                    continue;
-                }
-                match blob_store.blobs().get_bytes(blob_hash).await {
-                    Ok(bytes) => match crate::membership::decode_group_blob(&bytes) {
-                        Ok(data) => {
-                            new_data = Some(data);
-                            break;
-                        }
-                        Err(_) => continue,
-                    },
-                    Err(_) => continue,
-                }
-            }
-
-            let Some(data) = new_data else {
-                tracing::warn!("could not fetch updated group blob from any peer");
+            // Use the same peer+seed fallback fetch as reconverge_and_apply
+            // (fetch_verified_blob) instead of only trying live PeerTable
+            // connections — the poller's own hand-rolled fetch used to give up
+            // ("could not fetch updated group blob from any peer") even with a
+            // live mesh connection to the same peer, since it never fell back
+            // to the DHT record's seed peers.
+            let Some(data) = fetch_verified_blob(
+                &endpoint,
+                &blob_store,
+                &peers,
+                remote_hash,
+                &network_name,
+                &seed_peers,
+            )
+            .await
+            else {
+                tracing::warn!("could not fetch updated group blob from any peer or seed");
                 continue;
             };
 
@@ -326,6 +329,7 @@ pub(crate) fn spawn_group_poller(
             // but not acted on — the userspace firewall was removed (MINIMAL-010).
             {
                 let mut s = state.write().unwrap();
+                s.generation = data.generation;
                 s.members = MemberList::from_members(data.members.clone());
                 s.approved = ApprovedList::from_entries(data.approved.clone());
                 s.suggested_firewall = data.suggested_firewall.clone();
