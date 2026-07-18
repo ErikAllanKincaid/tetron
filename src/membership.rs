@@ -462,15 +462,43 @@ pub fn assign_ip(members: &MemberList, identity: &EndpointId, subnet: Subnet) ->
     }
 }
 
-/// Derives a stable IPv6 address from an [`EndpointId`] in the `200::/7` range.
-/// Uses blake3 to hash the identity, takes 15 bytes, and prepends `0x02`.
-/// The 120-bit address space makes collisions practically impossible.
-pub fn derive_ipv6(identity: &EndpointId) -> Ipv6Addr {
-    let hash = blake3::hash(identity.to_string().as_bytes());
+/// Derives a stable, per-network IPv6 address from an [`EndpointId`] in the
+/// `200::/7` range (IPV6-001). Structural split: fixed `0x02` (byte 0) +
+/// 48-bit network-prefix (bytes 1-6, a function of `network` alone, so every
+/// member of a network shares the same routable `/56` block — see
+/// [`ipv6_network_prefix`]) + 72-bit peer-part (bytes 7-15, a function of
+/// both `identity` and `network`, so the same identity gets an unrelated
+/// address in each network it joins — closes a cross-network grinding-reuse
+/// loophole against [`derive_ipv6`]'s admission-time collision check).
+/// No collision-index: at 72 bits, a 1% collision probability needs ~3.1
+/// billion members of one network, so accidental collision is not a
+/// practical concern (deliberate grinding is handled separately, at
+/// admission).
+pub fn derive_ipv6(identity: &EndpointId, network: &EndpointId) -> Ipv6Addr {
+    let prefix = ipv6_network_prefix(network);
+    let peer_hash = blake3::hash(format!("{identity}:{network}").as_bytes());
+    let peer_bytes = peer_hash.as_bytes();
+    let prefix_octets = prefix.octets();
+    let mut octets = [0u8; 16];
+    octets[..7].copy_from_slice(&prefix_octets[..7]);
+    octets[7..16].copy_from_slice(&peer_bytes[..9]);
+    Ipv6Addr::from(octets)
+}
+
+/// Bit width of the fixed `0x02` tag plus [`derive_ipv6`]'s network-prefix —
+/// the CIDR block shared by every member of one network (IPV6-003).
+pub const IPV6_NETWORK_PREFIX_LEN: u8 = 56;
+
+/// The `/56` network-prefix address for `network` (IPV6-001/003): fixed
+/// `0x02` + 48 bits of `blake3(network)`, peer-part bits zeroed. Used both as
+/// the base for [`derive_ipv6`] and as the route destination each network's
+/// TUN device gets ([`crate::tun::route_peer_range`]).
+pub fn ipv6_network_prefix(network: &EndpointId) -> Ipv6Addr {
+    let hash = blake3::hash(network.to_string().as_bytes());
     let bytes = hash.as_bytes();
     let octets: [u8; 16] = [
-        0x02, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+        0x02, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0, 0, 0, 0, 0, 0, 0,
+        0,
     ];
     Ipv6Addr::from(octets)
 }
@@ -1085,13 +1113,15 @@ mod tests {
     #[test]
     fn test_derive_ipv6_deterministic() {
         let id = test_id(1);
-        assert_eq!(derive_ipv6(&id), derive_ipv6(&id));
+        let net = test_id(100);
+        assert_eq!(derive_ipv6(&id, &net), derive_ipv6(&id, &net));
     }
 
     #[test]
     fn test_derive_ipv6_in_200_range() {
+        let net = test_id(100);
         for i in 0..=255u8 {
-            let ipv6 = derive_ipv6(&test_id(i));
+            let ipv6 = derive_ipv6(&test_id(i), &net);
             let octets = ipv6.octets();
             assert_eq!(octets[0], 0x02, "first byte must be 0x02 for 200::/7");
         }
@@ -1099,9 +1129,42 @@ mod tests {
 
     #[test]
     fn test_derive_ipv6_different_identities_differ() {
-        let a = derive_ipv6(&test_id(1));
-        let b = derive_ipv6(&test_id(2));
+        let net = test_id(100);
+        let a = derive_ipv6(&test_id(1), &net);
+        let b = derive_ipv6(&test_id(2), &net);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_derive_ipv6_same_identity_different_networks_differ() {
+        let id = test_id(1);
+        let net_a = test_id(100);
+        let net_b = test_id(101);
+        assert_ne!(derive_ipv6(&id, &net_a), derive_ipv6(&id, &net_b));
+    }
+
+    #[test]
+    fn test_derive_ipv6_shares_network_prefix() {
+        let net = test_id(100);
+        let a = derive_ipv6(&test_id(1), &net);
+        let b = derive_ipv6(&test_id(2), &net);
+        assert_eq!(a.octets()[..7], b.octets()[..7], "same network -> same /56 prefix");
+        let prefix = ipv6_network_prefix(&net);
+        assert_eq!(a.octets()[..7], prefix.octets()[..7]);
+    }
+
+    #[test]
+    fn test_ipv6_network_prefix_deterministic_and_distinct() {
+        let net_a = test_id(100);
+        let net_b = test_id(101);
+        assert_eq!(ipv6_network_prefix(&net_a), ipv6_network_prefix(&net_a));
+        assert_ne!(ipv6_network_prefix(&net_a), ipv6_network_prefix(&net_b));
+        assert_eq!(ipv6_network_prefix(&net_a).octets()[0], 0x02);
+        assert_eq!(
+            &ipv6_network_prefix(&net_a).octets()[7..],
+            &[0u8; 9],
+            "peer-part bits must be zeroed in the prefix address"
+        );
     }
 
     #[test]

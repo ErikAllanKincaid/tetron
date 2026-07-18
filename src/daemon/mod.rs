@@ -114,6 +114,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub(crate) struct MeshCtx {
     identity: IrohIdentityProvider,
+    /// This network's own public key (IPV6-001) — every peer IPv6 address
+    /// derived through this context is scoped to this network alone.
+    network_key: EndpointId,
     peers: PeerTable,
     tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     stats: Arc<ForwardMetrics>,
@@ -456,6 +459,7 @@ impl MeshManager {
         let handle = self.networks.get(network)?;
         Some(MeshCtx {
             identity: self.identity.clone(),
+            network_key: handle.network_key,
             peers: handle.peers.clone(),
             tun_tx: handle.tun_tx.clone(),
             stats: self.stats.clone(),
@@ -518,7 +522,11 @@ impl MeshManager {
         my_ip: Ipv4Addr,
         subnet: crate::membership::Subnet,
     ) {
-        let my_ipv6 = derive_ipv6(&self.identity.local_identity());
+        let Some(network_key) = self.networks.get(network).map(|h| h.network_key) else {
+            tracing::warn!(network, "network handle missing at TUN attach time");
+            return;
+        };
+        let my_ipv6 = derive_ipv6(&self.identity.local_identity(), &network_key);
         match tun::create(my_ip, my_ipv6, subnet).await {
             Ok((reader, writer, tun_name)) => {
                 if let Some(handle) = self.networks.get(network) {
@@ -529,7 +537,14 @@ impl MeshManager {
                     if let Err(e) = tun::set_link_up(&tun_name) {
                         tracing::warn!(network, error = %e, "failed to bring newly attached TUN up");
                     }
-                    if let Err(e) = tun::route_peer_range(&tun_name).await {
+                    let network_prefix = crate::membership::ipv6_network_prefix(&network_key);
+                    if let Err(e) = tun::route_peer_range(
+                        &tun_name,
+                        network_prefix,
+                        crate::membership::IPV6_NETWORK_PREFIX_LEN,
+                    )
+                    .await
+                    {
                         tracing::warn!(network, error = %e, "failed to route peer range into newly attached TUN");
                     }
                     if let Err(e) = tun::route_self_loopback(my_ip, my_ipv6).await {
@@ -1067,6 +1082,7 @@ mod accept_handler_tests {
         let (tun_tx, _) = tokio::sync::mpsc::channel(1);
         MeshCtx {
             identity,
+            network_key: SecretKey::from_bytes(&[1u8; 32]).public(),
             peers: PeerTable::new(),
             tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(tun_tx)),
             stats: Arc::new(ForwardMetrics::default()),

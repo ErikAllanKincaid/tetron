@@ -370,7 +370,7 @@ fn register_mesh_peer(
     peer_ip: Ipv4Addr,
     network_name: &str,
 ) {
-    let peer_ipv6 = derive_ipv6(&peer_id);
+    let peer_ipv6 = derive_ipv6(&peer_id, &ctx.network_key);
     peers.add(peer_ip, peer_ipv6, conn.clone(), peer_id, network_name);
     forward::spawn_peer_reader(
         conn,

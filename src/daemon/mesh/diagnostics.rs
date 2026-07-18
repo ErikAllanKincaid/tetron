@@ -63,7 +63,7 @@ impl MeshManager {
                         name: h.name.clone(),
                         role,
                         my_ip: h.my_ip,
-                        my_ipv6: Some(derive_ipv6(&my_id)),
+                        my_ipv6: Some(derive_ipv6(&my_id, &h.network_key)),
                         my_hostname: None,
                         network_key: Some(h.network_key.to_string()),
                         member_count: 0,
@@ -98,7 +98,7 @@ impl MeshManager {
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
-                    ipv6: Some(derive_ipv6(&m.identity)),
+                    ipv6: Some(derive_ipv6(&m.identity, &h.network_key)),
                     hostname: m.hostname.clone(),
                     connection,
                 }
@@ -113,7 +113,7 @@ impl MeshManager {
             name: h.name.clone(),
             role,
             my_ip: h.my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &h.network_key)),
             my_hostname,
             network_key: Some(h.network_key.to_string()),
             member_count,

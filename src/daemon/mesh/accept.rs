@@ -32,7 +32,7 @@ impl CoordinatorAcceptState {
     ) {
         tracing::info!(ip = %peer_ip, "known member reconnecting");
         crate::spawn_path_logger(conn.clone(), remote_id.fmt_short().to_string());
-        let peer_ipv6 = derive_ipv6(&remote_id);
+        let peer_ipv6 = derive_ipv6(&remote_id, &self.ctx.network_key);
         self.ctx.peers.add(
             peer_ip,
             peer_ipv6,
@@ -395,6 +395,24 @@ impl CoordinatorAcceptState {
         if collision {
             return Err(format!("IP collision: {peer_ip} already assigned"));
         }
+        // IPV6-002: defense against a *deliberately grinded* IPv6 collision
+        // (~2^36 attempts is realistically feasible), not the accidental case
+        // (astronomically unlikely at 72 bits, IPV6-001). No stored `ipv6`
+        // field exists to look up (never transmitted/signed — always
+        // re-derived locally), so recompute it for every existing roster
+        // entry and compare.
+        let candidate_ipv6 = derive_ipv6(&remote_id, &self.ctx.network_key);
+        let ipv6_collision = {
+            let s = self.state.read().unwrap();
+            s.members.all().iter().any(|m| {
+                m.identity != remote_id && derive_ipv6(&m.identity, &self.ctx.network_key) == candidate_ipv6
+            }) || s.approved.all().iter().any(|a| {
+                a.identity != remote_id && derive_ipv6(&a.identity, &self.ctx.network_key) == candidate_ipv6
+            })
+        };
+        if ipv6_collision {
+            return Err(format!("IPv6 collision: {candidate_ipv6} already assigned"));
+        }
         Ok((peer_ip, collision_index, final_hostname))
     }
 
@@ -406,7 +424,7 @@ impl CoordinatorAcceptState {
         remote_id: EndpointId,
         peer_ip: Ipv4Addr,
     ) {
-        let peer_ipv6 = derive_ipv6(&remote_id);
+        let peer_ipv6 = derive_ipv6(&remote_id, &self.ctx.network_key);
         crate::spawn_path_logger(conn.clone(), remote_id.fmt_short().to_string());
         self.ctx.peers.add(
             peer_ip,
@@ -448,7 +466,7 @@ impl MemberAcceptState {
     /// inbound data-plane reader. Shared by the approved-join and known-member
     /// branches of `handle_connection`.
     fn register_peer(&self, conn: Connection, peer_identity: EndpointId, ip: Ipv4Addr) {
-        let peer_ipv6 = derive_ipv6(&peer_identity);
+        let peer_ipv6 = derive_ipv6(&peer_identity, &self.ctx.network_key);
         self.ctx.peers.add(
             ip,
             peer_ipv6,

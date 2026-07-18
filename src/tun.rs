@@ -225,16 +225,26 @@ async fn configure_ipv6(tun_name: &str, addr: Ipv6Addr) -> Result<()> {
     Ok(())
 }
 
-/// Routes the peer ranges into the TUN. Must be called *after* the interface is
-/// up (see [`set_link_up`]). On Linux only the IPv6 `200::/7` route needs adding:
-/// the kernel does not reliably install an IPv6 connected route while the link is
+/// Routes the peer range into the TUN. Must be called *after* the interface is
+/// up (see [`set_link_up`]). On Linux only the IPv6 route needs adding: the
+/// kernel does not reliably install an IPv6 connected route while the link is
 /// down (peer traffic would otherwise leak out the host's default IPv6 route),
 /// whereas it re-installs the IPv4 `100.64.0.0/10` connected route from the /10
 /// netmask automatically on link-up. On macOS the point-to-point utun installs
-/// neither range reliably, so *both* `100.64.0.0/10` and `200::/7` are added
-/// explicitly. Idempotent — safe to call on every `up` cycle.
+/// neither range reliably, so *both* `100.64.0.0/10` and the IPv6 range are
+/// added explicitly. Idempotent — safe to call on every `up` cycle.
+///
+/// `network_prefix`/`prefix_len` (IPV6-003) is that network's own `/56` block
+/// (`membership::ipv6_network_prefix`, `IPV6_NETWORK_PREFIX_LEN`) rather than
+/// one system-wide `200::/7` — every joined network gets its own disjoint
+/// route into its own TUN device, closing the "IPv6 works on one segment
+/// only" limitation MULTISEG-003 left open.
 #[cfg(target_os = "linux")]
-pub async fn route_peer_range(tun_name: &str) -> Result<()> {
+pub async fn route_peer_range(
+    tun_name: &str,
+    network_prefix: Ipv6Addr,
+    prefix_len: u8,
+) -> Result<()> {
     use futures::TryStreamExt;
     use rtnetlink::RouteMessageBuilder;
 
@@ -255,7 +265,7 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
             .index;
 
         let route = RouteMessageBuilder::<Ipv6Addr>::new()
-            .destination_prefix(Ipv6Addr::new(0x0200, 0, 0, 0, 0, 0, 0, 0), 7)
+            .destination_prefix(network_prefix, prefix_len)
             .output_interface(index)
             .build();
         handle
@@ -264,7 +274,7 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
             .replace()
             .execute()
             .await
-            .context("add 200::/7 route via netlink")?;
+            .with_context(|| format!("add {network_prefix}/{prefix_len} route via netlink"))?;
 
         Ok(())
     }
@@ -275,15 +285,20 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub async fn route_peer_range(tun_name: &str) -> Result<()> {
+pub async fn route_peer_range(
+    tun_name: &str,
+    network_prefix: Ipv6Addr,
+    prefix_len: u8,
+) -> Result<()> {
     // utun is point-to-point, so the address prefix alone does not reliably
     // create the range route — we add both families explicitly. The IPv4 `/10`
     // is only installed implicitly by the `tun` crate at device creation and
-    // macOS drops it across an `up`/`down` cycle, so (like the IPv6 `/7`) we
+    // macOS drops it across an `up`/`down` cycle, so (like the IPv6 range) we
     // re-add it on every activate or peers become unreachable over IPv4 while
     // IPv6 still works. `route add` fails if the route already exists (e.g. an
     // earlier `up`), so delete any stale entry first and ignore its result.
-    for (family, net) in [("-inet", "100.64.0.0/10"), ("-inet6", "200::/7")] {
+    let v6_net = format!("{network_prefix}/{prefix_len}");
+    for (family, net) in [("-inet", "100.64.0.0/10"), ("-inet6", v6_net.as_str())] {
         let _ = Command::new("route")
             .args(["-n", "delete", family, "-net", net, "-interface", tun_name])
             .status();

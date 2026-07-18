@@ -201,6 +201,7 @@ pub(crate) fn prune_departed_peers(
     network_name: &str,
     my_identity: EndpointId,
 ) {
+    let net_key = state.read().unwrap().network_public_key;
     for (peer_id, ip, conn) in peers.peers_for_network_with_conn(network_name) {
         let still_member = {
             let s = state.read().unwrap();
@@ -215,7 +216,7 @@ pub(crate) fn prune_departed_peers(
             VarInt::from_u32(forward::KICK_CODE),
             b"removed from network",
         );
-        peers.remove_peer_from_network(&ip, &derive_ipv6(&peer_id), network_name);
+        peers.remove_peer_from_network(&ip, &derive_ipv6(&peer_id, &net_key), network_name);
     }
 }
 
@@ -351,7 +352,7 @@ pub(crate) fn spawn_group_poller(
                 if !new_member_ids.contains(old_id) {
                     let s = state.read().unwrap();
                     if let Some(member) = s.members.get(old_id) {
-                        peers.remove(&member.ip, &derive_ipv6(old_id));
+                        peers.remove(&member.ip, &derive_ipv6(old_id, &s.network_public_key));
                         tracing::info!(peer = %old_id.fmt_short(), "removed kicked peer");
                     }
                 }

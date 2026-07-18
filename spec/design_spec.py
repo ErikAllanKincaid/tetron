@@ -3568,3 +3568,187 @@ class JoinSideIpDerivationFixed(Requirement):
     """
     req_id = "MULTISEG-007"
 
+
+# --------------------------------------------------------------------------
+# IPV6-001..003: per-network IPv6 addressing, the follow-up MULTISEG-003
+# explicitly deferred ("Making IPv6 fully per-network would mean ... a
+# larger, separate change")
+# --------------------------------------------------------------------------
+
+class PerNetworkIpv6Derivation(Requirement):
+    """REQUIREMENT-ID: IPV6-001
+
+    Follow-up to MULTISEG-003's flagged limitation: `derive_ipv6(identity)`
+    is identity-only, so a node's peer IPv6 address is identical across
+    every network it joins — unlike IPv4, which is genuinely per-network
+    (`derive_ip(identity, subnet)`). This makes `derive_ipv6` take the
+    network's own public key too, mirroring the IPv4 shape, so each
+    network's v6 range becomes its own real, disjoint, routable block
+    instead of one address shared across every network a node belongs to.
+
+    **New signature:** `derive_ipv6(identity: &EndpointId, network: &EndpointId)
+    -> Ipv6Addr`.
+
+    **Structural split (decided 2026-07-18, not just "shrink the hash"):**
+    byte 0 fixed `0x02` (unchanged, keeps the address inside the existing
+    `200::/7` product-documented range) + a 48-bit **network-prefix**
+    (bytes 1-6, `blake3(network.to_string())` truncated to 6 bytes) + a
+    72-bit **peer-part** (bytes 7-15, `blake3(format!("{identity}:{network}"))`
+    truncated to 9 bytes). The network-prefix is the part that actually
+    matters: it is *only* a function of the network's public key, so every
+    member of a given network shares the same 56-bit prefix (`0x02` + 48
+    bits), giving that network a real `/56` CIDR block a route can target —
+    without this structural split, folding "network" into the hash input
+    alone would still produce addresses fully interleaved with every other
+    network's, with no CIDR block to route (this is what IPV6-003 needs).
+    The peer-part deliberately mixes in `network`, not just `identity`, so
+    the same identity gets an unrelated peer-part in each network it joins
+    — this closes a cross-network grinding-reuse loophole that would
+    otherwise undermine IPV6-002's collision defense (see that
+    requirement).
+
+    **No collision-index** (confirmed 2026-07-18 via birthday-paradox math
+    at the more realistic 1%-probability threshold, not just 50%): IPv4's
+    default `/24` needs only ~2-3 nodes for a 1% collision chance (why
+    `collision_index`/`assign_ip`'s rotation exists at all), while a
+    72-bit peer-part needs ~3.1 billion nodes for the same 1% risk —
+    astronomically beyond any realistic mesh size. `assign_ip`'s
+    IPv4-style rotate-on-collision approach is not extended to v6; a
+    genuine (non-adversarial) collision is not expected to ever occur.
+    Deliberate grinding is a different threat model, handled separately by
+    IPV6-002.
+
+    **Call-site audit** (every non-test caller of the old identity-only
+    signature, found via full-crate grep, each now threads through the
+    relevant network's own public key — already in scope at every site
+    below via `NetworkState.network_public_key`, `NetworkHandle.network_key`,
+    or an explicit `network`/`net_pubkey` parameter already being passed
+    for other reasons):
+    - `daemon/mesh/create_join.rs` — create/join success paths building
+      `my_ipv6`/roster `ipv6` fields for IPC responses.
+    - `daemon/mesh/accept.rs` — `spawn_admitted_member_tasks` and the two
+      other sites registering a peer's v6 route for the anti-spoof-adjacent
+      data plane.
+    - `daemon/mesh/diagnostics.rs` — `tetron status`'s per-network,
+      per-member v6 display.
+    - `daemon/mesh/join.rs` — registering the coordinator's v6 on initial
+      join.
+    - `daemon/mesh/coordinator.rs`, `daemon/mesh/reconverge.rs` — peer
+      removal/pruning, which must recompute the same network-scoped v6 that
+      was used to register the peer, or the removal is a no-op key-miss.
+    - `daemon/mesh/runtime.rs`, `daemon/mod.rs` — `activate()` and
+      `create_and_attach_network_tun`'s own-address computation, feeding
+      `route_self_loopback` (each network's loopback self-route must match
+      that network's own derived v6, not one node-wide value — the same bug
+      shape as MULTISEG-007 if left identity-only here).
+
+    `src/peers.rs`'s `PeerTable` needs no structural change (its `v6:
+    Arc<FastDashMap<Ipv6Addr, PeerEntry>>` is already a distinct instance
+    per network since MULTISEG-002 gave every `NetworkHandle` its own
+    `PeerTable`) — only what value each call site above computes as the key
+    changes.
+
+    Existing unit tests (`test_derive_ipv6_deterministic`,
+    `test_derive_ipv6_in_200_range`, `test_derive_ipv6_different_identities_differ`)
+    update for the new signature; new coverage added for same-identity
+    producing different addresses across two networks, and the network-
+    prefix being shared across different identities on the same network.
+
+    Found: 2026-07-18, decided during a design discussion following the
+    MULTISEG-002..007 merge; implemented on `feat/ipv6-per-network`.
+    """
+    req_id = "IPV6-001"
+
+
+class Ipv6CollisionRejectedAtAdmission(Requirement):
+    """REQUIREMENT-ID: IPV6-002
+
+    Defense-in-depth alongside IPV6-001's structural collision-resistance:
+    mirrors `validate_admission`'s existing IPv4 behavior (`accept.rs`,
+    "IP collision: {ip} already assigned" — a different identity already
+    holding a candidate's derived address is rejected, not silently
+    admitted) for IPv6. Scoped explicitly against a *deliberately grinded*
+    collision (an adversary generating on the order of 2^36 keypairs to
+    force a specific 72-bit peer-part match is realistically feasible with
+    modest hardware), not the accidental case — IPV6-001's math already
+    makes accidental collision astronomically unlikely; this closes the
+    much narrower gap that a probabilistic argument alone does not cover
+    for an adversarial actor.
+
+    Since `Member` carries no persisted `ipv6` field (v6 addresses are
+    never transmitted or signed — always freshly re-derived locally by
+    every node, confirmed by inspection of the `Member` struct), the check
+    cannot look up a stored value. `validate_admission` instead recomputes
+    `derive_ipv6(&m.identity, &s.network_public_key)` for every existing
+    roster/approved entry and compares against the joiner's candidate
+    address — an O(n) scan, cheap at realistic roster sizes, same shape as
+    the existing hostname-collision scan a few lines above it in the same
+    function.
+
+    On a collision against a *different* identity, admission is rejected
+    with `"IPv6 collision: {addr} already assigned"` (mirroring the v4
+    message's wording) — the joiner's admission fails outright. Unlike
+    IPv4, there is no collision-index to rotate to and retry (IPV6-001
+    deliberately has none), so this is a hard denial, not a resolution
+    step. A re-add of the *same* identity (e.g. a reconnect) is not a
+    collision, matching `assign_ip`'s existing same-identity exemption.
+
+    Found: 2026-07-18, decided as part of the same design discussion as
+    IPV6-001 (explicit user decision to add this check rather than accept
+    the residual grinding risk); implemented on `feat/ipv6-per-network`.
+    """
+    req_id = "IPV6-002"
+
+
+class PerNetworkIpv6RouteInstallation(Requirement):
+    """REQUIREMENT-ID: IPV6-003
+
+    Closes the limitation MULTISEG-003 explicitly flagged and deferred:
+    "IPv6 mesh reachability works on one segment only" — `activate()`
+    previously installed one system-wide `200::/7 -> <tun>` kernel route,
+    guarded by an `installed_peer_range_route` bool so only the *first*
+    network encountered got it (a deterministic, documented limitation,
+    not a last-writer-wins race, but still a real one: every other
+    network's peers were unreachable over IPv6). This was only fixable
+    once IPV6-001 existed — a single shared `200::/7` superset has no
+    narrower per-network block a route could target; disjoint per-network
+    `/56` prefixes do.
+
+    `tun::route_peer_range` changes signature from `(tun_name: &str)` to
+    take the specific prefix/width to install (the network's own `/56`
+    block: `0x02` + IPV6-001's 48-bit network-prefix, peer-part bits
+    zeroed) instead of the hardcoded `Ipv6Addr::new(0x0200, ..), 7`
+    literal — both the Linux (netlink `RouteMessageBuilder`) and macOS
+    (`route add -inet6`) implementations swap the constant for the passed-
+    in value. A new `membership::ipv6_network_prefix(network: &EndpointId)
+    -> Ipv6Addr` helper computes the zeroed-suffix prefix address from
+    IPV6-001's derivation, reused by both call sites below and by tests.
+
+    Both call sites — `daemon/mod.rs`'s `create_and_attach_network_tun`
+    and `daemon/mesh/runtime.rs`'s `activate()` — drop their "only the
+    first network" bookkeeping entirely and call `route_peer_range`
+    unconditionally per network: routes no longer collide, since each
+    network's `/56` is disjoint from every other's (birthday math on a
+    48-bit space, IPV6-001). `route_self_loopback`'s own-address argument
+    switches from `derive_ipv6(identity)` to the network-scoped
+    `derive_ipv6(identity, network)` at both sites, closing the same bug
+    shape MULTISEG-007 fixed for IPv4 (a node-wide value used somewhere
+    that needed to be network-scoped) before it can ever manifest here.
+
+    `AGENTS.md`'s multi-segment TUN section and MULTISEG-003's own spec
+    docstring both documented "IPv6 mesh reachability works on one segment
+    only" as a known, unresolved limitation needing a product decision —
+    that decision was made (IPV6-001) and this requirement is what acts on
+    it; both docs get their limitation note removed/updated to reflect the
+    resolved state once this lands and is live-tested.
+
+    Needs its own live multi-machine test: a node dual-homed on two
+    networks reaching a peer over IPv6 on *both* networks simultaneously
+    (the exact scenario MULTISEG-003 could not support), not just IPv4 as
+    the earlier MULTISEG live-testing pass covered.
+
+    Found: 2026-07-18, decided as part of the same design discussion as
+    IPV6-001/002; implemented on `feat/ipv6-per-network`.
+    """
+    req_id = "IPV6-003"
+

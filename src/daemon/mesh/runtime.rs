@@ -223,6 +223,7 @@ impl MeshManager {
         let (peers, tun_tx) = self.new_network_data_plane();
         let ctx = MeshCtx {
             identity: self.identity.clone(),
+            network_key: net_public_key,
             peers: peers.clone(),
             tun_tx: tun_tx.clone(),
             stats: self.stats.clone(),
@@ -301,6 +302,7 @@ impl MeshManager {
             &members_to_dial,
             &alpn,
             name,
+            net_public_key,
             self.identity.local_identity(),
             my_ip,
             persisted_hostname.clone(),
@@ -314,7 +316,7 @@ impl MeshManager {
             network: name.to_string(),
             network_key: net_public_key,
             my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_public_key)),
             // MULTISEG-003: this network's TUN is created fresh, in its own
             // subnet, right above — see the identical note in
             // `create_network_inner`'s `Created` response.
@@ -789,23 +791,13 @@ impl MeshManager {
         // MULTISEG-003: this now runs once per network (each has its own TUN),
         // not once for a single daemon-wide device.
         //
-        // **Known limitation, not fixed here:** peer IPv6 addresses
-        // (`derive_ipv6`) are identity-derived and global across every
-        // network a node joins — unlike IPv4, they are not subnet-scoped per
-        // network (see `AGENTS.md`'s addressing section). `route_peer_range`
-        // installs one system-wide `200::/7 -> <tun>` route; with N TUNs, the
-        // last one activated wins the kernel's route table entry, silently
-        // leaving every other network's peers unreachable over IPv6 (IPv4
-        // stays correctly segmented either way, since each network has its
-        // own distinct v4 subnet/TUN). Only the first network encountered
-        // below installs the `200::/7` route, deterministically, so this is
-        // an explicit "IPv6 mesh works on one segment" limitation rather than
-        // a silent last-writer-wins race. Making IPv6 fully per-network would
-        // mean either scoping peer IPv6 addresses per network (like IPv4
-        // already is) or policy routing — both larger, separate changes.
+        // IPV6-003 resolved the limitation this loop used to carry: peer IPv6
+        // addresses are now network-scoped (`derive_ipv6(identity, network)`,
+        // IPV6-001), so every network gets its own disjoint `/56` block
+        // (`membership::ipv6_network_prefix`) and its own route into its own
+        // TUN device — no more picking one network to "win" the route.
         #[cfg(not(target_os = "android"))]
         {
-            let mut installed_peer_range_route = false;
             for entry in self.networks.iter() {
                 let handle = entry.value();
                 let tun_name = handle.tun_name.lock().unwrap().clone();
@@ -817,17 +809,20 @@ impl MeshManager {
                     ));
                 }
 
-                // Route the 200::/7 peer range into the TUN. Must happen after
-                // link-up: on Linux the kernel won't install an IPv6 connected
-                // route while the link is down, so without this peer traffic
-                // leaks out the default route. See the known-limitation note
-                // above for why only the first network's TUN gets this route.
-                if !installed_peer_range_route {
-                    if let Err(e) = tun::route_peer_range(&tun_name).await {
-                        tracing::warn!(network = %handle.name, error = %e, "failed to route 200::/7 into TUN");
-                        warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
-                    }
-                    installed_peer_range_route = true;
+                // Route this network's own IPv6 /56 into its own TUN. Must
+                // happen after link-up: on Linux the kernel won't install an
+                // IPv6 connected route while the link is down, so without
+                // this peer traffic leaks out the default route.
+                let network_prefix = crate::membership::ipv6_network_prefix(&handle.network_key);
+                if let Err(e) = tun::route_peer_range(
+                    &tun_name,
+                    network_prefix,
+                    crate::membership::IPV6_NETWORK_PREFIX_LEN,
+                )
+                .await
+                {
+                    tracing::warn!(network = %handle.name, error = %e, "failed to route IPv6 peer range into TUN");
+                    warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
                 }
 
                 // Loop our own addresses back through lo0 so self-traffic (e.g.
@@ -836,7 +831,7 @@ impl MeshManager {
                 // peer for dst". No-op on Linux (kernel installs the `local`
                 // route automatically).
                 let my_v4 = handle.my_ip;
-                let my_v6 = derive_ipv6(&self.identity.local_identity());
+                let my_v6 = derive_ipv6(&self.identity.local_identity(), &handle.network_key);
                 if let Err(e) = tun::route_self_loopback(my_v4, my_v6).await {
                     tracing::warn!(network = %handle.name, error = %e, "failed to install loopback self-route");
                     warnings.push(format!("failed to install loopback self-route: {e}"));

@@ -175,7 +175,7 @@ pub(crate) async fn finalize_removal(
         if victims.contains(&pid) {
             conn.close(VarInt::from_u32(forward::KICK_CODE), b"kicked from network");
             ctx.peers
-                .remove_peer_from_network(&ip, &derive_ipv6(&pid), network);
+                .remove_peer_from_network(&ip, &derive_ipv6(&pid, &ctx.network_key), network);
         }
     }
 }

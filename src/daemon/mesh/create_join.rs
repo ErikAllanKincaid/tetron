@@ -393,6 +393,7 @@ impl MeshManager {
         let (peers, tun_tx) = self.new_network_data_plane();
         let ctx = MeshCtx {
             identity: self.identity.clone(),
+            network_key: net_public_key,
             peers: peers.clone(),
             tun_tx: tun_tx.clone(),
             stats: self.stats.clone(),
@@ -481,7 +482,7 @@ impl MeshManager {
             network: name,
             network_key: net_public_key,
             my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_public_key)),
             // MULTISEG-003: this network's TUN is created fresh, in its own
             // subnet, right above — SUBNET-014's warning existed only because
             // a subnet mismatch used to require a full daemon restart to take
@@ -616,6 +617,7 @@ impl MeshManager {
         let (peers, tun_tx) = self.new_network_data_plane();
         let mesh_ctx = MeshCtx {
             identity: self.identity.clone(),
+            network_key: net_pubkey,
             peers,
             tun_tx,
             stats: self.stats.clone(),
@@ -983,7 +985,7 @@ impl MeshManager {
                     .send(forward::DisconnectEvent {
                         endpoint_id: m.identity,
                         ip: m.ip,
-                        ipv6: derive_ipv6(&m.identity),
+                        ipv6: derive_ipv6(&m.identity, &ctx.net_pubkey),
                         network: ctx.display_name.to_string(),
                         // Synthetic cold-restore kick-start: not a leave or a
                         // kick, just a trigger to force the reconnect dial. No
@@ -1202,7 +1204,7 @@ impl MeshManager {
         Ok(TryJoin::Joined(IpcMessage::Joined {
             network: display_name.to_string(),
             my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_pubkey)),
             // MULTISEG-003: this network's TUN is created fresh, in its own
             // subnet, right above — see the identical note in
             // `create_network_inner`'s `Created` response.
@@ -1361,6 +1363,7 @@ impl MeshManager {
             let (peers, tun_tx) = self.new_network_data_plane();
             let mesh_ctx = MeshCtx {
                 identity: self.identity.clone(),
+                network_key: net_pubkey,
                 peers: peers.clone(),
                 tun_tx: tun_tx.clone(),
                 stats: self.stats.clone(),
@@ -1413,6 +1416,7 @@ impl MeshManager {
                 &data.members,
                 alpn,
                 network_name,
+                net_pubkey,
                 my_identity,
                 my_ip,
                 my_hostname.clone(),
@@ -1468,7 +1472,7 @@ impl MeshManager {
             return Ok(IpcMessage::Joined {
                 network: network_name.to_string(),
                 my_ip,
-                my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
+                my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_pubkey)),
                 warning: None,
             });
         }
@@ -1501,6 +1505,7 @@ impl MeshManager {
         members: &[Member],
         alpn: &[u8],
         network_name: &str,
+        net_pubkey: EndpointId,
         my_identity: EndpointId,
         my_ip: Ipv4Addr,
         my_hostname: Option<String>,
@@ -1555,7 +1560,7 @@ impl MeshManager {
                         );
                         peers.add(
                             m.ip,
-                            derive_ipv6(&m.identity),
+                            derive_ipv6(&m.identity, &net_pubkey),
                             peer_conn.clone(),
                             m.identity,
                             network_name,
@@ -1564,7 +1569,7 @@ impl MeshManager {
                             peer_conn,
                             m.identity,
                             m.ip,
-                            derive_ipv6(&m.identity),
+                            derive_ipv6(&m.identity, &net_pubkey),
                             network_name.to_string(),
                             forward::ForwardCtx {
                                 tun_tx,
