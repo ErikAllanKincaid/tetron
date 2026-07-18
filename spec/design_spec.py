@@ -1753,6 +1753,28 @@ class WorkspaceTrim(Requirement):
     benches/ to the surviving forward path, prune cargo features to the
     default set, and sweep justfile/cliff.toml targets that reference
     removed surfaces.
+
+    **Follow-up, 2026-07-17:** the ray-mobile *member crate* was removed, but
+    15 doc comments across 6 files (`daemon/mod.rs`, `daemon/mesh/runtime.rs`,
+    `daemon/mesh/bootstrap.rs`, `daemon/mesh/create_join.rs`,
+    `daemon/mesh/diagnostics.rs`, `config.rs`) still named `ray-mobile` as a
+    current consumer of the embedding API (`MeshManager::activate`/
+    `attach_tun`/`detach_tun`/`shutdown_and_close`/`create_network`/
+    `join_network`/`status`, the `DaemonState` legacy alias, and the
+    `TETRON_CONFIG_DIR` Android override). The embedding API itself is not
+    dead -- the `#[cfg(not(target_os = "android"))]` gates it exists for are
+    still live, compiled code -- only the specific named example is gone.
+    Reworded all 15 to describe the embedding API generically ("Part of the
+    embedding API", "an embedder", "a mobile embedder") instead of citing a
+    member crate that no longer exists in this workspace. Also fixed two
+    unrelated staleness bits found in the same pass: `MeshManager::activate`'s
+    doc comment still said it "configure[s] system DNS" / "configure[s] Magic
+    DNS" (removed by `MINIMAL-012`; `activate`'s body has had zero DNS-related
+    code since), and `bootstrap.rs`'s module doc said `handle_ipc_client`
+    answers "`ray` CLI requests" (the binary is `tetron`; this particular
+    phrasing didn't match `CON-010`'s `cli_reference_identity` regex because
+    the character after "ray " was uppercase, so the automated gate never
+    caught it).
     """
     req_id = "MINIMAL-016"
 

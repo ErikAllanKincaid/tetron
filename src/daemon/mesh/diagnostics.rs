@@ -4,8 +4,8 @@
 use super::super::*;
 
 impl MeshManager {
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    /// snapshot the daemon's status (identity, networks, peers).
+    /// Part of the embedding API: snapshot the daemon's status (identity,
+    /// networks, peers).
     pub fn status(&self) -> IpcMessage {
         let my_id = self.endpoint.id();
         // Direct-connection networks are flagged in config; collect their names

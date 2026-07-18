@@ -686,13 +686,12 @@ impl MeshManager {
         tracing::info!(networks = count, "control plane connected");
     }
 
-    /// Activate the VPN: bring the TUN interface up, configure system DNS.
-    /// Idempotent — a no-op if already active. Runs entirely inside the
-    /// (root) daemon, so the IPC client needs no privileges.
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    /// bring the data plane up (mark active, configure Magic DNS). On Android the
-    /// packet interface + routes are the `VpnService`'s job, so those desktop
-    /// route calls are skipped.
+    /// Activate the VPN: bring the TUN interface up. Idempotent — a no-op if
+    /// already active. Runs entirely inside the (root) daemon, so the IPC
+    /// client needs no privileges. Part of the embedding API: bring the data
+    /// plane up (mark active, configure routes). On Android the packet
+    /// interface + routes are the `VpnService`'s job, so those desktop route
+    /// calls are skipped.
     pub async fn activate(self: &Arc<Self>, hostname: Option<String>) -> IpcMessage {
         // Persist the personal default hostname first (before the already-active
         // short-circuit) so `tetron up --hostname X` records the new default even
@@ -836,7 +835,7 @@ impl MeshManager {
         self.leave_network(name).await;
     }
 
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
+    /// Part of the embedding API.
     #[tracing::instrument(skip(self), fields(net = network))]
     pub async fn leave_network(&self, network: &str) -> IpcMessage {
         // Gracefully close our connections with the leave code BEFORE teardown

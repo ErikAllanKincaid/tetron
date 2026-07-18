@@ -4,7 +4,7 @@
 //! command): it builds the shared [`MeshManager`], reconnects saved networks,
 //! and runs the IPC accept loop until shutdown. `build_daemon` wires the endpoint
 //! / TUN / protocol router / metrics; `serve_ipc` + `handle_ipc_client` answer
-//! `ray` CLI requests over the Unix socket. These live in a `mesh/` submodule
+//! `tetron` CLI requests over the Unix socket. These live in a `mesh/` submodule
 //! (a descendant of `daemon`) so they can still construct `MeshManager` and reach
 //! its private fields without widening visibility.
 
@@ -21,13 +21,13 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     // Build the always-on infrastructure without a packet interface, then attach
     // the desktop OS TUN device below. The headless builder is the same one
-    // `build_headless()` exposes to embedders (mobile), so both paths share
-    // identical construction.
+    // `build_headless()` exposes to embedders, so both paths share identical
+    // construction.
     let daemon = build_daemon(token.clone(), stats).await?;
 
     // Attach the real OS TUN device: create it, record its name, and spawn the
     // writer + `run_mesh` forwarding loop. On Android the packet interface is a
-    // `VpnService` fd attached later by `ray-mobile` via `attach_tun`, so this is
+    // `VpnService` fd attached later by the embedder via `attach_tun`, so this is
     // skipped here.
     #[cfg(not(target_os = "android"))]
     {
@@ -109,8 +109,8 @@ fn initial_alpns(app_config: &config::AppConfig) -> Vec<Vec<u8>> {
     alpns
 }
 
-/// Construct a headless [`MeshManager`] for an embedder (used by `ray-mobile`
-/// and future embedders). Builds the same infrastructure as `run_daemon` minus
+/// Construct a headless [`MeshManager`] for an embedder. Builds the same
+/// infrastructure as `run_daemon` minus
 /// the OS TUN device and the Unix-socket IPC server: the caller supplies a
 /// packet interface via [`MeshManager::attach_tun`]. The returned daemon is on
 /// standby (no data plane), with its saved networks' control plane connected.

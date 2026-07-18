@@ -433,8 +433,8 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 pub fn config_dir() -> Result<PathBuf> {
     // An explicit `TETRON_CONFIG_DIR` override (renamed from the torpedo-prefixed
     // name, RENAME-M02, so it cannot collide with a genuine torpedo/rayfish
-    // process's own override on the same host) is honored only on Android
-    // (`ray-mobile`'s `Node::new` points it at the app's `Context.getFilesDir()`)
+    // process's own override on the same host) is honored only on Android (a
+    // mobile embedder would point it at its app's `Context.getFilesDir()`)
     // and in `cfg(test)` (headless/test harnesses run against an isolated config
     // tree). Desktop/service production builds never check this var, so their
     // resolved path is byte-for-byte unchanged from before the override existed.

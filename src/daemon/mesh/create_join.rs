@@ -170,8 +170,8 @@ impl MeshManager {
         (tasks, disconnect_tx)
     }
 
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    /// create a new network and register this node as its coordinator.
+    /// Part of the embedding API: create a new network and register this
+    /// node as its coordinator.
     #[tracing::instrument(skip(self, hostname), fields(mode = ?mode))]
     pub async fn create_network(
         &self,
@@ -450,8 +450,8 @@ impl MeshManager {
         })
     }
 
-    /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    /// join an existing network by key (optionally with an invite secret).
+    /// Part of the embedding API: join an existing network by key
+    /// (optionally with an invite secret).
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, hostname), fields(net = name.unwrap_or(network_key)))]
     pub async fn join_network(

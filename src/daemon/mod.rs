@@ -91,11 +91,12 @@ mod mesh;
 pub(crate) use mesh::*;
 // `run_daemon` (the `tetron daemon` entry point) stays public for the binary.
 pub use mesh::run_daemon;
-// `build_headless` is the embedder (mobile) construction entry point.
+// `build_headless` is the embedder construction entry point.
 pub use mesh::build_headless;
 
-/// Legacy name for [`MeshManager`], kept so embedders (`ray-mobile`) that were
-/// written against `DaemonState` compile unchanged after the daemon refactor.
+/// Legacy name for [`MeshManager`], kept for compile compatibility with code
+/// (including this crate's own tests) written against the pre-refactor
+/// `DaemonState` name.
 pub type DaemonState = MeshManager;
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
@@ -320,7 +321,7 @@ pub struct NetworkHandle {
 /// Handles for the packet-forwarding tasks a [`MeshManager::attach_tun`] call
 /// spawns (the TUN writer and the `run_mesh` reader loop), plus a dedicated
 /// cancellation token so the data plane can be stopped independently of a full
-/// daemon shutdown (used by [`MeshManager::detach_tun`] / `ray-mobile`'s `down`).
+/// daemon shutdown (used by [`MeshManager::detach_tun`]).
 struct TunTasks {
     /// Cancels the `run_mesh` reader loop without touching `shutdown_token`.
     cancel: CancellationToken,
@@ -337,8 +338,8 @@ pub struct MeshManager {
     stats: Arc<ForwardMetrics>,
     /// Sender half of the current TUN write channel, in a swappable cell.
     /// [`DaemonState::attach_tun`] creates a fresh channel on every attach and
-    /// stores the new sender here, so incoming send-sites (peer readers, DNS
-    /// injection) always resolve the live writer via `tun_tx.load()`. This is
+    /// stores the new sender here, so incoming send-sites (peer readers)
+    /// always resolve the live writer via `tun_tx.load()`. This is
     /// what makes the VPN off/on toggle work: `detach_tun` stops the writer, and
     /// the next `attach_tun` swaps in a new sender feeding a fresh writer. On
     /// desktop the daemon attaches exactly once, so the cell holds one sender for
@@ -472,8 +473,8 @@ impl MeshManager {
     /// [`detach_tun`] the next `attach_tun` swaps in a new sender and a new writer,
     /// so forwarding resumes. This is the exact VPN off/on toggle path on Android.
     ///
-    /// This is the embedding API (used by `ray-mobile` and future embedders) and
-    /// is also how `run_daemon` wires the desktop OS TUN device. The forwarding
+    /// This is the embedding API and is also how `run_daemon` wires the
+    /// desktop OS TUN device. The forwarding
     /// loop runs under a child of `shutdown_token`, and its handles are stored so a
     /// later `down()`/detach can stop the data plane without tearing down the whole
     /// daemon. Desktop attaches exactly once, so the cell is never swapped there.
@@ -522,8 +523,8 @@ impl MeshManager {
         }
     }
 
-    /// Part of the embedding API (used by `ray-mobile`'s `down`): stop the
-    /// packet-forwarding data plane started by [`attach_tun`] (the TUN writer and
+    /// Part of the embedding API: stop the packet-forwarding data plane
+    /// started by [`attach_tun`] (the TUN writer and
     /// the `run_mesh` reader loop) WITHOUT tearing down the control plane. The
     /// iroh endpoint and every network connection stay live, so the node remains
     /// reachable to peers and keeps receiving roster/blob updates; only local
