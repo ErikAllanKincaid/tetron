@@ -63,6 +63,14 @@ pub(crate) struct JoinParams {
     /// Fresh join (send `JoinRequest` first) vs reconnect/restore (coordinator
     /// speaks first).
     pub(crate) initial: bool,
+    /// This node's own IP in this network (MULTISEG-004's per-network
+    /// derivation, already resolved by the caller from the network's own
+    /// blob-carried subnet). Threaded through rather than recomputed here via
+    /// `identity.local_ip()`, which is bound to the daemon's single node-wide
+    /// identity subnet and is wrong whenever this network's subnet differs
+    /// from it (found live-testing MULTISEG-002..006: a `--subnet`-diverging
+    /// network's join persisted the wrong `my_ip` to config).
+    pub(crate) my_ip: Ipv4Addr,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -106,9 +114,9 @@ pub(crate) async fn join_mesh_shared(
         generation,
         transport,
         initial,
+        my_ip,
     } = params;
     let my_identity = identity.local_identity();
-    let my_ip = identity.local_ip();
 
     let (members, approved) = match perform_join_handshake(
         &initial_conn,
@@ -149,7 +157,19 @@ pub(crate) async fn join_mesh_shared(
     // Register the coordinator connection as our first peer, then dial the rest
     // of the roster.
     let remote_id = initial_conn.remote_id();
-    let remote_ip = identity.derive_ip(&remote_id);
+    // The coordinator's IP comes from the just-admitted roster (authoritative,
+    // network-scoped), not `identity.derive_ip` (bound to this daemon's single
+    // node-wide identity subnet, wrong whenever this network's subnet differs
+    // from it — found live-testing MULTISEG-002..006: this produced an
+    // anti-spoof false-positive that dropped every real packet from the
+    // coordinator on a `--subnet`-diverging network). The coordinator is
+    // always present in its own roster, so the fallback below is defensive
+    // only, never expected to trigger.
+    let remote_ip = members
+        .iter()
+        .find(|m| m.identity == remote_id)
+        .map(|m| m.ip)
+        .unwrap_or_else(|| identity.derive_ip(&remote_id));
     crate::spawn_path_logger(initial_conn.clone(), remote_id.fmt_short().to_string());
     register_mesh_peer(
         &peers,

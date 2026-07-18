@@ -3480,3 +3480,91 @@ class RemainingPeerTableCallSitesScoped(Requirement):
     """
     req_id = "MULTISEG-006"
 
+
+# --------------------------------------------------------------------------
+# MULTISEG-007: join-side anti-spoof false positive on a subnet-diverging
+# network -- found via live 3-machine testing, not caught by reconcile.py
+# --------------------------------------------------------------------------
+
+class JoinSideIpDerivationFixed(Requirement):
+    """REQUIREMENT-ID: MULTISEG-007
+
+    Found live-testing MULTISEG-002..006 on 3 real machines (aorus
+    coordinating two networks at once: `multiseg-test-a` on the node-wide
+    default subnet, `multiseg-test-b` on an explicit `--subnet 10.77.0.0/16`
+    diverging from it) — `reconcile.py` was green throughout MULTISEG-002..006
+    and never caught this; it is a real functional bug, not a lint/build gap.
+
+    **Symptom:** every real packet from the coordinator (aorus) to a member
+    (x10sra) on the subnet-diverging network was silently dropped by the
+    member as `DropSpoof` ("dropped inbound packet with spoofed source IP"),
+    100% loss, while the identical topology on the network sharing the node's
+    default subnet worked fine (`multiseg-test-a`, aorus<->xps). The QUIC
+    control connection itself was healthy (`tetron status` showed a live,
+    connected peer on both sides) — only the data-plane anti-spoof check
+    (`forward::evaluate_inbound`, "a peer may only source packets from its
+    own mesh IP") was failing.
+
+    **Root cause:** `daemon/mesh/join.rs`'s `join_mesh_shared` computed both
+    its own `my_ip` (`identity.local_ip()`) and the coordinator's `remote_ip`
+    (`identity.derive_ip(&remote_id)`) via `IrohIdentityProvider`'s trait
+    methods — bound to the single subnet baked into `MeshCtx.identity` at
+    daemon boot (the node-wide default, `config::node_subnet()`), which
+    MULTISEG-002's per-network `MeshCtx` restructuring left unchanged (every
+    network's `MeshCtx` clones the same node-wide-subnet identity provider;
+    only `peers`/`tun_tx` became per-network). `create_network_inner`
+    (create_join.rs) and `join_network_inner`'s own subnet resolution
+    (create_join.rs, MULTISEG-004) both correctly derive a network-scoped
+    `my_ip` via the free `membership::derive_ip(identity, network_subnet)`
+    function when the network's subnet differs from the identity's default —
+    but that correct value never reached `join_mesh_shared`, because
+    `JoinParams` (the struct threading per-join inputs into it) had no
+    `my_ip` field at all, so `join_mesh_shared` recomputed its own (wrong)
+    value from scratch. The `remote_ip` used to register the coordinator's
+    connection for the anti-spoof check (`register_mesh_peer` ->
+    `spawn_peer_reader`'s `peer_ip` parameter) was `identity.derive_ip`
+    against the same wrong node-wide subnet, landing outside the network's
+    real range — so a legitimate packet correctly sourced from the
+    coordinator's real (correctly-derived, roster-authoritative) IP failed
+    the `src_ip == expected_peer_ip` check every time.
+
+    A second, lower-severity effect of the same root cause: `my_ip` also fed
+    `persist_join_config`, so the wrong value was written to
+    `NetworkConfig.my_ip` on disk for a subnet-diverging network — the live
+    in-memory value (correctly set elsewhere, from `JoinContext.my_ip`) papered
+    over this at runtime, but a fresh restart reading the persisted value back
+    could have surfaced it. Fixed by the same change.
+
+    **Fix:** `JoinParams` gained a `my_ip: Ipv4Addr` field; `run_join_handshake`
+    (create_join.rs) now passes `ctx.my_ip` (the already-correct,
+    network-scoped value) through instead of `join_mesh_shared` recomputing
+    it. `remote_ip` is now looked up from the just-admitted `members` roster
+    returned by `perform_join_handshake` (authoritative, network-scoped, and
+    already available at that point in the function) rather than
+    re-derived; `identity.derive_ip(&remote_id)` is kept only as a defensive
+    fallback for the practically-impossible case of the coordinator not
+    being in its own roster.
+
+    **Not fixed, found harmless on inspection:** `accept.rs`'s
+    `handle_connection` has an analogous-looking fallback
+    (`member_ip.unwrap_or_else(|| self.ctx.identity.derive_ip(&remote_id))`)
+    for a *fresh, not-yet-admitted* joiner. Traced its only consumer,
+    `admit_peer`'s `_suggested_ip` parameter — the leading underscore was
+    already a deliberate signal it's unused; `validate_admission` always
+    recomputes the authoritative IP via `membership::assign_ip(&s.members,
+    &remote_id, s.subnet)` (correctly network-scoped, since `s.subnet` is
+    `NetworkState`'s own per-network field), and that value — not the
+    fallback — is what actually gets registered. Left as-is rather than
+    changed as a drive-by; a real (if confusing) piece of dead input, not a
+    functional bug.
+
+    Live-verified after the fix, same 3-machine topology: 0% loss both
+    directions on the subnet-diverging network, `reconcile.py` green (build,
+    clippy 0 warnings, tests, all identity/regression gates).
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch, live 3-machine
+    testing (aorus/xps-17-9720/x10sra) per `DO-NOT-COMMIT/TESTING.md`'s
+    "multi-segment TUN" run.
+    """
+    req_id = "MULTISEG-007"
+

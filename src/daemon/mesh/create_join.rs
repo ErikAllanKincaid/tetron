@@ -1066,6 +1066,7 @@ impl MeshManager {
                 generation: data.generation,
                 transport: ctx.transport.clone(),
                 initial,
+                my_ip: ctx.my_ip,
             },
             disconnect_tx.clone(),
             cancel.clone(),
