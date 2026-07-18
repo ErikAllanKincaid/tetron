@@ -2412,6 +2412,30 @@ class AdminAddAcceptsHostname(Requirement):
     (`kick`, `nuke --second`) require the short id. `AGENTS.md`'s CLI
     reference had the same "hostname is NOT accepted" error and was corrected
     to match.
+
+    **Fix, 2026-07-17 (same day, follow-up):** `resolve_short_id_any_network`
+    took a prefix of *any* length and returned the first member whose
+    endpoint id started with it (`.find(...)`) -- no minimum length, and no
+    check for more than one match. For `admin_add` this was a UX gap; for
+    `kick_member` (the destructive caller) it was a real correctness bug: a
+    short-enough or colliding prefix could silently resolve to the wrong
+    peer with no warning the input was ambiguous. Fixed: now returns
+    `Result<EndpointId, String>`, rejects any input under 10 characters (the
+    length `tetron status` already displays, so copy-pasting from status
+    always satisfies it) with a "too short" message, and collects all
+    matches instead of stopping at the first -- more than one distinct match
+    now errors as "ambiguous" naming every candidate's short id, rather than
+    guessing. `resolve_peer_name` and its two callers (`admin_add`,
+    `kick_member`) propagate the specific message instead of a generic one.
+    A full (complete, untruncated) id was already inherently unambiguous
+    before this fix and needed no change -- `starts_with` matches a string
+    against itself trivially, and no two peers share a full endpoint id.
+
+    Found an analogous, not-yet-fixed gap in the same function family:
+    `resolve_peer_name`'s hostname match also returns the first cross-network
+    hit with no ambiguity check (lower severity -- only backs the additive
+    `admin_add`, not a destructive command). Logged in
+    `DO-NOT-COMMIT/TODO.md` rather than fixed in this pass.
     """
     req_id = "ADMIN-ADD-EASY-ID"
 

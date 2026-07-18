@@ -755,22 +755,47 @@ impl MeshManager {
         }
     }
 
-    pub(crate) fn resolve_short_id_any_network(&self, short: &str) -> Option<EndpointId> {
+    /// Resolve a peer's endpoint-id prefix (or the literal "self") to
+    /// exactly one member across all joined networks. Requires at least as
+    /// many characters as the short id `tetron status` displays
+    /// (`fmt_short()`'s 10 hex chars), and errors out -- rather than
+    /// silently guessing -- if the prefix matches more than one member.
+    /// Destructive callers (`kick`, `nuke --second`) depend on this never
+    /// picking a peer it wasn't sure about.
+    pub(crate) fn resolve_short_id_any_network(&self, short: &str) -> Result<EndpointId, String> {
         if short == "self" {
-            return Some(self.endpoint.id());
+            return Ok(self.endpoint.id());
         }
+        const MIN_PREFIX_LEN: usize = 10;
+        if short.len() < MIN_PREFIX_LEN {
+            return Err(format!(
+                "'{short}' is too short to safely identify a peer -- use at least \
+                 {MIN_PREFIX_LEN} characters (the short id shown by `tetron status`), \
+                 or the full id"
+            ));
+        }
+        let mut matches: Vec<EndpointId> = Vec::new();
         for entry in self.networks.iter() {
             let state = entry.value().state.read().unwrap();
-            if let Some(m) = state
-                .members
-                .all()
-                .iter()
-                .find(|m| m.identity.to_string().starts_with(short))
-            {
-                return Some(m.identity);
+            for m in state.members.all().iter() {
+                if m.identity.to_string().starts_with(short) && !matches.contains(&m.identity) {
+                    matches.push(m.identity);
+                }
             }
         }
-        None
+        match matches.as_slice() {
+            [] => Err(format!("could not resolve peer '{short}'")),
+            [id] => Ok(*id),
+            _ => Err(format!(
+                "'{short}' is ambiguous -- matches {} peers ({}); use more characters",
+                matches.len(),
+                matches
+                    .iter()
+                    .map(|id| id.fmt_short().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     // -----------------------------------------------------------------------

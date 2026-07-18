@@ -505,7 +505,7 @@ impl MeshManager {
     /// NOT use this — they resolve by short id / endpoint id only via
     /// [`Self::resolve_short_id_any_network`], since removing the wrong
     /// peer needs a cryptographic identity, not a spoofable one.
-    pub(crate) async fn resolve_peer_name(&self, name: &str) -> Option<EndpointId> {
+    pub(crate) async fn resolve_peer_name(&self, name: &str) -> Result<EndpointId, String> {
         for entry in self.networks.iter() {
             let state = entry.value().state.read().unwrap();
             if let Some(m) = state
@@ -514,7 +514,7 @@ impl MeshManager {
                 .iter()
                 .find(|m| m.hostname.as_deref() == Some(name))
             {
-                return Some(m.identity);
+                return Ok(m.identity);
             }
         }
         self.resolve_short_id_any_network(name)
@@ -558,11 +558,9 @@ impl MeshManager {
         // Resolve the argument to a roster member by endpoint id only (no
         // hostname or IP resolution — kick requires a cryptographic identity).
         let candidate = match self.resolve_short_id_any_network(peer) {
-            Some(id) => id,
-            None => {
-                return IpcMessage::Error {
-                    message: format!("could not resolve peer '{peer}'"),
-                };
+            Ok(id) => id,
+            Err(message) => {
+                return IpcMessage::Error { message };
             }
         };
         let (member_id, is_coord, display) = {
