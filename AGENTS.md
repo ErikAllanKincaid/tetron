@@ -74,7 +74,7 @@ tetron up [--hostname h] | down   # activate / standby. down takes the data plan
 
 tetron requests <net>         # coordinator-only: peers awaiting live approval
 tetron accept <net> <id> | deny <net> <id>    # admit / reject a pending join request
-tetron admin <net> add <id> | list            # coordinator-only: grant the network key (co-coordinator) / list key-holders. <id> is the target's short id as shown in `tetron status` (its endpoint-id prefix) — unlike `--peer` elsewhere, hostname is NOT accepted and resolves with "could not resolve identity"
+tetron admin <net> add <id> | list            # coordinator-only: grant the network key (co-coordinator) / list key-holders. <id> is the target's hostname (as shown in `tetron status`) or short id (its endpoint-id prefix) — unlike destructive commands (`kick`, `nuke --second`), this additive grant deliberately also resolves by hostname for convenience
 tetron config [get [key] | set <key> <value> [--replace] | unset <key>]   # global daemon settings; keys: relay, discovery-dns, subnet. relay/discovery values are comma lists of presets (rayfish/n0), URLs, or IPv4s (default augments n0; --replace swaps them out; n0/empty resets). `subnet` takes a single CIDR (e.g. 10.88.0.0/16; empty resets to default). Written client-side to settings.toml; all apply on `sudo tetron restart`.
 tetron completions <shell>
 tetron version | tetron --version | tetron -V        # print the compiled version + git sha

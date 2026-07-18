@@ -1651,6 +1651,19 @@ class RemoveMagicDns(Requirement):
     three dedicated tests. `assign_ip` now only avoids IPs already held by a
     different member; `validate_member` only checks the CGNAT range and the
     network/gateway reservations.
+
+    **Follow-up, 2026-07-17:** a CLI doc-comment-vs-handler audit found three
+    remaining `--help` references to the removed feature: `Create.hostname`
+    and `Join.hostname` both illustrated the hostname example as `"alice" ->
+    alice.gaming.ray` (a Magic DNS `.ray`-domain label that has not existed
+    since this requirement shipped); `Down`'s doc comment still said "take the
+    data plane (TUN + Magic DNS) offline." Fixed all three (`main.rs`). Also
+    found the same dead pattern in code, not just help text:
+    `resolve_peer_name` (`runtime.rs`) still split its argument on `.` to
+    accept a bare-or-qualified `alice.net.ray` hostname; since valid hostnames
+    can never contain a `.` (`is_valid_hostname` is letters/digits/hyphens
+    only), the split was permanently a no-op. Removed alongside the doc-
+    comment fix documented in ADMIN-ADD-EASY-ID's own addendum.
     """
     req_id = "MINIMAL-012"
 
@@ -2075,6 +2088,13 @@ class InviteExpiryDefault(Requirement):
 
     `InviteStore::create` defaults `ttl_secs: None` to `7 * 86400` (7 days)
     instead of no expiry. An `expires_at` of 0 means no expiry (opt-in).
+
+    **Correction, 2026-07-17:** `invite_create`'s own rustdoc (`invite_
+    handler.rs`) had drifted to say "If absent the invite never expires,"
+    directly contradicting the `None => 7 * 24 * 3600` default four lines
+    below it and this requirement's own text. The 7-day default is correct
+    and intentional (kept as-is); only the stale comment was wrong. Fixed to
+    match.
     """
     req_id = "INVITE-009"
 
@@ -2372,6 +2392,26 @@ class AdminAddAcceptsHostname(Requirement):
     Found: 2026-07-15, while writing the co-coordinator HOWTO section in
     README.md. The short-id-only requirement forced an awkward `--json` + manual
     truncation step for what should be a simple operation.
+
+    **Correction, 2026-07-17:** this requirement's own text was wrong on two
+    points, found during a CLI doc-comment-vs-handler audit. (1) "mesh IP" was
+    never implemented -- `resolve_peer_name` only checks hostname, then falls
+    back to short-id prefix matching; it never inspects an address. Dropped
+    "mesh IP" from the `--help` text (`main.rs`) and the daemon's own error
+    message (`admin.rs`), since it promised a capability that did not exist.
+    (2) "Use the same resolution logic as `tetron kick`" was also wrong --
+    `kick_member` was never changed to use `resolve_peer_name`; it resolves by
+    short-id/endpoint-id prefix only (`resolve_short_id_any_network`),
+    deliberately, because removing the wrong member needs a cryptographic
+    identity, not a spoofable hostname. `resolve_peer_name`'s own rustdoc had
+    drifted to claim it backs `kick` (leftover from an edit that moved
+    `kick_member`'s real doc comment onto the wrong function) -- restored
+    `kick_member`'s doc comment and rewrote `resolve_peer_name`'s to correctly
+    name `admin_add` as its caller and state the principle: additive commands
+    (`admin add`) may resolve friendlier identifiers; destructive commands
+    (`kick`, `nuke --second`) require the short id. `AGENTS.md`'s CLI
+    reference had the same "hostname is NOT accepted" error and was corrected
+    to match.
     """
     req_id = "ADMIN-ADD-EASY-ID"
 

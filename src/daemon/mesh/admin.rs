@@ -13,7 +13,7 @@ impl MeshManager {
         let Some(identity) = self.resolve_peer_name(identity_str).await else {
             return IpcMessage::Error {
                 message: format!(
-                    "could not resolve '{identity_str}' — use a hostname, mesh IP, or short id of a joined member"
+                    "could not resolve '{identity_str}' — use a hostname or short id of a joined member"
                 ),
             };
         };

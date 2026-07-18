@@ -9,7 +9,8 @@ impl MeshManager {
     /// Coordinator-only: mint a single-use invite key for `network`.
     ///
     /// `expires` is an optional human-readable duration ("24h", "7d", "30m").
-    /// If absent the invite never expires.
+    /// If absent, defaults to a 7-day expiry; pass `"0"` or `"never"` for a
+    /// permanent invite.
     pub(crate) async fn invite_create(
         &self,
         network: &str,

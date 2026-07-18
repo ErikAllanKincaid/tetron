@@ -52,7 +52,7 @@ pub(crate) enum Command {
         /// Network name (a random three-word name is generated if not set)
         #[arg(long)]
         name: Option<String>,
-        /// Your hostname within the network (e.g. "alice" → alice.gaming.ray). Random if not set
+        /// Your hostname within the network (e.g. "alice"). Random if not set
         #[arg(long)]
         hostname: Option<String>,
         /// Overlay IPv4 subnet in CIDR form (e.g. "10.88.0.0/24"). Override the
@@ -71,7 +71,7 @@ pub(crate) enum Command {
         /// Optional local alias for the network
         #[arg(long)]
         name: Option<String>,
-        /// Your hostname within the network (e.g. "bob" → bob.gaming.ray). Random if not set
+        /// Your hostname within the network (e.g. "bob"). Random if not set
         #[arg(long)]
         hostname: Option<String>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
@@ -118,14 +118,14 @@ pub(crate) enum Command {
     /// Run the daemon in the foreground (invoked by the system service)
     #[command(hide = true)]
     Daemon,
-    /// Install the system service if needed and start it
+    /// Bring the VPN online (installs the system service on first use only)
     Up {
         /// Set your default hostname for future networks (e.g. "dario"). Used
         /// when create/join don't specify one; doesn't rename existing networks
         #[arg(long)]
         hostname: Option<String>,
     },
-    /// Standby: take the data plane (TUN + Magic DNS) offline; stays connected to peers
+    /// Standby: take the data plane offline; stays connected to peers
     Down,
     /// Stop the system service (go fully offline). Requires root
     Stop,
@@ -133,7 +133,8 @@ pub(crate) enum Command {
     Start,
     /// Uninstall system service
     Uninstall,
-    /// Install or refresh the system service and start it (requires root)
+    /// (Re)install and restart the system service — for fixing/updating the
+    /// service itself, not routine activation (use `tetron up` for that)
     Install,
     /// Restart the system service (requires root)
     Restart,
@@ -177,7 +178,7 @@ pub(crate) enum Command {
 pub(crate) enum AdminAction {
     /// Grant the network key to a member (coordinator only)
     Add {
-        /// Hostname (from `tetron status`), mesh IP, or short id of the member to promote
+        /// Hostname (from `tetron status`) or short id of the member to promote
         identity: String,
     },
     /// List this network's key-holders (the local node + granted members)

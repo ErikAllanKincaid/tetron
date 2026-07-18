@@ -496,27 +496,23 @@ impl MeshManager {
         }
     }
 
-    /// Remove a member from a closed network. Coordinator-only (any network-key
-    /// holder). Prunes the target from the roster + approved list, republishes the
-    /// signed blob, and broadcasts a `MemberSync` so every member reconverges and
-    /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
-    /// closes its own link to the target immediately. Refused on open networks
-    /// (the target would auto-re-join) and against coordinators / self.
-    /// Resolve a peer argument (hostname — bare or `host.net.ray` — or a
-    /// short-id / endpoint-id prefix) to its endpoint id. Backs `tetron kick`.
-    /// Resolves hostnames directly against the signed roster (Magic DNS was
-    /// removed in MINIMAL-012), then falls back to a short-id match.
+    /// Resolve a peer argument (bare hostname, or a short-id / endpoint-id
+    /// prefix) to its endpoint id. Backs `tetron admin add`. Hostname
+    /// resolution is deliberately available here: `admin add` is additive
+    /// (grants trust to whoever the name currently resolves to), so a
+    /// friendlier identifier is an acceptable convenience. Destructive
+    /// commands (`tetron kick`, `tetron nuke --second`) intentionally do
+    /// NOT use this — they resolve by short id / endpoint id only via
+    /// [`Self::resolve_short_id_any_network`], since removing the wrong
+    /// peer needs a cryptographic identity, not a spoofable one.
     pub(crate) async fn resolve_peer_name(&self, name: &str) -> Option<EndpointId> {
-        // Accept a bare `alice` or a qualified `alice.net.ray`; the roster stores
-        // bare hostnames, so match on the first DNS label.
-        let candidate = name.split('.').next().unwrap_or(name);
         for entry in self.networks.iter() {
             let state = entry.value().state.read().unwrap();
             if let Some(m) = state
                 .members
                 .all()
                 .iter()
-                .find(|m| m.hostname.as_deref() == Some(candidate))
+                .find(|m| m.hostname.as_deref() == Some(name))
             {
                 return Some(m.identity);
             }
@@ -524,6 +520,12 @@ impl MeshManager {
         self.resolve_short_id_any_network(name)
     }
 
+    /// Remove a member from a closed network. Coordinator-only (any network-key
+    /// holder). Prunes the target from the roster + approved list, republishes the
+    /// signed blob, and broadcasts a `MemberSync` so every member reconverges and
+    /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
+    /// closes its own link to the target immediately. Refused on open networks
+    /// (the target would auto-re-join) and against coordinators / self.
     pub(crate) async fn kick_member(&self, network: &str, peer: &str) -> IpcMessage {
         let (state, dht_notify, has_key, mode) = match self.networks.get(network) {
             Some(h) => {
