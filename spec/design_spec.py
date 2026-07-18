@@ -2212,6 +2212,22 @@ class RemoveLiveApproval(Requirement):
     retained for D1 compat decode only — a full-tetron coordinator may
     publish an approved list that tetron nodes must decode without error.
     tetron coordinators never write to it.
+
+    **Follow-up, 2026-07-18:** one vestige survived this removal —
+    `NetworkStatus.pending_requests: usize` (`tetron-proto/src/ipc.rs`)
+    stayed on the wire and kept being populated by `diagnostics.rs`'s
+    `network_status()`, but hardcoded to `0` at both construction sites
+    (nothing left to count once the `PendingJoin` queue was gone) and never
+    read by any CLI display code (confirmed via grep — zero hits in
+    `src/cli/*.rs`). Found while fixing a related stale doc reference
+    (`AGENTS.md` still listing the removed `tetron requests`/`accept`/
+    `deny` commands). Removed: the field itself, its hardcoded-`0`
+    construction sites, and the `pending_requests` element of
+    `network_status()`'s destructured tuple (folded into a 3-element tuple
+    with `members`/`member_count`/`nuke_proposals`). Not part of the signed
+    `GroupBlob`/its canonical hash, so — unlike `suggested_firewall`'s
+    removal — this carried no wire-compat hashing concerns, just a
+    `NetworkStatus` field drop.
     """
     req_id = "LIVE-001"
 

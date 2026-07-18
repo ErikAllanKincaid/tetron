@@ -55,7 +55,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, pending_requests, nuke_proposals) = {
+        let (members, member_count, nuke_proposals) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -68,7 +68,6 @@ impl MeshManager {
                         network_key: Some(h.network_key.to_string()),
                         member_count: 0,
                         peers: vec![],
-                        pending_requests: 0,
                         nuke_proposals: vec![],
                     };
                 }
@@ -82,7 +81,7 @@ impl MeshManager {
                     proposed_at: s.nuke_proposals[id],
                 })
                 .collect();
-            (s.roster(), count, 0, proposals)
+            (s.roster(), count, proposals)
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = self
@@ -119,7 +118,6 @@ impl MeshManager {
             network_key: Some(h.network_key.to_string()),
             member_count,
             peers,
-            pending_requests,
             nuke_proposals,
         }
     }

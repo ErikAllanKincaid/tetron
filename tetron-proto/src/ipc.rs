@@ -207,10 +207,6 @@ pub struct NetworkStatus {
     pub network_key: Option<String>,
     pub member_count: usize,
     pub peers: Vec<PeerStatus>,
-    /// Legacy field retained for D1 compat — always 0 after LIVE-001 removed
-    /// the live-approval path. A full-tetron coordinator may still populate it.
-    #[serde(default)]
-    pub pending_requests: usize,
     /// Active (unexpired) nuke proposals (NUKE-CONSENSUS), so members can see a
     /// nuke is being considered before it executes. Empty on a solo-coordinator
     /// network (nuke there is immediate, no proposal phase).
@@ -547,7 +543,6 @@ mod tests {
                     hostname: None,
                     connection: None,
                 }],
-                pending_requests: 0,
             }],
             packets_rx: 0,
             packets_tx: 0,
