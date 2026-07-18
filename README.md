@@ -38,7 +38,9 @@ tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that ow
 
 ```bash
 # 1. Install the binary and bring the node online (needs root once). Linux
-#    x86_64/aarch64 and macOS aarch64/x86_64 binaries are published on releases:
+#    x86_64/aarch64 binaries are published on releases; macOS is supported
+#    in code but its release binaries aren't published yet -- see
+#    "Build & install" below to build from source on a Mac in the meantime:
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
@@ -182,7 +184,7 @@ just deploy <ip>                # cross-build release + install + start on a rem
 just deploy-dev <ip>            # same, but a debug build (faster iteration)
 ```
 
-tetron targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64) -- prebuilt binaries for both are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases). Android support is deferred.
+tetron targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64) at the source level. Prebuilt Linux binaries are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases); macOS release binaries are not yet published (`build-macos` is disabled in CI pending real-hardware verification) -- build from source with `cargo build --release` on a Mac in the meantime. Android support is deferred.
 
 ## Uninstall
 

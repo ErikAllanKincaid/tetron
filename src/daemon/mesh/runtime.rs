@@ -809,20 +809,23 @@ impl MeshManager {
                     ));
                 }
 
-                // Route this network's own IPv6 /56 into its own TUN. Must
-                // happen after link-up: on Linux the kernel won't install an
-                // IPv6 connected route while the link is down, so without
-                // this peer traffic leaks out the default route.
+                // Route this network's own subnet/IPv6 /56 into its own TUN.
+                // Must happen after link-up: on Linux the kernel won't
+                // install an IPv6 connected route while the link is down, so
+                // without this peer traffic leaks out the default route; on
+                // macOS neither family is installed reliably (MACOS-001).
+                let subnet = handle.state.read().unwrap().subnet;
                 let network_prefix = crate::membership::ipv6_network_prefix(&handle.network_key);
                 if let Err(e) = tun::route_peer_range(
                     &tun_name,
+                    subnet,
                     network_prefix,
                     crate::membership::IPV6_NETWORK_PREFIX_LEN,
                 )
                 .await
                 {
-                    tracing::warn!(network = %handle.name, error = %e, "failed to route IPv6 peer range into TUN");
-                    warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
+                    tracing::warn!(network = %handle.name, error = %e, "failed to route peer range into TUN");
+                    warnings.push(format!("failed to route peer range into TUN: {e}"));
                 }
 
                 // Loop our own addresses back through lo0 so self-traffic (e.g.

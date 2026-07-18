@@ -540,6 +540,7 @@ impl MeshManager {
                     let network_prefix = crate::membership::ipv6_network_prefix(&network_key);
                     if let Err(e) = tun::route_peer_range(
                         &tun_name,
+                        subnet,
                         network_prefix,
                         crate::membership::IPV6_NETWORK_PREFIX_LEN,
                     )

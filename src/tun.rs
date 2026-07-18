@@ -229,19 +229,24 @@ async fn configure_ipv6(tun_name: &str, addr: Ipv6Addr) -> Result<()> {
 /// up (see [`set_link_up`]). On Linux only the IPv6 route needs adding: the
 /// kernel does not reliably install an IPv6 connected route while the link is
 /// down (peer traffic would otherwise leak out the host's default IPv6 route),
-/// whereas it re-installs the IPv4 `100.64.0.0/10` connected route from the /10
-/// netmask automatically on link-up. On macOS the point-to-point utun installs
-/// neither range reliably, so *both* `100.64.0.0/10` and the IPv6 range are
-/// added explicitly. Idempotent — safe to call on every `up` cycle.
+/// whereas it re-installs the network's own IPv4 connected route from the
+/// interface's own netmask automatically on link-up. On macOS the
+/// point-to-point utun installs neither range reliably, so *both* the
+/// network's own IPv4 subnet and its IPv6 range are added explicitly.
+/// Idempotent — safe to call on every `up` cycle.
 ///
 /// `network_prefix`/`prefix_len` (IPV6-003) is that network's own `/56` block
 /// (`membership::ipv6_network_prefix`, `IPV6_NETWORK_PREFIX_LEN`) rather than
 /// one system-wide `200::/7` — every joined network gets its own disjoint
 /// route into its own TUN device, closing the "IPv6 works on one segment
-/// only" limitation MULTISEG-003 left open.
+/// only" limitation MULTISEG-003 left open. `subnet` is that same network's
+/// own IPv4 subnet — only consumed on macOS (MACOS-001), where the IPv4
+/// route must be installed explicitly; Linux's kernel handles it via the
+/// interface's own address/netmask, so it's unused there.
 #[cfg(target_os = "linux")]
 pub async fn route_peer_range(
     tun_name: &str,
+    _subnet: crate::membership::Subnet,
     network_prefix: Ipv6Addr,
     prefix_len: u8,
 ) -> Result<()> {
@@ -287,18 +292,30 @@ pub async fn route_peer_range(
 #[cfg(target_os = "macos")]
 pub async fn route_peer_range(
     tun_name: &str,
+    subnet: crate::membership::Subnet,
     network_prefix: Ipv6Addr,
     prefix_len: u8,
 ) -> Result<()> {
     // utun is point-to-point, so the address prefix alone does not reliably
-    // create the range route — we add both families explicitly. The IPv4 `/10`
-    // is only installed implicitly by the `tun` crate at device creation and
-    // macOS drops it across an `up`/`down` cycle, so (like the IPv6 range) we
-    // re-add it on every activate or peers become unreachable over IPv4 while
-    // IPv6 still works. `route add` fails if the route already exists (e.g. an
-    // earlier `up`), so delete any stale entry first and ignore its result.
+    // create the range route — we add both families explicitly. The IPv4
+    // range is only installed implicitly by the `tun` crate at device
+    // creation and macOS drops it across an `up`/`down` cycle, so (like the
+    // IPv6 range) we re-add it on every activate or peers become unreachable
+    // over IPv4 while IPv6 still works. `route add` fails if the route
+    // already exists (e.g. an earlier `up`), so delete any stale entry first
+    // and ignore its result.
+    //
+    // MACOS-001: this used to hardcode the pre-fork `100.64.0.0/10` CGNAT
+    // range regardless of the network's actual configured subnet, silently
+    // misrouting IPv4 on any network whose subnet differed from that literal
+    // (which is every network by default, since tetron's own default is
+    // `10.88.0.0/24` — found 2026-07-17, fixed 2026-07-18, same bug shape as
+    // MULTISEG-007's join-side IP derivation). Now takes the network's own
+    // subnet and formats its real CIDR instead.
+    let (base, prefix) = subnet;
+    let v4_net = format!("{base}/{prefix}");
     let v6_net = format!("{network_prefix}/{prefix_len}");
-    for (family, net) in [("-inet", "100.64.0.0/10"), ("-inet6", v6_net.as_str())] {
+    for (family, net) in [("-inet", v4_net.as_str()), ("-inet6", v6_net.as_str())] {
         let _ = Command::new("route")
             .args(["-n", "delete", family, "-net", net, "-interface", tun_name])
             .status();

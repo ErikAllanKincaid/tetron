@@ -26,7 +26,9 @@ install it:
 
 ```bash
 # Download the latest release binary. Published assets: tetron-linux-x86_64,
-# tetron-linux-aarch64, tetron-macos-aarch64, tetron-macos-x86_64.
+# tetron-linux-aarch64. macOS (tetron-macos-aarch64/x86_64) is supported in
+# code but not yet published as a release binary -- build from source on a
+# Mac instead (see "Building from source" below); it works the same way.
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 # OR
 wget -O tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64

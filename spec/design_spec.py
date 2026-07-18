@@ -3752,3 +3752,59 @@ class PerNetworkIpv6RouteInstallation(Requirement):
     """
     req_id = "IPV6-003"
 
+
+# --------------------------------------------------------------------------
+# MACOS-001: fix macOS route_peer_range's hardcoded pre-fork CGNAT literal
+# --------------------------------------------------------------------------
+
+class MacosRoutePeerRangeUsesActualSubnet(Requirement):
+    """REQUIREMENT-ID: MACOS-001
+
+    `src/tun.rs`'s macOS variant of `route_peer_range` (needed because
+    macOS's point-to-point `utun` doesn't reliably self-install either
+    range the way Linux's kernel does) hardcoded the pre-fork upstream
+    literal `100.64.0.0/10` for the IPv4 family, regardless of the
+    network's actual configured subnet. Since tetron's own default is
+    `10.88.0.0/24` (SUBNET-011), this silently misrouted IPv4 on every
+    macOS-joined network by default — the exact same bug shape as
+    MULTISEG-007 (a hardcoded/wrong value used where a network-specific
+    one was needed), just never caught because no macOS build/test has
+    run in CI (`build-macos` is `if: false` in both `nightly.yml` and
+    `release.yml`, specifically citing this bug as the reason it's
+    gated off) or on real hardware since the bug was first found
+    2026-07-17.
+
+    **Fix:** `route_peer_range` (both the Linux and macOS `cfg` variants,
+    which must share a signature) gained a `subnet: crate::membership::Subnet`
+    parameter. The macOS body now formats `subnet` into a real CIDR string
+    (`format!("{base}/{prefix}")`) and installs *that* as the `-inet` route
+    instead of the literal. Linux's variant receives the same parameter
+    (as `_subnet`, deliberately unused — the kernel already installs the
+    correct IPv4 connected route from the interface's own address/netmask
+    automatically on link-up, so Linux never needed this to begin with).
+    Both call sites (`daemon/mod.rs`'s `create_and_attach_network_tun`,
+    which already had the network's `Subnet` as its own parameter, and
+    `daemon/mesh/runtime.rs`'s `activate()`, which reads it from
+    `handle.state.read().unwrap().subnet`) now thread the real value
+    through instead of the function inventing its own.
+
+    **Not yet verified on real hardware or in CI** — found and fixed via
+    direct code read (this bug cannot be exercised or caught by
+    `reconcile.py`'s Linux-only build/test/clippy gates, same as
+    MULTISEG-007 needed live multi-machine testing to surface). Real
+    verification (native build + `sudo tetron up` + join an existing
+    mesh + confirm IPv4 reachability, mirroring the live-testing rigor
+    already applied to MULTISEG-002..007 and IPV6-001..003) is a
+    separate, subsequent step on real Apple Silicon hardware — this
+    commit is the code fix only. `build-macos`'s `if: false` should stay
+    in place until that real-hardware pass actually happens; flipping it
+    based on this fix alone (unverified) would repeat exactly the mistake
+    the CI comment was written to prevent.
+
+    Found: 2026-07-17 (original discovery, logged in
+    `DO-NOT-COMMIT/TODO.md`'s "macOS port" section). Re-confirmed still
+    present 2026-07-18 while auditing macOS support end to end. Fixed:
+    2026-07-18.
+    """
+    req_id = "MACOS-001"
+
