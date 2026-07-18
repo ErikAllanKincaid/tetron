@@ -36,7 +36,7 @@ pub enum IpcMessage {
         invite: Option<Vec<u8>>,
     },
     Leave {
-        name: String,
+        network: String,
     },
     Nuke {
         name: String,

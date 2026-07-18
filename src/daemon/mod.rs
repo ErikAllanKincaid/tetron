@@ -719,7 +719,7 @@ impl MeshManager {
                 self.join_network(&network_key, name.as_deref(), hostname, transport, invite)
                     .await
             }
-            IpcMessage::Leave { name } => self.leave_network(&name).await,
+            IpcMessage::Leave { network } => self.leave_network(&network).await,
             IpcMessage::Nuke {
                 name,
                 force,

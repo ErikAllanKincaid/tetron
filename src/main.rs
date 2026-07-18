@@ -81,8 +81,8 @@ pub(crate) enum Command {
     /// Leave a network (remove from saved config)
     #[command(visible_alias = "rm")]
     Leave {
-        /// Three-word network name
-        name: String,
+        /// Network name (as shown in `tetron status`)
+        network: String,
     },
     /// Destroy a network (coordinator only)
     ///
@@ -403,7 +403,7 @@ async fn main() -> Result<()> {
     let _log_guard = init_tracing(matches!(cli.command, Command::Daemon));
 
     match cli.command {
-        Command::Leave { name } => ipc_leave(&name).await,
+        Command::Leave { network } => ipc_leave(&network).await,
         Command::Create {
             name,
             hostname,

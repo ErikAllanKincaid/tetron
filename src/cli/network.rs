@@ -189,12 +189,12 @@ pub(crate) async fn ipc_kick(network: &str, peer: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn ipc_leave(name: &str) -> Result<()> {
+pub(crate) async fn ipc_leave(network: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Leave {
-            name: name.to_string(),
+            network: network.to_string(),
         },
     )
     .await?;

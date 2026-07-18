@@ -2441,6 +2441,45 @@ class AdminAddAcceptsHostname(Requirement):
 
 
 # --------------------------------------------------------------------------
+# CLI-VOCAB-001: unify the "which locally-known network" argument's name
+# --------------------------------------------------------------------------
+
+class LeaveArgumentRenamedToNetwork(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-001
+
+    `tetron leave`'s positional was named `name` while `invite`/`admin` (and
+    the same underlying lookup's IPC field) already used `network` -- three
+    commands doing the identical `self.networks.get(string)` lookup with two
+    different field names for no reason. Renamed `Leave`'s field to
+    `network` end to end: `main.rs`'s `Command::Leave`, `cli/network.rs`'s
+    `ipc_leave`, `tetron-proto`'s `IpcMessage::Leave`, `daemon/mod.rs`'s
+    dispatch arm, and `daemon/mesh/runtime.rs`'s `leave_network` (signature,
+    body, and its `#[tracing::instrument]` field). Pure rename -- the lookup
+    mechanism itself (a plain map keyed by the mutable local network name)
+    is unchanged.
+
+    This is deliberately scoped to `leave` only, not the full rename
+    described in `DO-NOT-COMMIT/TODO.md`'s "CLI-wide vocabulary/rename
+    pass". `nuke` and `kick` also have this same `name`/`network`
+    inconsistency (`nuke` still says `name`), but those two are slated to
+    stop using the mutable-name lookup entirely in favor of a not-yet-built
+    short-id resolution mechanism (mirroring `resolve_short_id_any_network`,
+    fixed for peers in `ADMIN-ADD-EASY-ID`'s follow-up addendum). Renaming
+    their field ahead of that mechanism would just relabel today's
+    unresolved-by-cryptographic-identity lookup with a more-honest-sounding
+    name it doesn't yet deserve -- the same class of doc-vs-behavior mismatch
+    this session has otherwise been finding and fixing. `leave`, `invite`,
+    and `admin` are not changing lookup mechanism, so unifying their field
+    name has no such dependency and was safe to do now.
+
+    Found: 2026-07-17, while auditing all five network-selecting commands
+    (`leave`/`nuke`/`kick`/`invite`/`admin`) for consistency at the user's
+    request.
+    """
+    req_id = "CLI-VOCAB-001"
+
+
+# --------------------------------------------------------------------------
 # ADMIN-RECONNECT-CTRL: admin-grant must work after coordinator reconnect
 # --------------------------------------------------------------------------
 

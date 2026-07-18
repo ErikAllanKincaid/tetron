@@ -837,29 +837,29 @@ impl MeshManager {
     }
 
     /// Part of the embedding API (used by `ray-mobile` and future embedders):
-    #[tracing::instrument(skip(self), fields(net = name))]
-    pub async fn leave_network(&self, name: &str) -> IpcMessage {
+    #[tracing::instrument(skip(self), fields(net = network))]
+    pub async fn leave_network(&self, network: &str) -> IpcMessage {
         // Gracefully close our connections with the leave code BEFORE teardown
         // drops them, so each peer's reader sees an intentional close and the
         // coordinator prunes us from the roster (rather than waiting for an
         // idle timeout that only ever clears the green dot).
-        for (_eid, _ip, conn) in self.peers.peers_for_network_with_conn(name) {
+        for (_eid, _ip, conn) in self.peers.peers_for_network_with_conn(network) {
             conn.close(VarInt::from_u32(forward::LEAVE_CODE), b"leave");
         }
 
-        let was_active = self.teardown_network_runtime(name).await;
+        let was_active = self.teardown_network_runtime(network).await;
 
         // Remove from config even if the network wasn't active
-        let removed_from_config = config::delete_network(name).unwrap_or(false);
+        let removed_from_config = config::delete_network(network).unwrap_or(false);
 
         if was_active || removed_from_config {
-            tracing::info!(network = %name, "left network");
+            tracing::info!(network = %network, "left network");
             IpcMessage::Ok {
-                message: format!("left network '{}'", name),
+                message: format!("left network '{}'", network),
             }
         } else {
             IpcMessage::Error {
-                message: format!("network '{}' not found", name),
+                message: format!("network '{}' not found", network),
             }
         }
     }
