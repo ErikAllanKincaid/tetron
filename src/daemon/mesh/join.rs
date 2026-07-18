@@ -272,6 +272,7 @@ fn persist_join_config(
         transport,
         admins: vec![],
         direct,
+        subnet: None,
     })
 }
 

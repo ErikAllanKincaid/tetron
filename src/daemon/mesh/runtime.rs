@@ -199,6 +199,7 @@ impl MeshManager {
             // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
+            subnet: net_config.and_then(|nc| nc.subnet),
         })?;
 
         let cancel = self.shutdown_token.child_token();

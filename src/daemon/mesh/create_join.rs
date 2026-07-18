@@ -370,6 +370,7 @@ impl MeshManager {
             transport,
             admins: vec![],
             direct,
+            subnet: None,
         })?;
 
         let cancel = self.shutdown_token.child_token();

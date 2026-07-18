@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-network subnet field on local config (MULTISEG-001, internal groundwork)**: `NetworkConfig` now persists an optional per-network subnet, laying the groundwork for multi-segment TUN (one TUN device + subnet per network). Purely additive — `None` means "use the node-wide subnet" (today's actual behavior), nothing reads the field yet, and no user-facing behavior changes.
 - **Nuke requires consensus on multi-coordinator networks (NUKE-CONSENSUS)**: `tetron nuke <net>` on a network with a single coordinator still destroys it immediately, unchanged. With two or more coordinators, a coordinator running `tetron nuke <net>` now proposes instead of nuking outright; the network is destroyed only once two distinct coordinators have proposed (a second coordinator running the same command seconds it) within a 24h window. `tetron nuke <net> --cancel` withdraws your own proposal; `tetron nuke <net> --second <short-id>` explicitly names the proposal being seconded. `tetron status` surfaces any pending proposal so members can see a nuke is being considered before it happens. Prevents a single compromised or reckless coordinator from unilaterally destroying a network nobody else agreed to lose.
 
 ### Fixed

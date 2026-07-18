@@ -130,6 +130,18 @@ pub struct NetworkConfig {
     /// and suppress its (non-shareable) room id.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
+    /// This network's own overlay subnet, distinct from [`AppConfig::subnet`]
+    /// (the node-wide operative subnet used to build the single shared TUN,
+    /// SUBNET-010). `None` means this network uses the node-wide subnet, same
+    /// as today. Additive only (MULTISEG-001) — nothing reads this field yet;
+    /// it exists so per-network subnet can be persisted ahead of the
+    /// multi-segment TUN work (per-network TUN devices) that will consume it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::membership::cidr_opt"
+    )]
+    pub subnet: Option<crate::membership::Subnet>,
 }
 
 /// In-memory aggregate of the on-disk config. Reads assemble this from
@@ -811,6 +823,7 @@ mod tests {
                     transport: None,
                     admins: vec![],
                     direct: false,
+                    subnet: None,
                 },
                 NetworkConfig {
                     name: "work".to_string(),
@@ -824,6 +837,7 @@ mod tests {
                     transport: None,
                     admins: vec![],
                     direct: false,
+                    subnet: None,
                 },
             ],
             ..Default::default()
@@ -858,6 +872,7 @@ mod tests {
             transport: None,
             admins: vec![],
             direct: false,
+            subnet: None,
         };
         upsert_network(&mut config, net);
         assert_eq!(config.networks.len(), 1);
@@ -880,6 +895,7 @@ mod tests {
                 transport: None,
                 admins: vec![],
                 direct: false,
+                subnet: None,
             }],
             ..Default::default()
         };
@@ -895,6 +911,7 @@ mod tests {
             transport: None,
             admins: vec![],
             direct: false,
+            subnet: None,
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
@@ -921,6 +938,7 @@ mod tests {
                     transport: None,
                     admins: vec![],
                     direct: false,
+                    subnet: None,
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
@@ -934,6 +952,7 @@ mod tests {
                     transport: None,
                     admins: vec![],
                     direct: false,
+                    subnet: None,
                 },
             ],
             ..Default::default()
@@ -975,6 +994,7 @@ mod tests {
                 transport: None,
                 admins: vec![],
                 direct: false,
+                subnet: None,
             }],
             ..Default::default()
         };
@@ -1001,6 +1021,7 @@ mod tests {
                 transport: None,
                 admins: vec![],
                 direct: false,
+                subnet: None,
             }],
             ..Default::default()
         };
@@ -1050,6 +1071,7 @@ name = "test"
             transport: None,
             admins: vec![],
             direct: false,
+            subnet: None,
         }
     }
 

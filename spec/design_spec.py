@@ -3135,3 +3135,55 @@ class NoUnconditionalFirstPublish(Requirement):
     """
     req_id = "CONVERGE-008"
 
+
+# --------------------------------------------------------------------------
+# MULTISEG-001: per-network subnet field on NetworkConfig (additive, unread)
+# --------------------------------------------------------------------------
+
+class PerNetworkSubnetConfigField(Requirement):
+    """REQUIREMENT-ID: MULTISEG-001
+
+    Step 1 of the multi-segment TUN plan (scoped in full in
+    `DO-NOT-COMMIT/IDEAS_MultiSegmentTUN.md`, "Scoped code changes"):
+    tetron today shares one TUN device and one node-wide overlay subnet
+    (`AppConfig.subnet`, SUBNET-010) across every joined network, even
+    though each network's signed `GroupBlob` already carries its own
+    `subnet: Option<Subnet>` — the data model has supported per-network
+    subnets since BLOB-001; only the daemon's single-TUN orchestration
+    hasn't caught up. Multi-segment TUN (one TUN device + subnet per
+    network, so a host can bridge two operator-distinct segments the way
+    two physical NICs would) needs a place to persist each network's own
+    subnet locally, ahead of any per-network TUN device existing to use it.
+
+    Adds `subnet: Option<crate::membership::Subnet>` to `NetworkConfig`
+    (`src/config.rs`), serialized the same way as the existing node-wide
+    `AppConfig.subnet` / `Settings.subnet` fields (`with =
+    "crate::membership::cidr_opt"`, CIDR string on disk, `None` omitted).
+    `None` means "this network uses the node-wide subnet," identical to
+    today's actual behavior — so this field starts fully inert. The three
+    non-test `NetworkConfig` construction sites: `create_join.rs`'s
+    `create_network_inner` and `join.rs`'s `join_network_inner` set it to
+    `None` (nothing mints a per-network subnet yet); `runtime.rs`'s
+    `restore_coordinator_network` carries the persisted value forward
+    (`net_config.and_then(|nc| nc.subnet)`), matching the existing
+    preserve-across-restart pattern already used for `admins`/`direct`.
+
+    Deliberately scoped to *only* this field — no `--subnet` CLI wiring, no
+    read site, no interaction with `SUBNET-010`'s node-wide-subnet
+    enforcement (both its sites are untouched). This is intentionally the
+    one part of the multi-segment TUN plan that is safe and independently
+    shippable on its own: the field is round-tripped by serde but nothing
+    in the daemon ever reads it, so there is no behavior change and no way
+    for this commit alone to reintroduce SUBNET-BUG-001 (a previously-fixed
+    bug where a subnet mismatch silently misconfigured the single shared
+    TUN). Every later step in the plan (relaxing `SUBNET-010`'s join-side
+    check, per-network `NetworkHandle`/`MeshCtx`/TUN-lifecycle
+    restructuring, `forward.rs`) depends on this field existing first, and
+    is unsafe to land before per-network TUN devices actually exist to
+    honor it -- see the corrected "Suggested commit sequence" in the ideas
+    doc.
+
+    Found: 2026-07-18, first commit of the `feat/multi-segment-tun` branch.
+    """
+    req_id = "MULTISEG-001"
+
