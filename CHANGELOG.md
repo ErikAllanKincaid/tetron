@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-18
+
 ### Added
 
 - **Per-network subnet field on local config (MULTISEG-001, internal groundwork)**: `NetworkConfig` now persists an optional per-network subnet, laying the groundwork for multi-segment TUN (one TUN device + subnet per network). Purely additive — `None` means "use the node-wide subnet" (today's actual behavior), nothing reads the field yet, and no user-facing behavior changes.
