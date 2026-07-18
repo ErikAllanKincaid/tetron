@@ -1734,6 +1734,62 @@ class FixedHostnameNoEphemeral(Requirement):
     req_id = "MINIMAL-014"
 
 
+class HostnameDefaultsToMachineHostname(Requirement):
+    """REQUIREMENT-ID: HOSTNAME-001
+
+    When no `--hostname` is given (and no `default_hostname` is configured
+    via `tetron up --hostname`), default to the machine's own OS hostname
+    instead of a random noun (the old behavior). `hostname::generate_hostname`
+    tries `machine_hostname()` (via `libc::gethostname`, sanitized) first,
+    falling back to the random generator only if the OS hostname is
+    unavailable or sanitizes down to nothing usable.
+
+    A random hostname gave zero information about which machine a roster
+    entry actually was, forcing cross-referencing `tetron status` by IP or
+    connection order. The real hostname is immediately meaningful at the
+    cost of exposing it to every peer on every network joined -- a
+    conscious trade accepted for tetron's model (a private mesh you
+    deliberately invite people to); `--hostname` still overrides this for
+    anyone who'd rather not.
+
+    `hostname::sanitize_hostname(raw) -> Option<String>`: keeps only the
+    first label (OS hostnames are sometimes FQDN-ish, e.g. macOS's
+    `MyLaptop.local`), lowercases ASCII letters/digits, collapses anything
+    else (spaces, underscores, other punctuation) to a hyphen, trims
+    leading/trailing hyphens, truncates to 63 characters (re-trimming a
+    hyphen the truncation might land on), and returns `None` if nothing
+    usable survives.
+
+    Also loosened *explicit* `--hostname` handling at its three entry points
+    (`create_join.rs`'s create and join paths, `runtime.rs`'s `activate`
+    for `tetron up --hostname`): each now lowercases the input before
+    validating, instead of hard-rejecting mixed case outright (e.g.
+    `--hostname MyLaptop` previously errored; now accepted as `mylaptop`).
+    `is_valid_hostname` itself is unchanged (still the strict char-class/
+    length/hyphen-boundary predicate over an already-lowercased string) --
+    other invalid characters (spaces, dots) are still a hard error for an
+    explicit `--hostname`, only case is auto-corrected, since silently
+    dropping characters from something a user typed on purpose seemed like
+    the wrong default whereas case was the actual, specific complaint.
+
+    The `is_valid_hostname` lowercase-only *restriction* itself was
+    investigated (traced via `git log -p -- src/hostname.rs` to upstream
+    commit `430f670`, "add Magic DNS with .pi domain resolution" -- avoiding
+    DNS-label case-folding, a concern MINIMAL-012 removed entirely) but
+    deliberately left in place: it's cheap to satisfy (lowercase on the way
+    in, both for the machine-hostname path and the explicit-input path
+    above) and a single canonical case avoids a second design question
+    (would roster lookups like `kick`/`admin add` need to become
+    case-insensitive to match a case-preserving hostname?) that has no
+    upstream requirement it was resolving anyway.
+
+    Found: 2026-07-17, logged as a TODO note earlier the same session,
+    implemented same-day at the user's request as part of the CLI
+    flags-and-defaults review.
+    """
+    req_id = "HOSTNAME-001"
+
+
 class PlainCliPresentation(Requirement):
     """REQUIREMENT-ID: MINIMAL-015
 

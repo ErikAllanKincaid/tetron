@@ -52,7 +52,8 @@ pub(crate) enum Command {
         /// Network name (a random three-word name is generated if not set)
         #[arg(long)]
         name: Option<String>,
-        /// Your hostname within the network (e.g. "alice"). Random if not set
+        /// Your hostname within the network. Defaults to this machine's own
+        /// hostname if not set (falls back to a random name if unavailable)
         #[arg(long)]
         hostname: Option<String>,
         /// Overlay IPv4 subnet in CIDR form (e.g. "10.88.0.0/24"). Override the
@@ -71,7 +72,8 @@ pub(crate) enum Command {
         /// Optional local alias for the network
         #[arg(long)]
         name: Option<String>,
-        /// Your hostname within the network (e.g. "bob"). Random if not set
+        /// Your hostname within the network. Defaults to this machine's own
+        /// hostname if not set (falls back to a random name if unavailable)
         #[arg(long)]
         hostname: Option<String>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)

@@ -330,9 +330,10 @@ impl MeshManager {
 
         let my_hostname = match hostname {
             Some(h) => {
+                let h = h.to_ascii_lowercase();
                 anyhow::ensure!(
                     crate::hostname::is_valid_hostname(&h),
-                    "invalid hostname '{h}': use 1-63 lowercase ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
+                    "invalid hostname '{h}': use 1-63 ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
                 );
                 h
             }
@@ -568,9 +569,10 @@ impl MeshManager {
 
         let my_hostname = match hostname {
             Some(h) => {
+                let h = h.to_ascii_lowercase();
                 anyhow::ensure!(
                     crate::hostname::is_valid_hostname(&h),
-                    "invalid hostname '{h}': use 1-63 lowercase ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
+                    "invalid hostname '{h}': use 1-63 ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
                 );
                 h
             }

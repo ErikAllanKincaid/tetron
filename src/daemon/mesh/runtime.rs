@@ -709,10 +709,11 @@ impl MeshManager {
         // when the VPN is already up. Used as the fallback for future
         // creates/joins; doesn't rename networks already joined.
         if let Some(h) = hostname {
+            let h = h.to_ascii_lowercase();
             if !crate::hostname::is_valid_hostname(&h) {
                 return IpcMessage::Error {
                     message: format!(
-                        "invalid hostname '{h}': use 1-63 lowercase ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
+                        "invalid hostname '{h}': use 1-63 ASCII letters, digits, or hyphens (no leading/trailing hyphen)"
                     ),
                 };
             }
