@@ -689,7 +689,7 @@ impl MeshManager {
         match req {
             IpcMessage::Create {
                 mode,
-                name,
+                network_name,
                 hostname,
                 transport,
                 subnet,
@@ -706,31 +706,31 @@ impl MeshManager {
                         };
                     }
                 };
-                self.create_network(mode, name, hostname, transport, parsed)
+                self.create_network(mode, network_name, hostname, transport, parsed)
                     .await
             }
             IpcMessage::Join {
                 network_key,
-                name,
+                alias,
                 hostname,
                 transport,
                 invite,
                 ..
             } => {
-                self.join_network(&network_key, name.as_deref(), hostname, transport, invite)
+                self.join_network(&network_key, alias.as_deref(), hostname, transport, invite)
                     .await
             }
             IpcMessage::Leave { network } => self.leave_network(&network).await,
             IpcMessage::Nuke {
-                name,
+                net_id,
                 force,
                 cancel,
                 second,
             } => {
-                self.nuke_network(&name, force, cancel, second.as_deref())
+                self.nuke_network(&net_id, force, cancel, second.as_deref())
                     .await
             }
-            IpcMessage::Kick { network, peer } => self.kick_member(&network, &peer).await,
+            IpcMessage::Kick { net_id, peer } => self.kick_member(&net_id, &peer).await,
             IpcMessage::Status => self.status(),
             IpcMessage::Up { hostname } => self.activate(hostname).await,
             IpcMessage::Down => self.deactivate().await,
@@ -741,7 +741,7 @@ impl MeshManager {
                 }
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
-            IpcMessage::AdminAdd { network, identity } => self.admin_add(&network, &identity).await,
+            IpcMessage::AdminAdd { network, peer } => self.admin_add(&network, &peer).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
             IpcMessage::InviteCreate { network, expires } => {
                 self.invite_create(&network, expires.as_deref()).await

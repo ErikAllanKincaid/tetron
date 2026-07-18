@@ -4,7 +4,7 @@ use crate::*;
 
 pub(crate) async fn ipc_create(
     mode: GroupMode,
-    name: Option<String>,
+    network_name: Option<String>,
     hostname: Option<String>,
     subnet: Option<String>,
     tor: bool,
@@ -24,7 +24,7 @@ pub(crate) async fn ipc_create(
         &mut stream,
         ipc::IpcMessage::Create {
             mode,
-            name,
+            network_name,
             hostname,
             transport,
             subnet,
@@ -34,7 +34,7 @@ pub(crate) async fn ipc_create(
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Created {
-            name,
+            network,
             network_key,
             my_ip,
             my_ipv6,
@@ -49,7 +49,7 @@ pub(crate) async fn ipc_create(
             };
             let _ = my_ipv6;
             println!();
-            println!("  created {name}");
+            println!("  created {network}");
             println!("    address  {}  ·  {}", my_ip, short);
             match &initial_invite_key {
                 Some(invite) => {
@@ -80,8 +80,8 @@ pub(crate) async fn ipc_create(
 }
 
 pub(crate) async fn ipc_join(
-    network_key: &str,
-    name: Option<&str>,
+    invite_code: &str,
+    alias: Option<&str>,
     hostname: Option<String>,
     tor: bool,
 ) -> Result<()> {
@@ -94,17 +94,19 @@ pub(crate) async fn ipc_join(
     // network pubkey plus a one-time secret. A bare room id (raw network public key)
     // is still parsed for backward compat but the daemon will deny it (tetron is
     // invite-only — LIVE-001 removed live approval). The daemon side rejects bare
-    // room-id joins with "a valid invite key is required".
-    let (network_key, invite) = match invite::decode_invite_code(network_key) {
+    // room-id joins with "a valid invite key is required". The wire field stays
+    // `network_key` regardless -- by the time this crosses IPC it's always the
+    // resolved public key, never invite-code text.
+    let (network_key, invite) = match invite::decode_invite_code(invite_code) {
         Ok((net_pubkey, secret)) => (net_pubkey.to_string(), Some(secret)),
-        Err(_) => (network_key.to_string(), None),
+        Err(_) => (invite_code.to_string(), None),
     };
     let mut stream = ipc::connect().await?;
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Join {
             network_key,
-            name: name.map(|s| s.to_string()),
+            alias: alias.map(|s| s.to_string()),
             hostname,
             transport,
             invite,
@@ -120,14 +122,14 @@ pub(crate) async fn ipc_join(
             println!("{}", message);
         }
         ipc::IpcMessage::Joined {
-            name,
+            network,
             my_ip,
             my_ipv6,
             warning,
         } => {
             let _ = my_ipv6;
             println!();
-            println!("  joined {name}");
+            println!("  joined {network}");
             println!("    address  {}", my_ip);
             print_next(&[
                 ("tetron status", "see who's online"),
@@ -145,7 +147,7 @@ pub(crate) async fn ipc_join(
 }
 
 pub(crate) async fn ipc_nuke(
-    name: &str,
+    net_id: &str,
     force: bool,
     cancel: bool,
     second: Option<&str>,
@@ -154,7 +156,7 @@ pub(crate) async fn ipc_nuke(
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Nuke {
-            name: name.to_string(),
+            net_id: net_id.to_string(),
             force,
             cancel,
             second: second.map(str::to_string),
@@ -170,12 +172,12 @@ pub(crate) async fn ipc_nuke(
     Ok(())
 }
 
-pub(crate) async fn ipc_kick(network: &str, peer: &str) -> Result<()> {
+pub(crate) async fn ipc_kick(net_id: &str, peer: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Kick {
-            network: network.to_string(),
+            net_id: net_id.to_string(),
             peer: peer.to_string(),
         },
     )

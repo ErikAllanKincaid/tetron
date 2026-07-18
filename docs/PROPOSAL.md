@@ -20,11 +20,11 @@ Identity (Ed25519 key) -> signed pkarr record -> signed GroupBlob roster -> iroh
 The complete CLI surface:
 
 ```
-tetron create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # invite-only, prints room id + invite key
-tetron join <invite-code> [--hostname h] [--tor]  # bare room id denied — tetron is invite-only
-tetron leave <net>  |  nuke <net>
+tetron create [--network-name n] [--hostname h] [--subnet CIDR] [--tor]   # invite-only, prints room id + invite key
+tetron join <invite-code> [--alias a] [--hostname h] [--tor]  # bare room id denied — tetron is invite-only
+tetron leave <net>  |  nuke <net-id>   # leave takes the local name; nuke takes the network's short id (never the name)
 tetron admin <net> add <id> | list
-tetron kick <net> <peer>
+tetron kick <net-id> <peer>   # both args are short ids, never the local name
 tetron status [--json]
 tetron up | down
 tetron config [get|set|unset]        # relay, discovery-dns, subnet only

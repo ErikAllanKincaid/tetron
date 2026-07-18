@@ -51,7 +51,7 @@ pub(crate) enum Command {
     Create {
         /// Network name (a random three-word name is generated if not set)
         #[arg(long)]
-        name: Option<String>,
+        network_name: Option<String>,
         /// Your hostname within the network. Defaults to this machine's own
         /// hostname if not set (falls back to a random name if unavailable)
         #[arg(long)]
@@ -68,10 +68,10 @@ pub(crate) enum Command {
     /// Join an existing network using an invite code (bare room id is denied — tetron is invite-only)
     Join {
         /// A one-time invite code (tetron join <room-id> is denied)
-        network_key: String,
+        invite_code: String,
         /// Optional local alias for the network
         #[arg(long)]
-        name: Option<String>,
+        alias: Option<String>,
         /// Your hostname within the network. Defaults to this machine's own
         /// hostname if not set (falls back to a random name if unavailable)
         #[arg(long)]
@@ -95,7 +95,7 @@ pub(crate) enum Command {
     /// network is destroyed.
     Nuke {
         /// Network's short id (see `tetron status`) -- not its local name
-        name: String,
+        net_id: String,
         /// Force destroy even if other members exist
         #[arg(long)]
         force: bool,
@@ -110,7 +110,7 @@ pub(crate) enum Command {
     #[command(visible_alias = "boot")]
     Kick {
         /// Network's short id (see `tetron status`) -- not its local name
-        network: String,
+        net_id: String,
         /// Endpoint id (short id from `tetron status`) of the member to kick
         peer: String,
     },
@@ -147,7 +147,7 @@ pub(crate) enum Command {
     },
     /// Manage single-use invite keys (coordinator only)
     Invite {
-        /// Network name
+        /// Network name (as shown in `tetron status`)
         network: String,
         #[command(subcommand)]
         action: InviteAction,
@@ -156,7 +156,7 @@ pub(crate) enum Command {
     /// a co-coordinator: it can publish the signed blob and admit fresh joiners.
     /// Trusted-network multi-admin.
     Admin {
-        /// Network name
+        /// Network name (as shown in `tetron status`)
         network: String,
         #[command(subcommand)]
         action: AdminAction,
@@ -181,7 +181,7 @@ pub(crate) enum AdminAction {
     /// Grant the network key to a member (coordinator only)
     Add {
         /// Hostname (from `tetron status`) or short id of the member to promote
-        identity: String,
+        peer: String,
     },
     /// List this network's key-holders (the local node + granted members)
     #[command(visible_alias = "ls")]
@@ -407,24 +407,24 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Leave { network } => ipc_leave(&network).await,
         Command::Create {
-            name,
+            network_name,
             hostname,
             subnet,
             tor,
-        } => ipc_create(GroupMode::Restricted, name, hostname, subnet, tor).await,
+        } => ipc_create(GroupMode::Restricted, network_name, hostname, subnet, tor).await,
         Command::Join {
-            network_key,
-            name,
+            invite_code,
+            alias,
             hostname,
             tor,
-        } => ipc_join(&network_key, name.as_deref(), hostname, tor).await,
+        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor).await,
         Command::Nuke {
-            name,
+            net_id,
             force,
             cancel,
             second,
-        } => ipc_nuke(&name, force, cancel, second.as_deref()).await,
-        Command::Kick { network, peer } => ipc_kick(&network, &peer).await,
+        } => ipc_nuke(&net_id, force, cancel, second.as_deref()).await,
+        Command::Kick { net_id, peer } => ipc_kick(&net_id, &peer).await,
         Command::Status => ipc_status().await,
         Command::Daemon => {
             check_root();

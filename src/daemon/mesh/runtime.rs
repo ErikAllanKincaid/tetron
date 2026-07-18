@@ -274,7 +274,7 @@ impl MeshManager {
         .await;
 
         Ok(IpcMessage::Created {
-            name: name.to_string(),
+            network: name.to_string(),
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
@@ -295,15 +295,15 @@ impl MeshManager {
     /// proposal. `second` optionally names (by short id) the specific proposal
     /// being seconded, for an explicit error if it doesn't match an active one
     /// rather than silently proposing fresh.
-    #[tracing::instrument(skip(self), fields(net = short_id))]
+    #[tracing::instrument(skip(self), fields(net = net_id))]
     pub(crate) async fn nuke_network(
         &self,
-        short_id: &str,
+        net_id: &str,
         force: bool,
         cancel: bool,
         second: Option<&str>,
     ) -> IpcMessage {
-        let name = match self.resolve_network_short_id(short_id) {
+        let name = match self.resolve_network_short_id(net_id) {
             Ok(name) => name,
             Err(message) => return IpcMessage::Error { message },
         };
@@ -532,8 +532,8 @@ impl MeshManager {
     /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
     /// closes its own link to the target immediately. Refused on open networks
     /// (the target would auto-re-join) and against coordinators / self.
-    pub(crate) async fn kick_member(&self, network_short_id: &str, peer: &str) -> IpcMessage {
-        let network = match self.resolve_network_short_id(network_short_id) {
+    pub(crate) async fn kick_member(&self, net_id: &str, peer: &str) -> IpcMessage {
+        let network = match self.resolve_network_short_id(net_id) {
             Ok(name) => name,
             Err(message) => return IpcMessage::Error { message },
         };
@@ -643,8 +643,8 @@ impl MeshManager {
                 let daemon_c = Arc::clone(self);
                 tokio::spawn(async move {
                     match daemon_c.restore_coordinator_network(&name, mode).await {
-                        Ok(IpcMessage::Created { name, .. }) => {
-                            tracing::info!(network = %name, "restored coordinator network");
+                        Ok(IpcMessage::Created { network, .. }) => {
+                            tracing::info!(network = %network, "restored coordinator network");
                         }
                         Ok(IpcMessage::Error { message }) => {
                             tracing::warn!(network = %name, error = %message, "failed to restore network");
@@ -680,8 +680,8 @@ impl MeshManager {
                         )
                         .await
                     {
-                        Ok(TryJoin::Joined(IpcMessage::Joined { name, my_ip, .. })) => {
-                            tracing::info!(network = %name, ip = %my_ip, "restored member network");
+                        Ok(TryJoin::Joined(IpcMessage::Joined { network, my_ip, .. })) => {
+                            tracing::info!(network = %network, ip = %my_ip, "restored member network");
                         }
                         Ok(_) => {}
                         Err(e) => {

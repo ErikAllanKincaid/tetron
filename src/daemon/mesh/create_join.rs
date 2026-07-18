@@ -176,13 +176,13 @@ impl MeshManager {
     pub async fn create_network(
         &self,
         mode: GroupMode,
-        name: Option<String>,
+        network_name: Option<String>,
         hostname: Option<String>,
         transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
     ) -> IpcMessage {
         match self
-            .create_network_inner(mode, name, hostname, transport, subnet, false, None)
+            .create_network_inner(mode, network_name, hostname, transport, subnet, false, None)
             .await
         {
             Ok(resp) => resp,
@@ -442,7 +442,7 @@ impl MeshManager {
         };
 
         Ok(IpcMessage::Created {
-            name,
+            network: name,
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
@@ -454,11 +454,11 @@ impl MeshManager {
     /// Part of the embedding API: join an existing network by key
     /// (optionally with an invite secret).
     #[allow(clippy::too_many_arguments)]
-    #[tracing::instrument(skip(self, hostname), fields(net = name.unwrap_or(network_key)))]
+    #[tracing::instrument(skip(self, hostname), fields(net = alias.unwrap_or(network_key)))]
     pub async fn join_network(
         self: &Arc<Self>,
         network_key: &str,
-        name: Option<&str>,
+        alias: Option<&str>,
         hostname: Option<String>,
         transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
@@ -466,7 +466,7 @@ impl MeshManager {
         match self
             .join_network_inner(
                 network_key,
-                name,
+                alias,
                 hostname.clone(),
                 transport,
                 invite.clone(),
@@ -1144,7 +1144,7 @@ impl MeshManager {
         tracing::info!(network = %display_name, key = %net_pubkey, ip = %my_ip, "joined network");
 
         Ok(TryJoin::Joined(IpcMessage::Joined {
-            name: display_name.to_string(),
+            network: display_name.to_string(),
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
             warning: crate::membership::subnet_change_warning(
@@ -1388,7 +1388,7 @@ impl MeshManager {
             self.refresh_alpns().await;
 
             return Ok(IpcMessage::Joined {
-                name: network_name.to_string(),
+                network: network_name.to_string(),
                 my_ip,
                 my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
                 warning: crate::membership::subnet_change_warning(

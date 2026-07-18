@@ -2626,6 +2626,86 @@ class NukeKickResolveByNetworkShortId(Requirement):
     req_id = "CLI-VOCAB-002"
 
 
+class CliFlagsVocabularyPass(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-003
+
+    Executes the `--flags`/positionals half of the CLI vocabulary cleanup
+    (`DO-NOT-COMMIT/TODO.md`'s "CLI-wide vocabulary/rename pass"), deferred
+    behind the internal-mechanism work (`ADMIN-ADD-EASY-ID`'s follow-up,
+    `CLI-VOCAB-001`, `CLI-VOCAB-002`) per the user's explicit sequencing.
+    The original proposed table (written before `CLI-VOCAB-001`/`002`
+    shipped) was stale in two ways, reconciled here rather than followed
+    literally:
+
+    1. It proposed renaming `Leave`'s field to `alias` -- but `Leave` was
+       already renamed to `network` by `CLI-VOCAB-001`, and the user's
+       later, stronger "I do not like the alias in the first place"
+       objection ruled the word out entirely as a lookup-selector name.
+    2. It proposed renaming `Nuke`/`Kick`'s network argument to `alias` --
+       flatly wrong once `CLI-VOCAB-002` moved both off name-based lookup
+       entirely onto short-id resolution; `alias` would have described a
+       mechanism those commands no longer use.
+
+    Resolved table (implemented):
+    - `Create.name` -> `network_name` (`--name` -> `--network-name`)
+    - `Join.name` -> `alias` (`--name` -> `--alias`)
+    - `Join`'s positional `network_key` -> `invite_code` (CLI-facing only --
+      see the wire-field correction below)
+    - `Nuke.name` -> `net_id`, `Kick.network` -> `net_id` (matches the
+      short-id mechanism `CLI-VOCAB-002` gave them; `Kick.peer` unchanged)
+    - `AdminAction::Add.identity` -> `peer` (matches `Kick.peer` -- same
+      concept, `peer` already wins internally: `PeerTable`, `peers.rs`)
+    - `Leave`/`Invite`/`Admin`'s `network` field: **no change** -- already
+      consistent with each other (`Leave` via `CLI-VOCAB-001`; `Invite`/
+      `Admin` were already `network`), which resolves the open "no alias
+      anywhere" question for free rather than requiring a rename.
+
+    **Caught and reverted before landing:** `IpcMessage::Join`'s *wire*
+    field is not the same thing as `main.rs`'s CLI-facing positional. The
+    CLI positional genuinely is raw invite-code text (correctly renamed to
+    `invite_code`), but `cli/network.rs`'s `ipc_join` decodes it locally
+    (`invite::decode_invite_code`) before ever sending anything over IPC --
+    the wire field always carries the resolved network *public key* (with
+    the secret riding separately in `invite`), in both the decode-success
+    and bare-room-id-fallback branches. Renaming the wire field to
+    `invite_code` would have been factually wrong; it stays `network_key`,
+    documented with a comment explaining why it looks like a mismatch with
+    the CLI layer but isn't.
+
+    **Scope addition beyond the literal table, for internal consistency:**
+    `IpcMessage::Created`/`Joined`'s response field (`name` in both) was
+    also renamed to `network`, matching what `Leave`/`Invite`/`Admin`
+    settled on -- these responses echo back the same "resolved local
+    display name" concept, and leaving them as `name` while the identical
+    concept elsewhere says `network` would have introduced a new
+    inconsistency instead of removing one.
+
+    **Also propagated to internal parameter names** at each renamed field's
+    boundary function (`create_network`, `join_network`, `nuke_network`,
+    `kick_member`, `admin_add`) so the rename doesn't stop at the wire
+    struct. `join_network_inner` already used `alias` internally (predating
+    this pass) -- confirms the outer boundary was the actual inconsistency,
+    not the deep internals. `create_network_inner`'s `custom_name` and the
+    resolved-identity locals in `nuke_network`/`kick_member`/`admin_add`
+    were deliberately left as-is -- already clear, not part of the
+    user-facing surface this pass targets.
+
+    **Found and fixed as side effects while touching `AGENTS.md`:** the CLI
+    reference block still listed `tetron requests`/`accept`/`deny` --
+    commands removed by `LIVE-001` (confirmed absent from `main.rs`'s
+    `Command` enum), sitting two lines above the very paragraph documenting
+    their removal. Removed. Also flagged (not fixed, logged to
+    `DO-NOT-COMMIT/TODO.md`): `NetworkStatus.pending_requests` is
+    vestigial -- still on the wire, still populated, but hardcoded to `0` at
+    both construction sites in `diagnostics.rs` since `LIVE-001` removed
+    the queue it used to reflect, and never read by any CLI display code.
+
+    Verified via real `--help` output on all five renamed commands (not
+    just build success) before considering this done.
+    """
+    req_id = "CLI-VOCAB-003"
+
+
 # --------------------------------------------------------------------------
 # ADMIN-RECONNECT-CTRL: admin-grant must work after coordinator reconnect
 # --------------------------------------------------------------------------

@@ -9,8 +9,8 @@ impl MeshManager {
     /// signed blob / admit joiners). The key is shared (shared-key model), so this is
     /// a transfer of publish capability, not an attributable delegation. The
     /// grant is recorded locally for `tetron admin list`.
-    pub(crate) async fn admin_add(&self, network: &str, identity_str: &str) -> IpcMessage {
-        let identity = match self.resolve_peer_name(identity_str).await {
+    pub(crate) async fn admin_add(&self, network: &str, peer_str: &str) -> IpcMessage {
+        let identity = match self.resolve_peer_name(peer_str).await {
             Ok(id) => id,
             Err(message) => return IpcMessage::Error { message },
         };

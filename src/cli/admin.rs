@@ -4,9 +4,9 @@ use crate::*;
 
 pub(crate) async fn ipc_admin(network: &str, action: AdminAction) -> Result<()> {
     let req = match action {
-        AdminAction::Add { identity } => ipc::IpcMessage::AdminAdd {
+        AdminAction::Add { peer } => ipc::IpcMessage::AdminAdd {
             network: network.to_string(),
-            identity,
+            peer,
         },
         AdminAction::List => ipc::IpcMessage::AdminList {
             network: network.to_string(),

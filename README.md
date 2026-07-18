@@ -42,7 +42,7 @@ sudo install tetron /usr/local/bin/tetron
 sudo tetron up
 
 # 2. Create a network. Output includes your mesh IP and invite key.
-tetron create --name mynet --hostname alice
+tetron create --network-name mynet --hostname alice
 
 #    Sample output:
 #      created mynet        ← network name
@@ -95,7 +95,7 @@ See [docs/HOWTO.md](docs/HOWTO.md) for kicking a member, listing key-holders, re
 
 ## Naming peers
 
-Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`--json` for scripting). A hostname is set once at join (`--hostname`) and is fixed after that -- there is no rename command; see [docs/HOWTO.md](docs/HOWTO.md) for the leave-and-rejoin workaround. `--hostname` names your node within the network; the network itself has its own name (random three words, or `--name` on `create`), used with `tetron leave <network-name>` etc. `tetron kick` requires an endpoint id (short id from `tetron status`), not a hostname or IP -- a deliberate restriction on a destructive command.
+Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`--json` for scripting). A hostname is set once at join (`--hostname`) and is fixed after that -- there is no rename command; see [docs/HOWTO.md](docs/HOWTO.md) for the leave-and-rejoin workaround. `--hostname` names your node within the network; the network itself has its own name (random three words, or `--network-name` on `create`), used with `tetron leave <network-name>` etc. `tetron kick` requires an endpoint id (short id from `tetron status`), not a hostname or IP -- a deliberate restriction on a destructive command.
 
 ## Features
 

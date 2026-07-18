@@ -143,7 +143,7 @@ key:
 tetron join t3tnR1vY3R... --hostname bob
 
 # Optional: give the network a local alias (shows in `tetron status`)
-tetron join t3tnR1vY3R... --hostname bob --name homelab
+tetron join t3tnR1vY3R... --hostname bob --alias homelab
 
 # Optional: route traffic through Tor
 tetron join t3tnR1vY3R... --hostname bob --tor
@@ -278,9 +278,14 @@ need to be online.
 ### Kick a member
 
 ```bash
-tetron kick mynetwork a1b2c3d4e5  # by short endpoint id (from `tetron status`)
-tetron kick mynetwork a1b2         # or a prefix of it
+tetron kick <net-id-from-status> a1b2c3d4e5  # both args are short ids from `tetron status`
 ```
+
+`<net-id-from-status>` is the network's own short id (the `id` line in
+`tetron status`) -- not its local display name (`mynetwork`). Both this and
+the peer id need at least 10 characters; neither accepts a local name, since
+kick is a destructive action and needs a cryptographic identity, not a
+mutable, spoofable one.
 
 The kicked member is removed from the roster and disconnected. They
 cannot re-join without a new invite key.
@@ -288,9 +293,12 @@ cannot re-join without a new invite key.
 ### Leave or destroy a network
 
 ```bash
-tetron leave mynetwork   # graceful leave: you disconnect and your config is removed
+tetron leave mynetwork   # graceful leave: you disconnect and your config is removed;
+                         # <net> here IS the local display name (leave isn't destructive
+                         # to the network itself)
 
-tetron nuke mynetwork    # coordinator only: publish an empty record, then leave.
+tetron nuke <net-id-from-status>    # coordinator only: publish an empty record, then leave.
+                                     # Same short-id-only rule as kick -- see above.
                          # Other members see the network as gone on next reconverge.
 ```
 

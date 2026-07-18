@@ -64,17 +64,15 @@ The daemon (`tetron daemon`) owns the TUN device and iroh endpoint and runs as a
 
 ```bash
 sudo tetron up                # install+start the service, then activate the VPN
-tetron create [--name n] [--hostname h] [--subnet CIDR] [--tor]   # always closed (approval-gated); MINIMAL-013 removed --open. --subnet overrides the default 10.88.0.0/16 for this network. Prints room id (public key)
-tetron join <invite-code> [--hostname h] [--tor]  # join by invite key (bare room id is denied — tetron is invite-only)
+tetron create [--network-name n] [--hostname h] [--subnet CIDR] [--tor]   # always closed (approval-gated); MINIMAL-013 removed --open. --subnet overrides the default 10.88.0.0/16 for this network. Prints room id (public key)
+tetron join <invite-code> [--alias a] [--hostname h] [--tor]  # join by invite key (bare room id is denied — tetron is invite-only). --alias sets a local-only display name for this network, never transmitted
 tetron leave <net>            # <net> is the local display name (as shown in `tetron status`)
 tetron nuke <net-id> [--force] [--cancel] [--second <short-id>]   # <net-id> is the network's own short id (`tetron status`'s `id` line) — NOT the local name; nuke = publish empty record then leave; on 2+ coordinators requires a second (NUKE-CONSENSUS) — see below
 tetron kick <net-id> <peer>   # coordinator-only (closed networks): remove a member. <net-id> is the network's own short id, same as nuke — not the local name. Prunes it from the roster + approved list, republishes the signed blob, disconnects it mesh-wide. Refused on open networks (target would re-join) and against coordinators/self
-tetron status                 # all networks (works without daemon); per-host traffic, member count excludes self. Ends with a `pending` summary of things awaiting the user (join requests) each with the command that clears it
-tetron <cmd> --json           # global flag: machine-readable JSON for status/requests/admin list (color + spinners off)
+tetron status                 # all networks (works without daemon); per-host traffic, member count excludes self
+tetron <cmd> --json           # global flag: machine-readable JSON for status/admin list (color + spinners off)
 tetron up [--hostname h] | down   # activate / standby. down takes the data plane (TUN) offline but stays connected to peers (still online); --hostname sets your default name
 
-tetron requests <net>         # coordinator-only: peers awaiting live approval
-tetron accept <net> <id> | deny <net> <id>    # admit / reject a pending join request
 tetron admin <net> add <id> | list            # coordinator-only: grant the network key (co-coordinator) / list key-holders. <id> is the target's hostname (as shown in `tetron status`) or short id (its endpoint-id prefix) — unlike destructive commands (`kick`, `nuke --second`), this additive grant deliberately also resolves by hostname for convenience
 tetron config [get [key] | set <key> <value> [--replace] | unset <key>]   # global daemon settings; keys: relay, discovery-dns, subnet. relay/discovery values are comma lists of presets (rayfish/n0), URLs, or IPv4s (default augments n0; --replace swaps them out; n0/empty resets). `subnet` takes a single CIDR (e.g. 10.88.0.0/16; empty resets to default). Written client-side to settings.toml; all apply on `sudo tetron restart`.
 tetron completions <shell>

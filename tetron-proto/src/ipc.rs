@@ -16,7 +16,7 @@ pub enum IpcMessage {
     // Requests
     Create {
         mode: GroupMode,
-        name: Option<String>,
+        network_name: Option<String>,
         hostname: Option<String>,
         transport: Option<TransportMode>,
         /// Overlay IPv4 subnet as a CIDR string (e.g. "10.88.0.0/24"). `None`
@@ -26,9 +26,13 @@ pub enum IpcMessage {
         #[serde(default)]
         subnet: Option<String>,
     },
+    /// `network_key` is already resolved to the network's public key by the
+    /// time it crosses IPC -- the CLI decodes the raw invite code client-side
+    /// (`invite::decode_invite_code`) and sends the key plus the secret
+    /// (`invite`) separately. It is not the invite-code text itself.
     Join {
         network_key: String,
-        name: Option<String>,
+        alias: Option<String>,
         hostname: Option<String>,
         transport: Option<TransportMode>,
         /// One-time invite secret to present for invite-gated admission.
@@ -38,8 +42,12 @@ pub enum IpcMessage {
     Leave {
         network: String,
     },
+    /// `net_id` is the network's own short id (a prefix of its public key,
+    /// as shown by `tetron status`'s `id` line) -- never the local display
+    /// name, which `MeshManager::resolve_network_short_id` deliberately
+    /// does not accept as a fallback.
     Nuke {
-        name: String,
+        net_id: String,
         force: bool,
         /// Withdraw the caller's own pending nuke proposal (NUKE-CONSENSUS).
         #[serde(default)]
@@ -51,24 +59,25 @@ pub enum IpcMessage {
     },
     /// Coordinator-only: remove a member from a closed network. Prunes it from the
     /// roster + approved list, republishes the signed blob, and disconnects it
-    /// mesh-wide. `peer` is a hostname / mesh IP / short id of a current member.
+    /// mesh-wide. `net_id` is the network's own short id (see `Nuke`'s doc
+    /// comment); `peer` is a hostname / mesh IP / short id of a current member.
     Kick {
-        network: String,
+        net_id: String,
         peer: String,
     },
     Status,
     Shutdown,
-    /// Activate the VPN: bring the TUN interface up, configure system DNS, and
-    /// reconnect all saved networks. Handled by the already-running daemon, so
-    /// no root privileges are needed on the client. An optional `hostname` sets
-    /// the personal default hostname used for future creates/joins.
+    /// Activate the VPN: bring the TUN interface up and reconnect all saved
+    /// networks. Handled by the already-running daemon, so no root
+    /// privileges are needed on the client. An optional `hostname` sets the
+    /// personal default hostname used for future creates/joins.
     Up {
         #[serde(default)]
         hostname: Option<String>,
     },
-    /// Put the daemon on standby: tear down active network connections, revert
-    /// system DNS, and bring the TUN interface down. The daemon process keeps
-    /// running so it can be reactivated with `Up`.
+    /// Put the daemon on standby: tear down active network connections and
+    /// bring the TUN interface down. The daemon process keeps running so it
+    /// can be reactivated with `Up`.
     Down,
     /// Authorize a local user (by UID) to control the daemon without root, the
     /// way `tailscale up --operator` does. Root-only.
@@ -79,7 +88,7 @@ pub enum IpcMessage {
     /// a co-coordinator (can publish / suggest firewall rules).
     AdminAdd {
         network: String,
-        identity: String,
+        peer: String,
     },
     /// List the identities this coordinator has granted the network key to
     /// (plus itself). Open read.
@@ -95,7 +104,7 @@ pub enum IpcMessage {
         message: String,
     },
     Created {
-        name: String,
+        network: String,
         network_key: EndpointId,
         my_ip: Ipv4Addr,
         my_ipv6: Option<Ipv6Addr>,
@@ -108,7 +117,7 @@ pub enum IpcMessage {
         initial_invite_key: Option<String>,
     },
     Joined {
-        name: String,
+        network: String,
         my_ip: Ipv4Addr,
         my_ipv6: Option<Ipv6Addr>,
         /// SUBNET-014: set when the joined network's subnet only applies after a restart.
@@ -369,7 +378,7 @@ mod tests {
     fn test_request_roundtrip() {
         let req = IpcMessage::Create {
             mode: GroupMode::Open,
-            name: None,
+            network_name: None,
             hostname: None,
             transport: None,
             subnet: None,
@@ -388,7 +397,7 @@ mod tests {
     fn test_response_roundtrip() {
         let key = iroh::SecretKey::generate().public();
         let resp = IpcMessage::Created {
-            name: "test".to_string(),
+            network: "test".to_string(),
             network_key: key,
             my_ip: Ipv4Addr::new(100, 64, 10, 5),
             my_ipv6: None,
@@ -399,13 +408,13 @@ mod tests {
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
         match decoded {
             IpcMessage::Created {
-                name,
+                network,
                 network_key,
                 my_ip,
                 initial_invite_key,
                 ..
             } => {
-                assert_eq!(name, "test");
+                assert_eq!(network, "test");
                 assert_eq!(network_key, key);
                 assert_eq!(my_ip, Ipv4Addr::new(100, 64, 10, 5));
                 assert_eq!(initial_invite_key, Some("bs58key123".to_string()));
@@ -418,7 +427,7 @@ mod tests {
     fn test_join_with_invite_roundtrip() {
         let req = IpcMessage::Join {
             network_key: "abc".to_string(),
-            name: None,
+            alias: None,
             hostname: None,
             transport: None,
             invite: Some(vec![1, 2, 3]),
