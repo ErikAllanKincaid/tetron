@@ -799,6 +799,46 @@ impl MeshManager {
         }
     }
 
+    /// Resolve a network's short id (a prefix of its public key) to the
+    /// local display name used to key `self.networks`. Requires at least as
+    /// many characters as the short id `tetron status` displays
+    /// (`fmt_short()`'s 10 hex chars), and errors out -- rather than
+    /// silently guessing -- if the prefix matches more than one joined
+    /// network. Destructive callers (`nuke`, `kick`) depend on this never
+    /// picking a network they weren't sure about; unlike peer resolution,
+    /// there is deliberately no local-name/alias fallback here -- the whole
+    /// point is that a network's identity is resolved by its cryptographic
+    /// key, not by the locally mutable string it happens to be filed under.
+    pub(crate) fn resolve_network_short_id(&self, short: &str) -> Result<String, String> {
+        const MIN_PREFIX_LEN: usize = 10;
+        if short.len() < MIN_PREFIX_LEN {
+            return Err(format!(
+                "'{short}' is too short to safely identify a network -- use at least \
+                 {MIN_PREFIX_LEN} characters (the short id shown by `tetron status`), \
+                 or the full id"
+            ));
+        }
+        let matches: Vec<(String, EndpointId)> = self
+            .networks
+            .iter()
+            .filter(|entry| entry.value().network_key.to_string().starts_with(short))
+            .map(|entry| (entry.key().clone(), entry.value().network_key))
+            .collect();
+        match matches.as_slice() {
+            [] => Err(format!("could not resolve network '{short}'")),
+            [(name, _)] => Ok(name.clone()),
+            _ => Err(format!(
+                "'{short}' is ambiguous -- matches {} networks ({}); use more characters",
+                matches.len(),
+                matches
+                    .iter()
+                    .map(|(name, key)| format!("{name} {}", key.fmt_short()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Join-request handlers (coordinator only)
     // -----------------------------------------------------------------------

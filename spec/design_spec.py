@@ -2501,6 +2501,60 @@ class LeaveArgumentRenamedToNetwork(Requirement):
     req_id = "CLI-VOCAB-001"
 
 
+class NukeKickResolveByNetworkShortId(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-002
+
+    `nuke` and `kick` stop resolving "which network" through the mutable
+    local display name (`self.networks.get(string)`, the same lookup
+    `leave`/`invite`/`admin` still use) and instead require the network's
+    own short id -- a prefix of its public key, matching the peer short-id
+    convention (`fmt_short()`, 10 hex chars). This is the mechanism gap
+    identified in `ADMIN-ADD-EASY-ID`'s follow-up addendum and
+    `CLI-VOCAB-001`'s deferred scope: a local alias is user/coordinator-
+    chosen, freely mutable, and can collide in meaning across networks --
+    unfit as the sole identifier for a destructive, hard-to-undo action.
+    There is deliberately no name/alias fallback: unlike peer resolution
+    (where `admin add` may resolve a friendlier hostname because it's
+    additive), both of these are destructive, so the short-id-only rule
+    is absolute.
+
+    New resolver: `MeshManager::resolve_network_short_id` (`daemon/mod.rs`,
+    next to `resolve_short_id_any_network`, which it mirrors structurally).
+    Rejects prefixes under 10 characters as too short, and rejects a prefix
+    matching more than one joined network as ambiguous -- same discipline as
+    the peer-side fix, applied to networks for the first time (previously
+    there was no network-resolution-by-cryptographic-identity path at all,
+    just the raw map lookup). Returns the resolved display name so
+    `nuke_network`/`kick_member`'s existing bodies, which are keyed off that
+    name throughout, need only a resolution step inserted at the top --
+    shadowing the parameter -- rather than a rewrite.
+
+    `tetron status` (`cli/status.rs`) now prints each network's short id
+    unconditionally (a new `id <short>` line, computed once per
+    `print_network` call and reused for both that line and the nuke-proposal
+    hint below) -- without this the feature has nothing to copy from.
+    Fixed two now-broken "run this command" hints that echoed the local
+    name back at the user: `nuke_network`'s own "have another coordinator
+    run `tetron nuke {name}`" message, and `status.rs`'s nuke-proposal
+    hint -- both now embed the short id instead, since the alias no longer
+    works as an argument to `nuke`.
+
+    `main.rs`'s `--help` text for `Nuke.name`/`Kick.network` corrected from
+    "Three-word network name"/"Network name" to explicitly say short id, not
+    local name -- leaving the old text would have been a doc-vs-behavior
+    lie, the same class of bug this session has spent most of its effort
+    finding elsewhere. The field *names* (`name`, `network`) are
+    deliberately left untouched -- renaming them is scoped to a later,
+    separate pass covering all five commands' `--flags` together, per the
+    user's explicit sequencing (internal mechanism first, user-facing
+    labels last).
+
+    Live multi-machine testing procedure to be defined in a follow-up
+    session; not yet performed as of this commit.
+    """
+    req_id = "CLI-VOCAB-002"
+
+
 # --------------------------------------------------------------------------
 # ADMIN-RECONNECT-CTRL: admin-grant must work after coordinator reconnect
 # --------------------------------------------------------------------------

@@ -201,6 +201,14 @@ fn print_network(net: &ipc::NetworkStatus) {
     let role = net.role.to_string();
     let dns_name = net.my_hostname.clone();
     let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
+    // The network's own short id (its public key, truncated the same way
+    // peer short ids are). `nuke`/`kick` require this, not the display name
+    // above — computed once here since both the id line and the nuke-
+    // proposal hint below need it.
+    let short_id: Option<String> = net
+        .network_key
+        .as_ref()
+        .map(|key| key.chars().take(10).collect());
     println!();
     print!("  {}  ·{role}·", net.name);
     if let Some(ref dns) = dns_name {
@@ -209,6 +217,12 @@ fn print_network(net: &ipc::NetworkStatus) {
     print!("   {}", net.my_ip);
     print!("   members {online}/{}", net.peers.len());
     println!();
+
+    // Shown unconditionally so it is always discoverable, unlike the "join"
+    // line below.
+    if let Some(ref short) = short_id {
+        println!("    id {short}");
+    }
 
     // Peer rows as text lines
     if net.peers.is_empty() {
@@ -235,12 +249,11 @@ fn print_network(net: &ipc::NetworkStatus) {
             .iter()
             .map(|p| p.short_id.as_str())
             .collect();
+        let id_hint = short_id.as_deref().unwrap_or(net.name.as_str());
         println!(
-            "    ! nuke proposed by {} ({}/2) — run `tetron nuke {}` to second, or `tetron nuke {} --cancel` to withdraw yours",
+            "    ! nuke proposed by {} ({}/2) — run `tetron nuke {id_hint}` to second, or `tetron nuke {id_hint} --cancel` to withdraw yours",
             ids.join(", "),
             net.nuke_proposals.len(),
-            net.name,
-            net.name,
         );
     }
 }

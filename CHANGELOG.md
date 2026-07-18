@@ -19,6 +19,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`tetron kick`/`admin add` could silently resolve an ambiguous or too-short peer-id prefix**: `resolve_short_id_any_network` accepted a prefix of any length and returned the first endpoint id that matched, with no check for a second match. Harmless for the additive `admin add`, but a real correctness bug for the destructive `kick`: a short or colliding prefix could silently act on the wrong member. Now rejects prefixes under 10 characters (the length `tetron status` already displays) as too short, and errors as ambiguous if more than one distinct peer matches, instead of guessing. A full endpoint id was already inherently unambiguous and needed no change.
 - **`tetron leave`'s positional argument renamed `name` → `network`**: matches `invite`/`admin`, which already used `network` for the identical lookup. Pure rename, no behavior change; `nuke` and `kick` keep their current field names for now, pending a separate, larger fix (see `DO-NOT-COMMIT/TODO.md`).
 
+### Changed
+
+- **`tetron nuke`/`tetron kick` now take a network's short id, not its local name**: both previously resolved "which network" through the same mutable, locally-chosen display name used by `leave`/`invite`/`admin` — unfit as the sole identifier for a destructive, hard-to-undo action (a stale or reused local name could point at the wrong network). Both now require the network's own short id instead (a prefix of its public key, no local-name fallback at all), matching the destructive-command discipline already applied to peer identifiers. `tetron status` gained a new `id <short>` line, printed unconditionally for every network, so the short id is always available to copy. `nuke`'s "have another coordinator run..." hint and `tetron status`'s pending-nuke-proposal hint were updated to suggest the short id instead of the now-unusable local name.
+
 ## [0.1.6] - 2026-07-16
 
 ### Added

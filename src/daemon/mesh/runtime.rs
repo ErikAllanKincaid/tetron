@@ -295,14 +295,19 @@ impl MeshManager {
     /// proposal. `second` optionally names (by short id) the specific proposal
     /// being seconded, for an explicit error if it doesn't match an active one
     /// rather than silently proposing fresh.
-    #[tracing::instrument(skip(self), fields(net = name))]
+    #[tracing::instrument(skip(self), fields(net = short_id))]
     pub(crate) async fn nuke_network(
         &self,
-        name: &str,
+        short_id: &str,
         force: bool,
         cancel: bool,
         second: Option<&str>,
     ) -> IpcMessage {
+        let name = match self.resolve_network_short_id(short_id) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let name = name.as_str();
         let my_id = self.endpoint.id();
         let (is_coordinator, has_other_members, coordinator_count) = {
             let handle = match self.networks.get(name) {
@@ -403,7 +408,7 @@ impl MeshManager {
             }
         }
 
-        let (dht_notify, net_secret_key, generation, active_count, snap_bytes) = {
+        let (dht_notify, net_secret_key, generation, active_count, snap_bytes, short_id) = {
             let handle = self.networks.get(name).unwrap();
             let mut state = handle.state.write().unwrap();
             state.nuke_proposals.insert(my_id.to_string(), now);
@@ -415,6 +420,7 @@ impl MeshManager {
                 state.generation,
                 active,
                 state.snapshot.as_ref().map(|s| s.msgpack_bytes.clone()),
+                handle.network_key.fmt_short().to_string(),
             )
         };
 
@@ -431,7 +437,7 @@ impl MeshManager {
             }
             return IpcMessage::Ok {
                 message: format!(
-                    "nuke proposed for '{name}' — {active_count}/2 coordinators required; have another coordinator run `tetron nuke {name}` to second"
+                    "nuke proposed for '{name}' — {active_count}/2 coordinators required; have another coordinator run `tetron nuke {short_id}` to second"
                 ),
             };
         }
@@ -526,7 +532,12 @@ impl MeshManager {
     /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
     /// closes its own link to the target immediately. Refused on open networks
     /// (the target would auto-re-join) and against coordinators / self.
-    pub(crate) async fn kick_member(&self, network: &str, peer: &str) -> IpcMessage {
+    pub(crate) async fn kick_member(&self, network_short_id: &str, peer: &str) -> IpcMessage {
+        let network = match self.resolve_network_short_id(network_short_id) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         let (state, dht_notify, has_key, mode) = match self.networks.get(network) {
             Some(h) => {
                 let (has_key, mode) = {

@@ -92,7 +92,7 @@ pub(crate) enum Command {
     /// distinct coordinators have proposed within the last 24h, the
     /// network is destroyed.
     Nuke {
-        /// Three-word network name
+        /// Network's short id (see `tetron status`) -- not its local name
         name: String,
         /// Force destroy even if other members exist
         #[arg(long)]
@@ -107,7 +107,7 @@ pub(crate) enum Command {
     /// Remove a member from a closed network (coordinator only)
     #[command(visible_alias = "boot")]
     Kick {
-        /// Network name
+        /// Network's short id (see `tetron status`) -- not its local name
         network: String,
         /// Endpoint id (short id from `tetron status`) of the member to kick
         peer: String,
