@@ -312,21 +312,55 @@ pub async fn route_peer_range(
     // `10.88.0.0/24` — found 2026-07-17, fixed 2026-07-18, same bug shape as
     // MULTISEG-007's join-side IP derivation). Now takes the network's own
     // subnet and formats its real CIDR instead.
+    // MACOS-002: route(8)'s exit code alone doesn't say enough to debug a
+    // route that silently doesn't take effect (found live 2026-07-18
+    // diagnosing MACOS-001: the identical `route add` invoked manually as
+    // root worked, but the daemon's own execution of it reported success
+    // with no route resulting — `.status()` alone can't distinguish "really
+    // succeeded" from "exited 0 but the OS didn't actually do what we
+    // asked"). Both delete and add now use `.output()` and log the real
+    // stdout/stderr, not just the exit code.
     let (base, prefix) = subnet;
     let v4_net = format!("{base}/{prefix}");
     let v6_net = format!("{network_prefix}/{prefix_len}");
     for (family, net) in [("-inet", v4_net.as_str()), ("-inet6", v6_net.as_str())] {
-        let _ = Command::new("route")
+        let del = Command::new("route")
             .args(["-n", "delete", family, "-net", net, "-interface", tun_name])
-            .status();
-        let status = Command::new("route")
+            .output();
+        match del {
+            Ok(out) => tracing::debug!(
+                family,
+                net,
+                status = %out.status,
+                stdout = %String::from_utf8_lossy(&out.stdout).trim(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "route delete (pre-add cleanup, failure here is normal)"
+            ),
+            Err(e) => tracing::debug!(family, net, error = %e, "route delete failed to spawn"),
+        }
+
+        let add = Command::new("route")
             .args(["-n", "add", family, "-net", net, "-interface", tun_name])
-            .status()
-            .with_context(|| format!("run route add {family} {net}"))?;
-        anyhow::ensure!(
-            status.success(),
-            "route add {family} {net} failed with {status}"
-        );
+            .output()
+            .with_context(|| format!("spawn route add {family} {net}"))?;
+        let add_stdout = String::from_utf8_lossy(&add.stdout).trim().to_string();
+        let add_stderr = String::from_utf8_lossy(&add.stderr).trim().to_string();
+        if add.status.success() {
+            tracing::debug!(family, net, stdout = %add_stdout, "route add succeeded");
+        } else {
+            tracing::warn!(
+                family,
+                net,
+                status = %add.status,
+                stdout = %add_stdout,
+                stderr = %add_stderr,
+                "route add reported failure"
+            );
+            anyhow::bail!(
+                "route add {family} {net} failed with {}: {add_stderr}",
+                add.status
+            );
+        }
     }
     Ok(())
 }

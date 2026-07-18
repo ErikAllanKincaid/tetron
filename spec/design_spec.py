@@ -3808,3 +3808,50 @@ class MacosRoutePeerRangeUsesActualSubnet(Requirement):
     """
     req_id = "MACOS-001"
 
+
+# --------------------------------------------------------------------------
+# MACOS-002: capture real route(8) output instead of only its exit code
+# --------------------------------------------------------------------------
+
+class MacosRouteCommandOutputCaptured(Requirement):
+    """REQUIREMENT-ID: MACOS-002
+
+    Found live 2026-07-18 diagnosing `MACOS-001` on real Apple Silicon
+    hardware: even after that fix, a `tetron down` / `tetron up` cycle
+    left the network's IPv4 peer route missing from the routing table,
+    silently breaking outbound connectivity (inbound still worked — the
+    forwarder's inbound path has no destination check and writes straight
+    to the TUN regardless of routing, so only *outbound* traffic showed
+    the symptom, and the daemon logged no error at all). Manually running
+    the *exact same* `route -n add -inet -net <cidr> -interface <tun>`
+    command as root, standalone, worked correctly and the route appeared.
+    So the command is right; something about the daemon's own execution
+    of it differs, and `route_peer_range`'s exit-code-only check
+    (`.status()`, discarding stdout/stderr) couldn't distinguish "really
+    succeeded" from "exited 0 but the OS didn't do what was asked" —
+    there was no way to see what actually happened.
+
+    **Fix (observability only, not a behavior fix):** `route_peer_range`'s
+    macOS variant now uses `.output()` instead of `.status()` for both
+    the pre-add `delete` and the `add` themselves, logging the real exit
+    status, stdout, and stderr — `debug` level for the delete (failure
+    there is normal, it's cleaning up a possibly-nonexistent stale route)
+    and for a successful add, `warn` level with the full output on a
+    failed add (replacing the old bare `anyhow::ensure!` that discarded
+    whatever `route(8)` actually printed).
+
+    **Deliberately scoped narrow**: this is the one code path currently
+    being live-debugged, not a sweep of every `Command::new(...).status()`
+    call in `tun.rs` (e.g. `route_self_loopback` has the identical
+    blind-exit-code pattern and is not touched here) — logged as a
+    follow-up, not done now, since widening scope here would slow down
+    the actual diagnosis this exists to unblock.
+
+    Found: 2026-07-18, live-debugging `MACOS-001` on real Apple Silicon
+    hardware (M1 MacBook Pro) after the fix alone didn't restore
+    connectivity across a down/up cycle. Root cause of *why* the daemon's
+    own route add doesn't take effect is still open — this requirement
+    only adds the visibility needed to find it.
+    """
+    req_id = "MACOS-002"
+
