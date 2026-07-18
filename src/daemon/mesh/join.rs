@@ -71,6 +71,15 @@ pub(crate) struct JoinParams {
     /// from it (found live-testing MULTISEG-002..006: a `--subnet`-diverging
     /// network's join persisted the wrong `my_ip` to config).
     pub(crate) my_ip: Ipv4Addr,
+    /// This network's own subnet (MULTISEG-001/004), already resolved by the
+    /// caller from the fetched blob. Threaded through to `build_member_state`
+    /// instead of that function defaulting to the node-wide subnet
+    /// (`config::node_subnet()`) — a stale SUBNET-010-era assumption from
+    /// before multi-segment TUN made subnets per-network. Every other
+    /// `NetworkState` construction site was updated for this during
+    /// `MULTISEG-004`; this one was missed (found live 2026-07-18 debugging
+    /// `MACOS-001`).
+    pub(crate) network_subnet: crate::membership::Subnet,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,6 +124,7 @@ pub(crate) async fn join_mesh_shared(
         transport,
         initial,
         my_ip,
+        network_subnet,
     } = params;
     let my_identity = identity.local_identity();
 
@@ -209,6 +219,7 @@ pub(crate) async fn join_mesh_shared(
         invites,
         nuke_proposals,
         generation,
+        network_subnet,
         &blob_store,
     )
     .await;
@@ -331,6 +342,7 @@ async fn build_member_state(
     invites: BTreeMap<String, crate::membership::InviteEntry>,
     nuke_proposals: BTreeMap<String, u64>,
     generation: u64,
+    subnet: crate::membership::Subnet,
     blob_store: &FsStore,
 ) -> SharedNetworkState {
     let mut ns = NetworkState {
@@ -342,10 +354,13 @@ async fn build_member_state(
         network_public_key: net_pubkey,
         network_name: Some(network_name.to_string()),
         mode: GroupMode::Restricted,
-        // SUBNET-010: single-TUN node — subnet comes from the persisted node
-        // cache (set when this network was joined; default until then), not the
-        // network record.
-        subnet: crate::config::node_subnet(),
+        // MULTISEG-004: this network's own subnet, already resolved by the
+        // caller from the fetched blob — not the node-wide default
+        // (see JoinParams::network_subnet's doc comment for how this was
+        // found: found live 2026-07-18, this site was missed during the
+        // original MULTISEG-004 sweep even though every other NetworkState
+        // construction site was updated).
+        subnet,
         reusable_keys,
         invites,
         nuke_proposals,

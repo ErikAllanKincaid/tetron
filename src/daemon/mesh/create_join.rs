@@ -1069,6 +1069,7 @@ impl MeshManager {
                 transport: ctx.transport.clone(),
                 initial,
                 my_ip: ctx.my_ip,
+                network_subnet: ctx.network_subnet,
             },
             disconnect_tx.clone(),
             cancel.clone(),

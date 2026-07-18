@@ -3855,3 +3855,62 @@ class MacosRouteCommandOutputCaptured(Requirement):
     """
     req_id = "MACOS-002"
 
+
+# --------------------------------------------------------------------------
+# MULTISEG-008: member-side NetworkState subnet still defaulted to the
+# node-wide subnet — one MULTISEG-004 call site the original sweep missed
+# --------------------------------------------------------------------------
+
+class MemberJoinNetworkStateSubnetFixed(Requirement):
+    """REQUIREMENT-ID: MULTISEG-008
+
+    `MACOS-002`'s new logging found the actual root cause behind
+    `MACOS-001` still not restoring IPv4 connectivity across a `tetron
+    down`/`up` cycle on macOS: `route_peer_range` was correctly threading
+    through whatever subnet it was given, but the subnet it was *given*
+    was wrong. `daemon/mesh/join.rs`'s `build_member_state` — the
+    function that builds a joining/reconnecting **member**'s live
+    `NetworkState` — still constructed it with `subnet:
+    crate::config::node_subnet()` (the node-wide default), a leftover
+    from before multi-segment TUN existed (its own comment said so
+    explicitly: `"SUBNET-010: single-TUN node — subnet comes from the
+    persisted node cache ... not the network record"`).
+
+    Every *other* `NetworkState` construction site was updated during
+    `MULTISEG-004`'s sweep to use the network's own resolved subnet
+    instead (`create_network_inner`, `restore_coordinator_network`, the
+    DHT-fallback and try-fetch member paths in `create_join.rs`) — this
+    one, reached only via the live member join/reconnect path
+    (`join_mesh_shared` → `build_member_state`), was missed. Not
+    macOS-specific at all: this is a data-model bug in the daemon's
+    in-memory state, present on every platform. It went unnoticed until
+    now for two independent reasons: (1) on Linux, IPv4's connected route
+    is installed automatically by the kernel from the interface's own
+    address/netmask — `route_peer_range`'s Linux variant never reads its
+    `subnet` parameter at all, so a wrong `NetworkState.subnet` had no
+    IPv4 symptom there; (2) IPv6's routing (`IPV6-003`) derives its
+    prefix from `network_key`, never from `subnet`, so it was unaffected
+    either way. `MACOS-001` was the first code path on any platform to
+    actually *read* `NetworkState.subnet` for something user-visible
+    outside of admission bookkeeping, which is what finally surfaced this.
+
+    **Fix:** `JoinParams` gained a `network_subnet: crate::membership::Subnet`
+    field, populated from `JoinContext.network_subnet` (already correctly
+    resolved by the caller before dialing, per `MULTISEG-007`'s `my_ip`
+    fix — the exact same pattern, same missing thread, same root cause
+    class). `build_member_state` now takes `subnet` as a parameter
+    instead of computing its own default.
+
+    Found: 2026-07-18, live-debugging `MACOS-001`/`MACOS-002` on real
+    Apple Silicon hardware (M1 MacBook Pro) — a `tetron down`/`up` cycle
+    on a member of a subnet-diverging network installed a route for the
+    *node's default* subnet instead of that network's actual one, so
+    outbound IPv4 traffic had no working route (inbound still worked,
+    since the forwarder's inbound path has no destination/routing
+    dependency). Not yet re-verified live after this fix — that's the
+    immediate next step, same M1 hardware, same reproduction (join a
+    subnet-diverging network, `down`, `up`, confirm the route now matches
+    the network's real subnet and IPv4 connectivity survives the cycle).
+    """
+    req_id = "MULTISEG-008"
+
