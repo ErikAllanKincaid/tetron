@@ -1786,6 +1786,13 @@ class HostnameDefaultsToMachineHostname(Requirement):
     Found: 2026-07-17, logged as a TODO note earlier the same session,
     implemented same-day at the user's request as part of the CLI
     flags-and-defaults review.
+
+    **Verified live, 2026-07-17,** on 3 bare-metal machines (aorus, xps,
+    x10sra). aorus's real OS hostname (`590I-AORUS-ULTRA`, mixed case) came
+    up as `590i-aorus-ultra` in `tetron status` with no `--hostname` passed;
+    xps joined the same way and showed as `xps-17-9720` on both its own
+    status and the coordinator's roster view, confirming the sanitized
+    hostname round-trips correctly through the signed roster.
     """
     req_id = "HOSTNAME-001"
 
@@ -2605,8 +2612,16 @@ class NukeKickResolveByNetworkShortId(Requirement):
     user's explicit sequencing (internal mechanism first, user-facing
     labels last).
 
-    Live multi-machine testing procedure to be defined in a follow-up
-    session; not yet performed as of this commit.
+    **Verified live, 2026-07-17,** on 3 bare-metal machines (aorus, xps,
+    x10sra): `nuke`/`kick` given the old alias both correctly errored
+    `could not resolve network '<alias>'` instead of falling back to the
+    name lookup; given the short id both resolved correctly (`nuke
+    --cancel` reached the real solo-coordinator rejection; `kick` actually
+    removed xps from the roster, confirmed on both sides and via
+    CONVERGE-003's self-removal on the kicked node). A prefix under 10
+    characters was correctly rejected as too short on both commands. Final
+    `tetron nuke <short-id> --force` cleanly destroyed the test network; TUN
+    device count stayed at 1 on all three machines throughout.
     """
     req_id = "CLI-VOCAB-002"
 
