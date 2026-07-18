@@ -352,6 +352,36 @@ pub fn set_link_down(tun_name: &str) -> Result<()> {
     set_link_state(tun_name, false)
 }
 
+/// Explicitly destroy a TUN device (MULTISEG-003). Before per-network TUN
+/// teardown existed, the code relied entirely on the kernel auto-removing a
+/// non-persistent TUN once the owning process's last fd closed — fine when
+/// there was exactly one TUN, alive for the daemon's whole life, but stale
+/// devices have been observed surviving daemon restarts/crashes in practice
+/// (the "TUN-CLEANUP" procedural workaround this replaces). Per-network
+/// teardown (`leave`/`nuke`/kick-of-self) now runs mid-process, with other
+/// networks' devices still live, so an explicit, synchronous delete here is
+/// the belt to the fd-close-triggers-cleanup suspenders rather than relying
+/// solely on timing.
+#[cfg(target_os = "linux")]
+pub fn delete(tun_name: &str) -> Result<()> {
+    let status = Command::new("ip")
+        .args(["link", "delete", tun_name])
+        .status()
+        .context("run ip link delete")?;
+    anyhow::ensure!(status.success(), "ip link delete failed with {status}");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn delete(tun_name: &str) -> Result<()> {
+    let status = Command::new("ifconfig")
+        .args([tun_name, "destroy"])
+        .status()
+        .context("run ifconfig destroy")?;
+    anyhow::ensure!(status.success(), "ifconfig destroy failed with {status}");
+    Ok(())
+}
+
 #[cfg(not(target_os = "android"))]
 fn set_link_state(tun_name: &str, up: bool) -> Result<()> {
     #[cfg(target_os = "macos")]

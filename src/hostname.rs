@@ -46,11 +46,11 @@ pub fn sanitize_hostname(raw: &str) -> Option<String> {
     let first_label = raw.split('.').next().unwrap_or(raw);
     let cleaned: String = first_label
         .chars()
-        .filter_map(|c| {
+        .map(|c| {
             if c.is_ascii_alphanumeric() {
-                Some(c.to_ascii_lowercase())
+                c.to_ascii_lowercase()
             } else {
-                Some('-')
+                '-'
             }
         })
         .collect();

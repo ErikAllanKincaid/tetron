@@ -102,12 +102,15 @@ pub type DaemonState = MeshManager;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
-/// Node-wide shared handles, cloned into every per-network accept handler and
-/// background task. Every field is a cheap `Clone` — an `Arc`-backed handle, a
-/// channel sender, or a small wrapper — so the whole bundle is cloned by value
-/// instead of threaded as a dozen separate arguments/struct fields. Built once
-/// per daemon via [`MeshManager::mesh_ctx`]; a new daemon-wide dependency is one
-/// field here rather than one parameter at every call site.
+/// Shared handles for one network's accept handlers and background tasks.
+/// Every field is a cheap `Clone` — an `Arc`-backed handle, a channel sender,
+/// or a small wrapper — so the whole bundle is cloned by value instead of
+/// threaded as a dozen separate arguments/struct fields. `identity`/`stats`/
+/// `blob_store`/`pruned_peers` are genuinely daemon-wide; `peers`/`tun_tx` are
+/// that network's own (MULTISEG-002 moved these off the daemon onto each
+/// [`NetworkHandle`], so a `MeshCtx` is now built per network — either freshly
+/// (before the handle exists, at create/join/restore) or via
+/// [`MeshManager::mesh_ctx_for`] (after it exists, at promotion).
 #[derive(Clone)]
 pub(crate) struct MeshCtx {
     identity: IrohIdentityProvider,
@@ -292,6 +295,10 @@ impl NetworkState {
 /// when the network is left or the VPN is put on standby. The persisted config
 /// (in `networks.toml`) outlives this handle — standby tears down the handle
 /// but keeps the config so `activate` can rebuild it.
+///
+/// **MULTISEG-002:** each network owns its own data-plane bundle (`peers`,
+/// `tun_name`, `tun_tx`, `tun_tasks`) instead of sharing one daemon-wide copy
+/// — see that requirement in `spec/design_spec.py` for the full rationale.
 #[allow(dead_code)]
 pub struct NetworkHandle {
     name: String,
@@ -312,6 +319,24 @@ pub struct NetworkHandle {
     /// promoted to coordinator (via `AdminGrant`) can re-register a
     /// [`CoordinatorAcceptState`] on the live channel without rebuilding it.
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
+    /// This network's own routing table (MULTISEG-002). Populated as soon as
+    /// the handle exists, independent of whether a TUN is attached yet — a
+    /// headless embedder can accept/join before calling `attach_tun`, same as
+    /// the pre-multi-segment daemon-wide table was usable before boot's single
+    /// `attach_tun` call.
+    peers: PeerTable,
+    /// Name of this network's OS TUN device (desktop), or a placeholder until
+    /// `attach_tun` runs. See `MeshManager.tun_name`'s pre-MULTISEG-002 doc
+    /// comment for why this is interior-mutable.
+    tun_name: std::sync::Mutex<String>,
+    /// Sender half of this network's TUN write channel, in a swappable cell.
+    /// See `MeshManager::attach_tun`'s doc comment (pre-MULTISEG-002) for the
+    /// fresh-channel-per-attach mechanism this enables; now per-network rather
+    /// than daemon-wide.
+    tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
+    /// Handles for this network's packet-forwarding tasks, spawned by
+    /// [`MeshManager::attach_tun`].
+    tun_tasks: std::sync::Mutex<Option<TunTasks>>,
 }
 
 /// Shared, always-on daemon state. Cloned (via `Arc`) into every IPC handler
@@ -334,29 +359,11 @@ struct TunTasks {
 pub struct MeshManager {
     endpoint: Endpoint,
     identity: IrohIdentityProvider,
-    peers: PeerTable,
     stats: Arc<ForwardMetrics>,
-    /// Sender half of the current TUN write channel, in a swappable cell.
-    /// [`DaemonState::attach_tun`] creates a fresh channel on every attach and
-    /// stores the new sender here, so incoming send-sites (peer readers)
-    /// always resolve the live writer via `tun_tx.load()`. This is
-    /// what makes the VPN off/on toggle work: `detach_tun` stops the writer, and
-    /// the next `attach_tun` swaps in a new sender feeding a fresh writer. On
-    /// desktop the daemon attaches exactly once, so the cell holds one sender for
-    /// its whole life and is never swapped.
-    tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     networks: Arc<DashMap<String, NetworkHandle>>,
     shutdown_token: CancellationToken,
     blob_store: FsStore,
     protocol_router: Arc<ProtocolRouter>,
-    /// Name of the OS TUN device (desktop) or a placeholder until a packet
-    /// interface is attached. Interior-mutable because on embedders (mobile) the
-    /// interface is attached after construction via [`MeshManager::attach_tun`],
-    /// while on desktop it is set once at boot.
-    tun_name: std::sync::Mutex<String>,
-    /// Handles for the packet-forwarding tasks spawned by
-    /// [`MeshManager::attach_tun`], kept so a future `down()`/detach can stop them.
-    tun_tasks: std::sync::Mutex<Option<TunTasks>>,
     /// Promotion-channel receiver drained by [`serve_ipc`]. Stored here so the
     /// headless builder can construct the daemon and hand the receiver back to
     /// [`run_daemon`] afterwards.
@@ -438,16 +445,101 @@ impl MeshManager {
         self.endpoint.close().await;
     }
 
-    /// Bundle the daemon-wide shared handles into a [`MeshCtx`] for the accept
-    /// handlers and background tasks. Every field is a cheap `Clone`.
-    pub(crate) fn mesh_ctx(&self) -> MeshCtx {
-        MeshCtx {
+    /// Bundle an existing network's own data-plane handles into a [`MeshCtx`]
+    /// (MULTISEG-002). Used only where the [`NetworkHandle`] already exists in
+    /// `self.networks` — [`promote_to_coordinator`], the only post-creation
+    /// caller. Every other `MeshCtx` construction site builds one directly
+    /// from a freshly created `peers`/`tun_tx` pair, before the handle exists
+    /// (see `create_network_inner`/`join_network_inner`/
+    /// `restore_coordinator_network`).
+    pub(crate) fn mesh_ctx_for(&self, network: &str) -> Option<MeshCtx> {
+        let handle = self.networks.get(network)?;
+        Some(MeshCtx {
             identity: self.identity.clone(),
-            peers: self.peers.clone(),
-            tun_tx: self.tun_tx.clone(),
+            peers: handle.peers.clone(),
+            tun_tx: handle.tun_tx.clone(),
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
+        })
+    }
+
+    /// Refresh the peer address cache (CACHE-001) from every network's own
+    /// routing table. MULTISEG-002 moved `PeerTable` off the daemon onto each
+    /// `NetworkHandle`, so this now iterates `self.networks` instead of
+    /// reading one daemon-wide table.
+    pub(crate) fn refresh_peer_cache(&self) {
+        for entry in self.networks.iter() {
+            crate::peercache::refresh_from_peers(&entry.value().peers);
+        }
+    }
+
+    /// Build a fresh, empty per-network data-plane bundle (MULTISEG-002): a new
+    /// `PeerTable` and a placeholder `tun_tx` cell (its receiver dropped
+    /// immediately — no real channel exists until `attach_tun` creates one).
+    /// Used by `create_network_inner`/`join_network_inner`/
+    /// `restore_coordinator_network` to build this network's own `MeshCtx`
+    /// before its `NetworkHandle` exists in `self.networks` — mirrors the
+    /// placeholder `build_daemon` used to set up once, daemon-wide.
+    pub(crate) fn new_network_data_plane(
+        &self,
+    ) -> (PeerTable, Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>) {
+        let peers = PeerTable::new();
+        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+        let tun_tx = Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx));
+        (peers, tun_tx)
+    }
+
+    /// Create `network`'s own OS TUN device and attach it (MULTISEG-003) —
+    /// desktop-only, the per-network counterpart of what `run_daemon` used to
+    /// do once, daemon-wide, at boot. Non-fatal on failure (logged): the
+    /// network still exists with its control plane connected, just without a
+    /// data plane, matching `activate()`'s existing "warn, don't fail" pattern
+    /// for TUN problems.
+    ///
+    /// If the VPN is already active (`self.active`), also brings this
+    /// network's link up and installs its routes immediately, rather than
+    /// waiting for a future `activate()` call — needed for `tetron join`/
+    /// `create` while already up, and for a restore whose attach lands after
+    /// boot's one `activate(None)` call already ran. This does not fully
+    /// close the boot-time race: `connect_all_networks` fires each restore as
+    /// a detached task, so in principle one could reach this check a moment
+    /// before `activate()`'s own `self.active` swap — in practice the DHT
+    /// round-trip every restore does first makes that swap complete long
+    /// before any restore reaches here, but it is not a hard guarantee.
+    /// Flagged, not fixed here: closing it fully would mean awaiting every
+    /// restore before `run_daemon` proceeds, undoing the fire-and-forget
+    /// design `connect_all_networks` deliberately uses so one dead network
+    /// can't delay the others.
+    #[cfg(not(target_os = "android"))]
+    pub(crate) async fn create_and_attach_network_tun(
+        self: &Arc<Self>,
+        network: &str,
+        my_ip: Ipv4Addr,
+        subnet: crate::membership::Subnet,
+    ) {
+        let my_ipv6 = derive_ipv6(&self.identity.local_identity());
+        match tun::create(my_ip, my_ipv6, subnet).await {
+            Ok((reader, writer, tun_name)) => {
+                if let Some(handle) = self.networks.get(network) {
+                    *handle.tun_name.lock().unwrap() = tun_name.clone();
+                }
+                self.attach_tun(network, reader, writer).await;
+                if self.active.load(Ordering::SeqCst) {
+                    if let Err(e) = tun::set_link_up(&tun_name) {
+                        tracing::warn!(network, error = %e, "failed to bring newly attached TUN up");
+                    }
+                    if let Err(e) = tun::route_peer_range(&tun_name).await {
+                        tracing::warn!(network, error = %e, "failed to route peer range into newly attached TUN");
+                    }
+                    if let Err(e) = tun::route_self_loopback(my_ip, my_ipv6).await {
+                        tracing::warn!(network, error = %e, "failed to install loopback self-route");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(network, error = %e, "failed to create TUN device for network");
+            }
         }
     }
 
@@ -461,40 +553,55 @@ impl MeshManager {
         self.endpoint.set_alpns(alpns);
     }
 
-    /// Attach a packet interface to a headless [`DaemonState`] and start the data
-    /// plane's forwarding tasks: the TUN writer (`spawn_tun_writer`) and the mesh
-    /// forwarding loop (`run_mesh`, reading `reader` and using the state's
-    /// peers/stats).
+    /// Attach a packet interface to one network and start that network's data
+    /// plane forwarding tasks: the TUN writer (`spawn_tun_writer`) and the mesh
+    /// forwarding loop (`run_mesh`, reading `reader` and using that network's own
+    /// `peers`/the daemon's shared `stats`).
+    ///
+    /// **MULTISEG-003:** this is a per-network operation, not a per-daemon one —
+    /// `network` must already have a [`NetworkHandle`] in `self.networks` (a
+    /// no-op, logged, if it doesn't). Desktop calls this once per network, right
+    /// after that network's own `tun::create()` succeeds (in
+    /// `create_network_inner`/`finalize_join`/`restore_coordinator_network`),
+    /// mirroring the pre-MULTISEG-003 single daemon-wide call in `run_daemon`.
+    /// An embedder (mobile) calls it once per network with that network's own
+    /// packet interface.
     ///
     /// A fresh `tun_tx`/`tun_rx` channel is created on every call: the new
-    /// receiver feeds the writer, and the new sender is stored in the `tun_tx`
-    /// cell so incoming send-sites (peer readers) resolve the live
-    /// writer via `tun_tx.load()`. This makes re-attach work: after a
-    /// [`detach_tun`] the next `attach_tun` swaps in a new sender and a new writer,
-    /// so forwarding resumes. This is the exact VPN off/on toggle path on Android.
+    /// receiver feeds the writer, and the new sender is stored in the network's
+    /// `tun_tx` cell so incoming send-sites (that network's peer readers) resolve
+    /// the live writer via `tun_tx.load()`. This makes re-attach work: after a
+    /// [`detach_tun`] the next `attach_tun` for the same network swaps in a new
+    /// sender and a new writer, so forwarding resumes. This is the exact VPN
+    /// off/on toggle path on Android.
     ///
-    /// This is the embedding API and is also how `run_daemon` wires the
-    /// desktop OS TUN device. The forwarding
-    /// loop runs under a child of `shutdown_token`, and its handles are stored so a
-    /// later `down()`/detach can stop the data plane without tearing down the whole
-    /// daemon. Desktop attaches exactly once, so the cell is never swapped there.
+    /// The forwarding loop runs under a child of `shutdown_token`, and its
+    /// handles are stored on the `NetworkHandle` so a later `down()`/detach can
+    /// stop that network's data plane without tearing down the whole daemon.
+    /// Desktop attaches each network exactly once, so its cell is never swapped.
     pub async fn attach_tun<R: crate::tun::TunRead, W: crate::tun::TunWrite>(
         self: &Arc<Self>,
+        network: &str,
         reader: R,
         writer: W,
     ) {
+        let Some(handle) = self.networks.get(network) else {
+            tracing::warn!(network, "attach_tun: network not active, ignoring");
+            return;
+        };
+
         // Fresh channel per attach. The previous writer (if any) was torn down by
         // `detach_tun`, which dropped the old receiver; swapping in the new sender
         // reconnects every incoming send-site to this writer.
         let (new_tx, new_rx) = mpsc::channel::<Bytes>(256);
-        self.tun_tx.store(Arc::new(new_tx.clone()));
+        handle.tun_tx.store(Arc::new(new_tx.clone()));
 
         // A dedicated child token so the data plane can be stopped independently
         // of a full daemon shutdown; it still cancels when `shutdown_token` does.
         let cancel = self.shutdown_token.child_token();
         let writer_handle = forward::spawn_tun_writer(writer, new_rx, self.active.clone());
         let mesh_handle = {
-            let peers = self.peers.clone();
+            let peers = handle.peers.clone();
             let cancel = cancel.clone();
             let stats = self.stats.clone();
             tokio::spawn(async move {
@@ -504,18 +611,19 @@ impl MeshManager {
             })
         };
 
-        // Self-healing: if `attach_tun` is called twice without an intervening
-        // `detach_tun`, stop the previous data plane before installing the new
-        // one. `JoinHandle::drop` detaches rather than aborts, so without this
-        // the old writer + `run_mesh` loop would keep running forever on the old
-        // fds (a leak of two live mesh loops). On the normal detach->attach path
-        // `detach_tun` already took the old tasks, so `replace` returns `None`.
+        // Self-healing: if `attach_tun` is called twice for the same network
+        // without an intervening `detach_tun`, stop the previous data plane
+        // before installing the new one. `JoinHandle::drop` detaches rather than
+        // aborts, so without this the old writer + `run_mesh` loop would keep
+        // running forever on the old fds (a leak of two live mesh loops). On the
+        // normal detach->attach path `detach_tun` already took the old tasks, so
+        // `replace` returns `None`.
         let new_tasks = TunTasks {
             cancel,
             writer: writer_handle,
             mesh: mesh_handle,
         };
-        let old = self.tun_tasks.lock().unwrap().replace(new_tasks);
+        let old = handle.tun_tasks.lock().unwrap().replace(new_tasks);
         if let Some(old) = old {
             old.cancel.cancel();
             old.writer.abort();
@@ -523,18 +631,27 @@ impl MeshManager {
         }
     }
 
-    /// Part of the embedding API: stop the packet-forwarding data plane
+    /// Part of the embedding API: stop `network`'s packet-forwarding data plane
     /// started by [`attach_tun`] (the TUN writer and
-    /// the `run_mesh` reader loop) WITHOUT tearing down the control plane. The
-    /// iroh endpoint and every network connection stay live, so the node remains
-    /// reachable to peers and keeps receiving roster/blob updates; only local
-    /// packet forwarding over the attached interface stops. Cancelling the loop's
+    /// the `run_mesh` reader loop) WITHOUT tearing down the control plane. That
+    /// network's connections stay live, so the node remains reachable to its
+    /// peers and keeps receiving roster/blob updates; only local packet
+    /// forwarding over the attached interface stops. Cancelling the loop's
     /// child token and aborting the tasks drops the reader/writer, closing the
-    /// underlying fds. Idempotent: a no-op if no interface is attached.
-    pub fn detach_tun(&self) {
-        self.active
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(tasks) = self.tun_tasks.lock().unwrap().take() {
+    /// underlying fds. Idempotent: a no-op if no interface is attached, or if
+    /// `network` isn't active.
+    ///
+    /// **MULTISEG-003:** unlike [`activate`]/[`deactivate`] (the global,
+    /// all-networks `Up`/`Down` data-plane toggle, which flips the shared
+    /// `active` flag every forwarding task already reads), this only tears
+    /// down `network`'s own forwarding tasks — it deliberately does not touch
+    /// `active`, since detaching one network's interface must not silently
+    /// mark every other network's data plane inactive too.
+    pub fn detach_tun(&self, network: &str) {
+        let Some(handle) = self.networks.get(network) else {
+            return;
+        };
+        if let Some(tasks) = handle.tun_tasks.lock().unwrap().take() {
             tasks.cancel.cancel();
             tasks.writer.abort();
             tasks.mesh.abort();
@@ -550,6 +667,11 @@ impl MeshManager {
     /// swap; the caller is responsible for spawning the `disconnect_rx` cleanup
     /// task **before** calling this so the channel is live when the first
     /// incoming connection arrives.
+    /// **MULTISEG-002:** `ctx` is this network's own [`MeshCtx`] (built from its
+    /// `peers`/`tun_tx`, not a daemon-wide one) — the caller supplies it because
+    /// at create/restore time the `NetworkHandle` doesn't exist in
+    /// `self.networks` yet (so [`mesh_ctx_for`] can't look it up); at
+    /// promote-to-coordinator time it does, and the caller uses `mesh_ctx_for`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_coordinator_handler(
         &self,
@@ -559,11 +681,12 @@ impl MeshManager {
         network_key: EndpointId,
         disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
         cancel: CancellationToken,
+        ctx: MeshCtx,
     ) {
         self.protocol_router.register(
             transport::network_alpn(&network_key),
             AcceptHandler::Coordinator(Arc::new(CoordinatorAcceptState {
-                ctx: self.mesh_ctx(),
+                ctx,
                 network_name: network.to_string(),
                 state,
                 disconnect_tx,
@@ -603,7 +726,12 @@ impl MeshManager {
                 h.cancel.clone(),
             )
         }; // DashMap ref dropped before the registration below.
-        self.register_coordinator_handler(network, parts.0, parts.1, parts.2, parts.3, parts.4);
+        let Some(ctx) = self.mesh_ctx_for(network) else {
+            return;
+        };
+        self.register_coordinator_handler(
+            network, parts.0, parts.1, parts.2, parts.3, parts.4, ctx,
+        );
         self.refresh_alpns().await;
         tracing::info!(network, "promoted to coordinator accept handler");
     }
@@ -1301,12 +1429,62 @@ mod headless_tests {
             .expect("build_headless should not hang")
             .expect("build_headless should succeed");
 
+        // MULTISEG-002: `attach_tun` is per-network now, so this test needs a
+        // `NetworkHandle` to attach to. `build_headless` builds a daemon with no
+        // saved networks, so insert a bare-bones one directly rather than going
+        // through the real `create_network` (which would also try to create a
+        // genuine OS TUN device, publish to the DHT, and mint an invite — heavy
+        // side effects this test doesn't want and a sandboxed test runner may
+        // lack permission for). Same-module access lets the test build the
+        // private `NetworkHandle` fields directly.
+        const NET: &str = "test-net";
+        {
+            let net_secret = SecretKey::from_bytes(&[9u8; 32]);
+            let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+            let (disconnect_tx, _disconnect_rx) =
+                mpsc::channel::<forward::DisconnectEvent>(1);
+            daemon.networks.insert(
+                NET.to_string(),
+                NetworkHandle {
+                    name: NET.to_string(),
+                    network_key: net_secret.public(),
+                    role: NetworkRole::Coordinator,
+                    my_ip: daemon.identity.local_ip(),
+                    state: Arc::new(RwLock::new(NetworkState {
+                        generation: 0,
+                        members: MemberList::new(),
+                        approved: ApprovedList::new(),
+                        snapshot: None,
+                        network_secret_key: None,
+                        network_public_key: net_secret.public(),
+                        network_name: Some(NET.to_string()),
+                        mode: GroupMode::Restricted,
+                        subnet: default_subnet(),
+                        reusable_keys: BTreeMap::new(),
+                        invites: BTreeMap::new(),
+                        nuke_proposals: BTreeMap::new(),
+                    })),
+                    dht_notify: None,
+                    cancel: CancellationToken::new(),
+                    tasks: Vec::new(),
+                    disconnect_tx,
+                    peers: PeerTable::new(),
+                    tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                    tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                    tun_tasks: std::sync::Mutex::new(None),
+                },
+            );
+        }
+
         use std::sync::atomic::Ordering;
 
         // Helper: send one packet through the same `tun_tx` cell the peer-reader
         // and DNS-injection paths use, then wait for the given writer to see it.
         async fn send_pkt(daemon: &Arc<DaemonState>, pkt: &'static [u8]) {
             daemon
+                .networks
+                .get(NET)
+                .expect("test network present")
                 .tun_tx
                 .load_full()
                 .send(Bytes::from_static(pkt))
@@ -1332,6 +1510,7 @@ mod headless_tests {
         let sink1 = writer1.written.clone();
         daemon
             .attach_tun(
+                NET,
                 FakeTunReader {
                     _alive: Arc::new(()),
                 },
@@ -1348,12 +1527,13 @@ mod headless_tests {
 
         // 2. Toggle: detach, then re-attach reader2 + writer2. This is the path
         //    that used to silently break before the fresh-channel-per-attach fix.
-        daemon.detach_tun();
+        daemon.detach_tun(NET);
         let writer2 = FakeTunWriter::default();
         let sink2 = writer2.written.clone();
         let alive2 = Arc::new(());
         daemon
             .attach_tun(
+                NET,
                 FakeTunReader {
                     _alive: alive2.clone(),
                 },
@@ -1378,6 +1558,7 @@ mod headless_tests {
         let sink3 = writer3.written.clone();
         daemon
             .attach_tun(
+                NET,
                 FakeTunReader {
                     _alive: Arc::new(()),
                 },
@@ -1396,6 +1577,6 @@ mod headless_tests {
             "the prior mesh loop must be aborted on a second attach without detach (no leak)"
         );
 
-        daemon.detach_tun();
+        daemon.detach_tun(NET);
     }
 }

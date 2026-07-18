@@ -84,7 +84,7 @@ impl MeshManager {
             (s.roster(), count, proposals)
         };
         // Index live connections by endpoint id for a fast lookup.
-        let connected: HashMap<EndpointId, Connection> = self
+        let connected: HashMap<EndpointId, Connection> = h
             .peers
             .peers_for_network_with_conn(&h.name)
             .into_iter()

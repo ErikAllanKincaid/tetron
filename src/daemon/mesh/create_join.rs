@@ -27,6 +27,14 @@ struct JoinContext<'a> {
     invite: Option<Vec<u8>>,
     /// Per-network transport preference (none = default, Some(Tor) = route over Tor).
     transport: Option<TransportMode>,
+    /// This network's own subnet (MULTISEG-001/004), resolved from the
+    /// fetched `GroupBlob` before dialing. Used both to derive `my_ip` and,
+    /// after a successful join, to create this network's own TUN device.
+    network_subnet: crate::membership::Subnet,
+    /// This network's own `MeshCtx` (MULTISEG-002), built from a fresh
+    /// `peers`/`tun_tx` pair before the `NetworkHandle` exists — threaded
+    /// through the dial phase instead of `self.mesh_ctx()`.
+    mesh_ctx: MeshCtx,
 }
 
 /// A live mesh connection produced by the dial phase: the per-network state cell
@@ -109,6 +117,10 @@ impl MeshManager {
     /// record publisher and the peer-disconnect cleanup (which republishes the
     /// blob when a member drops). Returns the task handles plus the
     /// `disconnect_tx` the accept handlers feed. Shared by create + restore.
+    /// **MULTISEG-002:** `ctx` is this network's own [`MeshCtx`] (its own
+    /// `peers`/`tun_tx`, built by the caller before the `NetworkHandle` exists
+    /// — see `register_coordinator_handler`'s doc comment for why this can't
+    /// be looked up here instead).
     pub(crate) fn spawn_coordinator_background_tasks(
         &self,
         name: &str,
@@ -116,6 +128,7 @@ impl MeshManager {
         state: &SharedNetworkState,
         dht_notify: &Arc<tokio::sync::Notify>,
         cancel: &CancellationToken,
+        ctx: &MeshCtx,
     ) -> (
         Vec<tokio::task::JoinHandle<()>>,
         mpsc::Sender<forward::DisconnectEvent>,
@@ -129,7 +142,7 @@ impl MeshManager {
                 net_secret_key.clone(),
                 state.clone(),
                 self.endpoint.id(),
-                self.peers.clone(),
+                ctx.peers.clone(),
                 name.to_string(),
                 dht_notify.clone(),
                 cancel.clone(),
@@ -146,7 +159,7 @@ impl MeshManager {
                 net_pubkey,
                 state.clone(),
                 self.endpoint.clone(),
-                self.mesh_ctx(),
+                ctx.clone(),
                 name.to_string(),
                 cancel.clone(),
                 self.left_tx.clone(),
@@ -157,7 +170,7 @@ impl MeshManager {
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
         tasks.push(spawn_peer_cleanup(
             disconnect_rx,
-            self.peers.clone(),
+            ctx.peers.clone(),
             cancel.clone(),
             Some(CoordinatorCleanup {
                 state: state.clone(),
@@ -174,7 +187,7 @@ impl MeshManager {
     /// node as its coordinator.
     #[tracing::instrument(skip(self, hostname), fields(mode = ?mode))]
     pub async fn create_network(
-        &self,
+        self: &Arc<Self>,
         mode: GroupMode,
         network_name: Option<String>,
         hostname: Option<String>,
@@ -266,7 +279,7 @@ impl MeshManager {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_network_inner(
-        &self,
+        self: &Arc<Self>,
         mode: GroupMode,
         custom_name: Option<String>,
         hostname: Option<String>,
@@ -296,22 +309,18 @@ impl MeshManager {
             });
         }
 
-        // SUBNET-010: keep the node's single TUN coherent. Default to the
-        // persisted node subnet; an explicit --subnet sets it on a node that has
-        // none yet, but is rejected if it disagrees with one already persisted.
+        // MULTISEG-004: each network now gets its own TUN, so there is no
+        // longer a node-wide single TUN for `--subnet` to disagree with — the
+        // former SUBNET-010 rejection (a `--subnet` that disagreed with an
+        // already-persisted node-wide value) is gone; a brand-new network name
+        // has nothing to conflict with (the `already active` check above
+        // already covers reusing an existing name). `AppConfig.subnet`'s only
+        // remaining job is seeding the *default* subnet for a create with no
+        // explicit `--subnet` and nothing persisted yet; an explicit `--subnet`
+        // still updates that default for the node's next unspecified create.
         let persisted = config::load().ok().and_then(|c| c.subnet);
         let subnet = match subnet {
             Some(requested) => {
-                if let Some(existing) = persisted
-                    && existing != requested
-                {
-                    let (eb, ep) = existing;
-                    return Ok(IpcMessage::Error {
-                        message: format!(
-                            "node subnet is {eb}/{ep}; change it with `tetron config set subnet <cidr>` and restart before creating a network on a different subnet"
-                        ),
-                    });
-                }
                 if let Err(e) = config::set_node_subnet(requested) {
                     tracing::warn!(error = %e, "failed to persist node subnet");
                 }
@@ -370,18 +379,33 @@ impl MeshManager {
             transport,
             admins: vec![],
             direct,
-            subnet: None,
+            // MULTISEG-001's field, now populated: `None` when the network runs
+            // the node-wide default (keeps existing configs byte-identical),
+            // `Some` only when this network's subnet actually differs from it.
+            subnet: (subnet != crate::membership::default_subnet()
+                && Some(subnet) != persisted)
+                .then_some(subnet),
         })?;
 
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(std::sync::RwLock::new(net_state));
         let dht_notify = Arc::new(tokio::sync::Notify::new());
+        let (peers, tun_tx) = self.new_network_data_plane();
+        let ctx = MeshCtx {
+            identity: self.identity.clone(),
+            peers: peers.clone(),
+            tun_tx: tun_tx.clone(),
+            stats: self.stats.clone(),
+            blob_store: self.blob_store.clone(),
+            pruned_peers: self.pruned_peers.clone(),
+        };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
             &net_secret_key,
             &state,
             &dht_notify,
             &cancel,
+            &ctx,
         );
 
         // Insert the handle first so register_coordinator_handler can update the role.
@@ -395,6 +419,10 @@ impl MeshManager {
             cancel: cancel.clone(),
             tasks,
             disconnect_tx: disconnect_tx.clone(),
+            peers,
+            tun_name: std::sync::Mutex::new(String::from("pending")),
+            tun_tx,
+            tun_tasks: std::sync::Mutex::new(None),
         };
         self.networks.insert(name.clone(), handle);
 
@@ -406,8 +434,15 @@ impl MeshManager {
             net_public_key,
             disconnect_tx,
             cancel,
+            ctx,
         );
         self.refresh_alpns().await;
+
+        // MULTISEG-003: this network's own TUN device, created (and, if the
+        // VPN is already active, brought up) now rather than at daemon boot.
+        #[cfg(not(target_os = "android"))]
+        self.create_and_attach_network_tun(&name, my_ip, subnet)
+            .await;
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network created");
 
@@ -447,7 +482,11 @@ impl MeshManager {
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
-            warning: crate::membership::subnet_change_warning(subnet, self.identity.subnet()),
+            // MULTISEG-003: this network's TUN is created fresh, in its own
+            // subnet, right above — SUBNET-014's warning existed only because
+            // a subnet mismatch used to require a full daemon restart to take
+            // effect on the one shared TUN. That scenario no longer exists.
+            warning: None,
             initial_invite_key: Some(initial_invite_key),
         })
     }
@@ -536,7 +575,17 @@ impl MeshManager {
         };
 
         let alpn = transport::network_alpn(&net_pubkey);
-        let my_ip = self.identity.local_ip();
+        // MULTISEG-004: this network gets its own TUN in its own subnet, so
+        // (unlike the removed SUBNET-BUG-001 guard) there is no shared TUN for
+        // it to disagree with — `my_ip` is derived directly from the
+        // network's own blob-carried subnet, matching `create_network_inner`'s
+        // existing derive-if-different pattern.
+        let network_subnet = crate::membership::resolve_subnet(data.subnet);
+        let my_ip = if network_subnet == self.identity.subnet() {
+            self.identity.local_ip()
+        } else {
+            crate::membership::derive_ip(&self.identity.local_identity(), network_subnet)
+        };
         // Use coordinator's network name from GroupBlob, or user alias, or truncated key as fallback
         let blob_name = data
             .name
@@ -547,25 +596,6 @@ impl MeshManager {
 
         if self.networks.contains_key(display_name) {
             anyhow::bail!("already in network '{display_name}'");
-        }
-
-        // Fail fast if the network's subnet differs from the node's configured
-        // subnet — joining would create a TUN with the wrong IP, silently
-        // breaking the data plane (SUBNET-BUG-001).
-        let network_subnet = crate::membership::resolve_subnet(data.subnet);
-        let node_subnet = config::node_subnet();
-        if network_subnet != node_subnet {
-            anyhow::bail!(
-                "node subnet is {}/{} but network '{display_name}' uses {}/{}; \
-                 run `sudo tetron config set subnet {}/{} && sudo tetron restart` \
-                 and try joining again",
-                node_subnet.0,
-                node_subnet.1,
-                network_subnet.0,
-                network_subnet.1,
-                network_subnet.0,
-                network_subnet.1,
-            );
         }
 
         let my_hostname = match hostname {
@@ -583,6 +613,15 @@ impl MeshManager {
                 .unwrap_or_else(crate::hostname::generate_hostname),
         };
 
+        let (peers, tun_tx) = self.new_network_data_plane();
+        let mesh_ctx = MeshCtx {
+            identity: self.identity.clone(),
+            peers,
+            tun_tx,
+            stats: self.stats.clone(),
+            blob_store: self.blob_store.clone(),
+            pruned_peers: self.pruned_peers.clone(),
+        };
         let ctx = JoinContext {
             display_name,
             my_hostname: &my_hostname,
@@ -591,6 +630,8 @@ impl MeshManager {
             net_pubkey,
             invite,
             transport,
+            network_subnet,
+            mesh_ctx,
         };
 
         // Establish the mesh link. A fresh join tries each coordinator in the
@@ -985,7 +1026,7 @@ impl MeshManager {
             ctx.display_name.to_string(),
             my_id,
             ctx.my_ip,
-            self.mesh_ctx(),
+            ctx.mesh_ctx.clone(),
             disconnect_tx.clone(),
             cancel.clone(),
             live_state_rx,
@@ -1014,7 +1055,7 @@ impl MeshManager {
             &self.endpoint,
             ctx.display_name,
             ctx.alpn,
-            self.mesh_ctx(),
+            ctx.mesh_ctx.clone(),
             JoinParams {
                 my_hostname: Some(ctx.my_hostname.to_string()),
                 net_pubkey: ctx.net_pubkey,
@@ -1055,6 +1096,8 @@ impl MeshManager {
             my_ip,
             net_pubkey,
             transport,
+            network_subnet,
+            mesh_ctx,
             ..
         } = ctx;
 
@@ -1073,6 +1116,7 @@ impl MeshManager {
                     net_public_key,
                     disconnect_tx.clone(),
                     cancel.clone(),
+                    mesh_ctx.clone(),
                 );
             }
             // `Direct` is a display-only role (set in `status`), never produced by
@@ -1081,7 +1125,7 @@ impl MeshManager {
                 self.protocol_router.register(
                     alpn.to_vec(),
                     AcceptHandler::Member(Arc::new(MemberAcceptState {
-                        ctx: self.mesh_ctx(),
+                        ctx: mesh_ctx.clone(),
                         network_name: display_name.to_string(),
                         state: state.clone(),
                         disconnect_tx: disconnect_tx.clone(),
@@ -1121,7 +1165,7 @@ impl MeshManager {
                 net_pubkey,
                 state.clone(),
                 self.endpoint.clone(),
-                self.mesh_ctx(),
+                mesh_ctx.clone(),
                 display_name.to_string(),
                 cancel.clone(),
                 self.left_tx.clone(),
@@ -1138,20 +1182,30 @@ impl MeshManager {
             cancel,
             tasks,
             disconnect_tx,
+            peers: mesh_ctx.peers.clone(),
+            tun_name: std::sync::Mutex::new(String::from("pending")),
+            tun_tx: mesh_ctx.tun_tx.clone(),
+            tun_tasks: std::sync::Mutex::new(None),
         };
         self.networks.insert(display_name.to_string(), handle);
         self.refresh_alpns().await;
 
         tracing::info!(network = %display_name, key = %net_pubkey, ip = %my_ip, "joined network");
 
+        // MULTISEG-003: this network's own TUN device, created (and, if the
+        // VPN is already active, brought up) now rather than at daemon boot.
+        #[cfg(not(target_os = "android"))]
+        self.create_and_attach_network_tun(display_name, my_ip, network_subnet)
+            .await;
+
         Ok(TryJoin::Joined(IpcMessage::Joined {
             network: display_name.to_string(),
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
-            warning: crate::membership::subnet_change_warning(
-                crate::config::node_subnet(),
-                self.identity.subnet(),
-            ),
+            // MULTISEG-003: this network's TUN is created fresh, in its own
+            // subnet, right above — see the identical note in
+            // `create_network_inner`'s `Created` response.
+            warning: None,
         }))
     }
 
@@ -1297,6 +1351,21 @@ impl MeshManager {
             let data = verify_group_blob(&blob_bytes, &expected_hash)?;
             tracing::info!(network = %network_name, members = data.members.len(), "group blob resolved via DHT fallback");
 
+            // MULTISEG-002: this dead-code path (`#[allow(dead_code)]`, no
+            // caller anywhere in the crate) is given the same fresh
+            // per-network `peers`/`tun_tx` pair as the live paths purely so it
+            // keeps compiling against the current `NetworkHandle`/`MeshCtx`
+            // shape; it does not create a real TUN device (nothing exercises
+            // it, so there is nothing to attach one for).
+            let (peers, tun_tx) = self.new_network_data_plane();
+            let mesh_ctx = MeshCtx {
+                identity: self.identity.clone(),
+                peers: peers.clone(),
+                tun_tx: tun_tx.clone(),
+                stats: self.stats.clone(),
+                blob_store: self.blob_store.clone(),
+                pruned_peers: self.pruned_peers.clone(),
+            };
             let my_ip = self.identity.local_ip();
             let my_hostname = net_config.my_hostname.clone();
             let cancel = self.shutdown_token.child_token();
@@ -1330,7 +1399,7 @@ impl MeshManager {
                 network_name.to_string(),
                 my_identity,
                 my_ip,
-                self.mesh_ctx(),
+                mesh_ctx.clone(),
                 disconnect_tx.clone(),
                 cancel.clone(),
                 live_state_rx,
@@ -1348,11 +1417,14 @@ impl MeshManager {
                 my_hostname.clone(),
                 disconnect_tx.clone(),
                 cancel.clone(),
+                &mesh_ctx,
             )
             .await;
 
-            // Persist the joined network's subnet so this node's TUN/identity are
-            // rebuilt in it at the next bootstrap (single-TUN node).
+            // Persist as the node's default-seed subnet (MULTISEG-004 narrowed
+            // this to seeding an unspecified future `create`, not rebuilding a
+            // single shared TUN — this network's own TUN would use
+            // `joined_subnet` directly if this path were ever live).
             let joined_subnet = crate::membership::resolve_subnet(data.subnet);
             if let Err(e) = config::set_node_subnet(joined_subnet) {
                 tracing::warn!(error = %e, "failed to persist node subnet on join");
@@ -1384,6 +1456,10 @@ impl MeshManager {
                 cancel,
                 tasks,
                 disconnect_tx,
+                peers,
+                tun_name: std::sync::Mutex::new(String::from("pending")),
+                tun_tx,
+                tun_tasks: std::sync::Mutex::new(None),
             };
             self.networks.insert(network_name.to_string(), handle);
             self.refresh_alpns().await;
@@ -1392,10 +1468,7 @@ impl MeshManager {
                 network: network_name.to_string(),
                 my_ip,
                 my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
-                warning: crate::membership::subnet_change_warning(
-                    joined_subnet,
-                    self.identity.subnet(),
-                ),
+                warning: None,
             });
         }
 
@@ -1418,6 +1491,10 @@ impl MeshManager {
     /// the total wait at the timeout regardless of roster size: total time is the
     /// slowest single dial, not their sum, and a dead peer can't hang this call —
     /// the per-peer reconnect loop is the real recovery path either way.
+    /// **MULTISEG-002:** `ctx` is `network_name`'s own [`MeshCtx`] — dialed
+    /// peers register into that network's own `peers` table and forward into
+    /// its own `tun_tx`, not a daemon-wide one.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dial_all_members(
         &self,
         members: &[Member],
@@ -1428,6 +1505,7 @@ impl MeshManager {
         my_hostname: Option<String>,
         disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
         cancel: CancellationToken,
+        ctx: &MeshCtx,
     ) {
         use futures::StreamExt;
         // Announce the current name (a pending rename or the confirmed one),
@@ -1441,6 +1519,9 @@ impl MeshManager {
             let my_hostname = my_hostname.clone();
             let disconnect_tx = disconnect_tx.clone();
             let cancel = cancel.clone();
+            let peers = ctx.peers.clone();
+            let tun_tx = ctx.tun_tx.clone();
+            let stats = ctx.stats.clone();
             dials.push(async move {
                 // Bound the dial and honor cancellation: an unreachable peer
                 // would otherwise sit in iroh's internal handshake timeout,
@@ -1471,7 +1552,7 @@ impl MeshManager {
                             peer_conn.clone(),
                             m.identity.fmt_short().to_string(),
                         );
-                        self.peers.add(
+                        peers.add(
                             m.ip,
                             derive_ipv6(&m.identity),
                             peer_conn.clone(),
@@ -1485,10 +1566,10 @@ impl MeshManager {
                             derive_ipv6(&m.identity),
                             network_name.to_string(),
                             forward::ForwardCtx {
-                                tun_tx: self.tun_tx.clone(),
+                                tun_tx,
                                 disconnect_tx,
                                 token: cancel,
-                                stats: self.stats.clone(),
+                                stats,
                             },
                         );
                         tracing::info!(

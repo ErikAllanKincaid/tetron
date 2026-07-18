@@ -46,8 +46,10 @@ impl MeshManager {
         // land the AdminGrant on the member's new-connection handler, which
         // expects a MeshHello first and silently drops anything else.
         let conn = self
-            .peers
-            .peers_for_network_with_conn(network)
+            .networks
+            .get(network)
+            .map(|h| h.peers.peers_for_network_with_conn(network))
+            .unwrap_or_default()
             .into_iter()
             .find(|(id, _, _)| *id == identity)
             .map(|(_, _, c)| c)

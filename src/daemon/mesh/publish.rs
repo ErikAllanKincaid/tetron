@@ -271,8 +271,10 @@ impl MeshManager {
             && let Ok(client) = dht::create_pkarr_client(&self.endpoint)
         {
             let mut seed_peers: Vec<EndpointId> = self
-                .peers
-                .peers_for_network(network)
+                .networks
+                .get(network)
+                .map(|h| h.peers.peers_for_network(network))
+                .unwrap_or_default()
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();

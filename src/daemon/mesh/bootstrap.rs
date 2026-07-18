@@ -19,37 +19,25 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     #[cfg(not(target_os = "android"))]
     tun::check_subnet_overlap(config::node_subnet())?;
 
-    // Build the always-on infrastructure without a packet interface, then attach
-    // the desktop OS TUN device below. The headless builder is the same one
-    // `build_headless()` exposes to embedders, so both paths share identical
-    // construction.
+    // Build the always-on infrastructure. Each saved network gets its own OS
+    // TUN device now (MULTISEG-003), created inside `connect_all_networks`'s
+    // per-network create/join/restore paths rather than once here — there is
+    // no daemon-wide packet interface left to attach at this point. On Android
+    // the packet interface is a `VpnService` fd attached later by the embedder
+    // via `attach_tun`, per network, so this was already skipped there.
     let daemon = build_daemon(token.clone(), stats).await?;
-
-    // Attach the real OS TUN device: create it, record its name, and spawn the
-    // writer + `run_mesh` forwarding loop. On Android the packet interface is a
-    // `VpnService` fd attached later by the embedder via `attach_tun`, so this is
-    // skipped here.
-    #[cfg(not(target_os = "android"))]
-    {
-        let my_ipv6 = derive_ipv6(&daemon.identity.local_identity());
-        let (tun_reader, tun_writer, tun_name) =
-            tun::create(daemon.identity.local_ip(), my_ipv6, daemon.identity.subnet())
-                .await
-                .context("failed to create TUN device")?;
-        *daemon.tun_name.lock().unwrap() = tun_name;
-        daemon.attach_tun(tun_reader, tun_writer).await;
-    }
 
     // Connect the control plane (mesh connections) once, for the daemon's
     // whole lifetime, then bring the data plane up. `tetron up`/`tetron down` toggle
     // only the data plane after this; connections persist across `down` so the
-    // node stays online to peers.
+    // node stays online to peers. Each network's TUN is created as part of this
+    // call (MULTISEG-003), not before it.
     daemon.connect_all_networks().await;
 
     // Seed the peer address cache from the live connections we just established.
     // Subsequent reconnects (after an all-offline gap) will skip DHT lookup and
     // dial cached addresses directly (CACHE-001).
-    crate::peercache::refresh_from_peers(&daemon.peers);
+    daemon.refresh_peer_cache();
 
     daemon.activate(None).await;
 
@@ -77,7 +65,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
 
     // Save one final cache snapshot before tearing down connections, so the
     // most recent peer addresses survive a restart (CACHE-001).
-    crate::peercache::refresh_from_peers(&daemon.peers);
+    daemon.refresh_peer_cache();
     crate::peercache::save();
 
     // Close the iroh endpoint before returning. Dropping it on return logs
@@ -181,22 +169,13 @@ async fn build_daemon(
         .context("failed to open blob store")?;
     let blobs_proto = BlobsProtocol::new(&blob_store, None);
 
-    // --- Packet interface: deferred to `attach_tun` ---
-    // No OS TUN device or forwarding loop is created here. On desktop `run_daemon`
-    // creates the real device and calls `attach_tun`; on embedders (mobile) the
-    // `VpnService` fd is attached the same way. `tun_name` starts as a placeholder
-    // and is overwritten when a real interface is attached.
-    let tun_name = String::from("tetron");
-    let peers = PeerTable::new();
+    // --- Packet interface: deferred, per-network ---
+    // No OS TUN device or forwarding loop is created here. MULTISEG-003 moved
+    // TUN creation off the daemon entirely: each network's own `peers`/
+    // `tun_name`/`tun_tx`/`tun_tasks` live on its `NetworkHandle`, created
+    // inside that network's own create/join/restore path (desktop) or attached
+    // there by the embedder via `attach_tun(network, ...)` (mobile).
     let active = Arc::new(AtomicBool::new(false));
-    // Placeholder sender whose receiver is dropped immediately: no real channel
-    // exists until `attach_tun` creates one and swaps it in. `attach_tun`
-    // (desktop: once at boot; mobile: on each `up()`) recreates the channel, spawns
-    // the TUN writer + `run_mesh` forwarding loop, and stores the live sender here.
-    let tun_tx = {
-        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
-        Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx))
-    };
     // --- Protocol router + the shared MeshManager ---
     let protocol_router = Arc::new(ProtocolRouter::new(blobs_proto));
     // Promotion channel: a co-coordinator's control reader signals the main
@@ -207,15 +186,11 @@ async fn build_daemon(
     let daemon = Arc::new(MeshManager {
         endpoint: ep,
         identity,
-        peers,
         stats: stats.clone(),
-        tun_tx,
         networks: Arc::new(DashMap::new()),
         shutdown_token: token.clone(),
         blob_store,
         protocol_router: protocol_router.clone(),
-        tun_name: std::sync::Mutex::new(tun_name),
-        tun_tasks: std::sync::Mutex::new(None),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         pruned_peers: Arc::new(DashSet::new()),
         active: active.clone(),

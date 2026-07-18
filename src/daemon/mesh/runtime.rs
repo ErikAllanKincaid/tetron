@@ -117,7 +117,7 @@ impl MeshManager {
 
     /// Restores a coordinator network from saved config (uses the existing name).
     pub(crate) async fn restore_coordinator_network(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         mode: GroupMode,
     ) -> Result<IpcMessage> {
@@ -129,8 +129,6 @@ impl MeshManager {
             }
         }
 
-        let my_ip = self.identity.local_ip();
-
         // Load persisted network secret key from config
         let app_config = config::load()?;
         let net_config = app_config.networks.iter().find(|n| n.name == name);
@@ -139,6 +137,20 @@ impl MeshManager {
             .context("no network secret key in config — cannot restore as coordinator")?;
         let net_public_key = net_secret_key.public();
         let persisted_hostname = net_config.and_then(|nc| nc.my_hostname.clone());
+
+        // MULTISEG-001/004: this network's own persisted subnet (first real
+        // read of `NetworkConfig.subnet`), falling back to the default rather
+        // than the node-wide cache — a restored network no longer shares a
+        // TUN with any other network, so there is nothing node-wide left for
+        // it to be coherent with.
+        let subnet = net_config
+            .and_then(|nc| nc.subnet)
+            .unwrap_or_else(crate::membership::default_subnet);
+        let my_ip = if subnet == self.identity.subnet() {
+            self.identity.local_ip()
+        } else {
+            crate::membership::derive_ip(&self.identity.local_identity(), subnet)
+        };
 
         // Restore membership from the authoritative published GroupBlob. The blob
         // (members + approved) is signed by the per-network key and published
@@ -170,9 +182,9 @@ impl MeshManager {
             network_public_key: net_public_key,
             network_name: Some(name.to_string()),
             mode,
-            // SUBNET-010: single-TUN node — use the provider's operative subnet
-            // (built from the persisted node cache at bootstrap).
-            subnet: self.identity.subnet(),
+            // MULTISEG-004: this network's own subnet, computed above — no
+            // longer the node-wide provider subnet (SUBNET-010's old role).
+            subnet,
             reusable_keys,
             invites,
             nuke_proposals,
@@ -199,18 +211,31 @@ impl MeshManager {
             // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
+            // Preserve whatever was persisted (MULTISEG-001's field is the one
+            // just read above into `subnet`; write the same value back so a
+            // restore is idempotent).
             subnet: net_config.and_then(|nc| nc.subnet),
         })?;
 
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(RwLock::new(net_state));
         let dht_notify = Arc::new(tokio::sync::Notify::new());
+        let (peers, tun_tx) = self.new_network_data_plane();
+        let ctx = MeshCtx {
+            identity: self.identity.clone(),
+            peers: peers.clone(),
+            tun_tx: tun_tx.clone(),
+            stats: self.stats.clone(),
+            blob_store: self.blob_store.clone(),
+            pruned_peers: self.pruned_peers.clone(),
+        };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             name,
             &net_secret_key,
             &state,
             &dht_notify,
             &cancel,
+            &ctx,
         );
 
         self.register_coordinator_handler(
@@ -220,6 +245,7 @@ impl MeshManager {
             net_public_key,
             disconnect_tx.clone(),
             cancel.clone(),
+            ctx.clone(),
         );
 
         // Insert the network before dialing its members (DIAL-001), not after:
@@ -239,11 +265,20 @@ impl MeshManager {
             cancel: cancel.clone(),
             tasks,
             disconnect_tx: disconnect_tx.clone(),
+            peers,
+            tun_name: std::sync::Mutex::new(String::from("pending")),
+            tun_tx,
+            tun_tasks: std::sync::Mutex::new(None),
         };
         self.networks.insert(name.to_string(), handle);
         self.refresh_alpns().await;
 
         tracing::info!(name = %name, key = %net_public_key, ip = %my_ip, "network restored (coordinator)");
+
+        // MULTISEG-003: this network's own TUN device, created (and, if the
+        // VPN is already active, brought up) now rather than at daemon boot.
+        #[cfg(not(target_os = "android"))]
+        self.create_and_attach_network_tun(name, my_ip, subnet).await;
 
         // Full mesh: proactively dial every known member so a restarting
         // coordinator/co-coordinator reconnects to peers that haven't (yet)
@@ -271,6 +306,7 @@ impl MeshManager {
             persisted_hostname.clone(),
             disconnect_tx,
             cancel,
+            &ctx,
         )
         .await;
 
@@ -279,10 +315,10 @@ impl MeshManager {
             network_key: net_public_key,
             my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity())),
-            warning: crate::membership::subnet_change_warning(
-                crate::config::node_subnet(),
-                self.identity.subnet(),
-            ),
+            // MULTISEG-003: this network's TUN is created fresh, in its own
+            // subnet, right above — see the identical note in
+            // `create_network_inner`'s `Created` response.
+            warning: None,
             initial_invite_key: None,
         })
     }
@@ -612,7 +648,11 @@ impl MeshManager {
         }
 
         // Prune the roster, then publish + broadcast + sever the link.
-        let ctx = self.mesh_ctx();
+        let Some(ctx) = self.mesh_ctx_for(network) else {
+            return IpcMessage::Error {
+                message: format!("network '{network}' not active"),
+            };
+        };
         remove_member_roster_only(&state, member_id);
         finalize_removal(&ctx, network, &state, &dht_notify, &[member_id]).await;
 
@@ -745,33 +785,62 @@ impl MeshManager {
         // The TUN device/routes are managed by the OS on desktop. On Android the
         // packet interface is a `VpnService` fd whose routes are configured on the
         // Kotlin side, so these desktop route calls don't apply.
+        //
+        // MULTISEG-003: this now runs once per network (each has its own TUN),
+        // not once for a single daemon-wide device.
+        //
+        // **Known limitation, not fixed here:** peer IPv6 addresses
+        // (`derive_ipv6`) are identity-derived and global across every
+        // network a node joins — unlike IPv4, they are not subnet-scoped per
+        // network (see `AGENTS.md`'s addressing section). `route_peer_range`
+        // installs one system-wide `200::/7 -> <tun>` route; with N TUNs, the
+        // last one activated wins the kernel's route table entry, silently
+        // leaving every other network's peers unreachable over IPv6 (IPv4
+        // stays correctly segmented either way, since each network has its
+        // own distinct v4 subnet/TUN). Only the first network encountered
+        // below installs the `200::/7` route, deterministically, so this is
+        // an explicit "IPv6 mesh works on one segment" limitation rather than
+        // a silent last-writer-wins race. Making IPv6 fully per-network would
+        // mean either scoping peer IPv6 addresses per network (like IPv4
+        // already is) or policy routing — both larger, separate changes.
         #[cfg(not(target_os = "android"))]
         {
-            let tun_name = self.tun_name.lock().unwrap().clone();
-            if let Err(e) = tun::set_link_up(&tun_name) {
-                tracing::warn!(error = %e, "failed to bring TUN interface up");
-                warnings.push(format!("failed to bring TUN interface up: {e}"));
-            }
+            let mut installed_peer_range_route = false;
+            for entry in self.networks.iter() {
+                let handle = entry.value();
+                let tun_name = handle.tun_name.lock().unwrap().clone();
+                if let Err(e) = tun::set_link_up(&tun_name) {
+                    tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface up");
+                    warnings.push(format!(
+                        "failed to bring TUN interface up for '{}': {e}",
+                        handle.name
+                    ));
+                }
 
-            // Route the 200::/7 peer range into the TUN. Must happen after
-            // link-up: on Linux the kernel won't install an IPv6 connected route
-            // while the link is down, so without this peer traffic leaks out the
-            // default route.
-            if let Err(e) = tun::route_peer_range(&tun_name).await {
-                tracing::warn!(error = %e, "failed to route 200::/7 into TUN");
-                warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
-            }
+                // Route the 200::/7 peer range into the TUN. Must happen after
+                // link-up: on Linux the kernel won't install an IPv6 connected
+                // route while the link is down, so without this peer traffic
+                // leaks out the default route. See the known-limitation note
+                // above for why only the first network's TUN gets this route.
+                if !installed_peer_range_route {
+                    if let Err(e) = tun::route_peer_range(&tun_name).await {
+                        tracing::warn!(network = %handle.name, error = %e, "failed to route 200::/7 into TUN");
+                        warnings.push(format!("failed to route IPv6 peer range into TUN: {e}"));
+                    }
+                    installed_peer_range_route = true;
+                }
 
-            // Loop our own addresses back through lo0 so self-traffic (e.g.
-            // pinging our own mesh IP) is answered locally instead of leaving via
-            // the TUN, where the forwarding loop would drop it as "no peer for
-            // dst". No-op on Linux (kernel installs the `local` route
-            // automatically).
-            let my_v4 = self.identity.local_ip();
-            let my_v6 = derive_ipv6(&self.identity.local_identity());
-            if let Err(e) = tun::route_self_loopback(my_v4, my_v6).await {
-                tracing::warn!(error = %e, "failed to install loopback self-route");
-                warnings.push(format!("failed to install loopback self-route: {e}"));
+                // Loop our own addresses back through lo0 so self-traffic (e.g.
+                // pinging our own mesh IP) is answered locally instead of leaving
+                // via the TUN, where the forwarding loop would drop it as "no
+                // peer for dst". No-op on Linux (kernel installs the `local`
+                // route automatically).
+                let my_v4 = handle.my_ip;
+                let my_v6 = derive_ipv6(&self.identity.local_identity());
+                if let Err(e) = tun::route_self_loopback(my_v4, my_v6).await {
+                    tracing::warn!(network = %handle.name, error = %e, "failed to install loopback self-route");
+                    warnings.push(format!("failed to install loopback self-route: {e}"));
+                }
             }
         }
 
@@ -802,11 +871,15 @@ impl MeshManager {
             };
         }
 
-        let tun_name = self.tun_name.lock().unwrap().clone();
-
+        // MULTISEG-003: bring every network's own TUN link down, not one
+        // daemon-wide device.
         #[cfg(not(target_os = "android"))]
-        if let Err(e) = tun::set_link_down(&tun_name) {
-            tracing::warn!(error = %e, "failed to bring TUN interface down");
+        for entry in self.networks.iter() {
+            let handle = entry.value();
+            let tun_name = handle.tun_name.lock().unwrap().clone();
+            if let Err(e) = tun::set_link_down(&tun_name) {
+                tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface down");
+            }
         }
 
         tracing::info!("VPN on standby");
@@ -815,10 +888,10 @@ impl MeshManager {
         }
     }
 
-    /// Tear down a network's runtime state (connections, ALPN, background tasks)
-    /// without touching its persisted config. Returns whether the network was
-    /// active. Used by `leave_network` (which also forgets the config); standby
-    /// (`deactivate`) no longer tears connections down.
+    /// Tear down a network's runtime state (connections, ALPN, background tasks,
+    /// TUN device) without touching its persisted config. Returns whether the
+    /// network was active. Used by `leave_network` (which also forgets the
+    /// config); standby (`deactivate`) no longer tears connections down.
     pub(crate) async fn teardown_network_runtime(&self, name: &str) -> bool {
         let Some(handle) = self.networks.remove(name).map(|(_, v)| v) else {
             return false;
@@ -828,7 +901,28 @@ impl MeshManager {
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
         }
 
-        self.peers.remove_by_network(name);
+        // MULTISEG-003: `handle.peers` is this network's own table, dropped
+        // along with the handle — no daemon-wide table to prune it from
+        // anymore. Tear down this network's own TUN device: abort its
+        // forwarding tasks, then actually delete the device rather than
+        // relying on the kernel to reclaim it whenever the whole process
+        // eventually exits (the pre-existing stale-TUN-on-teardown gap this
+        // requirement closes — see `spec/design_spec.py`'s MULTISEG-003).
+        if let Some(tasks) = handle.tun_tasks.lock().unwrap().take() {
+            tasks.cancel.cancel();
+            tasks.writer.abort();
+            tasks.mesh.abort();
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let tun_name = handle.tun_name.lock().unwrap().clone();
+            if tun_name != "pending"
+                && let Err(e) = tun::delete(&tun_name)
+            {
+                tracing::warn!(network = name, tun = %tun_name, error = %e, "failed to delete TUN device");
+            }
+        }
+
         self.protocol_router
             .unregister(&transport::network_alpn(&handle.network_key));
         self.refresh_alpns().await;
@@ -854,9 +948,13 @@ impl MeshManager {
         // Gracefully close our connections with the leave code BEFORE teardown
         // drops them, so each peer's reader sees an intentional close and the
         // coordinator prunes us from the roster (rather than waiting for an
-        // idle timeout that only ever clears the green dot).
-        for (_eid, _ip, conn) in self.peers.peers_for_network_with_conn(network) {
-            conn.close(VarInt::from_u32(forward::LEAVE_CODE), b"leave");
+        // idle timeout that only ever clears the green dot). Read from this
+        // network's own table before `teardown_network_runtime` removes the
+        // handle (MULTISEG-002: no daemon-wide table to read from afterward).
+        if let Some(handle) = self.networks.get(network) {
+            for (_ip, conn) in handle.peers.all_connections() {
+                conn.close(VarInt::from_u32(forward::LEAVE_CODE), b"leave");
+            }
         }
 
         let was_active = self.teardown_network_runtime(network).await;

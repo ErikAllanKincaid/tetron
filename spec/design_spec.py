@@ -3187,3 +3187,296 @@ class PerNetworkSubnetConfigField(Requirement):
     """
     req_id = "MULTISEG-001"
 
+
+# --------------------------------------------------------------------------
+# MULTISEG-002: per-network PeerTable/MeshCtx (NetworkHandle owns its own
+# data-plane routing table instead of sharing one daemon-wide table)
+# --------------------------------------------------------------------------
+
+class PerNetworkPeerTableAndMeshCtx(Requirement):
+    """REQUIREMENT-ID: MULTISEG-002
+
+    Step 3 of the multi-segment TUN plan. Moves `PeerTable` off `MeshManager`
+    (previously one daemon-wide table shared by every joined network) onto
+    each `NetworkHandle` — every network now owns its own routing table,
+    populated as soon as the handle exists (independent of whether a TUN is
+    attached yet, matching the pre-existing headless-before-attach pattern
+    `build_headless()` already relied on).
+
+    `MeshCtx` (the per-accept-handler/background-task bundle of
+    `identity`/`peers`/`tun_tx`/`stats`/`blob_store`/`pruned_peers`) is no
+    longer built once daemon-wide via a `mesh_ctx()` method. Two construction
+    paths now exist: (1) every call site that establishes a network — the
+    `create_network_inner`/`join_network_inner`/`restore_coordinator_network`
+    handlers, plus the `try_dht_fallback_join` dead-code path kept compiling
+    for consistency — builds a fresh `MeshCtx` from a freshly created
+    `peers`/placeholder `tun_tx` pair (`MeshManager::new_network_data_plane`)
+    *before* the `NetworkHandle` exists in `self.networks`, since there is
+    nothing yet to look up; (2) `MeshManager::mesh_ctx_for(network)` looks up
+    an *existing* handle's own `peers`/`tun_tx`, used only by
+    `promote_to_coordinator` (the one call site where the handle already
+    exists). `register_coordinator_handler` and `spawn_coordinator_background_
+    tasks` both take `ctx: MeshCtx`/`ctx: &MeshCtx` as an explicit parameter
+    now, rather than building it internally, so each caller supplies whichever
+    of the two is correct for its situation.
+
+    **Deliberate deviation from the original scoping doc
+    (`DO-NOT-COMMIT/IDEAS_MultiSegmentTUN.md`):** the doc suggested
+    `PeerEntry.conns: HashMap<SmolStr, Connection>` could collapse to a bare
+    `Connection` once each network has its own table (a peer only ever has one
+    connection within a single-network-scoped table). Implemented instead as
+    **N separate instances of the existing `PeerTable`/`PeerEntry` shape,
+    unchanged** — `src/peers.rs` has zero code changes. Reasoning: the
+    `conns`-collapse would touch every one of `PeerTable`'s ~15 methods'
+    signatures (dropping their `network: &str` parameter) and every call site
+    across `accept.rs`/`join.rs`/`runtime.rs`/`create_join.rs`/
+    `diagnostics.rs`/`admin.rs`/`publish.rs` — a second, independently risky
+    refactor layered on top of an already-large one, for a data-structure
+    tidiness gain with no behavioral difference (a table now holding only one
+    network's entries makes the existing `_for_network`/`_by_network`-suffixed
+    methods over-general but not incorrect — calling
+    `peers_for_network_with_conn(name)` on a table that only ever contained
+    `name`'s entries returns exactly the same thing a hypothetical
+    `all_with_conn()` would). Chose the smaller, safer diff. Flagged here as a
+    real follow-up cleanup, not silently dropped.
+
+    `crate::peercache::refresh_from_peers` (CACHE-001) took one `&PeerTable`;
+    with N tables it is now called once per network via a new
+    `MeshManager::refresh_peer_cache()` that iterates `self.networks`.
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch, landed together with
+    MULTISEG-003/004/005/006 (see MULTISEG-004's "Suggested commit sequence"
+    note in the ideas doc for why these five could not safely ship as
+    separate commits despite being granular, separable requirements).
+    """
+    req_id = "MULTISEG-002"
+
+
+# --------------------------------------------------------------------------
+# MULTISEG-003: per-network TUN lifecycle (attach_tun/detach_tun become
+# per-network; each network creates/tears down its own OS TUN device)
+# --------------------------------------------------------------------------
+
+class PerNetworkTunLifecycle(Requirement):
+    """REQUIREMENT-ID: MULTISEG-003
+
+    Step 4 of the multi-segment TUN plan. `MeshManager::attach_tun`/
+    `detach_tun` (the embedding API previously used once, daemon-wide, by a
+    hypothetical mobile embedder attaching a single `VpnService` fd) now take
+    a `network: &str` and operate on that network's own
+    `peers`/`tun_name`/`tun_tx`/`tun_tasks` (all moved onto `NetworkHandle` by
+    MULTISEG-002). **New finding since the doc was written:** `ray-mobile`
+    was removed by MINIMAL-016 and grepping the workspace `Cargo.toml` and
+    `src/` finds no in-tree consumer of this embedding API today — extending
+    it to be per-network (called once per network instead of once per daemon)
+    is a natural extension, not a break of any live integration. A future
+    embedder attaches one packet interface per network it wants active,
+    rather than one for the whole daemon.
+
+    `run_daemon` (`bootstrap.rs`) no longer creates one OS TUN device at boot
+    before any network exists. Instead, `MeshManager::
+    create_and_attach_network_tun(network, my_ip, subnet)` runs inside each
+    of the three live network-establishment paths (`create_network_inner`,
+    `finalize_join`, `restore_coordinator_network`), right after that
+    network's `NetworkHandle` is inserted: it calls `tun::create()` in that
+    network's own subnet, records the OS-assigned device name (already unique
+    per call — `tun.rs`'s Step-0 finding that every function is already
+    parameterized by device name held up unchanged), and calls the new
+    per-network `attach_tun`. Failure is non-fatal (logged, network stays
+    control-plane-connected without a data plane), matching `activate()`'s
+    existing warn-don't-fail pattern for TUN problems.
+
+    If the VPN is already active (`self.active`) at that point —
+    `tetron join`/`create` while already up, or a restore whose attach lands
+    after boot's one `activate(None)` call already ran — this also brings
+    that network's link up and installs its routes immediately, instead of
+    waiting for a future `activate()` call it would otherwise miss entirely
+    (since `activate()` only iterates whatever is in `self.networks` *at the
+    moment it runs*). **Known, documented, unclosed residual race:**
+    `connect_all_networks` fires each saved network's restore as a detached
+    `tokio::spawn` task and does not await them; in principle a restore's own
+    post-attach `self.active` check could run a moment before `activate()`'s
+    own `self.active.swap(true, ...)` executes, in which case neither catches
+    it and that network's TUN stays administratively down until a manual
+    `tetron down && tetron up`. In practice every restore does a DHT
+    round-trip (tens to hundreds of ms) before reaching that check, while
+    `activate()`'s swap runs within microseconds of `connect_all_networks()`
+    returning, so the window is not expected to be hit — but it is not a hard
+    guarantee, and closing it fully would mean awaiting every restore before
+    `run_daemon` proceeds, undoing the fire-and-forget design
+    `connect_all_networks` deliberately uses so one dead/slow network can't
+    delay the others (a DIAL-001-adjacent tradeoff this does not reopen).
+    Documented in code at `MeshManager::create_and_attach_network_tun`'s doc
+    comment; flagged here as a known gap needing live multi-network-boot
+    testing to actually observe (or not) before this can be fully trusted.
+
+    `activate()`/`deactivate()` (previously operating on one daemon-wide
+    `tun_name`) now iterate `self.networks`, bringing every network's own link
+    up/down and installing its own loopback self-route (`handle.my_ip`, which
+    MULTISEG-004 makes genuinely per-network rather than the node-wide
+    identity IP). **Known, documented, unresolved limitation surfaced by this
+    change, not present in the original scoping doc:** peer IPv6 addresses
+    (`derive_ipv6`) are identity-derived and global across every network a
+    node joins (`200::/7`, "never rotates" per `AGENTS.md`'s addressing
+    section) — unlike IPv4, they are not subnet-scoped per network. The
+    `route_peer_range` call installs one system-wide `200::/7 -> <tun>`
+    kernel route; with N TUN devices the last one activated would otherwise
+    silently win that route, leaving every other network's peers unreachable
+    over IPv6 (IPv4 stays correctly segmented regardless, since each network
+    has its own distinct v4 subnet/TUN). `activate()` now installs the
+    `200::/7` route on only the first network encountered, deterministically,
+    so this is an explicit "IPv6 mesh reachability works on one segment only"
+    limitation rather than a silent last-writer-wins race. This is a genuine,
+    unresolved product question (does multi-segment TUN need IPv6 addressing
+    to become per-network too, e.g. by deriving it from `(identity, network)`
+    the way IPv4 already is, or is single-segment IPv6 an acceptable interim
+    state?) that was out of scope to resolve in this pass and needs an
+    explicit decision before this ships.
+
+    Network teardown (`teardown_network_runtime`, reached by `leave_network`/
+    `nuke_network`'s solo-coordinator immediate-destroy path/kick-of-self)
+    now aborts that network's own forwarding tasks and calls the new
+    `tun::delete()` (added to `src/tun.rs`: `ip link delete` on Linux,
+    `ifconfig <name> destroy` on macOS) rather than relying solely on the
+    kernel to reclaim the device whenever the whole process eventually exits.
+    This incidentally closes the pre-existing "stale TUN devices survive a
+    daemon restart/crash" gap logged in the ideas doc's "Fallback" section —
+    per-network teardown now runs mid-process, with other networks' devices
+    still live, so relying on process-exit-triggered cleanup was no longer
+    viable regardless.
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch, landed together with
+    MULTISEG-002/004/005/006.
+    """
+    req_id = "MULTISEG-003"
+
+
+# --------------------------------------------------------------------------
+# MULTISEG-004: relax SUBNET-010 (per-network TUN means no shared TUN left
+# for a subnet mismatch to break); SUBNET-014's warning mechanism retired
+# --------------------------------------------------------------------------
+
+class SubnetCoherenceRelaxed(Requirement):
+    """REQUIREMENT-ID: MULTISEG-004
+
+    Step 2 of the multi-segment TUN plan, landed only once MULTISEG-003 (per-
+    network TUN) actually exists — see the corrected "Suggested commit
+    sequence" logged in `DO-NOT-COMMIT/IDEAS_MultiSegmentTUN.md`: relaxing
+    this before per-network TUN existed would have reintroduced
+    SUBNET-BUG-001 (joining a network whose subnet didn't match the single
+    shared TUN silently misconfigured that TUN, breaking the data plane with
+    no error). Per-network TUN removes the precondition that bug depended on
+    — there is no longer a single shared TUN for a network's subnet to
+    disagree with.
+
+    **Create side** (`create_network_inner`): removed SUBNET-010's rejection
+    of a `--subnet` that disagreed with the already-persisted node-wide
+    value. A brand-new network name has nothing to conflict with (the
+    existing `already active` check already rejects reusing a name); the only
+    remaining validation is the pre-existing `already active`/hostname/CIDR
+    checks. `AppConfig.subnet` (the node-wide cache, `config::node_subnet()`)
+    keeps exactly one job: seeding the *default* subnet for a create with no
+    explicit `--subnet` and nothing persisted yet. An explicit `--subnet`
+    still updates that default (for the node's next unspecified create), it
+    just no longer gets rejected for disagreeing with a prior one.
+
+    **Join side** (`join_network_inner`): removed the SUBNET-BUG-001 guard
+    outright (`network_subnet != node_subnet` -> `bail!`). `my_ip` is now
+    derived directly from the joining network's own blob-carried subnet
+    (`if network_subnet == self.identity.subnet() { self.identity.local_ip() }
+    else { derive_ip(&self.identity.local_identity(), network_subnet) }`),
+    mirroring the derive-if-different pattern `create_network_inner` already
+    used — this was a real, previously-missed bug in the pre-relaxation code:
+    `my_ip` was computed from `self.identity.local_ip()` (the node-wide
+    identity IP) unconditionally, which would have been wrong the moment the
+    coherence guard was removed without this fix. `restore_coordinator_network`
+    gets the equivalent fix: its `subnet`/`my_ip` are now derived from
+    `NetworkConfig.subnet` (MULTISEG-001's field — this is its first real
+    read) falling back to the default, not from `self.identity.subnet()`.
+
+    **SUBNET-014's warning mechanism is retired, not removed.** That
+    requirement's `warning: Option<String>` field on the `Created`/`Joined`
+    IPC responses existed because a subnet mismatch used to require a full
+    `sudo tetron restart` to take effect on the one shared TUN. That scenario
+    no longer exists — every network's TUN is created fresh, in its own
+    correct subnet, at the moment it's established. All four call sites that
+    used to call `membership::subnet_change_warning` now pass `warning: None`
+    unconditionally. The wire field itself, `subnet_change_warning`'s
+    definition, and its unit test are left in place (harmless, no longer
+    exercised by any live call site) rather than removed — deleting an
+    IPC/wire surface is a separate, deliberate cleanup better done on its own,
+    not a drive-by of this change. Flagged as a real follow-up, not forgotten.
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch, landed together with
+    MULTISEG-002/003/005/006.
+    """
+    req_id = "MULTISEG-004"
+
+
+# --------------------------------------------------------------------------
+# MULTISEG-005: forward.rs needs no changes -- confirmed, not just assumed
+# --------------------------------------------------------------------------
+
+class ForwardingLoopUnchanged(Requirement):
+    """REQUIREMENT-ID: MULTISEG-005
+
+    Step 5 of the multi-segment TUN plan. Confirms (rather than merely
+    assumes, per the ideas doc's own "Still unverified" caveat) that
+    `src/forward.rs` needed zero code changes. `run_mesh`, `spawn_tun_writer`,
+    `spawn_peer_reader`, and `ForwardCtx` already took `peers`/`tun_tx` as
+    plain parameters/fields with no daemon-wide assumption baked into their
+    own bodies — the daemon-wide-ness lived entirely in what
+    `MeshManager::attach_tun` passed them, not in `forward.rs` itself. Once
+    MULTISEG-002/003 made that a per-network `peers`/`tun_tx` pair, the same
+    loop runs once per network's TUN reader task (mirroring the pre-existing
+    one-writer/one-reader-task-per-`attach_tun`-call pattern, now called once
+    per network instead of once per daemon) with no logic change. The
+    per-packet ingress anti-spoof check (`evaluate_inbound`, a peer may only
+    source packets from its own mesh IP) is unaffected: it validates a
+    datagram against the specific peer that sent it, already scoped to one
+    connection regardless of how many networks or tables exist elsewhere.
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch, landed together with
+    MULTISEG-002/003/004/006.
+    """
+    req_id = "MULTISEG-005"
+
+
+# --------------------------------------------------------------------------
+# MULTISEG-006: remaining daemon-wide `self.peers`/`self.mesh_ctx()` call
+# sites updated to their network-scoped equivalents
+# --------------------------------------------------------------------------
+
+class RemainingPeerTableCallSitesScoped(Requirement):
+    """REQUIREMENT-ID: MULTISEG-006
+
+    Step 6 of the multi-segment TUN plan. Beyond the sites the ideas doc
+    enumerated (`accept.rs`'s `self.ctx.peers.add(...)`, already
+    network-scoped via the `MeshCtx` each accept handler already carries as a
+    struct field — needed zero changes, confirmed; `runtime.rs`'s
+    `leave_network`/`kick_member`; `create_join.rs`'s create/join paths,
+    covered by MULTISEG-002/003/004 directly), a full-crate re-grep (not
+    trusting the doc's now-stale line numbers) found three more daemon-wide
+    `self.peers`/`self.mesh_ctx()` sites the doc's Step-6 pass had not
+    enumerated: `daemon/mesh/admin.rs`'s `admin_add` (finding the live
+    connection to send an `AdminGrant` over), `daemon/mesh/publish.rs`'s
+    `store_and_publish_group` (collecting seed peers for a re-publish after
+    `tetron accept`-style admission), and `daemon/mesh/diagnostics.rs`'s
+    `network_status` (building `tetron status`'s per-peer connection info).
+    All three now resolve `self.networks.get(network)` and read that handle's
+    own `peers` table instead of a daemon-wide one. `runtime.rs`'s
+    `leave_network` (closing connections gracefully before teardown) and
+    `kick_member` (via `mesh_ctx_for(network)` replacing `self.mesh_ctx()`)
+    were fixed as part of the same sweep. None of these needed the
+    `_for_network`/`_by_network`-suffixed `PeerTable` methods themselves to
+    change (see MULTISEG-002's note on why `peers.rs` has zero code changes)
+    — only which table instance each call site reads.
+
+    Found: 2026-07-18, `feat/multi-segment-tun` branch (the three
+    previously-unenumerated sites found via `cargo build` after
+    MULTISEG-002/003/004 landed, not via grep — the compiler caught what a
+    line-based grep across multi-line `self\n    .peers` call chains missed).
+    Landed together with MULTISEG-002/003/004/005.
+    """
+    req_id = "MULTISEG-006"
+
