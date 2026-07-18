@@ -25,10 +25,11 @@ Download the binary for your architecture from the
 install it:
 
 ```bash
-# Download the release binary for x86_64 Linux
-curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
+# Download the latest release binary. Published assets: tetron-linux-x86_64,
+# tetron-linux-aarch64, tetron-macos-aarch64, tetron-macos-x86_64.
+curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 # OR
-wget -O tetron https://github.com/ErikAllanKincaid/tetron/releases/download/nightly/tetron-linux-x86_64
+wget -O tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 
@@ -38,6 +39,10 @@ sudo tetron up
 # Verify
 tetron version
 ```
+
+For a specific version instead of the latest, substitute the tag directly:
+`.../releases/download/v0.2.0/tetron-linux-x86_64`. A rolling pre-release
+build off the latest commit is also published under the `nightly` tag.
 
 **Building from source:**
 
@@ -57,38 +62,52 @@ A network is always closed (approval-gated). The creator holds the
 network key and becomes the coordinator.
 
 ```bash
-# Create a network. Your hostname is set once at creation.
-tetron create --hostname alice
+# Create a network. Your hostname is set once at creation. --network-name
+# names the network itself (a random three-word name is generated if omitted).
+tetron create --network-name mynet --hostname alice
 
 # Output shows the network name, your mesh IP, and an initial invite key
 # you can share immediately:
-#   Created network "bold-summer-starlight" as 10.88.0.1
+#   Created network "mynet" as 10.88.0.1
 #   Invite key: t3tnR1vY3R... (expires in 7 days)
 #   Share the invite key with peers so they can join.
 ```
 
 The invite key printed at creation is a single-use invite that expires in
-7 days by default. If you want a permanent invite instead:
+7 days by default. If you want a permanent invite instead, mint one
+explicitly with `--expires` (this flag lives on `invite create`, not
+`create` itself — see [section 3](#3-mint-invite-keys)):
 
 ```bash
-tetron create --hostname alice --expires never
+tetron invite mynet create --expires never
 ```
 
-**Custom subnet.** If `10.88.0.0/24` collides with a local network, set a
-different subnet node-wide before creating:
+**Custom subnet.** Every network gets its own TUN device and its own
+subnet — one network's subnet has no effect on another's, and there is no
+restart-required coherence check to satisfy. Override a specific
+network's subnet directly at create time:
 
 ```bash
-tetron config set subnet 10.77.0.0/24
+tetron create --network-name mynet --hostname alice --subnet 10.77.0.0/16
+```
+
+Or change the **node-wide default** used by future `create`/`join` calls
+that don't pass `--subnet` explicitly:
+
+```bash
+tetron config set subnet 10.77.0.0/16
 sudo tetron restart
-tetron create --hostname alice
+tetron create --network-name mynet --hostname alice   # now defaults to 10.77.0.0/16
 ```
 
-**Subnet collision warning.** If you already belong to a network on
-`10.88.0.0/24` and create (or join) a second network on the same subnet,
-traffic can route to the wrong peer — the kernel route table cannot
-distinguish two networks sharing one range. Set a different subnet
-first, or use `--force` on create/join if you understand the routing
-implications. See `docs/SUBNET_COLLISION.md` for details.
+**Tor transport.** Route this network's traffic over Tor from the start:
+
+```bash
+tetron create --network-name mynet --hostname alice --tor
+```
+
+Requires a running Tor daemon with `ControlPort 9051` — see
+[Tor transport](#tor-transport) below.
 
 ---
 
@@ -299,8 +318,26 @@ tetron leave mynetwork   # graceful leave: you disconnect and your config is rem
 
 tetron nuke <net-id-from-status>    # coordinator only: publish an empty record, then leave.
                                      # Same short-id-only rule as kick -- see above.
-                         # Other members see the network as gone on next reconverge.
 ```
+
+**With a single coordinator**, `nuke` destroys the network immediately.
+**With two or more coordinators**, it requires consensus: the first
+`nuke` proposes instead of destroying outright, and the network is only
+actually destroyed once a *second, distinct* coordinator has also
+proposed (or explicitly seconded) within a 24h window. This stops one
+compromised or reckless coordinator from unilaterally destroying a
+network nobody else agreed to lose.
+
+```bash
+tetron nuke <net-id>              # propose (or second, if already proposed by someone else)
+tetron nuke <net-id> --cancel     # withdraw your own pending proposal
+tetron nuke <net-id> --second <short-id>   # explicitly second a specific coordinator's proposal
+tetron status                     # shows any pending nuke proposal on the network
+```
+
+Other members see the network as gone on next reconverge once the
+tombstone is actually published (immediate on solo-coordinator destroy,
+or once consensus is reached).
 
 ### Toggle data plane (standby)
 
@@ -314,7 +351,47 @@ offline); `sudo tetron start` reconnects.
 
 ---
 
-## 9. Custom configuration
+## 9. Belonging to multiple networks
+
+Every network you join gets its **own TUN device and its own subnet** —
+structurally the same as plugging a second physical NIC into a second
+physical network, not one shared interface juggling multiple meshes.
+
+```bash
+tetron create --network-name work --hostname alice
+tetron create --network-name home --hostname alice --subnet 10.77.0.0/16
+tetron status   # shows both networks, each with its own mesh IP for this node
+```
+
+**Networks do not route traffic to each other.** A node that belongs to
+both `work` and `home` does **not** automatically forward packets between
+them — each stays a fully isolated peer mesh, even though both interfaces
+live on the same machine. This is a real limitation relative to two
+physical NICs (where the kernel's own routing table would bridge them);
+building transparent cross-network routing is out of scope for tetron
+today.
+
+**Jump-hosting already covers the practical need.** A node that's a
+member of both networks can bridge them at the application layer with
+zero extra configuration, since each hop is that node's own native
+connection to a peer it genuinely shares a network with:
+
+```bash
+# alice is a member of both `work` (reaching a `work` peer at 10.61.0.5)
+# and `home` (reaching bob's laptop at 10.77.0.9). bob wants to reach the
+# `work` peer through alice as a jump host:
+ssh -J alice@10.77.0.9 user@10.61.0.5
+
+# Port-forward instead of an interactive shell:
+ssh -L 8080:10.61.0.5:80 alice@10.77.0.9
+
+# Or run a SOCKS proxy through alice and point any app at it:
+ssh -D 1080 alice@10.77.0.9
+```
+
+---
+
+## 10. Custom configuration
 
 ### Custom relay or discovery servers
 
@@ -361,7 +438,7 @@ peer uses whatever transport it specified.
 
 ---
 
-## 10. Upgrading
+## 11. Upgrading
 
 ```bash
 # Replace the binary (no self-update in tetron)
@@ -381,8 +458,9 @@ sudo tetron start
 tetron status
 ```
 
-The daemon socket is at `/var/run/tetron/tetron.sock`. If the socket is
-missing, the daemon is not running.
+The daemon socket is at `/var/run/tetron/tetron.sock` on Linux
+(`/var/run/tetron.sock` on macOS). If the socket is missing, the daemon
+is not running.
 
 ### "No invite key provided" when joining
 
@@ -450,11 +528,12 @@ Without port forwarding, iroh still connects through its relay fallback
 ### Viewing logs
 
 ```bash
-# Daemon logs are at /var/log/tetron/ (rotated daily, 7 most recent)
+# Daemon logs are at /var/log/tetron/ on Linux (/Library/Logs/tetron on
+# macOS), rotated daily, 7 most recent kept:
 sudo tail -f /var/log/tetron/*.log
 
 # Or filter by our crate:
-sudo journalctl -u tetron -f   # if using systemd journal
+sudo journalctl -u tetron -f   # systemd journal, Linux only
 
 # Panic traces are saved to panic.log in the log dir
 sudo cat /var/log/tetron/panic.log
@@ -462,19 +541,22 @@ sudo cat /var/log/tetron/panic.log
 
 ### "Permission denied" on a command
 
-Read-only commands (`status`, `config get`, `invite list`) are open to
-any user. Mutating commands need root or the configured operator:
+`status` and other read-only network commands are open to any local
+user. `config` (even `get`) and mutating commands need root or the
+configured operator:
 
 ```bash
-# Check who the operator is:
-tetron config get operator_uid
-
-# Set operator (requires root):
+# (Re)authorize yourself as operator (requires root):
 sudo tetron set-operator $USER
 
-# Commands that always need sudo:
+# Commands that always need sudo, regardless of operator status:
 sudo tetron install | restart | uninstall | start | stop
 ```
+
+There is no command to query who the current operator is; `tetron up`/
+`install` auto-grant it to whoever ran them (`$SUDO_USER`), so re-running
+`set-operator` for the account you're using is always safe if a mutating
+command unexpectedly asks for root.
 
 ### "Address already in use" at daemon start
 
