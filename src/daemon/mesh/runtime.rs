@@ -893,16 +893,16 @@ impl MeshManager {
 
         if !brought_up_any {
             let message = match network {
-                Some(name) => format!("'{name}' already up"),
-                None => "already up".to_string(),
+                Some(name) => format!("'{name}' already active"),
+                None => "already active".to_string(),
             };
             return IpcMessage::Ok { message };
         }
 
         tracing::info!(network = ?network, "data plane activated");
         let up_message = match network {
-            Some(name) => format!("'{name}' up"),
-            None => "VPN up".to_string(),
+            Some(name) => format!("'{name}' active"),
+            None => "VPN active".to_string(),
         };
         if warnings.is_empty() {
             IpcMessage::Ok { message: up_message }
