@@ -424,6 +424,7 @@ impl MeshManager {
             tun_name: std::sync::Mutex::new(String::from("pending")),
             tun_tx,
             tun_tasks: std::sync::Mutex::new(None),
+            active: Arc::new(AtomicBool::new(false)),
         };
         self.networks.insert(name.clone(), handle);
 
@@ -1190,6 +1191,7 @@ impl MeshManager {
             tun_name: std::sync::Mutex::new(String::from("pending")),
             tun_tx: mesh_ctx.tun_tx.clone(),
             tun_tasks: std::sync::Mutex::new(None),
+            active: Arc::new(AtomicBool::new(false)),
         };
         self.networks.insert(display_name.to_string(), handle);
         self.refresh_alpns().await;
@@ -1466,6 +1468,7 @@ impl MeshManager {
                 tun_name: std::sync::Mutex::new(String::from("pending")),
                 tun_tx,
                 tun_tasks: std::sync::Mutex::new(None),
+                active: Arc::new(AtomicBool::new(false)),
             };
             self.networks.insert(network_name.to_string(), handle);
             self.refresh_alpns().await;

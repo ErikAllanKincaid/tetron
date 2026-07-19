@@ -357,6 +357,17 @@ tetron up     # re-activate: near-instant
 Unlike `down`, `sudo tetron stop` closes all peer connections (fully
 offline); `sudo tetron start` reconnects.
 
+**Standby one network at a time** with `--network <name>` (the local
+display name shown in `tetron status`), instead of the whole VPN:
+
+```bash
+tetron down --network work   # take "work" offline at end of day, "home" stays up
+tetron up --network work     # bring it back
+```
+
+`tetron status` shows a `·standby·` marker next to any network whose
+data plane is currently down.
+
 ---
 
 ## 9. Belonging to multiple networks

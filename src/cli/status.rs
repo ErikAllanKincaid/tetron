@@ -216,6 +216,9 @@ fn print_network(net: &ipc::NetworkStatus) {
     }
     print!("   {}", net.my_ip);
     print!("   members {online}/{}", net.peers.len());
+    if !net.active {
+        print!("   ·standby·");
+    }
     println!();
 
     // Shown unconditionally so it is always discoverable, unlike the "join"
@@ -287,9 +290,9 @@ fn render_peer_line(peer: &ipc::PeerStatus) -> String {
 /// `tetron down`: put the daemon on standby (tear down the TUN, revert DNS, drop
 /// connections) while leaving the daemon process running so `tetron up` can
 /// reactivate it without root.
-pub(crate) async fn ipc_down() -> Result<()> {
+pub(crate) async fn ipc_down(network: Option<String>) -> Result<()> {
     let mut stream = ipc::connect().await?;
-    ipc::send(&mut stream, ipc::IpcMessage::Down).await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Down { network }).await?;
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),

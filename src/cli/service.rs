@@ -89,9 +89,9 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
 /// to bring the TUN up, configure DNS, and reconnect networks. Only when no
 /// daemon is reachable do we fall back to installing/starting the system
 /// service, which requires root.
-pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
+pub(crate) async fn cmd_up(hostname: Option<String>, network: Option<String>) -> Result<()> {
     if let Ok(mut stream) = ipc::connect().await {
-        ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
+        ipc::send(&mut stream, ipc::IpcMessage::Up { hostname, network }).await?;
         match ipc::recv(&mut stream).await? {
             ipc::IpcMessage::Ok { message } => println!("{message}"),
             ipc::IpcMessage::Error { message } => print_error("error", &message, None),
@@ -108,6 +108,9 @@ pub(crate) async fn cmd_up(hostname: Option<String>) -> Result<()> {
         );
         std::process::exit(1);
     }
+    // A fresh service start always brings every network up (run_daemon's own
+    // boot-time activate(None, None) already covers it) -- --network doesn't
+    // apply when there was no daemon running to scope down from.
     install_and_start_service(hostname).await
 }
 
@@ -146,7 +149,14 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
     let daemon = wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await;
     match daemon {
         Some(mut stream) => {
-            ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
+            ipc::send(
+                &mut stream,
+                ipc::IpcMessage::Up {
+                    hostname,
+                    network: None,
+                },
+            )
+            .await?;
             match ipc::recv(&mut stream).await? {
                 ipc::IpcMessage::Ok { message } => println!("tetron service started. {message}"),
                 ipc::IpcMessage::Error { message } => print_error("error", &message, None),

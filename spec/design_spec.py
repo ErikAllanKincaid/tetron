@@ -4095,3 +4095,106 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     """
     req_id = "STRANDED-COORDINATOR-WARN"
 
+
+# --------------------------------------------------------------------------
+# STANDBY-PER-NETWORK: per-network data-plane standby via --network
+# --------------------------------------------------------------------------
+
+class UpDownAcceptOptionalNetworkScope(Requirement):
+    """REQUIREMENT-ID: STANDBY-PER-NETWORK
+
+    Found 2026-07-18 auditing the CLI/IPC command surface for
+    multi-segment TUN: `tetron up`/`tetron down` (`activate()`/
+    `deactivate()`, `daemon/mesh/runtime.rs`) were daemon-wide — one
+    `MeshManager.active: Arc<AtomicBool>`, every loop over every joined
+    network unconditionally. There was no way to take e.g. a "work"
+    network's TUN offline at end of day while keeping "home" active, the
+    way you'd physically unplug one of two NICs — a real gap once
+    multi-segment TUN (`MULTISEG-002..007`) made "several genuinely
+    isolated networks on one node" a normal, live configuration rather
+    than a theoretical one.
+
+    **Design (the "not yet scoped" gap this requirement closes):**
+    `MeshManager.active` is a single flag, but the actual per-packet data
+    gate needed to move to be per-network for `--network` to mean
+    anything — the daemon-wide flag alone can't represent "net-a is up,
+    net-b is on standby" at the same time. `NetworkHandle` gained its own
+    `active: Arc<AtomicBool>`, and `forward::spawn_tun_writer` (the
+    function that actually gates whether a received packet gets written
+    to a TUN device) is now handed each network's own flag
+    (`handle.active.clone()`, `attach_tun`) instead of the daemon-wide
+    one. `MeshManager.active` survives, repurposed: it now only seeds a
+    brand-new network's initial state at create/join/restore time
+    (`create_and_attach_network_tun`'s existing "if the VPN is already
+    active, bring this new network straight up" check) and is what an
+    *unscoped* `activate()`/`deactivate()` call sets across the board —
+    an unscoped `tetron up`/`down` is unchanged in effect (every network
+    moves together) even though the mechanism underneath is now N
+    independent per-network flags rather than one shared flag every
+    writer read.
+
+    **`activate`/`deactivate` signatures** gained `network: Option<&str>`.
+    `Some(name)` restricts the loop to that one network (erroring if the
+    name isn't a currently-joined network, rather than silently
+    activating nothing) and uses that network's own `handle.active.swap`
+    for idempotency (skip work if already in the target state) instead of
+    the old single daemon-wide swap-guard. `None` preserves the original
+    behavior exactly: it still flips `MeshManager.active` (for future new
+    networks) and iterates every joined network. Both `IpcMessage::Up`
+    and `IpcMessage::Down` gained a `#[serde(default)] network:
+    Option<String>` field (defaulting to `None` so an old client's
+    request still decodes as daemon-wide); `Command::Up`/`Command::Down`
+    gained a matching `--network <name>` clap flag (network's local
+    display name, as shown by `tetron status`).
+
+    **Status visibility:** `NetworkStatus` gained `active: bool`
+    (`#[serde(default)]` for wire back-compat), populated from each
+    network's own `handle.active`. `tetron status`'s per-network line
+    prints a `·standby·` marker when it's `false`. The top-level
+    `StatusResponse.active` (the "up"/"standby" banner) changed from
+    mirroring the single daemon-wide flag directly to "is at least one
+    network's data plane up" (`statuses.iter().any(|s| s.active)`) — the
+    banner's pre-existing meaning ("up" unless everything is on standby)
+    is preserved without a wire-format change to that field, now just
+    computed instead of stored.
+
+    **Persistence, deliberately unchanged:** per-network standby state is
+    not persisted to config, matching the pre-existing daemon-wide
+    behavior — `run_daemon` always calls `activate(None, None)`
+    unconditionally at boot (before this requirement and after), so a
+    daemon restart already brought the whole VPN back up regardless of
+    any prior `tetron down`; per-network standby inherits that same
+    "doesn't survive a restart" property rather than introducing new
+    persisted state.
+
+    **Internal call sites updated:** `run_daemon`'s boot-time
+    `activate(None)` → `activate(None, None)`; the shutdown handler's
+    `deactivate()` → `deactivate(None)` (`bootstrap.rs`). Every
+    `NetworkHandle` construction site (create/join/restore, plus the
+    bare-bones test fixture in `attach_tun_is_self_healing_on_reattach_
+    and_double_attach`) gained `active: Arc::new(AtomicBool::new(false))`
+    — a freshly constructed handle always starts inactive;
+    `create_and_attach_network_tun` is the one place that decides whether
+    to immediately flip it, based on the daemon's current default state.
+
+    **Live-tested:** not yet on real multi-machine hardware (same caveat
+    as `STRANDED-COORDINATOR-WARN`, found in the same audit pass) —
+    verified via a new unit test (`activate_deactivate_scope_to_one_
+    network_when_given`, `daemon/mod.rs`'s `headless_tests`) that inserts
+    two bare-bones networks and exercises scoped activate/scoped
+    deactivate/unscoped activate/unscoped deactivate/unknown-network-name
+    against real `activate()`/`deactivate()`, asserting exactly which
+    network's `active` flag moved at each step. The real OS calls
+    (`tun::set_link_up`/`route_peer_range`) fail against the test
+    fixture's placeholder device name, which is expected and harmless —
+    they're non-fatal everywhere in this codebase (logged as warnings,
+    never propagated as an error), so the test's assertions are about
+    the flag-scoping logic itself, not real TUN state. `reconcile.py`
+    green (build/clippy/test, 216 tests — 215 prior + this one).
+
+    Found: 2026-07-18, same audit pass as `STATUS-001`,
+    `ADMIN-ADD-NETWORK-SCOPE`, and `STRANDED-COORDINATOR-WARN`. Fixed:
+    2026-07-18.
+    """
+    req_id = "STANDBY-PER-NETWORK"
+

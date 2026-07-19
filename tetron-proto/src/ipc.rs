@@ -80,11 +80,22 @@ pub enum IpcMessage {
     Up {
         #[serde(default)]
         hostname: Option<String>,
+        /// Bring up only this network (by local display name) instead of
+        /// every joined network. `None` preserves the original daemon-wide
+        /// behavior (STANDBY-PER-NETWORK).
+        #[serde(default)]
+        network: Option<String>,
     },
     /// Put the daemon on standby: tear down active network connections and
     /// bring the TUN interface down. The daemon process keeps running so it
     /// can be reactivated with `Up`.
-    Down,
+    Down {
+        /// Take only this network (by local display name) offline instead
+        /// of every joined network. `None` preserves the original
+        /// daemon-wide behavior (STANDBY-PER-NETWORK).
+        #[serde(default)]
+        network: Option<String>,
+    },
     /// Authorize a local user (by UID) to control the daemon without root, the
     /// way `tailscale up --operator` does. Root-only.
     SetOperator {
@@ -223,6 +234,12 @@ pub struct NetworkStatus {
     /// network (nuke there is immediate, no proposal phase).
     #[serde(default)]
     pub nuke_proposals: Vec<NukeProposalInfo>,
+    /// Whether this network's own data plane (TUN link, routes) is up, as
+    /// opposed to on standby (STANDBY-PER-NETWORK) — control-plane
+    /// connections stay live either way. `#[serde(default)]` (defaults to
+    /// `false`) so an older daemon's response still decodes.
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// One pending nuke proposal, as surfaced by `tetron status` (NUKE-CONSENSUS).
@@ -556,6 +573,7 @@ mod tests {
                 }],
                 nuke_proposals: vec![],
                 tun_name: "tun0".to_string(),
+                active: true,
             }],
             packets_rx: 0,
             packets_tx: 0,

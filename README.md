@@ -139,7 +139,7 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 - **Cross-platform service management** -- systemd on Linux, launchd on macOS; `tetron up`/`install`/`restart`/`uninstall` handle it uniformly.
 - **Tailscale-style permission model** -- the daemon authorizes by caller UID, not socket permissions; read-only commands are open to any local user, mutating commands need root or the configured operator (`set-operator`), auto-granted to whoever ran `tetron up`.
 - **`--json` on every read command** -- `status`, `invite list`, `admin list`, `config get`, for scripting.
-- **Near-instant standby** -- `tetron down`/`up` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online.
+- **Near-instant standby** -- `tetron down`/`up` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online. Add `--network <name>` to either to standby just one joined network instead of all of them.
 
 Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin` (add/list)/`kick`, `config` (get/set/unset), `status` (`--json`), `up`/`down`, `install`/`restart`/`uninstall`/`start`/`stop`, `set-operator`, `version`, and `completions`.
 

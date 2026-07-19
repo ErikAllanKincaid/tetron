@@ -14,7 +14,11 @@
 //! - **Active VPN state** — the TUN link being *up*, system DNS being
 //!   configured, and the saved networks being connected. This is toggled at
 //!   runtime by [`MeshManager::activate`] / [`MeshManager::deactivate`], driven
-//!   by the `Up` / `Down` IPC commands, and tracked by [`MeshManager::active`].
+//!   by the `Up` / `Down` IPC commands. Each network tracks its own
+//!   activation on its own `NetworkHandle.active` (STANDBY-PER-NETWORK), so
+//!   `--network` can toggle one network's data plane without touching the
+//!   others; [`MeshManager::active`] now only seeds a brand-new network's
+//!   initial state and is what an *unscoped* `Up`/`Down` sets.
 //!
 //! This mirrors Tailscale's split between the always-running `tailscaled`
 //! daemon and the `tailscale up` / `tailscale down` client toggles: `down`
@@ -340,6 +344,16 @@ pub struct NetworkHandle {
     /// Handles for this network's packet-forwarding tasks, spawned by
     /// [`MeshManager::attach_tun`].
     tun_tasks: std::sync::Mutex<Option<TunTasks>>,
+    /// This network's own data-plane activation state (STANDBY-PER-NETWORK).
+    /// `true` once its TUN link/routes are up; `false` in standby (still
+    /// connected to peers, no packets flow). Gates `spawn_tun_writer`'s
+    /// actual write-to-TUN — the per-network counterpart of the role
+    /// `MeshManager.active` played daemon-wide before `tetron up`/`down`
+    /// gained `--network` scoping. Starts `false` at construction; brought
+    /// up by `create_and_attach_network_tun` if the daemon's default state
+    /// (`MeshManager.active`) is already "up" at attach time, or later by
+    /// an explicit `activate()`.
+    active: Arc<AtomicBool>,
 }
 
 /// Shared, always-on daemon state. Cloned (via `Arc`) into every IPC handler
@@ -374,8 +388,14 @@ pub struct MeshManager {
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
-    /// Whether the VPN is currently active (TUN up, networks connected) or on
-    /// standby. Toggled by the `Up`/`Down` IPC commands.
+    /// Default data-plane activation state for a network at the moment it is
+    /// first created/joined/restored (`create_and_attach_network_tun`
+    /// consults this to decide whether to bring a brand-new `NetworkHandle`
+    /// straight up). Toggled by an *unscoped* `Up`/`Down` IPC command (no
+    /// `--network`). The actual per-packet gate is each network's own
+    /// `NetworkHandle.active` (STANDBY-PER-NETWORK) — this field no longer
+    /// gates forwarding directly, it only seeds new networks' initial state
+    /// and is what an unscoped `tetron up`/`down` sets across the board.
     active: Arc<AtomicBool>,
     /// Promotion signal: a co-coordinator's per-peer control reader sends the
     /// network name here after persisting an `AdminGrant` key, and the main
@@ -501,20 +521,23 @@ impl MeshManager {
     /// data plane, matching `activate()`'s existing "warn, don't fail" pattern
     /// for TUN problems.
     ///
-    /// If the VPN is already active (`self.active`), also brings this
-    /// network's link up and installs its routes immediately, rather than
+    /// If the VPN's default state is active (`self.active` — the
+    /// daemon-wide flag an unscoped `activate()`/`deactivate()` sets, used
+    /// to seed a brand-new network's initial state per STANDBY-PER-NETWORK),
+    /// also brings this network's own link up and installs its routes
+    /// immediately (setting its own `NetworkHandle.active`), rather than
     /// waiting for a future `activate()` call — needed for `tetron join`/
     /// `create` while already up, and for a restore whose attach lands after
-    /// boot's one `activate(None)` call already ran. This does not fully
-    /// close the boot-time race: `connect_all_networks` fires each restore as
-    /// a detached task, so in principle one could reach this check a moment
-    /// before `activate()`'s own `self.active` swap — in practice the DHT
-    /// round-trip every restore does first makes that swap complete long
-    /// before any restore reaches here, but it is not a hard guarantee.
-    /// Flagged, not fixed here: closing it fully would mean awaiting every
-    /// restore before `run_daemon` proceeds, undoing the fire-and-forget
-    /// design `connect_all_networks` deliberately uses so one dead network
-    /// can't delay the others.
+    /// boot's one `activate(None, None)` call already ran. This does not
+    /// fully close the boot-time race: `connect_all_networks` fires each
+    /// restore as a detached task, so in principle one could reach this
+    /// check a moment before `activate()`'s own `self.active` store — in
+    /// practice the DHT round-trip every restore does first makes that
+    /// complete long before any restore reaches here, but it is not a hard
+    /// guarantee. Flagged, not fixed here: closing it fully would mean
+    /// awaiting every restore before `run_daemon` proceeds, undoing the
+    /// fire-and-forget design `connect_all_networks` deliberately uses so
+    /// one dead network can't delay the others.
     #[cfg(not(target_os = "android"))]
     pub(crate) async fn create_and_attach_network_tun(
         self: &Arc<Self>,
@@ -534,6 +557,9 @@ impl MeshManager {
                 }
                 self.attach_tun(network, reader, writer).await;
                 if self.active.load(Ordering::SeqCst) {
+                    if let Some(handle) = self.networks.get(network) {
+                        handle.active.store(true, Ordering::SeqCst);
+                    }
                     if let Err(e) = tun::set_link_up(&tun_name) {
                         tracing::warn!(network, error = %e, "failed to bring newly attached TUN up");
                     }
@@ -615,7 +641,7 @@ impl MeshManager {
         // A dedicated child token so the data plane can be stopped independently
         // of a full daemon shutdown; it still cancels when `shutdown_token` does.
         let cancel = self.shutdown_token.child_token();
-        let writer_handle = forward::spawn_tun_writer(writer, new_rx, self.active.clone());
+        let writer_handle = forward::spawn_tun_writer(writer, new_rx, handle.active.clone());
         let mesh_handle = {
             let peers = handle.peers.clone();
             let cancel = cancel.clone();
@@ -878,8 +904,10 @@ impl MeshManager {
             }
             IpcMessage::Kick { net_id, peer } => self.kick_member(&net_id, &peer).await,
             IpcMessage::Status => self.status(),
-            IpcMessage::Up { hostname } => self.activate(hostname).await,
-            IpcMessage::Down => self.deactivate().await,
+            IpcMessage::Up { hostname, network } => {
+                self.activate(hostname, network.as_deref()).await
+            }
+            IpcMessage::Down { network } => self.deactivate(network.as_deref()).await,
             IpcMessage::Shutdown => {
                 self.shutdown_token.cancel();
                 IpcMessage::Ok {
@@ -1491,6 +1519,7 @@ mod headless_tests {
                     tun_name: std::sync::Mutex::new("placeholder".to_string()),
                     tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
                     tun_tasks: std::sync::Mutex::new(None),
+                    active: Arc::new(AtomicBool::new(false)),
                 },
             );
         }
@@ -1536,7 +1565,7 @@ mod headless_tests {
                 writer1,
             )
             .await;
-        daemon.active.store(true, Ordering::SeqCst);
+        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-1").await;
         assert!(
@@ -1559,7 +1588,7 @@ mod headless_tests {
                 writer2,
             )
             .await;
-        daemon.active.store(true, Ordering::SeqCst);
+        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-2").await;
         assert!(
@@ -1584,7 +1613,7 @@ mod headless_tests {
                 writer3,
             )
             .await;
-        daemon.active.store(true, Ordering::SeqCst);
+        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-3").await;
         assert!(
@@ -1597,5 +1626,129 @@ mod headless_tests {
         );
 
         daemon.detach_tun(NET);
+    }
+
+    /// STANDBY-PER-NETWORK: `activate`/`deactivate` scoped to one network
+    /// (`--network`) must only touch that network's own `active` flag,
+    /// leaving every other joined network's data-plane state untouched. The
+    /// unscoped form (`network: None`) must still touch every network,
+    /// matching the pre-existing daemon-wide behavior. An unknown network
+    /// name must error rather than silently doing nothing.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activate_deactivate_scope_to_one_network_when_given() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        // Insert two bare-bones networks directly, same technique as
+        // `attach_tun_is_self_healing_on_reattach_and_double_attach` above
+        // (going through the real create/join path would publish to the
+        // DHT). Their real TUN-touching OS calls (set_link_up /
+        // route_peer_range) will fail against the placeholder device name
+        // -- non-fatal, logged as warnings by `activate`/`deactivate`, and
+        // irrelevant to what this test checks: which networks' own `active`
+        // flags moved.
+        fn insert_bare_network(daemon: &Arc<DaemonState>, name: &str, key_byte: u8) {
+            let net_secret = SecretKey::from_bytes(&[key_byte; 32]);
+            let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+            let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
+            daemon.networks.insert(
+                name.to_string(),
+                NetworkHandle {
+                    name: name.to_string(),
+                    network_key: net_secret.public(),
+                    role: NetworkRole::Coordinator,
+                    my_ip: daemon.identity.local_ip(),
+                    state: Arc::new(RwLock::new(NetworkState {
+                        generation: 0,
+                        members: MemberList::new(),
+                        approved: ApprovedList::new(),
+                        snapshot: None,
+                        network_secret_key: None,
+                        network_public_key: net_secret.public(),
+                        network_name: Some(name.to_string()),
+                        mode: GroupMode::Restricted,
+                        subnet: default_subnet(),
+                        reusable_keys: BTreeMap::new(),
+                        invites: BTreeMap::new(),
+                        nuke_proposals: BTreeMap::new(),
+                    })),
+                    dht_notify: None,
+                    cancel: CancellationToken::new(),
+                    tasks: Vec::new(),
+                    disconnect_tx,
+                    peers: PeerTable::new(),
+                    tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                    tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                    tun_tasks: std::sync::Mutex::new(None),
+                    active: Arc::new(AtomicBool::new(false)),
+                },
+            );
+        }
+
+        insert_bare_network(&daemon, "net-a", 20);
+        insert_bare_network(&daemon, "net-b", 21);
+
+        let is_active = |name: &str| {
+            daemon
+                .networks
+                .get(name)
+                .unwrap()
+                .active
+                .load(Ordering::SeqCst)
+        };
+
+        assert!(!is_active("net-a"));
+        assert!(!is_active("net-b"));
+
+        // Scoped activate: only net-a comes up.
+        daemon.activate(None, Some("net-a")).await;
+        assert!(
+            is_active("net-a"),
+            "net-a should be active after a scoped activate"
+        );
+        assert!(
+            !is_active("net-b"),
+            "net-b must stay untouched by a scoped activate"
+        );
+
+        // Scoped deactivate on the still-standby network: no-op, no error.
+        let resp = daemon.deactivate(Some("net-b")).await;
+        assert!(matches!(resp, IpcMessage::Ok { .. }));
+        assert!(!is_active("net-b"));
+
+        // Unscoped activate: brings up every network, including the one
+        // already up (idempotent) and the one still down.
+        daemon.activate(None, None).await;
+        assert!(is_active("net-a"));
+        assert!(
+            is_active("net-b"),
+            "unscoped activate must bring up every network"
+        );
+
+        // Scoped deactivate: only net-a goes down.
+        daemon.deactivate(Some("net-a")).await;
+        assert!(!is_active("net-a"));
+        assert!(
+            is_active("net-b"),
+            "net-b must stay untouched by a scoped deactivate"
+        );
+
+        // Unknown network name errors rather than silently no-op-ing.
+        let resp = daemon.activate(None, Some("does-not-exist")).await;
+        assert!(matches!(resp, IpcMessage::Error { .. }));
+        let resp = daemon.deactivate(Some("does-not-exist")).await;
+        assert!(matches!(resp, IpcMessage::Error { .. }));
+
+        // Unscoped deactivate: brings down every network.
+        daemon.deactivate(None).await;
+        assert!(!is_active("net-a"));
+        assert!(!is_active("net-b"));
     }
 }

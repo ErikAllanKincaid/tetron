@@ -27,9 +27,16 @@ impl MeshManager {
         // LIVE-001 removed the pending-join queue; always empty.
         let pending_networks: Vec<String> = Vec::new();
 
+        // STANDBY-PER-NETWORK: the top-level `active` used to mirror the one
+        // daemon-wide flag directly; now that data-plane activation is
+        // per-network, it's "is at least one network's data plane up" —
+        // matches the pre-existing `tetron status` banner semantics ("up"
+        // unless everything is on standby) without a wire-format change.
+        let active = statuses.iter().any(|s| s.active);
+
         IpcMessage::StatusResponse {
             endpoint_id: self.endpoint.id(),
-            active: self.active.load(Ordering::SeqCst),
+            active,
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
             networks: statuses,
             packets_rx: self.stats.packets_rx.get(),
@@ -70,6 +77,7 @@ impl MeshManager {
                         peers: vec![],
                         nuke_proposals: vec![],
                         tun_name: h.tun_name.lock().unwrap().clone(),
+                        active: h.active.load(Ordering::SeqCst),
                     };
                 }
             };
@@ -121,6 +129,7 @@ impl MeshManager {
             peers,
             nuke_proposals,
             tun_name: h.tun_name.lock().unwrap().clone(),
+            active: h.active.load(Ordering::SeqCst),
         }
     }
 

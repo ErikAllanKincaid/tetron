@@ -39,7 +39,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // dial cached addresses directly (CACHE-001).
     daemon.refresh_peer_cache();
 
-    daemon.activate(None).await;
+    daemon.activate(None, None).await;
 
     // Spawn a periodic task that saves the peer address cache to disk every
     // 5 minutes. The task exits when the shutdown token fires, saving one
@@ -232,7 +232,7 @@ async fn serve_ipc(
         tokio::select! {
             _ = token.cancelled() => {
                 tracing::info!("daemon shutting down");
-                daemon.deactivate().await;
+                daemon.deactivate(None).await;
                 let _ = std::fs::remove_file(&socket_path);
                 return Ok(());
             }

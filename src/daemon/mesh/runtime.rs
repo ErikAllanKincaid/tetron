@@ -270,6 +270,7 @@ impl MeshManager {
             tun_name: std::sync::Mutex::new(String::from("pending")),
             tun_tx,
             tun_tasks: std::sync::Mutex::new(None),
+            active: Arc::new(AtomicBool::new(false)),
         };
         self.networks.insert(name.to_string(), handle);
         self.refresh_alpns().await;
@@ -755,13 +756,22 @@ impl MeshManager {
         tracing::info!(networks = count, "control plane connected");
     }
 
-    /// Activate the VPN: bring the TUN interface up. Idempotent — a no-op if
-    /// already active. Runs entirely inside the (root) daemon, so the IPC
-    /// client needs no privileges. Part of the embedding API: bring the data
-    /// plane up (mark active, configure routes). On Android the packet
-    /// interface + routes are the `VpnService`'s job, so those desktop route
-    /// calls are skipped.
-    pub async fn activate(self: &Arc<Self>, hostname: Option<String>) -> IpcMessage {
+    /// Activate the VPN: bring the TUN interface up. Idempotent per network —
+    /// a no-op for any network already active. Runs entirely inside the
+    /// (root) daemon, so the IPC client needs no privileges. Part of the
+    /// embedding API: bring the data plane up (mark active, configure
+    /// routes). On Android the packet interface + routes are the
+    /// `VpnService`'s job, so those desktop route calls are skipped.
+    ///
+    /// `network` scopes the activation to one joined network (by local
+    /// display name) instead of every one (STANDBY-PER-NETWORK) — omit it
+    /// for the original daemon-wide behavior, unchanged. An unknown
+    /// `network` name errors rather than silently no-op-ing.
+    pub async fn activate(
+        self: &Arc<Self>,
+        hostname: Option<String>,
+        network: Option<&str>,
+    ) -> IpcMessage {
         // Persist the personal default hostname first (before the already-active
         // short-circuit) so `tetron up --hostname X` records the new default even
         // when the VPN is already up. Used as the fallback for future
@@ -788,16 +798,30 @@ impl MeshManager {
             }
         }
 
-        if self.active.swap(true, Ordering::SeqCst) {
-            return IpcMessage::Ok {
-                message: "already up".into(),
-            };
-        }
+        // Collect the target set up front so an unknown `--network` name
+        // errors instead of silently activating nothing.
+        let targets: Vec<String> = match network {
+            Some(name) => {
+                if !self.networks.contains_key(name) {
+                    return IpcMessage::Error {
+                        message: format!("network '{name}' not active"),
+                    };
+                }
+                vec![name.to_string()]
+            }
+            None => {
+                // Unscoped: also flips the daemon-wide default used to seed a
+                // brand-new network's initial state (create/join/restore).
+                self.active.store(true, Ordering::SeqCst);
+                self.networks.iter().map(|e| e.key().clone()).collect()
+            }
+        };
 
         // Non-fatal problems hit while activating. The daemon stays up, but we
         // return these to the client so `tetron up` can tell the user something is
         // wrong instead of silently reporting success on a degraded VPN.
         let mut warnings: Vec<String> = Vec::new();
+        let mut brought_up_any = false;
 
         // The TUN device/routes are managed by the OS on desktop. On Android the
         // packet interface is a `VpnService` fd whose routes are configured on the
@@ -813,8 +837,17 @@ impl MeshManager {
         // TUN device — no more picking one network to "win" the route.
         #[cfg(not(target_os = "android"))]
         {
-            for entry in self.networks.iter() {
-                let handle = entry.value();
+            for name in &targets {
+                let Some(handle) = self.networks.get(name) else {
+                    continue;
+                };
+                // Per-network idempotency (STANDBY-PER-NETWORK): skip a
+                // network that's already up rather than redundantly
+                // re-running set_link_up/route_peer_range on it.
+                if handle.active.swap(true, Ordering::SeqCst) {
+                    continue;
+                }
+                brought_up_any = true;
                 let tun_name = handle.tun_name.lock().unwrap().clone();
                 if let Err(e) = tun::set_link_up(&tun_name) {
                     tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface up");
@@ -857,13 +890,23 @@ impl MeshManager {
             }
         }
 
-        tracing::info!("data plane activated");
+        if !brought_up_any {
+            let message = match network {
+                Some(name) => format!("'{name}' already up"),
+                None => "already up".to_string(),
+            };
+            return IpcMessage::Ok { message };
+        }
+
+        tracing::info!(network = ?network, "data plane activated");
+        let up_message = match network {
+            Some(name) => format!("'{name}' up"),
+            None => "VPN up".to_string(),
+        };
         if warnings.is_empty() {
-            IpcMessage::Ok {
-                message: "VPN up".into(),
-            }
+            IpcMessage::Ok { message: up_message }
         } else {
-            let mut message = String::from("VPN up, but some things need attention:");
+            let mut message = format!("{up_message}, but some things need attention:");
             for w in &warnings {
                 message.push_str("\n  - ");
                 message.push_str(w);
@@ -876,29 +919,62 @@ impl MeshManager {
     /// link down, stop forwarding) while keeping the control plane connected.
     /// Network connections, control readers, and pollers stay live so the node
     /// remains online to peers and keeps receiving roster/blob updates.
-    /// Connections are dropped only on leave/nuke/shutdown. Idempotent.
-    pub(crate) async fn deactivate(&self) -> IpcMessage {
-        if !self.active.swap(false, Ordering::SeqCst) {
-            return IpcMessage::Ok {
-                message: "already on standby".into(),
-            };
-        }
+    /// Connections are dropped only on leave/nuke/shutdown. Idempotent per
+    /// network.
+    ///
+    /// `network` scopes the standby to one joined network (by local display
+    /// name) instead of every one (STANDBY-PER-NETWORK) — omit it for the
+    /// original daemon-wide behavior, unchanged. An unknown `network` name
+    /// errors rather than silently no-op-ing.
+    pub(crate) async fn deactivate(&self, network: Option<&str>) -> IpcMessage {
+        let targets: Vec<String> = match network {
+            Some(name) => {
+                if !self.networks.contains_key(name) {
+                    return IpcMessage::Error {
+                        message: format!("network '{name}' not active"),
+                    };
+                }
+                vec![name.to_string()]
+            }
+            None => {
+                self.active.store(false, Ordering::SeqCst);
+                self.networks.iter().map(|e| e.key().clone()).collect()
+            }
+        };
 
-        // MULTISEG-003: bring every network's own TUN link down, not one
-        // daemon-wide device.
+        let mut brought_down_any = false;
+
+        // MULTISEG-003: bring every targeted network's own TUN link down, not
+        // one daemon-wide device.
         #[cfg(not(target_os = "android"))]
-        for entry in self.networks.iter() {
-            let handle = entry.value();
+        for name in &targets {
+            let Some(handle) = self.networks.get(name) else {
+                continue;
+            };
+            if !handle.active.swap(false, Ordering::SeqCst) {
+                continue;
+            }
+            brought_down_any = true;
             let tun_name = handle.tun_name.lock().unwrap().clone();
             if let Err(e) = tun::set_link_down(&tun_name) {
                 tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface down");
             }
         }
 
-        tracing::info!("VPN on standby");
-        IpcMessage::Ok {
-            message: "VPN on standby (still connected to peers)".into(),
+        if !brought_down_any {
+            let message = match network {
+                Some(name) => format!("'{name}' already on standby"),
+                None => "already on standby".to_string(),
+            };
+            return IpcMessage::Ok { message };
         }
+
+        tracing::info!(network = ?network, "data plane on standby");
+        let message = match network {
+            Some(name) => format!("'{name}' on standby (still connected to peers)"),
+            None => "VPN on standby (still connected to peers)".to_string(),
+        };
+        IpcMessage::Ok { message }
     }
 
     /// Tear down a network's runtime state (connections, ALPN, background tasks,

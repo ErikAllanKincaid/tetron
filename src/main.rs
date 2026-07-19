@@ -131,9 +131,18 @@ pub(crate) enum Command {
         /// when create/join don't specify one; doesn't rename existing networks
         #[arg(long)]
         hostname: Option<String>,
+        /// Bring up only this network (as shown in `tetron status`) instead
+        /// of every joined network
+        #[arg(long)]
+        network: Option<String>,
     },
     /// Standby: take the data plane offline; stays connected to peers
-    Down,
+    Down {
+        /// Take only this network (as shown in `tetron status`) offline
+        /// instead of every joined network
+        #[arg(long)]
+        network: Option<String>,
+    },
     /// Stop the system service (go fully offline). Requires root
     Stop,
     /// Start the installed system service. Requires root
@@ -439,8 +448,8 @@ async fn main() -> Result<()> {
             stats.spawn_logger(token.clone());
             daemon::run_daemon(token, stats).await
         }
-        Command::Up { hostname } => cmd_up(hostname).await,
-        Command::Down => ipc_down().await,
+        Command::Up { hostname, network } => cmd_up(hostname, network).await,
+        Command::Down { network } => ipc_down(network).await,
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),
