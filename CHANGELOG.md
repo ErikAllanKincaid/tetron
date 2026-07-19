@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`tetron status` shows each network's OS TUN interface name (STATUS-001)**: with a node joined to several networks, there was previously no way to tell which interface (`tun0`, `tun1`, ...) belongs to which network without guessing from `ip link show` order or daemon logs. Now printed as an `interface` line per network in both text and `--json` output.
+
 ## [0.3.0] - 2026-07-18
 
 ### Added

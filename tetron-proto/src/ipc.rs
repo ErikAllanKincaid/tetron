@@ -207,6 +207,11 @@ pub struct NetworkStatus {
     pub network_key: Option<String>,
     pub member_count: usize,
     pub peers: Vec<PeerStatus>,
+    /// Name of this network's OS TUN device (e.g. `tun0`), so a node
+    /// belonging to several networks can tell which interface is which
+    /// (host firewall rules, `ip link show`, etc.) instead of guessing.
+    #[serde(default)]
+    pub tun_name: String,
     /// Active (unexpired) nuke proposals (NUKE-CONSENSUS), so members can see a
     /// nuke is being considered before it executes. Empty on a solo-coordinator
     /// network (nuke there is immediate, no proposal phase).
@@ -543,6 +548,8 @@ mod tests {
                     hostname: None,
                     connection: None,
                 }],
+                nuke_proposals: vec![],
+                tun_name: "tun0".to_string(),
             }],
             packets_rx: 0,
             packets_tx: 0,

@@ -69,6 +69,7 @@ impl MeshManager {
                         member_count: 0,
                         peers: vec![],
                         nuke_proposals: vec![],
+                        tun_name: h.tun_name.lock().unwrap().clone(),
                     };
                 }
             };
@@ -119,6 +120,7 @@ impl MeshManager {
             member_count,
             peers,
             nuke_proposals,
+            tun_name: h.tun_name.lock().unwrap().clone(),
         }
     }
 

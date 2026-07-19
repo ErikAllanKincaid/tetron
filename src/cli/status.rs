@@ -223,6 +223,9 @@ fn print_network(net: &ipc::NetworkStatus) {
     if let Some(ref short) = short_id {
         println!("    id {short}");
     }
+    if !net.tun_name.is_empty() && net.tun_name != "pending" {
+        println!("    interface {}", net.tun_name);
+    }
 
     // Peer rows as text lines
     if net.peers.is_empty() {

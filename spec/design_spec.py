@@ -3928,3 +3928,39 @@ class MemberJoinNetworkStateSubnetFixed(Requirement):
     """
     req_id = "MULTISEG-008"
 
+
+# --------------------------------------------------------------------------
+# STATUS-001: expose each network's OS TUN interface name in `tetron status`
+# --------------------------------------------------------------------------
+
+class StatusShowsTunInterfaceName(Requirement):
+    """REQUIREMENT-ID: STATUS-001
+
+    Found 2026-07-18 auditing the CLI/IPC command surface now that a node
+    can belong to several real, isolated networks (multi-segment TUN,
+    `MULTISEG-002..007`): `NetworkHandle.tun_name` has existed in the
+    daemon since that work landed, but was never put on the `NetworkStatus`
+    wire type or printed by `tetron status`. With one network this never
+    mattered; with several, there was no way to know which OS interface
+    (`tun0`, `tun1`, ...) belongs to which network without guessing from
+    `ip link show` order or grepping daemon logs — and that matters for
+    writing host-firewall rules per network (see `STATUS-001`'s companion
+    docs fix for the previously-fictional `iifname "tetron"` example).
+
+    **Fix:** `tetron-proto::ipc::NetworkStatus` gained a `tun_name: String`
+    field (`#[serde(default)]` so an older daemon's response — one built
+    before this field existed — still decodes against a newer CLI, and a
+    stored/replayed old test fixture still deserializes). `diagnostics.rs`'s
+    `network_status()` populates it from `h.tun_name.lock().unwrap().clone()`
+    at both construction sites (the normal path and the state-lock-poisoned
+    fallback). `tetron status`'s text renderer (`cli/status.rs::print_network`)
+    prints it as an `interface <name>` line alongside the existing `id`
+    line, suppressed while the value is still the pre-attach placeholder
+    (`"pending"`) or empty. `--json` gets it for free since `networks` in
+    the JSON status output is `NetworkStatus` serialized directly.
+
+    Found: 2026-07-18, same audit pass as the other "Multi-network
+    command-surface follow-ups" items logged in `DO-NOT-COMMIT/TODO.md`.
+    """
+    req_id = "STATUS-001"
+
