@@ -1751,4 +1751,128 @@ mod headless_tests {
         assert!(!is_active("net-a"));
         assert!(!is_active("net-b"));
     }
+
+    /// STRANDED-COORDINATOR-WARN's auto-promotion: a sole-coordinator leave
+    /// with other members who are all unreachable (no live connection, so
+    /// none can receive the `AdminGrant`) is blocked by default and names
+    /// exactly which members would be stranded, rather than silently
+    /// abandoning them or requiring the caller to already know who's safe
+    /// to leave behind. `--force` still bypasses the check entirely. (The
+    /// "successfully auto-promoted a reachable member" happy path needs a
+    /// real live QUIC connection to exercise -- not covered here; see this
+    /// requirement's own live-testing caveat in `spec/design_spec.py`.)
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leave_blocks_on_sole_coordinator_with_unreachable_members() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        const NET: &str = "test-net";
+        let my_id = daemon.identity.local_identity();
+        let member_a = SecretKey::from_bytes(&[30u8; 32]).public();
+        let member_b = SecretKey::from_bytes(&[31u8; 32]).public();
+
+        let mut members = MemberList::new();
+        members
+            .add(Member {
+                identity: my_id,
+                ip: daemon.identity.local_ip(),
+                is_coordinator: true,
+                hostname: None,
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+                last_seen: None,
+            })
+            .unwrap();
+        members
+            .add(Member {
+                identity: member_a,
+                ip: Ipv4Addr::new(10, 88, 0, 2),
+                is_coordinator: false,
+                hostname: Some("member-a".to_string()),
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+                last_seen: None,
+            })
+            .unwrap();
+        members
+            .add(Member {
+                identity: member_b,
+                ip: Ipv4Addr::new(10, 88, 0, 3),
+                is_coordinator: false,
+                hostname: Some("member-b".to_string()),
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+                last_seen: None,
+            })
+            .unwrap();
+
+        let net_secret = SecretKey::from_bytes(&[32u8; 32]);
+        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
+        daemon.networks.insert(
+            NET.to_string(),
+            NetworkHandle {
+                name: NET.to_string(),
+                network_key: net_secret.public(),
+                role: NetworkRole::Coordinator,
+                my_ip: daemon.identity.local_ip(),
+                state: Arc::new(RwLock::new(NetworkState {
+                    generation: 0,
+                    members,
+                    approved: ApprovedList::new(),
+                    snapshot: None,
+                    network_secret_key: Some(net_secret.clone()),
+                    network_public_key: net_secret.public(),
+                    network_name: Some(NET.to_string()),
+                    mode: GroupMode::Restricted,
+                    subnet: default_subnet(),
+                    reusable_keys: BTreeMap::new(),
+                    invites: BTreeMap::new(),
+                    nuke_proposals: BTreeMap::new(),
+                })),
+                dht_notify: None,
+                cancel: CancellationToken::new(),
+                tasks: Vec::new(),
+                disconnect_tx,
+                // Empty: no live connection to either member, so neither
+                // can receive an AdminGrant -- both are "offline" for the
+                // purposes of this test.
+                peers: PeerTable::new(),
+                tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                tun_tasks: std::sync::Mutex::new(None),
+                active: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        // Blocked by default: both members are unreachable, so neither can
+        // be auto-promoted, and the leave must not proceed.
+        let resp = daemon.leave_network(NET, false).await;
+        match &resp {
+            IpcMessage::Error { message } => {
+                assert!(message.contains(&member_a.fmt_short().to_string()));
+                assert!(message.contains(&member_b.fmt_short().to_string()));
+            }
+            other => panic!("expected a blocking Error, got {other:?}"),
+        }
+        assert!(
+            daemon.networks.contains_key(NET),
+            "a blocked leave must not tear down the network"
+        );
+
+        // --force bypasses the check entirely and proceeds.
+        let resp = daemon.leave_network(NET, true).await;
+        assert!(matches!(resp, IpcMessage::Ok { .. }));
+        assert!(!daemon.networks.contains_key(NET));
+    }
 }

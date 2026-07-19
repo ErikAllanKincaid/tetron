@@ -320,9 +320,11 @@ tetron leave mynetwork   # graceful leave: you disconnect and your config is rem
                          # <net> here IS the local display name (leave isn't destructive
                          # to the network itself)
 
-tetron leave mynetwork --force   # required if you are the network's only coordinator
-                                  # and other members exist -- leaving would strand them
-                                  # with no one able to admit joiners, mint invites, or kick
+tetron leave mynetwork   # if you are the network's only coordinator and other members
+                         # exist, this auto-promotes every currently-connected member to
+                         # co-coordinator first -- --force is only needed if someone is
+                         # offline right now and can't be reached (they'd be stranded;
+                         # the error names them)
 
 tetron nuke <net-id-from-status>    # coordinator only: publish an empty record, then leave.
                                      # Same short-id-only rule as kick -- see above.

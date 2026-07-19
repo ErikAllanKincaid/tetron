@@ -14,37 +14,47 @@ impl MeshManager {
             Ok(id) => id,
             Err(message) => return IpcMessage::Error { message },
         };
+        match self.grant_admin_key(network, identity).await {
+            Ok(()) => IpcMessage::Ok {
+                message: format!("granted network key to {}", identity.fmt_short()),
+            },
+            Err(message) => IpcMessage::Error { message },
+        }
+    }
+
+    /// Grant the network key to `identity` directly — no name/hostname
+    /// resolution, unlike `admin_add`. The mechanism shared between
+    /// `admin_add` and `leave_network`'s auto-promotion-before-stranding
+    /// (`STRANDED-COORDINATOR-WARN`): send the key over the target's
+    /// *existing* mesh connection (opening a fresh one would land the
+    /// `AdminGrant` on the member's new-connection handler, which expects a
+    /// `MeshHello` first and silently drops anything else), publish the
+    /// grantee as a coordinator in the signed group blob, and record the
+    /// grant locally for `tetron admin list`. Requires the caller to
+    /// already hold the network's secret key.
+    pub(crate) async fn grant_admin_key(
+        &self,
+        network: &str,
+        identity: EndpointId,
+    ) -> Result<(), String> {
         let (net_pubkey, net_secret_key) = match self.networks.get(network) {
             Some(h) => {
                 let key = {
                     let s = h.state.read().unwrap();
                     s.network_secret_key.clone()
                 };
-                if key.is_none() {
-                    return IpcMessage::Error {
-                        message: "only a coordinator (network key holder) can grant admin"
-                            .to_string(),
-                    };
-                }
+                let Some(key) = key else {
+                    return Err(
+                        "only a coordinator (network key holder) can grant admin".to_string(),
+                    );
+                };
                 (h.network_key, key)
             }
             None => {
-                return IpcMessage::Error {
-                    message: format!("network '{network}' not active"),
-                };
+                return Err(format!("network '{network}' not active"));
             }
         };
-        let Some(net_secret_key) = net_secret_key else {
-            return IpcMessage::Error {
-                message: "network key not available".to_string(),
-            };
-        };
 
-        // The target must be a member of this network. Send the grant over the
-        // *existing* mesh connection to that member (the one its control reader
-        // is accept_bi-ing on from join time). Opening a fresh connection would
-        // land the AdminGrant on the member's new-connection handler, which
-        // expects a MeshHello first and silently drops anything else.
         let conn = self
             .networks
             .get(network)
@@ -53,15 +63,10 @@ impl MeshManager {
             .into_iter()
             .find(|(id, _, _)| *id == identity)
             .map(|(_, _, c)| c)
-            .ok_or_else(|| IpcMessage::Error {
-                message: format!(
-                    "could not find an active connection to {identity} on '{network}'"
-                ),
-            });
-        let conn = match conn {
-            Ok(c) => c,
-            Err(e) => return e,
-        };
+            .ok_or_else(|| {
+                format!("could not find an active connection to {identity} on '{network}'")
+            })?;
+
         let grant = ControlMsg::AdminGrant {
             network_pubkey: net_pubkey,
             secret_key: net_secret_key.to_bytes(),
@@ -74,15 +79,11 @@ impl MeshManager {
                     let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
                 }
                 Err(e) => {
-                    return IpcMessage::Error {
-                        message: format!("failed to send admin grant: {e}"),
-                    };
+                    return Err(format!("failed to send admin grant: {e}"));
                 }
             },
             Err(e) => {
-                return IpcMessage::Error {
-                    message: format!("failed to open stream to {identity}: {e}"),
-                };
+                return Err(format!("failed to open stream to {identity}: {e}"));
             }
         }
 
@@ -90,9 +91,7 @@ impl MeshManager {
         // joiners can discover co-coordinators to dial.
         {
             let Some(handle) = self.networks.get(network) else {
-                return IpcMessage::Error {
-                    message: format!("network '{network}' not active"),
-                };
+                return Err(format!("network '{network}' not active"));
             };
             let mut s = handle.state.write().unwrap();
             crate::membership::mark_coordinator(&mut s.members, &identity);
@@ -107,9 +106,7 @@ impl MeshManager {
             net.admins.push(identity);
             let _ = config::save_network(&net);
         }
-        IpcMessage::Ok {
-            message: format!("granted network key to {}", identity.fmt_short()),
-        }
+        Ok(())
     }
 
     /// List this network's key-holders: the local node (if it holds the key) plus

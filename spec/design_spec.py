@@ -4057,41 +4057,98 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
 
     Not fixable in the sense of a guaranteed farewell broadcast — leave
     is a local, unilateral action, and a coordinator can't force delivery
-    of a message to peers who may be offline anyway. What *is*
-    achievable, and is what this requirement adds: `tetron leave` warns
-    the caller locally and refuses by default, the same shape as
-    `NUKE-CONSENSUS`'s `has_other_members && !force` guard for the
-    single-coordinator nuke path (`nuke_network`, `runtime.rs`) — a
-    destructive-adjacent action should ask, not just proceed silently.
+    of a message to peers who may be offline anyway. What matters more
+    than a farewell, though, is that this state was *permanent*: once
+    the sole coordinator is gone, no remaining member can ever recover
+    coordination capability on their own — `admin add`, `kick`, `invite
+    create`, and `nuke` all require holding the network's secret key,
+    and there is no path to obtain it after the fact. A warn-and-`--force`
+    design (this requirement's first cut, superseded below same day)
+    undersold that: it read like "some inconvenience," not "irreversible
+    loss of governance for everyone else."
 
-    **Fix:** `tetron leave` gained a `--force` flag (`Command::Leave`,
-    threaded through `IpcMessage::Leave.force` — `#[serde(default)]` so
-    an old client's request still decodes, defaulting to the safer
-    "warn" behavior). `MeshManager::leave_network` now takes `force: bool`
-    and, when `false`, checks whether the caller is the network's sole
-    coordinator (`coordinator_count(&roster) <= 1` while the caller
-    itself `is_coordinator`) with at least one other member present; if
-    so it returns an error naming the member count and pointing at
-    `--force` instead of proceeding. Internal callers that already made
-    the leave decision elsewhere always pass `force: true`: `nuke_network`'s
-    own self-leave (called only after the destructive tombstone is
-    already published — the stranding warning is moot, the network is
-    gone) and `handle_removed_from_network` (reacting to an
-    already-applied roster change — kicked or pruned by a stale-publish
-    race — where there is no "decision" left to warn about).
+    **Design, revised same day (Erik's call, 2026-07-18): don't just warn
+    about the strand, actively prevent it where possible.** Before
+    leaving, a sole coordinator with other members now auto-promotes
+    every member reachable *right now* to co-coordinator, the same
+    `AdminGrant` mechanism `tetron admin add` uses (already the
+    project's own recommended practice — README/HOWTO tell users "every
+    fully trusted member should be a co-coordinator to avoid a single
+    point of failure"; this makes that happen automatically at the exact
+    moment it matters most instead of requiring the leaver to have
+    already done it). This is strictly better than an earlier
+    `--transfer-to <peer>` idea (pick one successor) — it doesn't
+    require the leaver to decide who the "right" successor is, and
+    spreads trust across everyone present rather than creating a new
+    single point of failure.
+
+    **The one irreducible limit:** the network's secret key only ever
+    travels over a live authenticated connection (`AdminGrant`) — never
+    the public signed blob, since that would defeat the point of it
+    being secret. A member who is offline at the exact moment `tetron
+    leave` runs cannot be promoted, full stop; there is no way to
+    pre-stage a grant for them. So the command still refuses by default
+    (destructive-adjacent action, same `has_other_members && !force`
+    shape `NUKE-CONSENSUS` already established) — but only for the
+    residual case: members that auto-promotion could not reach. Anyone
+    who *was* reachable is promoted regardless of whether the command
+    ultimately proceeds or is blocked on someone else.
+
+    **Fix:** `admin_add`'s `AdminGrant`-sending logic was factored out of
+    `daemon/mesh/admin.rs` into `MeshManager::grant_admin_key(network,
+    identity) -> Result<(), String>` — identity-only, no hostname
+    resolution — so `leave_network` can call it directly for each other
+    member without going through `admin_add`'s full IPC-message
+    round-trip. `leave_network(&self, network: &str, force: bool)`, when
+    `!force`, computes the sole-coordinator check as before
+    (`coordinator_count(&roster) <= 1` while the caller itself
+    `is_coordinator`), then — only if that's true and other members
+    exist — partitions those other members into "currently connected"
+    (via `handle.peers.peers_for_network_with_conn`) and not, calls
+    `grant_admin_key` for each connected one, and only returns an error
+    (naming the short ids of whoever remains unreachable, and how many
+    were already promoted) if any member couldn't be saved from
+    stranding. If every other member ends up promoted, the leave
+    proceeds and the success message reports how many were promoted.
+    `tetron leave --force` still bypasses the entire check (no
+    auto-promotion attempted either) — an explicit, informed choice to
+    abandon the network as-is, matching `nuke --force`'s existing
+    semantics of "I know, don't check." Internal callers that already
+    made the leave decision elsewhere still always pass `force: true`
+    and so skip auto-promotion too: `nuke_network`'s own self-leave
+    (tombstone already published — promoting anyone right before
+    destroying the network is pointless) and
+    `handle_removed_from_network` (reacting to an already-applied
+    roster change — kicked or pruned — where granting the key out
+    doesn't make sense either).
+
+    **Covered by a unit test** (`leave_blocks_on_sole_coordinator_with_
+    unreachable_members`, `daemon/mod.rs`'s `headless_tests`): a
+    bare-bones sole-coordinator network with two other members, neither
+    connected, confirms the leave is blocked with both short ids named
+    in the message and the network handle left intact, then confirms
+    `--force` bypasses it. **The "successfully auto-promoted a reachable
+    member" happy path is not covered by an automated test** — it needs
+    a real, live QUIC connection between two endpoints (`grant_admin_key`
+    calls `conn.open_bi()` on an actual `iroh::endpoint::Connection`),
+    which this codebase has no lightweight in-process test harness for;
+    every other real-connection scenario in this project is verified via
+    live multi-machine testing instead, not unit tests.
 
     Found: 2026-07-18, same audit pass as `STATUS-001` and
-    `ADMIN-ADD-NETWORK-SCOPE`. Fixed: 2026-07-18.
+    `ADMIN-ADD-NETWORK-SCOPE`. Fixed: 2026-07-18 (warn+force cut);
+    redesigned same day to auto-promote before blocking.
 
     **Not yet live-tested on real multi-machine hardware** — verified via
-    `reconcile.py` (build/clippy/test green) and code read only. A real
-    two-machine run (create a network on machine A as sole coordinator,
-    join from machine B, `tetron leave` on A without `--force` and
-    confirm the refusal message, then with `--force` and confirm B
-    correctly ends up coordinator-less and offline-facing per the
-    original live-confirmed symptom) is a reasonable follow-up whenever
-    hardware is available, same rigor as `NUKE-CONSENSUS`'s own
-    live-testing pass — not done as part of this change.
+    `reconcile.py` (build/clippy/test green) and the unit test above
+    only. A real multi-machine run (create a network on machine A as
+    sole coordinator, join from machines B and C, `tetron leave` on A
+    with both B and C connected — confirm both get promoted and the
+    leave succeeds; then repeat with C offline — confirm B gets
+    promoted, the leave is blocked naming C, and `--force` proceeds
+    anyway) is a reasonable follow-up whenever hardware is available,
+    same rigor as `NUKE-CONSENSUS`'s own live-testing pass — not done as
+    part of this change.
     """
     req_id = "STRANDED-COORDINATOR-WARN"
 

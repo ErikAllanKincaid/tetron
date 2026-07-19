@@ -1041,31 +1041,95 @@ impl MeshManager {
     /// reacting to an already-applied roster change) always pass `true`.
     #[tracing::instrument(skip(self), fields(net = network))]
     pub async fn leave_network(&self, network: &str, force: bool) -> IpcMessage {
-        // Warn (rather than silently proceed) if leaving would strand the
-        // rest of the network with no coordinator able to admit joiners,
-        // mint invites, or kick. This can't force delivery of a farewell to
-        // offline peers -- it's a local, unilateral action -- but at least
-        // makes the caller aware before doing something hard to undo.
-        if !force
-            && let Some(handle) = self.networks.get(network)
-        {
-            let state = handle.state.read().unwrap();
-            let my_id = self.endpoint.id();
-            let is_sole_coordinator = state
-                .members
-                .get(&my_id)
-                .map(|m| m.is_coordinator)
-                .unwrap_or(false)
-                && crate::membership::coordinator_count(&state.roster()) <= 1;
-            let other_member_count = state.members.all().len().saturating_sub(1);
-            if is_sole_coordinator && other_member_count > 0 {
-                return IpcMessage::Error {
-                    message: format!(
-                        "you are the only coordinator of '{network}' — leaving will strand \
-                         {other_member_count} other member(s) with no one able to admit \
-                         joiners, mint invites, or kick; use --force to leave anyway"
-                    ),
-                };
+        // If leaving would strand the rest of the network (sole coordinator,
+        // other members exist), first try to fix that instead of just
+        // warning about it: promote every member reachable right now to
+        // co-coordinator, so the network keeps someone able to admit
+        // joiners, mint invites, or kick after this node is gone. This
+        // can't reach anyone offline -- the network's secret key only ever
+        // travels over a live authenticated connection (`AdminGrant`),
+        // never the public signed blob, so there is no way to pre-stage a
+        // grant for a peer who isn't connected right now. If any other
+        // member can't be saved from stranding this way, still refuse by
+        // default (destructive-adjacent action) and name them; --force
+        // overrides.
+        let mut promoted_count = 0usize;
+        if !force {
+            let other_members: Vec<EndpointId> = self
+                .networks
+                .get(network)
+                .map(|handle| {
+                    let state = handle.state.read().unwrap();
+                    let my_id = self.endpoint.id();
+                    let is_sole_coordinator = state
+                        .members
+                        .get(&my_id)
+                        .map(|m| m.is_coordinator)
+                        .unwrap_or(false)
+                        && crate::membership::coordinator_count(&state.roster()) <= 1;
+                    if !is_sole_coordinator {
+                        return Vec::new();
+                    }
+                    state
+                        .members
+                        .all()
+                        .iter()
+                        .filter(|m| m.identity != my_id)
+                        .map(|m| m.identity)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if !other_members.is_empty() {
+                let connected: std::collections::HashSet<EndpointId> = self
+                    .networks
+                    .get(network)
+                    .map(|h| h.peers.peers_for_network_with_conn(network))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, _, _)| id)
+                    .collect();
+
+                let mut unreachable: Vec<EndpointId> = Vec::new();
+                for id in &other_members {
+                    if !connected.contains(id) {
+                        unreachable.push(*id);
+                        continue;
+                    }
+                    match self.grant_admin_key(network, *id).await {
+                        Ok(()) => promoted_count += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                peer = %id.fmt_short(),
+                                error = %e,
+                                "failed to auto-promote member before sole-coordinator leave"
+                            );
+                            unreachable.push(*id);
+                        }
+                    }
+                }
+
+                if !unreachable.is_empty() {
+                    let short_ids: Vec<String> =
+                        unreachable.iter().map(|id| id.fmt_short().to_string()).collect();
+                    let already_promoted = if promoted_count > 0 {
+                        format!("Already promoted {promoted_count} other member(s) that were reachable. ")
+                    } else {
+                        String::new()
+                    };
+                    return IpcMessage::Error {
+                        message: format!(
+                            "you are the only coordinator of '{network}' — {} of {} other \
+                             member(s) are offline right now and can't be promoted before you \
+                             leave ({}); they would be stranded with no one able to admit \
+                             joiners, mint invites, or kick. {already_promoted}Use --force to \
+                             leave anyway.",
+                            unreachable.len(),
+                            other_members.len(),
+                            short_ids.join(", "),
+                        ),
+                    };
+                }
             }
         }
 
@@ -1087,10 +1151,16 @@ impl MeshManager {
         let removed_from_config = config::delete_network(network).unwrap_or(false);
 
         if was_active || removed_from_config {
-            tracing::info!(network = %network, "left network");
-            IpcMessage::Ok {
-                message: format!("left network '{}'", network),
-            }
+            tracing::info!(network = %network, promoted = promoted_count, "left network");
+            let message = if promoted_count > 0 {
+                format!(
+                    "promoted {promoted_count} other member(s) to co-coordinator, then left \
+                     network '{network}'"
+                )
+            } else {
+                format!("left network '{}'", network)
+            };
+            IpcMessage::Ok { message }
         } else {
             IpcMessage::Error {
                 message: format!("network '{}' not found", network),
