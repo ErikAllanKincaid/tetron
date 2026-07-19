@@ -40,7 +40,7 @@ wait_all_ssh "$A" "$B" "$C"
 seed_known_hosts "$A" "$B" "$C"
 reset_state "$A" "$B" "$C"
 deploy_all "$ROOT" "$A" "$B" "$C"
-for h in "$A" "$B" "$C"; do on "$h" 'tetron up' >/dev/null 2>&1 || true; done
+for h in "$A" "$B" "$C"; do on "$h" 'tetron resume' >/dev/null 2>&1 || true; done
 wait_daemons "$A" "$B" "$C"
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ sleep 8
 
 # ---------------------------------------------------------------------------
 step "5. gatekeeper resilience — co-coordinator admits while srv-a is offline"
-on "$A" 'tetron down' >/dev/null 2>&1 || true   # original coordinator goes offline
+on "$A" 'tetron standby' >/dev/null 2>&1 || true   # original coordinator goes offline
 sleep 3
 # srv-c joins with the bare room id; it queues for approval. Only srv-b (the
 # co-coordinator promoted in step 4) is online to admit it — this proves any
@@ -109,7 +109,7 @@ else
   fail "srv-c was never admitted by co-coordinator srv-b"
 fi
 wait_roster "$B" srv-c
-on "$A" 'tetron up' >/dev/null 2>&1 || true     # bring the coordinator back
+on "$A" 'tetron resume' >/dev/null 2>&1 || true     # bring the coordinator back
 
 # ---------------------------------------------------------------------------
 step "6. peers reach each other by mesh IP (hostname is fixed at join in tetron)"

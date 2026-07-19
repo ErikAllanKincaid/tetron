@@ -126,19 +126,20 @@ pub(crate) enum Command {
     /// Run the daemon in the foreground (invoked by the system service)
     #[command(hide = true)]
     Daemon,
-    /// Bring the VPN online (installs the system service on first use only)
-    Up {
+    /// Resume: bring the data plane online. Requires the service to already
+    /// be installed and running (see `tetron install`)
+    Resume {
         /// Set your default hostname for future networks (e.g. "dario"). Used
         /// when create/join don't specify one; doesn't rename existing networks
         #[arg(long)]
         hostname: Option<String>,
-        /// Bring up only this network (as shown in `tetron status`) instead
+        /// Resume only this network (as shown in `tetron status`) instead
         /// of every joined network
         #[arg(long)]
         network: Option<String>,
     },
     /// Standby: take the data plane offline; stays connected to peers
-    Down {
+    Standby {
         /// Take only this network (as shown in `tetron status`) offline
         /// instead of every joined network
         #[arg(long)]
@@ -150,8 +151,9 @@ pub(crate) enum Command {
     Start,
     /// Uninstall system service
     Uninstall,
-    /// (Re)install and restart the system service — for fixing/updating the
-    /// service itself, not routine activation (use `tetron up` for that)
+    /// (Re)install and restart the system service — the bootstrap command
+    /// for a first-time setup; use `tetron resume` for routine activation
+    /// once the service is already installed
     Install,
     /// Restart the system service (requires root)
     Restart,
@@ -449,8 +451,8 @@ async fn main() -> Result<()> {
             stats.spawn_logger(token.clone());
             daemon::run_daemon(token, stats).await
         }
-        Command::Up { hostname, network } => cmd_up(hostname, network).await,
-        Command::Down { network } => ipc_down(network).await,
+        Command::Resume { hostname, network } => cmd_resume(hostname, network).await,
+        Command::Standby { network } => ipc_standby(network).await,
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),
@@ -556,7 +558,7 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("unknown user '{user}' (pass a valid username or UID)"))?;
     let mut stream = ipc::connect()
         .await
-        .context("tetron daemon is not running; start it with: sudo tetron up")?;
+        .context("tetron daemon is not running; start it with: sudo tetron install")?;
     ipc::send(&mut stream, ipc::IpcMessage::SetOperator { uid }).await?;
     match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { message } => println!("{message}"),

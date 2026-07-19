@@ -33,7 +33,7 @@ never lost). One member was observed stuck for ~13 hours.
 
 1. `srv-a` creates a closed network; `srv-b` and `srv-c` join by live approval
    (`requests`/`accept`) and the three full-mesh.
-2. `srv-a`'s daemon is stopped entirely (`systemctl stop`, not `tetron down` standby),
+2. `srv-a`'s daemon is stopped entirely (`systemctl stop`, not `tetron standby`),
    so the coordinator endpoint is genuinely unreachable; `srv-b` and `srv-c` see it
    go offline but stay linked to each other.
 3. `srv-b`'s daemon is restarted while the coordinator is offline (the exact

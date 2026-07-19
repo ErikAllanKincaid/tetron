@@ -9,11 +9,11 @@ Electric ray *Tetronarce californica*
 ### TL;DR
 
 ```bash
-sudo tetron up                                    # start the node (installs the service)
+sudo tetron install                               # start the node (installs the service)
 tetron create --network-name home --hostname alice # you are the coordinator; output includes an invite key
 # next: tetron join <invite-key>                  # <- copy this from the output, run it on the next machine
 
-sudo tetron up                                    # on a second machine:
+sudo tetron install                               # on a second machine:
 tetron join <invite-key> --hostname bob           # paste the invite key from step 1's output
 
 tetron status                                     # either machine: mesh IPs, hostnames, traffic
@@ -44,7 +44,7 @@ tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that ow
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
-sudo tetron up
+sudo tetron install
 
 # 2. Create a network. Output includes your mesh IP and invite key.
 #    --network-name/--hostname are optional; --subnet overrides the default
@@ -58,12 +58,12 @@ tetron create --network-name mynet --hostname alice --tor
 #        address  10.88.0.1  ·  abcd…1234
 #      next: tetron join <invite-key>    single-use invite (one more available)
 #            tetron invite <net> create  mint another invite
-#            tetron up                   activate the VPN
+#            tetron resume               activate the VPN
 
 # 3. On a second machine, join using the invite key from step 2 (--alias
 #    sets a local-only display name; --tor mirrors the coordinator's transport
 #    if it used one):
-sudo tetron up
+sudo tetron install
 tetron join <invite-key> --hostname bob
 tetron join <invite-key> --hostname bob --alias homelab --tor
 
@@ -136,18 +136,18 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 
 **Operations:**
 
-- **Cross-platform service management** -- systemd on Linux, launchd on macOS; `tetron up`/`install`/`restart`/`uninstall` handle it uniformly.
-- **Tailscale-style permission model** -- the daemon authorizes by caller UID, not socket permissions; read-only commands are open to any local user, mutating commands need root or the configured operator (`set-operator`), auto-granted to whoever ran `tetron up`.
+- **Cross-platform service management** -- systemd on Linux, launchd on macOS; `tetron resume`/`install`/`restart`/`uninstall` handle it uniformly.
+- **Tailscale-style permission model** -- the daemon authorizes by caller UID, not socket permissions; read-only commands are open to any local user, mutating commands need root or the configured operator (`set-operator`), auto-granted to whoever ran `tetron install`.
 - **`--json` on every read command** -- `status`, `invite list`, `admin list`, `config get`, for scripting.
-- **Near-instant standby** -- `tetron down`/`up` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online. Add `--network <name>` to either to standby just one joined network instead of all of them.
+- **Near-instant standby** -- `tetron standby`/`resume` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online. Add `--network <name>` to either to standby just one joined network instead of all of them.
 
-Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin` (add/list)/`kick`, `config` (get/set/unset), `status` (`--json`), `up`/`down`, `install`/`restart`/`uninstall`/`start`/`stop`, `set-operator`, `version`, and `completions`.
+Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin` (add/list)/`kick`, `config` (get/set/unset), `status` (`--json`), `resume`/`standby`, `install`/`restart`/`uninstall`/`start`/`stop`, `set-operator`, `version`, and `completions`.
 
 > **Removed from upstream rayfish**: file sharing and multi-device pairing, declarative apply layer (`apply`/`alias`), Magic DNS and all OS DNS mutation, userspace firewall, permissionless ("open") networks, hostname renaming, ephemeral members, and self-update. Packet filtering is the host firewall's job; name resolution is `/etc/hosts`'s job; copy files with `scp`/`rsync` over mesh IPs; upgrade by replacing the binary.
 
 ## Permissions
 
-Like Tailscale, the daemon authorizes each command by the **caller's UID**, not file permissions. Read-only commands (`status`, `... show`) are open to any local user; mutating commands need root or the configured operator. The user who installs the service (`sudo tetron up`) becomes the operator automatically.
+Like Tailscale, the daemon authorizes each command by the **caller's UID**, not file permissions. Read-only commands (`status`, `... show`) are open to any local user; mutating commands need root or the configured operator. The user who installs the service (`sudo tetron install`) becomes the operator automatically.
 
 ```bash
 sudo tetron install | restart | uninstall   # manage the system service
@@ -155,7 +155,7 @@ sudo tetron start | stop                     # stop = fully offline; start = bac
 sudo tetron set-operator <user>              # authorize a user to run tetron without sudo
 ```
 
-`tetron up` / `tetron down` toggle only the data plane (near-instant standby); the daemon stays connected to peers across `down`.
+`tetron resume` / `tetron standby` toggle only the data plane (near-instant standby); the daemon stays connected to peers across `standby`.
 
 ## Upgrading
 

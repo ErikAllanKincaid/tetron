@@ -28,10 +28,10 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     let daemon = build_daemon(token.clone(), stats).await?;
 
     // Connect the control plane (mesh connections) once, for the daemon's
-    // whole lifetime, then bring the data plane up. `tetron up`/`tetron down` toggle
-    // only the data plane after this; connections persist across `down` so the
-    // node stays online to peers. Each network's TUN is created as part of this
-    // call (MULTISEG-003), not before it.
+    // whole lifetime, then bring the data plane up. `tetron resume`/`tetron
+    // standby` toggle only the data plane after this; connections persist
+    // across `standby` so the node stays online to peers. Each network's TUN
+    // is created as part of this call (MULTISEG-003), not before it.
     daemon.connect_all_networks().await;
 
     // Seed the peer address cache from the live connections we just established.

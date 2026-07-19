@@ -26,7 +26,7 @@ tetron leave <net>  |  nuke <net-id>   # leave takes the local name; nuke takes 
 tetron admin <net> add <id> | list
 tetron kick <net-id> <peer>   # both args are short ids, never the local name
 tetron status [--json]
-tetron up | down
+tetron resume | standby
 tetron config [get|set|unset]        # relay, discovery-dns, subnet only
 tetron completions <shell>  |  version
 sudo tetron install | restart | uninstall | start | stop | set-operator <user>

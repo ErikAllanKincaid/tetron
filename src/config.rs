@@ -328,7 +328,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub operator_uid: Option<u32>,
     /// Personal default hostname used when creating/joining a network without an
-    /// explicit `--hostname`. Set via `tetron up --hostname <name>`. `None` falls
+    /// explicit `--hostname`. Set via `tetron resume --hostname <name>`. `None` falls
     /// back to a random generated name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_hostname: Option<String>,

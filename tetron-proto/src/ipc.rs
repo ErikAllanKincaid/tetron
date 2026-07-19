@@ -77,10 +77,10 @@ pub enum IpcMessage {
     /// networks. Handled by the already-running daemon, so no root
     /// privileges are needed on the client. An optional `hostname` sets the
     /// personal default hostname used for future creates/joins.
-    Up {
+    Resume {
         #[serde(default)]
         hostname: Option<String>,
-        /// Bring up only this network (by local display name) instead of
+        /// Resume only this network (by local display name) instead of
         /// every joined network. `None` preserves the original daemon-wide
         /// behavior (STANDBY-PER-NETWORK).
         #[serde(default)]
@@ -88,8 +88,8 @@ pub enum IpcMessage {
     },
     /// Put the daemon on standby: tear down active network connections and
     /// bring the TUN interface down. The daemon process keeps running so it
-    /// can be reactivated with `Up`.
-    Down {
+    /// can be reactivated with `Resume`.
+    Standby {
         /// Take only this network (by local display name) offline instead
         /// of every joined network. `None` preserves the original
         /// daemon-wide behavior (STANDBY-PER-NETWORK).

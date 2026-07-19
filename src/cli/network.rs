@@ -57,14 +57,14 @@ pub(crate) async fn ipc_create(
                     print_next(&[
                         (&share, "single-use invite (one more available)"),
                         ("tetron invite <net> create", "mint another invite"),
-                        ("tetron up", "activate the VPN"),
+                        ("tetron resume", "activate the VPN"),
                     ]);
                 }
                 None => {
                     let share = format!("tetron join {network_key}");
                     print_next(&[
                         (&share, "share this to invite peers"),
-                        ("tetron up", "activate the VPN"),
+                        ("tetron resume", "activate the VPN"),
                     ]);
                 }
             }
@@ -133,7 +133,7 @@ pub(crate) async fn ipc_join(
             println!("    address  {}", my_ip);
             print_next(&[
                 ("tetron status", "see who's online"),
-                ("tetron up", "activate the VPN"),
+                ("tetron resume", "activate the VPN"),
             ]);
             if let Some(w) = &warning {
                 println!("  ⚠ {w}");

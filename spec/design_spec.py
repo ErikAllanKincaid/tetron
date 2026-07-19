@@ -2737,6 +2737,89 @@ class CliFlagsVocabularyPass(Requirement):
 
 
 # --------------------------------------------------------------------------
+# CLI-VOCAB-004: up/down renamed to resume/standby; resume's escalation removed
+# --------------------------------------------------------------------------
+
+class ResumeStandbyRename(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-004
+
+    `tetron up`/`tetron down` renamed to `tetron resume`/`tetron standby`,
+    full depth (CLI and wire protocol both), fixing two problems in the
+    inherited-from-upstream naming (full analysis in
+    `DO-NOT-COMMIT/DECISION_tetron_UpDown_Naming_And_Behavior.md`, not
+    reproduced here):
+
+    1. The state `down` produced was never itself called "down" anywhere
+       in the product -- `tetron status` and every daemon log/message
+       already said "standby" (`·standby·` marker, "on standby (still
+       connected to peers)"). The verb and the resulting state's name
+       didn't match. Renaming the verb to `standby` makes it match the
+       noun that was already in universal use.
+    2. `up` silently escalated scope on hidden state (`src/cli/
+       service.rs`'s old `cmd_up`): with a daemon reachable it was the
+       narrow mirror of `down` (just activate data plane); with none
+       reachable it silently did everything `install` does (write the
+       systemd unit/launchd plist, `systemctl enable && restart`, wait
+       for the daemon, grant operator) *before* activating -- an
+       undocumented, asymmetric side door into full installation. `resume`
+       removes this escalation entirely rather than renaming it: it is
+       always exactly one operation, matching `standby`'s existing
+       single-meaning behavior. With no daemon reachable, `resume` now
+       errors the same way regardless of caller privilege (collapses the
+       old root/non-root branch into one message): "tetron service is not
+       running. Install and start it with: sudo tetron install." No new
+       verb is needed for the bootstrap case -- `cmd_install` already
+       calls the exact same `install_and_start_service()` the old
+       escalation fallback called, verified identical before this was
+       written.
+
+    Renamed, full depth:
+    - `tetron-proto::IpcMessage::Up { hostname, network }` ->
+      `Resume { hostname, network }`; `Down { network }` -> `Standby
+      { network }`. Wire-level, not just CLI text -- any client
+      (`tetron-webui` included) constructing these variants directly
+      needs updating in lockstep.
+    - `src/main.rs`'s `Command::Up`/`Down` -> `Command::Resume`/
+      `Command::Standby`, same fields, same `--hostname`/`--network`
+      flags.
+    - `src/cli/service.rs`'s `cmd_up` -> `cmd_resume` (escalation removed
+      per point 2 above); `src/cli/status.rs`'s `ipc_down` -> `ipc_standby`.
+    - `src/daemon/mod.rs`'s IPC dispatch match arms follow the wire rename;
+      `activate()`/`deactivate()` themselves are unchanged (they already
+      only ever meant "the data plane," never named after the old verbs).
+
+    **State label decoupled from the command verb for the active side.**
+    `src/cli/status.rs`'s daemon-wide summary line (`let state = if active
+    { "up" } else { "standby" }`) does not become `"resume"` -- "resume" is
+    a verb, not a state adjective ("the service is in resume" reads wrong;
+    "the service is active" reads right). It becomes `"active"` instead,
+    which is not new vocabulary: it already matches the internal `active:
+    bool` field used throughout (`net.active`, the JSON output's `"active":
+    active`). The `standby` side needed no equivalent split -- "standby"
+    already worked as both verb and state-noun before this change, so the
+    per-network `·standby·` marker and daemon log text are unchanged.
+
+    **Hard cutover, no soft-deprecation** -- matches the `CLI-VOCAB-003`
+    precedent (last CLI vocabulary rename pass, also a hard cutover with no
+    aliases kept). No hidden `up`/`down` compatibility aliases; a
+    `CHANGELOG.md` entry is the only transition aid. `start`/`stop` are
+    explicitly out of scope and unchanged -- they already mirror `systemctl
+    start`/`stop` directly and were confirmed not to have either problem
+    above.
+
+    **Cross-repo consequence, not part of this change's own scope:**
+    `tetron-webui` calls `IpcMessage::Up`/`Down` directly (`src/api.rs`) and
+    routes `POST /api/up`/`/api/down`; this wire rename breaks its build
+    against `tetron-proto`'s `main` until it is updated separately, in that
+    repo, immediately after this ships (per the DECISION doc's sequencing:
+    tetron ships first, tetron-webui fixed right after since it's a hard
+    compile failure not a backlog item, tetron-systray scaffolded fresh
+    against `Resume`/`Standby` only).
+    """
+    req_id = "CLI-VOCAB-004"
+
+
+# --------------------------------------------------------------------------
 # ADMIN-RECONNECT-CTRL: admin-grant must work after coordinator reconnect
 # --------------------------------------------------------------------------
 

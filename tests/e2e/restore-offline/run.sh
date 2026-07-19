@@ -20,7 +20,7 @@
 #
 # Flow:
 #   1. a-coordinator + b-member + c-member come up and full-mesh,
-#   2. the coordinator daemon is stopped entirely (not `tetron down` standby, so its
+#   2. the coordinator daemon is stopped entirely (not `tetron standby`, so its
 #      endpoint is genuinely unreachable); b and c stay linked to each other,
 #   3. srv-b's daemon is restarted (the restore-with-coordinator-offline path),
 #   4. asserts srv-b still has the network AND reconnects to srv-c while the
@@ -52,7 +52,7 @@ wait_all_ssh "$A" "$B" "$C"
 seed_known_hosts "$A" "$B" "$C"
 reset_state "$A" "$B" "$C"
 deploy_all "$ROOT" "$A" "$B" "$C"
-for h in "$A" "$B" "$C"; do on "$h" 'tetron up' >/dev/null 2>&1 || true; done
+for h in "$A" "$B" "$C"; do on "$h" 'tetron resume' >/dev/null 2>&1 || true; done
 wait_daemons "$A" "$B" "$C"
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ wait_roster "$B" srv-a srv-c
 wait_roster "$C" srv-a srv-b
 
 # ---------------------------------------------------------------------------
-step "2. take the coordinator fully offline (systemctl stop, not 'tetron down')"
-# `tetron down` is standby: the daemon stays connected to peers, so it would still
+step "2. take the coordinator fully offline (systemctl stop, not 'tetron standby')"
+# `tetron standby` keeps the daemon connected to peers, so it would still
 # answer the member's restore dial. We need the endpoint genuinely gone.
 on "$A" 'systemctl stop tetron' >/dev/null 2>&1 || true
 if retry_until 45 "[[ \"\$(peer_online '$B' srv-a '$NET')\" == 0 && \"\$(peer_online '$C' srv-a '$NET')\" == 0 ]]"; then
@@ -93,7 +93,7 @@ step "3. restart the member daemon while the coordinator is offline"
 # is unreachable. Pre-fix, restore aborted and the network was never registered.
 on "$B" 'systemctl restart tetron' >/dev/null 2>&1 || true
 sleep 5
-on "$B" 'tetron up' >/dev/null 2>&1 || true
+on "$B" 'tetron resume' >/dev/null 2>&1 || true
 if retry_until 30 "on '$B' 'tetron status' >/dev/null 2>&1"; then
   pass "srv-b daemon responds after restart"
 else
@@ -134,7 +134,7 @@ fi
 step "5. RECOVERY: bring the coordinator back, full mesh reconverges"
 on "$A" 'systemctl start tetron' >/dev/null 2>&1 || true
 sleep 5
-on "$A" 'tetron up' >/dev/null 2>&1 || true
+on "$A" 'tetron resume' >/dev/null 2>&1 || true
 wait_daemons "$A"
 # The reconnect loop (seeded at restore) keeps dialing with backoff, so links
 # form without any manual step on the members.

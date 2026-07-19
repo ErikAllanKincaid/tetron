@@ -682,7 +682,7 @@ impl MeshManager {
 
     /// Connect to every saved network (control plane). Run once at daemon
     /// startup so mesh connections follow the daemon lifecycle, not the data
-    /// plane: `tetron down` keeps these connected so the node stays online to
+    /// plane: `tetron standby` keeps these connected so the node stays online to
     /// peers. Connections are dropped only on leave/nuke/shutdown.
     pub(crate) async fn connect_all_networks(self: &Arc<Self>) {
         let app_config = match config::load() {
@@ -773,8 +773,8 @@ impl MeshManager {
         network: Option<&str>,
     ) -> IpcMessage {
         // Persist the personal default hostname first (before the already-active
-        // short-circuit) so `tetron up --hostname X` records the new default even
-        // when the VPN is already up. Used as the fallback for future
+        // short-circuit) so `tetron resume --hostname X` records the new default
+        // even when the VPN is already active. Used as the fallback for future
         // creates/joins; doesn't rename networks already joined.
         if let Some(h) = hostname {
             let h = h.to_ascii_lowercase();
@@ -818,8 +818,9 @@ impl MeshManager {
         };
 
         // Non-fatal problems hit while activating. The daemon stays up, but we
-        // return these to the client so `tetron up` can tell the user something is
-        // wrong instead of silently reporting success on a degraded VPN.
+        // return these to the client so `tetron resume` can tell the user
+        // something is wrong instead of silently reporting success on a
+        // degraded VPN.
         let mut warnings: Vec<String> = Vec::new();
         let mut brought_up_any = false;
 

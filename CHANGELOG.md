@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`tetron up`/`tetron down` renamed to `tetron resume`/`tetron standby` (CLI-VOCAB-004)**: `down`'s target state was already called "standby" everywhere (`tetron status`, daemon logs) — the verb never matched the noun. Full depth, not just CLI text: the wire protocol's `IpcMessage::Up`/`Down` are now `Resume`/`Standby` too. Hard cutover, no aliases — update scripts/muscle memory. `tetron status`'s daemon-wide summary now shows `active`/`standby` (was `up`/`standby`), matching the existing `active` field used everywhere else in the output.
+- **`tetron resume`'s silent install-on-first-use is removed.** The old `tetron up` would silently install and start the system service (needing root) if no daemon was reachable — a hidden scope escalation baked into what looked like a routine activate command. `tetron resume` is now a stable, single-meaning operation: with no daemon reachable it always errors ("tetron service is not running. Install and start it with: `sudo tetron install`"), regardless of caller privilege. Use `sudo tetron install` explicitly for first-time setup — it already did the same install/start work, just without the redundant name.
+
 ## [0.4.0] - 2026-07-18
 
 ### Added

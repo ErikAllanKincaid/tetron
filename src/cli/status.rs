@@ -35,7 +35,7 @@ pub(crate) fn print_json(value: &serde_json::Value) {
 pub(crate) fn infer_hint(message: &str) -> Option<String> {
     let m = message.to_lowercase();
     if m.contains("daemon") && (m.contains("not running") || m.contains("connect")) {
-        Some("start the service: sudo tetron up".into())
+        Some("start the service: sudo tetron install".into())
     } else if m.contains("expired") || m.contains("invite") {
         Some("ask the coordinator for a fresh code: tetron invite <net>".into())
     } else if m.contains("root") || m.contains("permission") || m.contains("operator") {
@@ -139,7 +139,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 return Ok(());
             }
             let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);
-            let state = if active { "up" } else { "standby" };
+            let state = if active { "active" } else { "standby" };
             println!();
             println!(
                 "  tetron  {}      endpoint {}",
@@ -147,7 +147,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 endpoint_id.fmt_short(),
             );
             if !active {
-                println!("  (run `tetron up` to activate)");
+                println!("  (run `tetron resume` to activate)");
             }
 
             if networks.is_empty() {
@@ -287,12 +287,12 @@ fn render_peer_line(peer: &ipc::PeerStatus) -> String {
     }
 }
 
-/// `tetron down`: put the daemon on standby (tear down the TUN, revert DNS, drop
-/// connections) while leaving the daemon process running so `tetron up` can
-/// reactivate it without root.
-pub(crate) async fn ipc_down(network: Option<String>) -> Result<()> {
+/// `tetron standby`: put the daemon on standby (tear down the TUN, revert DNS,
+/// drop connections) while leaving the daemon process running so `tetron
+/// resume` can reactivate it without root.
+pub(crate) async fn ipc_standby(network: Option<String>) -> Result<()> {
     let mut stream = ipc::connect().await?;
-    ipc::send(&mut stream, ipc::IpcMessage::Down { network }).await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Standby { network }).await?;
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),

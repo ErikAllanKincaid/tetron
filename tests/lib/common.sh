@@ -84,10 +84,10 @@ reset_state(){
   done
 }
 
-# deploy_all <root> <ip...> : cross-build + rsync + tetron up on each host; abort on failure.
+# deploy_all <root> <ip...> : cross-build + rsync + tetron resume on each host; abort on failure.
 deploy_all(){
   local root="$1"; shift
-  step "deploy tetron to all hosts (cross build + rsync + tetron up)"
+  step "deploy tetron to all hosts (cross build + rsync + tetron resume)"
   local ip
   for ip in "$@"; do
     echo ">> just deploy $ip"

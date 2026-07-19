@@ -13,7 +13,7 @@ Clients talk to it over a Unix socket. The daemon must be running and
 active before any mesh operations work.
 
 ```bash
-sudo tetron up        # install the system service + start + activate data plane
+sudo tetron install   # install the system service + start + activate data plane
 ```
 
 ---
@@ -36,7 +36,7 @@ chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 
 # Start the daemon (runs as a system service)
-sudo tetron up
+sudo tetron install
 
 # Verify
 tetron version
@@ -53,7 +53,7 @@ git clone https://github.com/ErikAllanKincaid/tetron.git
 cd tetron
 cargo build --release
 sudo install target/release/tetron /usr/local/bin/tetron
-sudo tetron up
+sudo tetron install
 ```
 
 ---
@@ -157,7 +157,7 @@ joiner. Revoked or expired invites cannot be redeemed.
 
 ## 4. Join a network
 
-On the joining machine (already running `sudo tetron up`), use the invite
+On the joining machine (already running `sudo tetron install`), use the invite
 key:
 
 ```bash
@@ -408,19 +408,19 @@ network just quietly decaying.
 ### Toggle data plane (standby)
 
 ```bash
-tetron down   # standby: TUN and routes go down, but daemon stays connected to peers
-tetron up     # re-activate: near-instant
+tetron standby   # standby: TUN and routes go down, but daemon stays connected to peers
+tetron resume    # re-activate: near-instant
 ```
 
-Unlike `down`, `sudo tetron stop` closes all peer connections (fully
+Unlike `standby`, `sudo tetron stop` closes all peer connections (fully
 offline); `sudo tetron start` reconnects.
 
 **Standby one network at a time** with `--network <name>` (the local
 display name shown in `tetron status`), instead of the whole VPN:
 
 ```bash
-tetron down --network work   # take "work" offline at end of day, "home" stays up
-tetron up --network work     # bring it back
+tetron standby --network work   # take "work" offline at end of day, "home" stays up
+tetron resume --network work    # bring it back
 ```
 
 `tetron status` shows a `·standby·` marker next to any network whose
@@ -630,8 +630,8 @@ sudo tetron set-operator $USER
 sudo tetron install | restart | uninstall | start | stop
 ```
 
-There is no command to query who the current operator is; `tetron up`/
-`install` auto-grant it to whoever ran them (`$SUDO_USER`), so re-running
+There is no command to query who the current operator is; `tetron install`
+auto-grants it to whoever ran it (`$SUDO_USER`), so re-running
 `set-operator` for the account you're using is always safe if a mutating
 command unexpectedly asks for root.
 
@@ -658,7 +658,7 @@ INVITE_KEY="${2}"
 # Step 1: Install the binary and start the daemon on each machine
 for host in server1 server2 server3; do
   scp tetron "$host:/usr/local/bin/tetron"
-  ssh "$host" sudo tetron up
+  ssh "$host" sudo tetron install
 done
 
 # Step 2: Join each machine to the network using the invite key

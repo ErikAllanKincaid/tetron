@@ -1,5 +1,5 @@
-//! CLI service-management handlers: up, install, start/stop/restart, uninstall,
-//! operator, plus small process/daemon-reachability helpers.
+//! CLI service-management handlers: resume, install, start/stop/restart,
+//! uninstall, operator, plus small process/daemon-reachability helpers.
 
 use crate::*;
 use std::path::Path;
@@ -38,7 +38,7 @@ pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
 /// Write the system service unit/plist, substituting the path of the binary
 /// currently running so the service execs the same binary the user invoked
 /// (rather than a hardcoded /usr/local/bin/tetron). Idempotent — safe to call on
-/// every `tetron up`, keeping the exec path fresh if the binary moves.
+/// every `tetron install`, keeping the exec path fresh if the binary moves.
 #[allow(unused_variables)]
 pub(crate) fn ensure_service_installed() -> Result<()> {
     let exe = std::env::current_exe()
@@ -82,36 +82,27 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
     }
 }
 
-/// `tetron up`: activate the VPN.
+/// `tetron resume`: activate the VPN's data plane.
 ///
-/// If the daemon is already running (the common case — the system service
-/// starts it at boot), this is just an unprivileged IPC call asking the daemon
-/// to bring the TUN up, configure DNS, and reconnect networks. Only when no
-/// daemon is reachable do we fall back to installing/starting the system
-/// service, which requires root.
-pub(crate) async fn cmd_up(hostname: Option<String>, network: Option<String>) -> Result<()> {
-    if let Ok(mut stream) = ipc::connect().await {
-        ipc::send(&mut stream, ipc::IpcMessage::Up { hostname, network }).await?;
-        match ipc::recv(&mut stream).await? {
-            ipc::IpcMessage::Ok { message } => println!("{message}"),
-            ipc::IpcMessage::Error { message } => print_error("error", &message, None),
-            other => eprintln!("Unexpected response: {other:?}"),
-        }
-        return Ok(());
-    }
-
-    // No daemon reachable — install and start the system service (needs root).
-    if unsafe { libc::geteuid() } != 0 {
+/// A stable, single-meaning operation (CLI-VOCAB-004): an unprivileged IPC
+/// call asking the already-running daemon to bring the TUN up and reconnect
+/// networks. Unlike the old `up`, this never silently installs or starts the
+/// system service -- if no daemon is reachable, it errors the same way
+/// regardless of caller privilege and points at the actual bootstrap command.
+pub(crate) async fn cmd_resume(hostname: Option<String>, network: Option<String>) -> Result<()> {
+    let Ok(mut stream) = ipc::connect().await else {
         eprintln!(
-            "tetron service is not running. Start it with: sudo tetron up\n\
-             (the daemon needs root to install the system service and create the TUN device)"
+            "tetron service is not running. Install and start it with: sudo tetron install"
         );
         std::process::exit(1);
+    };
+    ipc::send(&mut stream, ipc::IpcMessage::Resume { hostname, network }).await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::Ok { message } => println!("{message}"),
+        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        other => eprintln!("Unexpected response: {other:?}"),
     }
-    // A fresh service start always brings every network up (run_daemon's own
-    // boot-time activate(None, None) already covers it) -- --network doesn't
-    // apply when there was no daemon running to scope down from.
-    install_and_start_service(hostname).await
+    Ok(())
 }
 
 /// Install/refresh the system service and (re)start it. Requires root.
@@ -151,7 +142,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         Some(mut stream) => {
             ipc::send(
                 &mut stream,
-                ipc::IpcMessage::Up {
+                ipc::IpcMessage::Resume {
                     hostname,
                     network: None,
                 },
@@ -238,7 +229,7 @@ pub(crate) fn service_unit_exists() -> bool {
 
 /// Restart the installed service via the OS service manager (without rewriting
 /// the unit file) and wait for the daemon to accept IPC again. Backs
-/// `tetron restart`; mirrors the `up`/`install` diagnostics.
+/// `tetron restart`; mirrors the `install` diagnostics.
 #[allow(unreachable_code)]
 pub(crate) async fn restart_service_and_wait() -> Result<()> {
     #[cfg(target_os = "linux")]
@@ -269,15 +260,15 @@ pub(crate) async fn restart_service_and_wait() -> Result<()> {
 pub(crate) async fn cmd_restart() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("tetron service is not installed. Run: sudo tetron up");
+        eprintln!("tetron service is not installed. Run: sudo tetron install");
         std::process::exit(1);
     }
     restart_service_and_wait().await
 }
 
 /// `tetron stop`: stop the installed system service so the daemon exits and all
-/// peer connections close cleanly (a clean offline, distinct from `tetron down`
-/// standby). Does not disable or uninstall the unit. Requires root.
+/// peer connections close cleanly (a clean offline, distinct from `tetron
+/// standby`). Does not disable or uninstall the unit. Requires root.
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_stop() -> Result<()> {
     require_root()?;
@@ -309,7 +300,7 @@ pub(crate) async fn cmd_stop() -> Result<()> {
 pub(crate) async fn cmd_start() -> Result<()> {
     require_root()?;
     if !service_unit_exists() {
-        eprintln!("tetron service is not installed. Run: sudo tetron up");
+        eprintln!("tetron service is not installed. Run: sudo tetron install");
         std::process::exit(1);
     }
 

@@ -14,30 +14,31 @@
 //! - **Active VPN state** — the TUN link being *up*, system DNS being
 //!   configured, and the saved networks being connected. This is toggled at
 //!   runtime by [`MeshManager::activate`] / [`MeshManager::deactivate`], driven
-//!   by the `Up` / `Down` IPC commands. Each network tracks its own
+//!   by the `Resume` / `Standby` IPC commands. Each network tracks its own
 //!   activation on its own `NetworkHandle.active` (STANDBY-PER-NETWORK), so
 //!   `--network` can toggle one network's data plane without touching the
 //!   others; [`MeshManager::active`] now only seeds a brand-new network's
-//!   initial state and is what an *unscoped* `Up`/`Down` sets.
+//!   initial state and is what an *unscoped* `Resume`/`Standby` sets.
 //!
 //! This mirrors Tailscale's split between the always-running `tailscaled`
-//! daemon and the `tailscale up` / `tailscale down` client toggles: `down`
+//! daemon and the `tailscale up` / `tailscale down` client toggles: `standby`
 //! puts the daemon on *standby* (VPN state torn down) without killing the
-//! process, so the next `up` is a cheap, unprivileged IPC call rather than a
-//! root service restart.
+//! process, so the next `resume` is a cheap, unprivileged IPC call rather than
+//! a root service restart.
 //!
 //! # Cancellation tokens
 //!
 //! There are two tiers, and the distinction is what makes standby work:
 //!
 //! - `shutdown_token` (the token passed into [`run_daemon`]) gates all the
-//!   always-on infrastructure. Cancelling it stops the **process**. `Down`
+//!   always-on infrastructure. Cancelling it stops the **process**. `Standby`
 //!   never touches it — otherwise the IPC accept loop would die and there would
-//!   be nothing left to receive the next `Up`.
+//!   be nothing left to receive the next `Resume`.
 //! - Each active network owns a `shutdown_token.child_token()` stored on its
 //!   [`NetworkHandle`]. `deactivate` cancels these per-network children to stop
 //!   that network's background tasks. Because cancellation is one-shot, every
-//!   `activate` mints *fresh* child tokens, so `up → down → up` cycles work.
+//!   `activate` mints *fresh* child tokens, so `resume → standby → resume`
+//!   cycles work.
 
 use bytes::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -348,10 +349,10 @@ pub struct NetworkHandle {
     /// `true` once its TUN link/routes are up; `false` in standby (still
     /// connected to peers, no packets flow). Gates `spawn_tun_writer`'s
     /// actual write-to-TUN — the per-network counterpart of the role
-    /// `MeshManager.active` played daemon-wide before `tetron up`/`down`
-    /// gained `--network` scoping. Starts `false` at construction; brought
-    /// up by `create_and_attach_network_tun` if the daemon's default state
-    /// (`MeshManager.active`) is already "up" at attach time, or later by
+    /// `MeshManager.active` played daemon-wide before `tetron resume`/
+    /// `standby` gained `--network` scoping. Starts `false` at construction;
+    /// brought up by `create_and_attach_network_tun` if the daemon's default
+    /// state (`MeshManager.active`) is already active at attach time, or later by
     /// an explicit `activate()`.
     active: Arc<AtomicBool>,
 }
@@ -391,11 +392,11 @@ pub struct MeshManager {
     /// Default data-plane activation state for a network at the moment it is
     /// first created/joined/restored (`create_and_attach_network_tun`
     /// consults this to decide whether to bring a brand-new `NetworkHandle`
-    /// straight up). Toggled by an *unscoped* `Up`/`Down` IPC command (no
-    /// `--network`). The actual per-packet gate is each network's own
+    /// straight up). Toggled by an *unscoped* `Resume`/`Standby` IPC command
+    /// (no `--network`). The actual per-packet gate is each network's own
     /// `NetworkHandle.active` (STANDBY-PER-NETWORK) — this field no longer
     /// gates forwarding directly, it only seeds new networks' initial state
-    /// and is what an unscoped `tetron up`/`down` sets across the board.
+    /// and is what an unscoped `tetron resume`/`standby` sets across the board.
     active: Arc<AtomicBool>,
     /// Promotion signal: a co-coordinator's per-peer control reader sends the
     /// network name here after persisting an `AdminGrant` key, and the main
@@ -684,7 +685,7 @@ impl MeshManager {
     /// `network` isn't active.
     ///
     /// **MULTISEG-003:** unlike [`activate`]/[`deactivate`] (the global,
-    /// all-networks `Up`/`Down` data-plane toggle, which flips the shared
+    /// all-networks `Resume`/`Standby` data-plane toggle, which flips the shared
     /// `active` flag every forwarding task already reads), this only tears
     /// down `network`'s own forwarding tasks — it deliberately does not touch
     /// `active`, since detaching one network's interface must not silently
@@ -904,10 +905,10 @@ impl MeshManager {
             }
             IpcMessage::Kick { net_id, peer } => self.kick_member(&net_id, &peer).await,
             IpcMessage::Status => self.status(),
-            IpcMessage::Up { hostname, network } => {
+            IpcMessage::Resume { hostname, network } => {
                 self.activate(hostname, network.as_deref()).await
             }
-            IpcMessage::Down { network } => self.deactivate(network.as_deref()).await,
+            IpcMessage::Standby { network } => self.deactivate(network.as_deref()).await,
             IpcMessage::Shutdown => {
                 self.shutdown_token.cancel();
                 IpcMessage::Ok {
