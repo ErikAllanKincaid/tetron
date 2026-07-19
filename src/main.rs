@@ -85,6 +85,11 @@ pub(crate) enum Command {
     Leave {
         /// Network name (as shown in `tetron status`)
         network: String,
+        /// Leave even if you are the only coordinator and other members
+        /// would be stranded (no one left able to admit joiners, mint
+        /// invites, or kick)
+        #[arg(long)]
+        force: bool,
     },
     /// Destroy a network (coordinator only)
     ///
@@ -405,7 +410,7 @@ async fn main() -> Result<()> {
     let _log_guard = init_tracing(matches!(cli.command, Command::Daemon));
 
     match cli.command {
-        Command::Leave { network } => ipc_leave(&network).await,
+        Command::Leave { network, force } => ipc_leave(&network, force).await,
         Command::Create {
             network_name,
             hostname,

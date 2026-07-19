@@ -66,7 +66,7 @@ The daemon (`tetron daemon`) owns the TUN device and iroh endpoint and runs as a
 sudo tetron up                # install+start the service, then activate the VPN
 tetron create [--network-name n] [--hostname h] [--subnet CIDR] [--tor]   # always closed (approval-gated); MINIMAL-013 removed --open. --subnet overrides the default 10.88.0.0/24 for this network. Prints room id (public key)
 tetron join <invite-code> [--alias a] [--hostname h] [--tor]  # join by invite key (bare room id is denied — tetron is invite-only). --alias sets a local-only display name for this network, never transmitted
-tetron leave <net>            # <net> is the local display name (as shown in `tetron status`)
+tetron leave <net> [--force]  # <net> is the local display name (as shown in `tetron status`). Warns and refuses (STRANDED-COORDINATOR-WARN) if you are the network's only coordinator and other members exist — `--force` overrides
 tetron nuke <net-id> [--force] [--cancel] [--second <short-id>]   # <net-id> is the network's own short id (`tetron status`'s `id` line) — NOT the local name; nuke = publish empty record then leave; on 2+ coordinators requires a second (NUKE-CONSENSUS) — see below
 tetron kick <net-id> <peer>   # coordinator-only (closed networks): remove a member. <net-id> is the network's own short id, same as nuke — not the local name. Prunes it from the roster + approved list, republishes the signed blob, disconnects it mesh-wide. Refused on open networks (target would re-join) and against coordinators/self
 tetron status                 # all networks (works without daemon); per-host traffic, member count excludes self

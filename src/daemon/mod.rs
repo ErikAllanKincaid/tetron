@@ -864,7 +864,9 @@ impl MeshManager {
                 self.join_network(&network_key, alias.as_deref(), hostname, transport, invite)
                     .await
             }
-            IpcMessage::Leave { network } => self.leave_network(&network).await,
+            IpcMessage::Leave { network, force } => {
+                self.leave_network(&network, force).await
+            }
             IpcMessage::Nuke {
                 net_id,
                 force,

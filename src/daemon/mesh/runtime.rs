@@ -396,7 +396,9 @@ impl MeshManager {
             };
             self.publish_nuke_tombstone(net_secret_key, tombstone_generation)
                 .await;
-            return self.leave_network(name).await;
+            // force=true: the network is being destroyed (tombstone already
+            // published above); the stranding warning doesn't apply.
+            return self.leave_network(name, true).await;
         }
 
         // Two or more coordinators: consensus required.
@@ -485,7 +487,9 @@ impl MeshManager {
         // waiting for the proposal-blob publish + a reconverge cycle.
         self.publish_nuke_tombstone(net_secret_key, generation + 1)
             .await;
-        self.leave_network(name).await
+        // force=true: the network is being destroyed (tombstone already
+        // published above); the stranding warning doesn't apply.
+        self.leave_network(name, true).await
     }
 
     /// Publish an empty (tombstone) pkarr record for a network, poisoning the
@@ -948,12 +952,47 @@ impl MeshManager {
     #[tracing::instrument(skip(self), fields(net = name))]
     pub(crate) async fn handle_removed_from_network(&self, name: &str) {
         tracing::warn!(network = %name, "no longer a member of this network; leaving locally");
-        self.leave_network(name).await;
+        // force=true: we've already been removed from the roster (kicked, or
+        // a stale publish race) -- there is nothing to warn about, the
+        // membership decision was already made by someone else.
+        self.leave_network(name, true).await;
     }
 
-    /// Part of the embedding API.
+    /// Part of the embedding API. `force` bypasses the sole-coordinator
+    /// stranding warning below (`STRANDED-COORDINATOR-WARN`); internal
+    /// callers that already made the leave decision elsewhere (nuke's own
+    /// self-leave after publishing the tombstone, `handle_removed_from_network`
+    /// reacting to an already-applied roster change) always pass `true`.
     #[tracing::instrument(skip(self), fields(net = network))]
-    pub async fn leave_network(&self, network: &str) -> IpcMessage {
+    pub async fn leave_network(&self, network: &str, force: bool) -> IpcMessage {
+        // Warn (rather than silently proceed) if leaving would strand the
+        // rest of the network with no coordinator able to admit joiners,
+        // mint invites, or kick. This can't force delivery of a farewell to
+        // offline peers -- it's a local, unilateral action -- but at least
+        // makes the caller aware before doing something hard to undo.
+        if !force
+            && let Some(handle) = self.networks.get(network)
+        {
+            let state = handle.state.read().unwrap();
+            let my_id = self.endpoint.id();
+            let is_sole_coordinator = state
+                .members
+                .get(&my_id)
+                .map(|m| m.is_coordinator)
+                .unwrap_or(false)
+                && crate::membership::coordinator_count(&state.roster()) <= 1;
+            let other_member_count = state.members.all().len().saturating_sub(1);
+            if is_sole_coordinator && other_member_count > 0 {
+                return IpcMessage::Error {
+                    message: format!(
+                        "you are the only coordinator of '{network}' — leaving will strand \
+                         {other_member_count} other member(s) with no one able to admit \
+                         joiners, mint invites, or kick; use --force to leave anyway"
+                    ),
+                };
+            }
+        }
+
         // Gracefully close our connections with the leave code BEFORE teardown
         // drops them, so each peer's reader sees an intentional close and the
         // coordinator prunes us from the roster (rather than waiting for an

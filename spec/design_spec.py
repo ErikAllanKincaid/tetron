@@ -4036,3 +4036,62 @@ class AdminAddResolvePeerNameNetworkScoped(Requirement):
     """
     req_id = "ADMIN-ADD-NETWORK-SCOPE"
 
+
+# --------------------------------------------------------------------------
+# STRANDED-COORDINATOR-WARN: warn before a sole-coordinator leave strands members
+# --------------------------------------------------------------------------
+
+class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
+    """REQUIREMENT-ID: STRANDED-COORDINATOR-WARN
+
+    Found live 2026-07-18 auditing the CLI/IPC command surface for
+    multi-segment TUN: `leave_network` only tears down the *caller's* own
+    participation — correct, and the only sane behavior for a command
+    that by definition can't act on other nodes. But if the caller was
+    the network's only coordinator, every other member is left in a
+    network with no one able to admit joiners, mint invites, or kick —
+    and had no signal this happened beyond eventually noticing the
+    (former) coordinator shows "offline" forever. Live-confirmed this
+    exact state 2026-07-18 (a second node still showed a test network
+    with the departed sole coordinator as `offline` after it left).
+
+    Not fixable in the sense of a guaranteed farewell broadcast — leave
+    is a local, unilateral action, and a coordinator can't force delivery
+    of a message to peers who may be offline anyway. What *is*
+    achievable, and is what this requirement adds: `tetron leave` warns
+    the caller locally and refuses by default, the same shape as
+    `NUKE-CONSENSUS`'s `has_other_members && !force` guard for the
+    single-coordinator nuke path (`nuke_network`, `runtime.rs`) — a
+    destructive-adjacent action should ask, not just proceed silently.
+
+    **Fix:** `tetron leave` gained a `--force` flag (`Command::Leave`,
+    threaded through `IpcMessage::Leave.force` — `#[serde(default)]` so
+    an old client's request still decodes, defaulting to the safer
+    "warn" behavior). `MeshManager::leave_network` now takes `force: bool`
+    and, when `false`, checks whether the caller is the network's sole
+    coordinator (`coordinator_count(&roster) <= 1` while the caller
+    itself `is_coordinator`) with at least one other member present; if
+    so it returns an error naming the member count and pointing at
+    `--force` instead of proceeding. Internal callers that already made
+    the leave decision elsewhere always pass `force: true`: `nuke_network`'s
+    own self-leave (called only after the destructive tombstone is
+    already published — the stranding warning is moot, the network is
+    gone) and `handle_removed_from_network` (reacting to an
+    already-applied roster change — kicked or pruned by a stale-publish
+    race — where there is no "decision" left to warn about).
+
+    Found: 2026-07-18, same audit pass as `STATUS-001` and
+    `ADMIN-ADD-NETWORK-SCOPE`. Fixed: 2026-07-18.
+
+    **Not yet live-tested on real multi-machine hardware** — verified via
+    `reconcile.py` (build/clippy/test green) and code read only. A real
+    two-machine run (create a network on machine A as sole coordinator,
+    join from machine B, `tetron leave` on A without `--force` and
+    confirm the refusal message, then with `--force` and confirm B
+    correctly ends up coordinator-less and offline-facing per the
+    original live-confirmed symptom) is a reasonable follow-up whenever
+    hardware is available, same rigor as `NUKE-CONSENSUS`'s own
+    live-testing pass — not done as part of this change.
+    """
+    req_id = "STRANDED-COORDINATOR-WARN"
+

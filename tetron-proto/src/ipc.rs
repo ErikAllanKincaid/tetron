@@ -41,6 +41,12 @@ pub enum IpcMessage {
     },
     Leave {
         network: String,
+        /// Leave even if you are the only coordinator and other members
+        /// would be stranded. Defaults to `false` on old wire data
+        /// (pre-`STRANDED-COORDINATOR-WARN` clients), preserving the
+        /// safer behavior of warning rather than silently leaving.
+        #[serde(default)]
+        force: bool,
     },
     /// `net_id` is the network's own short id (a prefix of its public key,
     /// as shown by `tetron status`'s `id` line) -- never the local display

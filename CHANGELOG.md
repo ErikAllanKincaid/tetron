@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`tetron status` shows each network's OS TUN interface name (STATUS-001)**: with a node joined to several networks, there was previously no way to tell which interface (`tun0`, `tun1`, ...) belongs to which network without guessing from `ip link show` order or daemon logs. Now printed as an `interface` line per network in both text and `--json` output.
+- **`tetron leave --force` (STRANDED-COORDINATOR-WARN)**: leaving a network as its only coordinator, while other members still exist, now refuses by default with a warning naming how many members would be stranded (no one left able to admit joiners, mint invites, or kick) — pass `--force` to leave anyway.
 
 ### Fixed
 
