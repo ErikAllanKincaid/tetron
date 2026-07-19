@@ -4139,16 +4139,10 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     `ADMIN-ADD-NETWORK-SCOPE`. Fixed: 2026-07-18 (warn+force cut);
     redesigned same day to auto-promote before blocking.
 
-    **Not yet live-tested on real multi-machine hardware** — verified via
-    `reconcile.py` (build/clippy/test green) and the unit test above
-    only. A real multi-machine run (create a network on machine A as
-    sole coordinator, join from machines B and C, `tetron leave` on A
-    with both B and C connected — confirm both get promoted and the
-    leave succeeds; then repeat with C offline — confirm B gets
-    promoted, the leave is blocked naming C, and `--force` proceeds
-    anyway) is a reasonable follow-up whenever hardware is available,
-    same rigor as `NUKE-CONSENSUS`'s own live-testing pass — not done as
-    part of this change.
+    **Not yet live-tested on real multi-machine hardware as of this
+    writing** — verified via `reconcile.py` (build/clippy/test green)
+    and the unit test above only. **Resolved same day — see the
+    live-testing addendum below.**
 
     **Addendum, 2026-07-18 — `--force` is a deliberate, irreversible
     choice; document it as one.** Erik's follow-up questions (is
@@ -4174,6 +4168,44 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     remain unreachable) both gained an explicit "NOT REVERSIBLE" /
     "not reversible" callout too, so the warning is visible at the
     point of decision, not just in a doc a user may never open.
+
+    **Addendum, 2026-07-18 — live-tested on 3 bare-metal machines
+    (590i-aorus-ultra as sole coordinator, xps-17-9720 and x10sra as
+    members), both scenarios the original caveat above named.**
+
+    *All members reachable:* aorus created a fresh network, xps and
+    x10sra joined, aorus ran `tetron leave` with no `--force` — reply
+    was exactly "promoted 2 other member(s) to co-coordinator, then
+    left network '...'". Verified both promotions were real, not just a
+    local flag flip: `tetron admin <net> list` on each showed itself as
+    a key-holder, and each independently minted a working invite
+    (`tetron invite <net> create`) after aorus was gone — proof of a
+    genuinely usable key, since minting requires a real, valid
+    coordinator secret. Bonus check: with two coordinators now, one of
+    them (xps) leaving proceeded immediately with no promotion message
+    at all, confirming `coordinator_count <= 1` correctly gates the
+    whole mechanism.
+
+    *One member offline:* same setup, then `sudo systemctl stop tetron`
+    on x10sra to take it offline. `tetron leave` with no `--force` on
+    aorus refused, naming x10sra's exact short id and confirming xps
+    was already promoted despite the overall block — matching the
+    designed message precisely. Verified xps's promotion was still real
+    (same admin-list + invite-mint proof) even though the command as a
+    whole failed. `tetron leave --force` then proceeded, deliberately
+    stranding x10sra. Restarting x10sra's daemon reproduced the exact
+    zombie symptom this requirement exists to prevent by default: it
+    still showed the network with aorus permanently offline, while its
+    connection to the promoted xps stayed live and direct. Confirmed
+    x10sra itself — never a coordinator — could still `tetron leave`
+    freely with no block, since the check only ever applies to the
+    caller's own coordinator status.
+
+    No bugs found in either scenario; behavior matched the design
+    exactly on the first live run. `reconcile.py` remained the gate for
+    build/clippy/test throughout, matching the discipline established
+    for every other destructive-adjacent feature in this project
+    (`NUKE-CONSENSUS`, the `CONVERGE-*` fixes).
     """
     req_id = "STRANDED-COORDINATOR-WARN"
 
@@ -4277,6 +4309,29 @@ class UpDownAcceptOptionalNetworkScope(Requirement):
     Found: 2026-07-18, same audit pass as `STATUS-001`,
     `ADMIN-ADD-NETWORK-SCOPE`, and `STRANDED-COORDINATOR-WARN`. Fixed:
     2026-07-18.
+
+    **Addendum, 2026-07-18 — live-tested on 4 real machines (3 bare-metal
+    Linux: 590i-aorus-ultra/xps-17-9720/x10sra, plus an M1 MacBook Pro
+    over macOS).** aorus coordinated two networks on distinct subnets
+    simultaneously (`standby-a`, xps as the other member; `standby-b`,
+    subnet `10.66.0.0/24`, the Mac as the other member) — `tetron
+    status` showed two distinct interfaces (`tun0`/`tun1`) as expected
+    (`STATUS-001`). `tetron down --network standby-a` on aorus dropped
+    ping to xps to 100% loss while `standby-b`'s ping to the Mac stayed
+    at 0% loss throughout, confirming real isolation, not just a status
+    flag; `tetron up --network standby-a` recovered it to 0% loss.
+    Separately, the Mac ran `tetron down --network standby-b` /
+    `tetron up --network standby-b` **on its own side**, specifically to
+    exercise the platform-specific route code (`route_peer_range`,
+    `set_link_up`/`set_link_down`) `MACOS-001`/`MACOS-002` lived in —
+    confirmed the route disappeared from macOS's own routing table on
+    down (100% ping loss from aorus) and reappeared cleanly on up (0%
+    loss). Finally, unscoped `tetron down`/`tetron up` (no `--network`)
+    on aorus was confirmed to still move both networks together,
+    matching the pre-existing daemon-wide behavior exactly. No bugs
+    found. `reconcile.py` remained the gate for build/clippy/test
+    throughout; this run is the real-hardware confirmation the spec
+    entry above flagged as outstanding.
     """
     req_id = "STANDBY-PER-NETWORK"
 
