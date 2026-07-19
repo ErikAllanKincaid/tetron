@@ -3961,6 +3961,19 @@ class StatusShowsTunInterfaceName(Requirement):
 
     Found: 2026-07-18, same audit pass as the other "Multi-network
     command-surface follow-ups" items logged in `DO-NOT-COMMIT/TODO.md`.
+
+    **Addendum, 2026-07-18 — companion docs fix**: `AGENTS.md`'s
+    `MINIMAL-010` note and `docs/HOWTO.md`'s port-restriction example both
+    showed `nft add rule inet filter input iifname "tetron" ...` — but
+    `tun::create()` never calls `.name(...)` on the `tun` crate's
+    `Configuration`, so the OS always auto-assigns `tun0`/`tun1`/etc. This
+    predates multi-segment TUN entirely (the single old shared device was
+    never actually named `tetron` either); with N networks there are now N
+    auto-named interfaces and no fixed name to reference even in
+    principle. Both docs now show a real `tun0` example and point at
+    `tetron status`'s new `interface` line (this requirement) or
+    `ip link show` for finding the right interface per network, instead of
+    a name that was always fictional.
     """
     req_id = "STATUS-001"
 

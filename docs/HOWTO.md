@@ -261,8 +261,10 @@ curl http://10.88.0.2:8080
 
 # Check which ports a peer can reach: within the mesh there is no
 # userspace firewall — every peer can reach every port. Restrict ports
-# with the host firewall on the TUN interface:
-#   nft add rule inet filter input iifname "tetron" tcp dport != 22 drop
+# with the host firewall on the TUN interface. The OS auto-assigns the
+# interface name (tun0, tun1, ...) -- find yours with `tetron status`
+# (the "interface" line per network) or `ip link show`:
+#   nft add rule inet filter input iifname "tun0" tcp dport != 22 drop
 ```
 
 **Is the daemon running?**
