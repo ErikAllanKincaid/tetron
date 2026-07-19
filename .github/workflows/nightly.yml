@@ -120,11 +120,9 @@ jobs:
             ${{ matrix.name }}
             ${{ matrix.name }}.sha256
 
-  # DISABLED (CI-002): macOS support is unfinished — see the matching comment
-  # in release.yml. Kept for when it's fixed and verified; not run until then.
+  # ENABLED as of 0.3.0 — see the matching comment in release.yml.
   build-macos:
     needs: roll-tag
-    if: false
     permissions:
       contents: write
     strategy:

@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-18
+
+### Added
+
+- **macOS support, live-verified on real Apple Silicon hardware**: tetron now runs on macOS as a real target, not an aspirational one — installed as a launchd service (`sudo tetron up`), joined to a live network, and confirmed working end to end over both IPv4 and IPv6 (ping and real multi-megabyte file transfers, both directions, both address families), including surviving a `tetron down`/`up` standby cycle. This is the first time the per-network IPv6 addressing shipped in 0.2.0 has been tested on macOS at all. Prebuilt macOS release binaries are not published yet (`build-macos` stays disabled in CI pending that separate step); build from source with `cargo build --release` in the meantime.
+
+### Fixed
+
+- **macOS installed the wrong IPv4 route for a network's peer range (MACOS-001)**: `route_peer_range`'s macOS variant hardcoded the pre-fork `100.64.0.0/10` CGNAT literal for the IPv4 route instead of the network's actual configured subnet, silently breaking IPv4 connectivity on every macOS-joined network by default (tetron's own default subnet is `10.88.0.0/24`, not `100.64.0.0/10`). Fixed by threading the network's real subnet through, the same pattern already used for MULTISEG-007.
+- **A member's locally-tracked subnet could revert to the node-wide default on reconnect (MULTISEG-008)**: present since multi-segment TUN shipped in 0.2.0, not something introduced since. Rejoining or reconnecting to a network (including a `tetron down`/`up` cycle) rebuilt a member's in-memory state using the node's default subnet instead of that network's own — on Linux this had no visible effect (IPv4 routing there doesn't consult this value, and IPv6 routing derives its prefix elsewhere), which is why it shipped unnoticed; on macOS, where the route is installed explicitly, it meant connectivity could silently stop routing to the correct subnet after a standby cycle. Fixed by threading the network's already-correctly-resolved subnet through the member reconnect path, closing the one call site multi-segment TUN's original subnet-correctness sweep had missed.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added

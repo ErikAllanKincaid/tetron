@@ -134,17 +134,17 @@ jobs:
             ${{ matrix.name }}
             ${{ matrix.name }}.sha256
 
-  # DISABLED (CI-002): macOS support is unfinished — `route_peer_range`/
-  # `route_self_loopback` in src/tun.rs still hardcode the old 100.64.0.0/10
-  # range and ignore --subnet, and none
-  # of the cfg(macos) code is compiled or tested on this Linux dev host.
-  # Shipping a release binary that silently misroutes a real Mac's network
-  # config is not acceptable, so this job is kept (for when macOS is actually
-  # fixed and verified) but never runs. Flip `if: false` off only once that
-  # work is done and tested on a real Mac.
+  # ENABLED as of 0.3.0 (MACOS-001/MACOS-002/MULTISEG-008): macOS support
+  # is live-verified on real Apple Silicon hardware — joined a live network,
+  # confirmed working over both IPv4 and IPv6 (ping + real file transfer,
+  # both directions), including surviving a down/up standby cycle. This job
+  # was previously gated off (`if: false`) because `route_peer_range` (and,
+  # it turned out, a separate member-reconnect subnet bug, MULTISEG-008)
+  # would have shipped a release binary that silently misrouted a real
+  # Mac's network config; both are fixed and this has now actually run on
+  # real hardware, not just compiled.
   build-macos:
     needs: create-release
-    if: false
     permissions:
       contents: write
     strategy:

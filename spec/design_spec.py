@@ -673,6 +673,20 @@ class ReleaseWorkflowLinuxOnlyForNow(Requirement):
     CI-001. Verified by reading the diff (both disabled jobs present with
     `if: false`) and, once triggered, that only Linux assets appear on a
     release.
+
+    **Addendum, 2026-07-18 (0.3.0): the macOS half of this gate is
+    resolved.** `MACOS-001` (the exact hardcoded-`100.64.0.0/10` bug named
+    above) and `MULTISEG-008` (a second, deeper bug the first one's fix
+    exposed — a member's locally-tracked subnet reverting to the node-wide
+    default on reconnect, present since multi-segment TUN shipped in
+    0.2.0) are both fixed, and macOS has now actually been live-verified
+    on real Apple Silicon hardware — joined a live network, confirmed
+    working over IPv4 and IPv6 (ping + real file transfer, both
+    directions), including surviving a `down`/`up` standby cycle. `if:
+    false` is removed from `build-macos` in both `nightly.yml` and
+    `release.yml` as of this release. **Android is unaffected and remains
+    gated off** — its blockers (deep-link scheme mismatch, Kotlin/package
+    identity rename) are unrelated and still unresolved.
     """
     req_id = "CI-002"
 
