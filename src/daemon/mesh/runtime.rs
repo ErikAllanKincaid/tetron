@@ -1122,8 +1122,9 @@ impl MeshManager {
                             "you are the only coordinator of '{network}' — {} of {} other \
                              member(s) are offline right now and can't be promoted before you \
                              leave ({}); they would be stranded with no one able to admit \
-                             joiners, mint invites, or kick. {already_promoted}Use --force to \
-                             leave anyway.",
+                             joiners, mint invites, or kick. {already_promoted}This is not \
+                             reversible: once the last coordinator is gone nobody can ever \
+                             recover the network's key. Use --force to leave anyway.",
                             unreachable.len(),
                             other_members.len(),
                             short_ids.join(", "),

@@ -318,13 +318,11 @@ cannot re-join without a new invite key.
 ```bash
 tetron leave mynetwork   # graceful leave: you disconnect and your config is removed;
                          # <net> here IS the local display name (leave isn't destructive
-                         # to the network itself)
-
-tetron leave mynetwork   # if you are the network's only coordinator and other members
-                         # exist, this auto-promotes every currently-connected member to
-                         # co-coordinator first -- --force is only needed if someone is
-                         # offline right now and can't be reached (they'd be stranded;
-                         # the error names them)
+                         # to the network itself). If you are the network's only
+                         # coordinator and other members exist, this auto-promotes every
+                         # currently-connected member to co-coordinator first --
+                         # --force is only needed if someone is offline right now and
+                         # can't be reached (they'd be stranded; the error names them)
 
 tetron nuke <net-id-from-status>    # coordinator only: publish an empty record, then leave.
                                      # Same short-id-only rule as kick -- see above.
@@ -348,6 +346,64 @@ tetron status                     # shows any pending nuke proposal on the netwo
 Other members see the network as gone on next reconverge once the
 tombstone is actually published (immediate on solo-coordinator destroy,
 or once consensus is reached).
+
+### Create a zombie network (intentionally)
+
+A "zombie" network is one left with no coordinator: the remaining
+members can still reach each other directly (existing P2P connections
+keep working), but nobody can ever admit a new joiner, mint an invite,
+kick anyone, or nuke the network again -- that requires the network's
+secret key, and once the last coordinator is gone, nobody can obtain
+it. By default `tetron leave` tries to *prevent* this (it auto-promotes
+every reachable member to co-coordinator first, so the network survives
+you leaving); a zombie only happens if you make it happen, on purpose:
+
+```bash
+tetron leave mynetwork --force   # skips auto-promotion entirely, even for members
+                                  # who are online and reachable right now
+```
+
+**This is not reversible.** There is no command, no recovery flow, and
+no way for anyone -- including you -- to ever regenerate or reclaim the
+network's secret key once every coordinator is gone. The remaining
+members are frozen at whatever roster existed at that moment,
+permanently: no new members, ever; no removals, ever; no destroying it
+cleanly with `nuke`, ever. The only way out at that point is for every
+remaining member to abandon the network by hand (`tetron leave` on each
+of their own machines) and, if they still want a mesh, stand up a new
+one from scratch. Make sure this is really what you want before running
+`--force` here -- there is no undo.
+
+`--force` is the only *deliberate* way to do this. (`sudo tetron
+uninstall` without running `tetron leave` first has the same effect
+unintentionally -- it tears down the service without ever attempting a
+handoff, so if you're a sole coordinator, uninstalling first zombifies
+that network by accident, with the same irreversibility as above.
+`tetron leave` each network before uninstalling if you want to avoid
+that.)
+
+**Why you might want a zombie network:**
+
+- **Deliberately freezing membership.** A small, fixed set of trusted
+  peers (e.g. your own devices, or a few IoT nodes) where you want the
+  roster to become permanently unchangeable once set up. Fewer
+  key-holders means a smaller blast radius if any single device is ever
+  compromised -- nobody, including a future you, can add or remove
+  members again. This trades flexibility for a hard security ceiling.
+- **Grace-period wind-down.** You're stepping away (leaving a company,
+  retiring a project) and don't want to force an immediate decision on
+  whoever's left, the way `nuke` would. A zombie network keeps existing
+  connections alive while the remaining members figure out separately
+  whether to keep using it, without you having to pick a successor.
+- **Throwaway or test networks.** Nobody cares if a scratch network
+  becomes unreachable afterward, and running `nuke` or picking a
+  successor is unnecessary ceremony.
+
+If you actually want the network gone for everyone, rather than merely
+ungoverned, use `tetron nuke` instead (see above) -- it publishes an
+explicit tombstone, so even members who are offline right now detect
+the destruction cleanly the next time they reconnect, rather than the
+network just quietly decaying.
 
 ### Toggle data plane (standby)
 

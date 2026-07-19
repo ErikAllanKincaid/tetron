@@ -4149,6 +4149,31 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     anyway) is a reasonable follow-up whenever hardware is available,
     same rigor as `NUKE-CONSENSUS`'s own live-testing pass — not done as
     part of this change.
+
+    **Addendum, 2026-07-18 — `--force` is a deliberate, irreversible
+    choice; document it as one.** Erik's follow-up questions (is
+    kick-everyone-then-leave the only way to force-close a network? is a
+    zombie network ever desirable? is there still a way to make one?)
+    surfaced that `--force` is in fact the *only* remaining path to a
+    zombie network (an unreachable member blocks by default; `--force`
+    is the sole override), and that this state is irrecoverable — no
+    command or recovery flow can ever regenerate a lost network key, so
+    once the last coordinator is gone the roster is frozen forever.
+    `docs/HOWTO.md` gained a new "Create a zombie network
+    (intentionally)" section: what a zombie actually is, the one
+    deliberate way to make one (`--force`) plus the one *accidental* way
+    (`sudo tetron uninstall` without `tetron leave`-ing first — uninstall
+    never attempts a handoff), an explicit "not reversible" callout, and
+    three legitimate reasons to want one (deliberately freezing
+    membership as a security ceiling, grace-period wind-down without
+    forcing an immediate decision on remaining members, throwaway/test
+    networks) — plus a pointer to `nuke` for when the actual goal is
+    destroying the network rather than merely orphaning it. The `--force`
+    flag's own `--help` text (`Command::Leave` in `main.rs`) and the
+    daemon's blocking-error message (`leave_network`, when some members
+    remain unreachable) both gained an explicit "NOT REVERSIBLE" /
+    "not reversible" callout too, so the warning is visible at the
+    point of decision, not just in a doc a user may never open.
     """
     req_id = "STRANDED-COORDINATOR-WARN"
 

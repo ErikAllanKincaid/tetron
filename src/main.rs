@@ -87,7 +87,8 @@ pub(crate) enum Command {
         network: String,
         /// Leave even if you are the only coordinator and other members
         /// would be stranded (no one left able to admit joiners, mint
-        /// invites, or kick)
+        /// invites, or kick). NOT REVERSIBLE: once the last coordinator
+        /// is gone nobody can ever recover the network's key
         #[arg(long)]
         force: bool,
     },
