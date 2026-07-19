@@ -2302,7 +2302,7 @@ class CrateIdentityGate(Constraint):
     targets), and leaving upstream's personal address there risked routing
     this fork's own traffic to someone with no connection to it, the same
     category of problem `RENAME-013` already fixed once for `SECURITY.md`'s
-    report-to address. Erik's own framing: "give credit without leading to
+    report-to address. USER's own framing: "give credit without leading to
     emails" -- the fix is dropping the email, not the credit, so the name
     stays. No enforcement change: this gate's own `check_crate_identity`
     (reconcile.py) only ever scanned `.rs` source, never `Cargo.toml`, so
@@ -2311,10 +2311,10 @@ class CrateIdentityGate(Constraint):
     the edit.
 
     **Second addendum, same day -- co-author added, same no-email rule.**
-    `authors = ["Dario"]` -> `["Dario", "ErikAllanKincaid"]`. Erik asked
-    to add his own co-authorship but was uncertain about exposing his own
-    email either ("better to have message to github"); resolved by using
-    his GitHub username as the entry (no email, matching `Dario`'s
+    `authors = ["Dario"]` -> `["Dario", "ErikAllanKincaid"]`. USER asked
+    to add their own co-authorship but was uncertain about exposing their
+    own email either ("better to have message to github"); resolved by
+    using a GitHub username as the entry (no email, matching `Dario`'s
     pattern) since `Cargo.toml`'s own `repository` field already points at
     `github.com/ErikAllanKincaid/tetron` -- the actual contact path, same
     "GitHub only, no personal email in a published file" policy
@@ -4176,7 +4176,7 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     undersold that: it read like "some inconvenience," not "irreversible
     loss of governance for everyone else."
 
-    **Design, revised same day (Erik's call, 2026-07-18): don't just warn
+    **Design, revised same day (USER's call, 2026-07-18): don't just warn
     about the strand, actively prevent it where possible.** Before
     leaving, a sole coordinator with other members now auto-promotes
     every member reachable *right now* to co-coordinator, the same
@@ -4254,7 +4254,7 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     live-testing addendum below.**
 
     **Addendum, 2026-07-18 — `--force` is a deliberate, irreversible
-    choice; document it as one.** Erik's follow-up questions (is
+    choice; document it as one.** USER's follow-up questions (is
     kick-everyone-then-leave the only way to force-close a network? is a
     zombie network ever desirable? is there still a way to make one?)
     surfaced that `--force` is in fact the *only* remaining path to a
