@@ -2309,6 +2309,16 @@ class CrateIdentityGate(Constraint):
     the carve-out was already inert with respect to the actual automated
     check either way -- confirmed by re-running `reconcile.py` green after
     the edit.
+
+    **Second addendum, same day -- co-author added, same no-email rule.**
+    `authors = ["Dario"]` -> `["Dario", "ErikAllanKincaid"]`. Erik asked
+    to add his own co-authorship but was uncertain about exposing his own
+    email either ("better to have message to github"); resolved by using
+    his GitHub username as the entry (no email, matching `Dario`'s
+    pattern) since `Cargo.toml`'s own `repository` field already points at
+    `github.com/ErikAllanKincaid/tetron` -- the actual contact path, same
+    "GitHub only, no personal email in a published file" policy
+    `SECURITY.md` already follows (`RENAME-013`).
     """
     constraint_id = "CON-M03"
     enforcement_logic = "{{ crate_identity.leak_count == 0 }}"
