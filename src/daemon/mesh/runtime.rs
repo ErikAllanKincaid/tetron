@@ -542,17 +542,28 @@ impl MeshManager {
     }
 
     /// Resolve a peer argument (bare hostname, or a short-id / endpoint-id
-    /// prefix) to its endpoint id. Backs `tetron admin add`. Hostname
-    /// resolution is deliberately available here: `admin add` is additive
-    /// (grants trust to whoever the name currently resolves to), so a
-    /// friendlier identifier is an acceptable convenience. Destructive
+    /// prefix) to its endpoint id, scoped to `network`. Backs `tetron admin
+    /// add`. Hostname resolution is deliberately available here: `admin add`
+    /// is additive (grants trust to whoever the name currently resolves to),
+    /// so a friendlier identifier is an acceptable convenience. Destructive
     /// commands (`tetron kick`, `tetron nuke --second`) intentionally do
     /// NOT use this — they resolve by short id / endpoint id only via
     /// [`Self::resolve_short_id_any_network`], since removing the wrong
     /// peer needs a cryptographic identity, not a spoofable one.
-    pub(crate) async fn resolve_peer_name(&self, name: &str) -> Result<EndpointId, String> {
-        for entry in self.networks.iter() {
-            let state = entry.value().state.read().unwrap();
+    ///
+    /// Scoped to `network` (ADMIN-ADD-NETWORK-SCOPE) rather than searching
+    /// every joined network's roster: hostnames are only guaranteed unique
+    /// *within* one network's roster (`resolve_collision` at admission), so
+    /// an unscoped search could hit a same-named member on a different
+    /// network the caller belongs to — `admin_add` always has the target
+    /// network in scope, it just never used to thread it through here.
+    pub(crate) async fn resolve_peer_name(
+        &self,
+        network: &str,
+        name: &str,
+    ) -> Result<EndpointId, String> {
+        if let Some(entry) = self.networks.get(network) {
+            let state = entry.state.read().unwrap();
             if let Some(m) = state
                 .members
                 .all()

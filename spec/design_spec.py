@@ -3977,3 +3977,62 @@ class StatusShowsTunInterfaceName(Requirement):
     """
     req_id = "STATUS-001"
 
+
+# --------------------------------------------------------------------------
+# ADMIN-ADD-NETWORK-SCOPE: resolve_peer_name scoped to the target network
+# --------------------------------------------------------------------------
+
+class AdminAddResolvePeerNameNetworkScoped(Requirement):
+    """REQUIREMENT-ID: ADMIN-ADD-NETWORK-SCOPE
+
+    Re-examined 2026-07-18 while auditing the CLI/IPC command surface for
+    multi-segment TUN: `resolve_peer_name(name: &str)` (`daemon/mesh/
+    runtime.rs`) searched *every* joined network's roster for a hostname
+    match and returned the first hit — it had no `network` parameter at
+    all, even though its only caller, `admin_add(network: &str, peer_str:
+    &str)` (`daemon/mesh/admin.rs`), already has the target network in
+    scope and never passed it through. Hostnames are only guaranteed
+    unique *within* one network's roster (`resolve_collision` at
+    admission), so with two joined networks each having an `alice`,
+    `tetron admin <net-A> add alice` could resolve to network-B's `alice`
+    instead of network-A's.
+
+    **Not a silent-wrong-grant security bug**: `admin_add` looks up the
+    resolved identity in `network`'s *own* `PeerTable`
+    (`h.peers.peers_for_network_with_conn(network)`, MULTISEG-002's
+    per-network table) before sending the `AdminGrant`, and errors with
+    "could not find an active connection to `<identity>` on `<network>`"
+    if that identity isn't actually connected there. A cross-network
+    mis-resolution fails closed, not silently — but it is a real
+    usability bug: if network-A's real, currently-connected `alice`
+    exists, but `resolve_peer_name` happened to hit network-B's `alice`
+    first (DashMap iteration order), the command failed with a confusing
+    "could not find an active connection" error even though the intended
+    target was right there and reachable, with no indication the wrong
+    identity was resolved behind the scenes.
+
+    Same root category as the short-id prefix-collision bug fixed
+    2026-07-17 in `resolve_short_id_any_network` (that one now rejects
+    ambiguous/too-short matches instead of guessing — see
+    `ADMIN-ADD-EASY-ID`'s addendum). This fix is smaller: no separate
+    "collect all matches, error on >1" step is needed the way the
+    short-id fix needed one, because scoping the search to one network's
+    roster makes cross-network ambiguity structurally impossible rather
+    than something to detect after the fact.
+
+    **Fix:** `resolve_peer_name` now takes `network: &str` and looks up
+    the hostname match only in that network's own roster
+    (`self.networks.get(network)`), instead of iterating `self.networks`.
+    `admin_add`'s call site now passes its own `network` parameter
+    through — the CLI already requires `tetron admin <network> add
+    <peer>`, so the value was always available, just unused for this
+    lookup. The short-id fallback (`resolve_short_id_any_network`) stays
+    cross-network and unchanged: it already rejects ambiguous/too-short
+    prefixes rather than guessing, so it was never the unsafe half of
+    this function.
+
+    Found: 2026-07-16 (original, less precise write-up). Root cause
+    re-examined and narrowed 2026-07-18. Fixed: 2026-07-18.
+    """
+    req_id = "ADMIN-ADD-NETWORK-SCOPE"
+

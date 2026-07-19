@@ -10,6 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`tetron status` shows each network's OS TUN interface name (STATUS-001)**: with a node joined to several networks, there was previously no way to tell which interface (`tun0`, `tun1`, ...) belongs to which network without guessing from `ip link show` order or daemon logs. Now printed as an `interface` line per network in both text and `--json` output.
 
+### Fixed
+
+- **`tetron admin add` could resolve a peer's hostname on the wrong network (ADMIN-ADD-NETWORK-SCOPE)**: with two joined networks each having a same-named member (e.g. `alice`), `tetron admin <net-A> add alice` could resolve to network-B's `alice` instead of network-A's, since `resolve_peer_name` searched every joined network's roster instead of just the target one. Failed closed rather than granting the wrong peer (the resolved identity was then checked against the target network's own connection table), but produced a confusing error when the intended target was actually reachable. Fixed by scoping the hostname lookup to the target network.
+
 ## [0.3.0] - 2026-07-18
 
 ### Added
