@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Dropped the email from `Cargo.toml`/`tetron-proto/Cargo.toml`'s `authors` field, kept the name.** Was `["Dario <dario@rayfish.xyz>"]`, now `["Dario"]`. An `authors` field is a published contact point (crates.io/docs.rs listings, security-scanner disclosure targets); leaving upstream's personal address there risked routing this fork's own traffic to someone unconnected to it. No functional change.
+
 ## [0.5.0] - 2026-07-19
 
 ### Changed

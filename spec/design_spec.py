@@ -2293,6 +2293,22 @@ class CrateIdentityGate(Constraint):
     a bare `rayfish` grep, so it never trips on the KEEP-ON-PURPOSE references.
 
     ENFORCEMENT (reconcile.py): crate_identity.leak_count equals 0.
+
+    **Addendum, 2026-07-19 — the `Cargo.toml` author-attribution carve-out
+    is narrowed: name kept, email dropped.** `authors = ["Dario
+    <dario@rayfish.xyz>"]` in `Cargo.toml`/`tetron-proto/Cargo.toml` became
+    `authors = ["Dario"]` -- an `authors` field is a published contact
+    point (crates.io/docs.rs listings, security-scanner disclosure
+    targets), and leaving upstream's personal address there risked routing
+    this fork's own traffic to someone with no connection to it, the same
+    category of problem `RENAME-013` already fixed once for `SECURITY.md`'s
+    report-to address. Erik's own framing: "give credit without leading to
+    emails" -- the fix is dropping the email, not the credit, so the name
+    stays. No enforcement change: this gate's own `check_crate_identity`
+    (reconcile.py) only ever scanned `.rs` source, never `Cargo.toml`, so
+    the carve-out was already inert with respect to the actual automated
+    check either way -- confirmed by re-running `reconcile.py` green after
+    the edit.
     """
     constraint_id = "CON-M03"
     enforcement_logic = "{{ crate_identity.leak_count == 0 }}"
