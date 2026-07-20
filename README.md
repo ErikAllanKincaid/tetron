@@ -151,6 +151,13 @@ Run `tetron --help` (and `tetron <command> --help`) for the full surface: `creat
 
 > **Removed from upstream rayfish**: file sharing and multi-device pairing, declarative apply layer (`apply`/`alias`), Magic DNS and all OS DNS mutation, userspace firewall, permissionless ("open") networks, hostname renaming, ephemeral members, and self-update. Packet filtering is the host firewall's job; name resolution is `/etc/hosts`'s job; copy files with `scp`/`rsync` over mesh IPs; upgrade by replacing the binary.
 
+## Optional addons
+
+tetron itself stays CLI-only by design. Two genuinely separate, opt-in clients talk to the same daemon over its existing IPC socket -- no daemon changes required either way, and nothing about tetron's own behavior changes whether you install them or not.
+
+- **[tetron-webui](https://github.com/ErikAllanKincaid/tetron-webui)** -- a browser dashboard: live status, network create/join/leave, invite management, and the full coordinator admin surface (kick, promote, nuke) with the same consensus/force safeguards the CLI has. Binds `127.0.0.1` only. Ships as a per-user service (`tetron-webui install`) and pre-built binaries.
+- **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client: glanceable status, per-network resume/standby toggling, a member list with click-to-copy IPs, and clipboard-detect join (copy an invite key, click "Join" -- no typed entry). Deliberately non-destructive: no leave/kick/nuke/admin from the tray, ever. Same per-user-service and pre-built-binary deployment as tetron-webui. Early-stage (v1 function list implemented; not yet visually verified beyond service-level testing).
+
 ## Permissions
 
 Like Tailscale, the daemon authorizes each command by the **caller's UID**, not file permissions. Read-only commands (`status`, `... show`) are open to any local user; mutating commands need root or the configured operator. The user who installs the service (`sudo tetron install`) becomes the operator automatically.
