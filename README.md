@@ -90,6 +90,10 @@ Each machine runs the `tetron` daemon. **Every network you join gets its own TUN
 
 A node that belongs to two networks does **not** automatically route traffic between them (each stays a fully isolated peer mesh, like two separate physical networks would) -- if you need to bridge them, a node that's a member of both can jump-host at the application layer (`ssh -J`, port forwards) with zero extra configuration, since each hop is that node's own native connection to a peer it genuinely shares a network with.
 
+<img src="docs/tetron.jpeg" alt="Diagram: each tetron node runs the same daemon, encrypts traffic with QUIC over ChaCha20-Poly1305, and connects directly to peers once iroh's shared relay/discovery infrastructure has helped them find each other and punch through NAT." width="900">
+
+Every node runs the identical daemon. Once two nodes can reach each other, traffic moves directly between them over an encrypted QUIC/UDP tunnel -- iroh's shared relay/discovery infrastructure only brokers the initial introduction and NAT traversal, and is never in the data path for an established connection. Each node's TUN device carries whatever name the OS assigns it (`tun0`, `tun1`, ...), not a fixed name.
+
 ## Co-coordinators and admission
 
 By default only the node that ran `tetron create` holds the network key -- a **single point of failure**: if it's offline, nobody else can admit joiners, mint invites, or kick members. Grant the key to every trusted member so the network stays operational no matter who's online:
