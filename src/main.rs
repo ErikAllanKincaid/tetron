@@ -83,7 +83,9 @@ pub(crate) enum Command {
     /// Leave a network (remove from saved config)
     #[command(visible_alias = "rm")]
     Leave {
-        /// Network name (as shown in `tetron status`)
+        /// Network name (as shown in `tetron status`), or its `network_key`
+        /// (or an unambiguous prefix of it) if you don't have the local
+        /// name handy
         network: String,
         /// Leave even if you are the only coordinator and other members
         /// would be stranded (no one left able to admit joiners, mint

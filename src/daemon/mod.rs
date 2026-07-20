@@ -1021,6 +1021,34 @@ impl MeshManager {
         }
     }
 
+    /// Resolve `leave`'s network argument: the local display name if it
+    /// matches exactly (today's only path, unchanged), else fall back to a
+    /// network-key prefix match (same `>=10`-char rule and ambiguity
+    /// handling as [`Self::resolve_network_short_id`]). Unlike that
+    /// function, this one *does* try the local name first -- `leave` only
+    /// ever acts on the caller's own participation (no roster mutation of
+    /// anyone else), so the destructive-action argument for key-only
+    /// resolution doesn't apply here. Lets a user who only has an invite
+    /// key or room id handy (e.g. at uninstall time) still `leave` without
+    /// having to remember the local name `tetron status` assigned it.
+    pub(crate) fn resolve_network_name_or_key(&self, s: &str) -> Result<String, String> {
+        if self.networks.contains_key(s) {
+            return Ok(s.to_string());
+        }
+        // Don't propagate resolve_network_short_id's raw error as-is -- its
+        // "too short to safely identify a network" wording assumes the
+        // caller was attempting key resolution, which is misleading here
+        // when `s` is just a plain local-name typo (the common case for
+        // `leave`).
+        self.resolve_network_short_id(s).map_err(|_| {
+            format!(
+                "'{s}' is not a known local network name (see `tetron status`), and does not \
+                 resolve as a network key either (needs >=10 characters, matching the \
+                 `network_key` shown by `tetron status`, or the full value)"
+            )
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Join-request handlers (coordinator only)
     // -----------------------------------------------------------------------

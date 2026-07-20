@@ -1031,6 +1031,11 @@ impl MeshManager {
     /// reacting to an already-applied roster change) always pass `true`.
     #[tracing::instrument(skip(self), fields(net = network))]
     pub async fn leave_network(&self, network: &str, force: bool) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         // If leaving would strand the rest of the network (sole coordinator,
         // other members exist), first try to fix that instead of just
         // warning about it: promote every member reachable right now to

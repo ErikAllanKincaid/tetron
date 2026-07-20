@@ -6,8 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`tetron leave` now accepts a network key, not just the local display name (LEAVE-NETWORK-KEY-001)**: previously the only way to identify which network to leave was its locally-assigned display name (as shown in `tetron status`) -- if you only had the invite key or room id handy (e.g. at uninstall time), there was no way to `leave` at all. `tetron leave` now tries the local name first (unchanged), then falls back to a `network_key` prefix match (same rules `nuke`/`kick` already use: >=10 characters, or the full key).
+
 ### Changed
 
+- **`sudo tetron install` now says what it's actually doing (INSTALL-OUTPUT-001)**: previously ran silently until "waiting for daemon…", giving no indication a privileged system service was being written and enabled. Now prints the concrete unit/job name and exact file path before writing it (e.g. `installing systemd service 'tetron' -> /etc/systemd/system/tetron.service`), and announces the enable/restart (or launchd load) step.
 - **`tetron kick` no longer claims to refuse on "open networks" (RENAME-M02 follow-up)**: dead code left over from the D1 severance cleanup -- tetron has never been able to create an open network (`MINIMAL-013`) and can't coordinate a full-torpedo one either (D1's ALPN split makes that connection impossible), so this branch could never actually trigger. Removed the check and the doc/help text implying it was a real behavior. `kick` is now refused only against a coordinator or yourself.
 - **`tetron nuke`/`tetron kick`'s network positional renamed `net_id` -> `network_key` (CLI-VOCAB-005)**: `--help` showed `<NET_ID>` and `tetron status` (text) labeled the same value `id`, but `tetron status --json` already called it `network_key` -- the field name a user scripting against `tetron status --json | jq` actually has to know. Standardized on `network_key` everywhere: `--help` now shows `<NETWORK_KEY>`, and the status text line reads `network_key <short>` instead of `id <short>`. Behavior is unchanged (still accepts an unambiguous >=10-char prefix, or the full key).
 - **`tetron kick`'s second positional renamed `peer` -> `endpoint_id` (CLI-VOCAB-005)**: same problem one level deeper -- `kick` resolves this argument only against a member's endpoint id, never a hostname, but `tetron status --json`'s `PeerStatus` exposes both `endpoint_id` and `hostname` fields side by side with no way to tell which one `kick` wants. `--help` now shows `<ENDPOINT_ID>`, matching the JSON field. `tetron admin add`'s `peer` argument is unchanged -- it genuinely accepts a hostname or short id.

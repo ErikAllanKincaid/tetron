@@ -57,6 +57,7 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
         let path = Path::new("/etc/systemd/system/tetron.service");
         let service =
             include_str!("../../contrib/tetron.service").replace("/usr/local/bin/tetron", &exe);
+        println!("installing systemd service 'tetron' -> {}", path.display());
         std::fs::write(path, service)
             .with_context(|| format!("failed to write {}", path.display()))?;
         run_cmd("systemctl", &["daemon-reload"]);
@@ -71,6 +72,7 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
         // contains — leaving the real exe path unsubstituted). Mirrors Linux.
         let plist = include_str!("../../contrib/com.tetron.vpn.plist")
             .replace("/usr/local/bin/tetron", &exe);
+        println!("installing launchd job 'com.tetron.vpn' -> {}", path.display());
         std::fs::write(path, plist)
             .with_context(|| format!("failed to write {}", path.display()))?;
         return Ok(());
@@ -117,6 +119,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
 
     #[cfg(target_os = "linux")]
     {
+        println!("enabling and starting systemd service 'tetron' (systemctl enable/restart)");
         run_cmd("systemctl", &["enable", "tetron"]);
         run_cmd("systemctl", &["restart", "tetron"]);
     }
@@ -127,6 +130,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
         // Tear down any previously loaded job (e.g. one pointing at a stale
         // binary path) before loading the freshly written plist.
         run_cmd_quiet("launchctl", &["unload", path]);
+        println!("loading launchd job 'com.tetron.vpn' -> {path}");
         run_cmd("launchctl", &["load", "-w", path]);
     }
 

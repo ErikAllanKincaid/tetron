@@ -276,11 +276,14 @@ The kicked member is removed from the roster and disconnected. They cannot re-jo
 ```bash
 tetron leave mynetwork   # graceful leave: you disconnect and your config is removed;
                          # <net> here IS the local display name (leave isn't destructive
-                         # to the network itself). If you are the network's only
-                         # coordinator and other members exist, this auto-promotes every
-                         # currently-connected member to co-coordinator first --
-                         # --force is only needed if someone is offline right now and
-                         # can't be reached (they'd be stranded; the error names them)
+                         # to the network itself). If you don't have the local name handy
+                         # (e.g. you only kept the invite key or room id from setup), pass
+                         # the network's `network_key` instead -- `tetron leave` tries the
+                         # local name first, then falls back to a network_key match. If you
+                         # are the network's only coordinator and other members exist, this
+                         # auto-promotes every currently-connected member to co-coordinator
+                         # first -- --force is only needed if someone is offline right now
+                         # and can't be reached (they'd be stranded; the error names them)
 
 tetron nuke <network-key-from-status>    # coordinator only: publish an empty record, then leave.
                                           # Same short-id-only rule as kick -- see above.

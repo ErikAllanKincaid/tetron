@@ -4535,3 +4535,71 @@ class UpDownAcceptOptionalNetworkScope(Requirement):
     """
     req_id = "STANDBY-PER-NETWORK"
 
+
+class InstallOutputNamesConcreteAction(Requirement):
+    """REQUIREMENT-ID: INSTALL-OUTPUT-001
+
+    `sudo tetron install` used to run entirely silently until "waiting
+    for daemon…" -- `ensure_service_installed` wrote the systemd unit /
+    launchd plist with no output, and `install_and_start_service` ran
+    `systemctl enable/restart` or `launchctl load` via `run_cmd`, which
+    itself only ever prints on failure. So a user watching the command
+    run saw nothing about what was actually happening on their machine
+    (a privileged install writing a system service file and enabling
+    it) until it was already done. Flagged live-testing macOS
+    (2026-07-19): don't hide privileged/system-level actions just
+    because the command that triggers them is short -- the command
+    being short is not a reason for its output to be vague about what
+    actually happened.
+
+    Fix: `ensure_service_installed` (`src/cli/service.rs`) now prints
+    the concrete unit/job name and the exact path being written before
+    writing it -- `installing systemd service 'tetron' -> /etc/systemd/
+    system/tetron.service` on Linux, `installing launchd job
+    'com.tetron.vpn' -> /Library/LaunchDaemons/com.tetron.vpn.plist` on
+    macOS. `install_and_start_service` similarly announces the
+    enable/restart or load step before running it. Both functions have
+    exactly one caller each (`cmd_install`, i.e. `sudo tetron install`),
+    so this adds no noise to any other command path (`restart` uses its
+    own `restart_service_and_wait`, which was already explicit about
+    "restarted").
+    """
+    req_id = "INSTALL-OUTPUT-001"
+
+
+class LeaveAcceptsNetworkKey(Requirement):
+    """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
+
+    `tetron leave` previously resolved its network argument only by
+    exact match against the local display name (`self.networks.get`,
+    a plain map lookup, no dedicated resolver) -- unlike `nuke`/`kick`,
+    which both resolve by network key. A user who only has the invite
+    key or room id handy (e.g. at uninstall time, having never noted
+    the locally-assigned display name) had no way to `leave` at all.
+
+    Fix: new `MeshManager::resolve_network_name_or_key` (`src/daemon/
+    mod.rs`), tried at the top of `leave_network`
+    (`src/daemon/mesh/runtime.rs`) before any of its existing logic --
+    every downstream use of the network argument (the sole-coordinator
+    check, connection teardown, config removal, response messages) now
+    operates on the resolved local name either way, so behavior for the
+    existing local-name path is unchanged byte-for-byte. Tries the exact
+    local name first (preserves today's only path untouched); falls back
+    to `resolve_network_short_id` (same >=10-char-minimum, ambiguous-
+    prefix-rejected rules already used by `nuke`/`kick`) only if that
+    fails. Deliberately **not** the same trust posture as `nuke`/`kick`'s
+    key-only resolution: `leave` only ever tears down the caller's own
+    participation, never mutates another node's roster, so there is no
+    destructive-action argument for refusing a local-name match the way
+    `resolve_network_short_id`'s own doc comment explains for those two.
+    On failure, the combined error names both things that were tried
+    (not a known local name, and not a valid/unambiguous key) rather
+    than surfacing `resolve_network_short_id`'s raw wording, which
+    assumes -- correctly for `nuke`/`kick`, not for `leave` -- that the
+    caller was attempting key resolution in the first place.
+
+    `--help`, `AGENTS.md`, `README.md`, and `docs/HOWTO.md` updated to
+    document the fallback.
+    """
+    req_id = "LEAVE-NETWORK-KEY-001"
+

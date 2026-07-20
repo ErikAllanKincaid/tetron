@@ -22,7 +22,7 @@ The complete CLI surface:
 ```
 tetron create [--network-name n] [--hostname h] [--subnet CIDR] [--tor]   # invite-only, prints room id + invite key
 tetron join <invite-code> [--alias a] [--hostname h] [--tor]  # bare room id denied — tetron is invite-only
-tetron leave <net>  |  nuke <network-key>   # leave takes the local name; nuke takes the network's key/short id (never the name)
+tetron leave <net>  |  nuke <network-key>   # leave takes the local name (or the network's key/short id as a fallback); nuke takes the network's key/short id (never the name)
 tetron admin <net> add <id> | list
 tetron kick <network-key> <endpoint-id>   # both args are short ids, never the local name
 tetron status [--json]
