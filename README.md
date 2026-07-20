@@ -94,7 +94,7 @@ A node that belongs to two networks does **not** automatically route traffic bet
 
 Every node runs the identical daemon. Once two nodes can reach each other, traffic moves directly between them over an encrypted QUIC/UDP tunnel -- iroh's shared relay/discovery infrastructure only brokers the initial introduction and NAT traversal, and is never in the data path for an established connection. Each node's TUN device carries whatever name the OS assigns it (`tun0`, `tun1`, ...), not a fixed name.
 
-For a longer, narrative take on the same architecture, see [**docs/Tetron_AnatomyofaMesh.html**](docs/Tetron_AnatomyofaMesh.html) -- a field-guide-style writeup covering the daemon's internal structure, the path a packet takes, and how concurrent state is held. Third-party-style piece, included for a different angle on the same system rather than as an authoritative reference -- some details are simplified for narrative flow.
+For a longer, narrative take on the same architecture, see [**Tetron: Anatomy of a Mesh**](https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html) -- a field-guide-style writeup covering the daemon's internal structure, the path a packet takes, and how concurrent state is held. Third-party-style piece, included for a different angle on the same system rather than as an authoritative reference -- some details are simplified for narrative flow.
 
 ## Co-coordinators and admission
 
