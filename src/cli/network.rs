@@ -147,7 +147,7 @@ pub(crate) async fn ipc_join(
 }
 
 pub(crate) async fn ipc_nuke(
-    net_id: &str,
+    network_key: &str,
     force: bool,
     cancel: bool,
     second: Option<&str>,
@@ -156,7 +156,7 @@ pub(crate) async fn ipc_nuke(
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Nuke {
-            net_id: net_id.to_string(),
+            network_key: network_key.to_string(),
             force,
             cancel,
             second: second.map(str::to_string),
@@ -172,13 +172,13 @@ pub(crate) async fn ipc_nuke(
     Ok(())
 }
 
-pub(crate) async fn ipc_kick(net_id: &str, peer: &str) -> Result<()> {
+pub(crate) async fn ipc_kick(network_key: &str, endpoint_id: &str) -> Result<()> {
     let mut stream = ipc::connect().await?;
     ipc::send(
         &mut stream,
         ipc::IpcMessage::Kick {
-            net_id: net_id.to_string(),
-            peer: peer.to_string(),
+            network_key: network_key.to_string(),
+            endpoint_id: endpoint_id.to_string(),
         },
     )
     .await?;

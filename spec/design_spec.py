@@ -1945,6 +1945,24 @@ class ProductIdentityRenamed(Requirement):
     tetron-native `--reusable` invite flag would need; only its doc comment's
     "D1 compat" framing was stale, now corrected to describe it as dormant
     infrastructure rather than full-torpedo interop.
+
+    **Second follow-up, found later (via `CLI-VOCAB-005`'s `kick` naming
+    work), not caught by the 2026-07-17 pass above:** `kick_member`
+    (`daemon/mesh/runtime.rs`) had its own `if mode == GroupMode::Open`
+    refusal branch -- same provably-dead class as the auto-admit branch
+    already removed (tetron never creates an open network, and D1's ALPN
+    split means it can never coordinate a full-torpedo one either), just
+    missed because the 2026-07-17 audit scoped itself to literal `D1`-
+    comment references and this branch's comment didn't carry one. Removed,
+    along with its now-dead `mode` local and the doc-comment/help-text/
+    README/AGENTS.md lines claiming `kick` is "refused on open networks" or
+    "closed networks only." `NetworkState.mode` (`daemon/mod.rs`) is now
+    itself unread by anything -- kept (config/wire carries it) but marked
+    `#[allow(dead_code)]`, the same treatment already given to
+    `membership::OpenPolicy`/`policy_for_mode`, rather than cascading into
+    removing the field/config schema entirely -- that bigger structural
+    question (drop `GroupMode` down to a single implicit mode) is deliberately
+    deferred to its own future pass, not folded into this naming cleanup.
     """
     req_id = "RENAME-M02"
 
@@ -2760,6 +2778,79 @@ class CliFlagsVocabularyPass(Requirement):
     just build success) before considering this done.
     """
     req_id = "CLI-VOCAB-003"
+
+
+class CliNetworkKeyVocabularyFollowup(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-005
+
+    Further rename of `CLI-VOCAB-002`/`003`'s `net_id` -> `network_key`,
+    prompted by a concrete discoverability gap those two passes didn't
+    catch: `net_id` (the `Nuke`/`Kick` positional, shown as `<NET_ID>` in
+    `--help`) and `tetron status`'s text-output label (`id`) were both
+    spelled differently from `tetron status --json`'s field for the exact
+    same underlying value, `network_key`. A user's actual path to this
+    value is `tetron status --json | jq`, not reading prose -- grepping
+    that JSON for `net_id` or `id` finds nothing, only `network_key`. Fixed
+    by standardizing on `network_key` for every human-facing spelling
+    (`--help`, status text label, docs) and propagating it back into the
+    wire field too, rather than leaving the JSON field as the odd one out.
+
+    Changed:
+    - `IpcMessage::Nuke`/`Kick` (`tetron-proto/src/ipc.rs`): field `net_id`
+      -> `network_key`.
+    - `main.rs`'s `Command::Nuke`/`Kick` clap positional: `net_id` ->
+      `network_key` (so `--help` now shows `<NETWORK_KEY>`), plus the
+      `main()` dispatch match arms.
+    - `cli/network.rs`'s `ipc_nuke`/`ipc_kick` parameters.
+    - `daemon/mod.rs`'s `IpcMessage::Nuke`/`Kick` dispatch match arms, and
+      `resolve_network_short_id`'s error string (now names `network_key`
+      instead of "the short id" when a prefix is too short).
+    - `daemon/mesh/runtime.rs`'s `nuke_network`/`kick_member` parameters
+      and the `#[tracing::instrument]` field on `nuke_network`.
+      `resolve_network_short_id`'s own parameter (`short`) is untouched --
+      it is a generic resolver, not part of this user-facing vocabulary.
+    - `cli/status.rs`: the text-output line changes from `id <short>` to
+      `network_key <short>`, matching `--json`'s field name exactly.
+    - Docs (`AGENTS.md`, `README.md`, `docs/HOWTO.md`, `docs/PROPOSAL.md`):
+      `<net-id>`/`<net-id-from-status>` placeholders and "the `id` line"
+      references updated to `<network-key>`/`<network-key-from-status>`/
+      "the `network_key` line", each noting the value may be an
+      unambiguous >=10-char prefix rather than the full key.
+
+    **Deliberately unchanged:** `IpcMessage::Join`'s existing `network_key`
+    field (always the full public key, decoded client-side from the
+    invite code) and this rename's `Nuke`/`Kick` `network_key` (accepts a
+    prefix) now share a field name for the same underlying concept --
+    intentional, not a naming collision to resolve. `resolve_network_short_id`'s
+    behavior (>=10-char prefix, ambiguous-prefix rejection, no name/alias
+    fallback) is unchanged; only the names pointing at it moved.
+
+    **Same-session follow-up: `Kick`'s second positional, `peer` ->
+    `endpoint_id`.** The same mismatch existed one level deeper: `Kick.peer`
+    (shown as `<PEER>` in `--help`) is resolved exclusively by
+    `MeshManager::resolve_short_id_any_network`, which matches only against
+    a member's endpoint id -- it never accepts a hostname, unlike
+    `AdminAction::Add.peer`, which deliberately resolves hostname-first
+    (`resolve_peer_name`). `tetron status --json`'s `PeerStatus` struct
+    carries both `endpoint_id` and `hostname` fields side by side, so
+    without this fix a user would have no way to tell, from the JSON alone,
+    which of the two `kick` actually wants -- and guessing `hostname` (the
+    more human-looking field) would silently fail to resolve. Renamed
+    `IpcMessage::Kick.peer` -> `endpoint_id` (wire), `Command::Kick.peer` ->
+    `endpoint_id` (`main.rs`, so `--help` shows `<ENDPOINT_ID>`),
+    `cli/network.rs`'s `ipc_kick` parameter, `daemon/mod.rs`'s dispatch
+    match arm, and `kick_member`'s parameter in `daemon/mesh/runtime.rs`
+    (plus the two internal uses of it in that function). `AdminAction::Add`'s
+    `peer` field is deliberately left alone -- it genuinely accepts a
+    hostname, so `peer` still describes it accurately.
+
+    **Cross-repo consequence, not part of this change's own scope** (same
+    class of risk as `CLI-VOCAB-004`'s `Up`/`Down` wire rename): any code in
+    `tetron-webui`/`tetron-systray` constructing `IpcMessage::Kick { peer,
+    .. }` directly will fail to compile against this crate until updated
+    there.
+    """
+    req_id = "CLI-VOCAB-005"
 
 
 # --------------------------------------------------------------------------

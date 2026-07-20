@@ -100,8 +100,9 @@ pub(crate) enum Command {
     /// distinct coordinators have proposed within the last 24h, the
     /// network is destroyed.
     Nuke {
-        /// Network's short id (see `tetron status`) -- not its local name
-        net_id: String,
+        /// Network's key, or an unambiguous prefix of it (the `network_key`
+        /// line in `tetron status`) -- not its local name
+        network_key: String,
         /// Force destroy even if other members exist
         #[arg(long)]
         force: bool,
@@ -112,13 +113,16 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "cancel")]
         second: Option<String>,
     },
-    /// Remove a member from a closed network (coordinator only)
+    /// Remove a member from a network (coordinator only)
     #[command(visible_alias = "boot")]
     Kick {
-        /// Network's short id (see `tetron status`) -- not its local name
-        net_id: String,
-        /// Endpoint id (short id from `tetron status`) of the member to kick
-        peer: String,
+        /// Network's key, or an unambiguous prefix of it (the `network_key`
+        /// line in `tetron status`) -- not its local name
+        network_key: String,
+        /// Endpoint id of the member to kick (the `endpoint_id` field in
+        /// `tetron status --json`), or an unambiguous prefix of it -- never
+        /// a hostname
+        endpoint_id: String,
     },
     /// Show status of all networks (active + saved)
     #[command(visible_aliases = ["st", "ls"])]
@@ -436,12 +440,15 @@ async fn main() -> Result<()> {
             tor,
         } => ipc_join(&invite_code, alias.as_deref(), hostname, tor).await,
         Command::Nuke {
-            net_id,
+            network_key,
             force,
             cancel,
             second,
-        } => ipc_nuke(&net_id, force, cancel, second.as_deref()).await,
-        Command::Kick { net_id, peer } => ipc_kick(&net_id, &peer).await,
+        } => ipc_nuke(&network_key, force, cancel, second.as_deref()).await,
+        Command::Kick {
+            network_key,
+            endpoint_id,
+        } => ipc_kick(&network_key, &endpoint_id).await,
         Command::Status => ipc_status().await,
         Command::Daemon => {
             check_root();

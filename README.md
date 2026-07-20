@@ -127,7 +127,7 @@ See [docs/HOWTO.md](docs/HOWTO.md) for kicking a member, listing key-holders, re
 
 ## Naming peers
 
-Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`--json` for scripting). A hostname is set once at join (`--hostname`) and is fixed after that -- there is no rename command; see [docs/HOWTO.md](docs/HOWTO.md) for the leave-and-rejoin workaround. `--hostname` names your node within the network; the network itself has its own name (random three words, or `--network-name` on `create`), used with `tetron leave <network-name>` etc. `tetron kick` requires an endpoint id (short id from `tetron status`), not a hostname or IP -- a deliberate restriction on a destructive command.
+Reach peers by their **mesh IP**, listed with their hostnames in `tetron status` (`--json` for scripting). A hostname is set once at join (`--hostname`) and is fixed after that -- there is no rename command; see [docs/HOWTO.md](docs/HOWTO.md) for the leave-and-rejoin workaround. `--hostname` names your node within the network; the network itself has its own name (random three words, or `--network-name` on `create`), used with `tetron leave <network-name>` etc. `tetron kick` requires an endpoint id (the `endpoint_id` field from `tetron status --json` -- plain-text `tetron status` doesn't print it), not a hostname or IP -- a deliberate restriction on a destructive command.
 
 ## Features
 
@@ -137,8 +137,8 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 - **Multi-segment TUN** -- every network you join gets its own TUN device and its own subnet, structurally isolated like two separate physical NICs. `tetron create --subnet <cidr>` sets a network's own subnet on the spot, no restart needed; `tetron config set subnet` changes the node-wide default for future creates.
 - **Configurable overlay subnet** -- default `10.88.0.0/24` avoids Tailscale's `100.64.0.0/10`, so both run side by side on the same host.
 - **Co-coordinators / multi-admin** -- `tetron admin <net> add <peer>` grants the network key to any trusted member, so admission, invite-minting, and member management don't depend on one machine staying online.
-- **Nuke consensus** -- destroying a network with a single coordinator is immediate; with two or more coordinators, it requires a second coordinator to independently agree (`tetron nuke <net-id>` proposes/seconds, `--cancel` withdraws, `--second <id>` seconds explicitly) within a 24h window, so one compromised or reckless coordinator can't unilaterally destroy a network nobody else agreed to lose.
-- **Kick** -- coordinators remove a member from a closed network by cryptographic short id (`tetron kick <net-id> <peer>`); the target is dropped mesh-wide and can't rejoin without a fresh invite.
+- **Nuke consensus** -- destroying a network with a single coordinator is immediate; with two or more coordinators, it requires a second coordinator to independently agree (`tetron nuke <network-key>` proposes/seconds, `--cancel` withdraws, `--second <id>` seconds explicitly) within a 24h window, so one compromised or reckless coordinator can't unilaterally destroy a network nobody else agreed to lose.
+- **Kick** -- coordinators remove a member by cryptographic short id (`tetron kick <network-key> <endpoint-id>`); the target is dropped mesh-wide and can't rejoin without a fresh invite.
 
 **Addressing & transport:**
 
@@ -208,7 +208,7 @@ sudo rm -rf /etc/tetron/          # optional: wipe config + identity on Linux (~
                                    # macOS) -- back up /etc/tetron/secret_key first if you need the key
 ```
 
-Don't run `tetron nuke <net-id>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).
+Don't run `tetron nuke <network-key>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).
 
 ## Development
 

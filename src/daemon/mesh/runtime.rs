@@ -335,15 +335,15 @@ impl MeshManager {
     /// proposal. `second` optionally names (by short id) the specific proposal
     /// being seconded, for an explicit error if it doesn't match an active one
     /// rather than silently proposing fresh.
-    #[tracing::instrument(skip(self), fields(net = net_id))]
+    #[tracing::instrument(skip(self), fields(net = network_key))]
     pub(crate) async fn nuke_network(
         &self,
-        net_id: &str,
+        network_key: &str,
         force: bool,
         cancel: bool,
         second: Option<&str>,
     ) -> IpcMessage {
-        let name = match self.resolve_network_short_id(net_id) {
+        let name = match self.resolve_network_short_id(network_key) {
             Ok(name) => name,
             Err(message) => return IpcMessage::Error { message },
         };
@@ -581,25 +581,22 @@ impl MeshManager {
         self.resolve_short_id_any_network(name)
     }
 
-    /// Remove a member from a closed network. Coordinator-only (any network-key
+    /// Remove a member from a network. Coordinator-only (any network-key
     /// holder). Prunes the target from the roster + approved list, republishes the
     /// signed blob, and broadcasts a `MemberSync` so every member reconverges and
     /// drops the target mesh-wide (`prune_departed_peers`); the coordinator also
-    /// closes its own link to the target immediately. Refused on open networks
-    /// (the target would auto-re-join) and against coordinators / self.
-    pub(crate) async fn kick_member(&self, net_id: &str, peer: &str) -> IpcMessage {
-        let network = match self.resolve_network_short_id(net_id) {
+    /// closes its own link to the target immediately. Refused against
+    /// coordinators / self.
+    pub(crate) async fn kick_member(&self, network_key: &str, endpoint_id: &str) -> IpcMessage {
+        let network = match self.resolve_network_short_id(network_key) {
             Ok(name) => name,
             Err(message) => return IpcMessage::Error { message },
         };
         let network = network.as_str();
-        let (state, dht_notify, has_key, mode) = match self.networks.get(network) {
+        let (state, dht_notify, has_key) = match self.networks.get(network) {
             Some(h) => {
-                let (has_key, mode) = {
-                    let s = h.state.read().unwrap();
-                    (s.network_secret_key.is_some(), s.mode)
-                };
-                (h.state.clone(), h.dht_notify.clone(), has_key, mode)
+                let has_key = h.state.read().unwrap().network_secret_key.is_some();
+                (h.state.clone(), h.dht_notify.clone(), has_key)
             }
             None => {
                 return IpcMessage::Error {
@@ -612,18 +609,10 @@ impl MeshManager {
                 message: "only a coordinator (network key holder) can kick a member".to_string(),
             };
         }
-        if mode == GroupMode::Open {
-            return IpcMessage::Error {
-                message: format!(
-                    "'{network}' is an open network — a kicked peer can re-join immediately. \
-                     Kicking only takes effect on a closed network."
-                ),
-            };
-        }
 
         // Resolve the argument to a roster member by endpoint id only (no
         // hostname or IP resolution — kick requires a cryptographic identity).
-        let candidate = match self.resolve_short_id_any_network(peer) {
+        let candidate = match self.resolve_short_id_any_network(endpoint_id) {
             Ok(id) => id,
             Err(message) => {
                 return IpcMessage::Error { message };
@@ -646,7 +635,7 @@ impl MeshManager {
                 ),
                 None => {
                     return IpcMessage::Error {
-                        message: format!("'{peer}' is not a member of '{network}'"),
+                        message: format!("'{endpoint_id}' is not a member of '{network}'"),
                     };
                 }
             }

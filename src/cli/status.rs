@@ -203,8 +203,8 @@ fn print_network(net: &ipc::NetworkStatus) {
     let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
     // The network's own short id (its public key, truncated the same way
     // peer short ids are). `nuke`/`kick` require this, not the display name
-    // above — computed once here since both the id line and the nuke-
-    // proposal hint below need it.
+    // above — computed once here since both the network_key line and the
+    // nuke-proposal hint below need it.
     let short_id: Option<String> = net
         .network_key
         .as_ref()
@@ -222,9 +222,10 @@ fn print_network(net: &ipc::NetworkStatus) {
     println!();
 
     // Shown unconditionally so it is always discoverable, unlike the "join"
-    // line below.
+    // line below. Labeled to match `--json`'s `network_key` field and the
+    // `nuke`/`kick` positional -- one name for this value everywhere.
     if let Some(ref short) = short_id {
-        println!("    id {short}");
+        println!("    network_key {short}");
     }
     if !net.tun_name.is_empty() && net.tun_name != "pending" {
         println!("    interface {}", net.tun_name);

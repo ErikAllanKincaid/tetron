@@ -48,12 +48,12 @@ pub enum IpcMessage {
         #[serde(default)]
         force: bool,
     },
-    /// `net_id` is the network's own short id (a prefix of its public key,
-    /// as shown by `tetron status`'s `id` line) -- never the local display
-    /// name, which `MeshManager::resolve_network_short_id` deliberately
-    /// does not accept as a fallback.
+    /// `network_key` is the network's own key (or an unambiguous prefix of
+    /// it, as shown by `tetron status`'s `network_key` line) -- never the
+    /// local display name, which `MeshManager::resolve_network_short_id`
+    /// deliberately does not accept as a fallback.
     Nuke {
-        net_id: String,
+        network_key: String,
         force: bool,
         /// Withdraw the caller's own pending nuke proposal (NUKE-CONSENSUS).
         #[serde(default)]
@@ -65,11 +65,14 @@ pub enum IpcMessage {
     },
     /// Coordinator-only: remove a member from a closed network. Prunes it from the
     /// roster + approved list, republishes the signed blob, and disconnects it
-    /// mesh-wide. `net_id` is the network's own short id (see `Nuke`'s doc
-    /// comment); `peer` is a hostname / mesh IP / short id of a current member.
+    /// mesh-wide. `network_key` is the network's own key (see `Nuke`'s doc
+    /// comment); `endpoint_id` is the target member's endpoint id (or an
+    /// unambiguous prefix of it) -- never a hostname, which
+    /// `MeshManager::resolve_short_id_any_network` deliberately does not
+    /// accept as a fallback (unlike `AdminAction::Add`'s peer resolution).
     Kick {
-        net_id: String,
-        peer: String,
+        network_key: String,
+        endpoint_id: String,
     },
     Status,
     Shutdown,

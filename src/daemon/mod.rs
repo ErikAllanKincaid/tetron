@@ -206,8 +206,12 @@ pub(crate) struct NetworkState {
     network_secret_key: Option<SecretKey>,
     network_public_key: EndpointId,
     network_name: Option<String>,
-    /// Access mode (open auto-admits; restricted gates unknown joiners). Only the
-    /// coordinator's accept path consults this; members default to `Restricted`.
+    /// Access mode, carried through from config for wire/config-format
+    /// compatibility. Admission is invite-only regardless of this value
+    /// (`LIVE-001`) and tetron never creates an `Open` network
+    /// (`MINIMAL-013`), so nothing in this daemon consults it anymore --
+    /// same dead-weight class as `membership::OpenPolicy`/`policy_for_mode`.
+    #[allow(dead_code)]
     mode: GroupMode,
     /// Reusable join keys carried in the signed blob (keyed by hex
     /// `blake3(secret)`). On a network-key holder this is what it publishes and
@@ -895,15 +899,18 @@ impl MeshManager {
                 self.leave_network(&network, force).await
             }
             IpcMessage::Nuke {
-                net_id,
+                network_key,
                 force,
                 cancel,
                 second,
             } => {
-                self.nuke_network(&net_id, force, cancel, second.as_deref())
+                self.nuke_network(&network_key, force, cancel, second.as_deref())
                     .await
             }
-            IpcMessage::Kick { net_id, peer } => self.kick_member(&net_id, &peer).await,
+            IpcMessage::Kick {
+                network_key,
+                endpoint_id,
+            } => self.kick_member(&network_key, &endpoint_id).await,
             IpcMessage::Status => self.status(),
             IpcMessage::Resume { hostname, network } => {
                 self.activate(hostname, network.as_deref()).await
@@ -989,8 +996,8 @@ impl MeshManager {
         if short.len() < MIN_PREFIX_LEN {
             return Err(format!(
                 "'{short}' is too short to safely identify a network -- use at least \
-                 {MIN_PREFIX_LEN} characters (the short id shown by `tetron status`), \
-                 or the full id"
+                 {MIN_PREFIX_LEN} characters (the `network_key` shown by `tetron status`), \
+                 or the full value"
             ));
         }
         let matches: Vec<(String, EndpointId)> = self
