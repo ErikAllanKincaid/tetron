@@ -44,10 +44,10 @@ ping 10.88.x.y                                    # reach the other node by its 
 tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that owns the TUN device and the iroh endpoint. Everything else is an unprivileged `tetron` command talking to it over a local socket.
 
 ```bash
-# 1. Install the binary and bring the node online (needs root once). Linux
-#    x86_64/aarch64 binaries are published on releases; macOS is supported
-#    in code but its release binaries aren't published yet -- see
-#    "Build & install" below to build from source on a Mac in the meantime:
+# 1. Install the binary and bring the node online (needs root once).
+#    Linux (x86_64/aarch64) and macOS (aarch64/x86_64) binaries are both
+#    published on releases -- swap tetron-linux-x86_64 below for
+#    tetron-macos-aarch64/tetron-macos-x86_64 on a Mac:
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
@@ -197,7 +197,7 @@ just deploy <ip>                # cross-build release + install + start on a rem
 just deploy-dev <ip>            # same, but a debug build (faster iteration)
 ```
 
-tetron targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64) at the source level. Prebuilt Linux binaries are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases); macOS release binaries are not yet published (`build-macos` is disabled in CI pending real-hardware verification) -- build from source with `cargo build --release` on a Mac in the meantime. Android support is deferred.
+tetron targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64). Prebuilt binaries for both platforms are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases) (`tetron-linux-x86_64`/`tetron-linux-aarch64`/`tetron-macos-aarch64`/`tetron-macos-x86_64`) -- macOS support is live-verified on real Apple Silicon hardware, not just compiled. Android support is deferred.
 
 ## Uninstall
 
