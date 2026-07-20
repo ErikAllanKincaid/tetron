@@ -2260,6 +2260,23 @@ class RemoveLiveApproval(Requirement):
     `GroupBlob`/its canonical hash, so — unlike `suggested_firewall`'s
     removal — this carried no wire-compat hashing concerns, just a
     `NetworkStatus` field drop.
+
+    **Second follow-up, 2026-07-20:** `pending_requests`'s exact twin,
+    `StatusResponse.pending_networks: Vec<String>`, was missed by the
+    follow-up above. Found while surveying available-but-unshown fields
+    for the `STATUS-002` status redesign, unrelated to it otherwise. Its
+    own doc comment claimed to reflect `AppConfig.pending_joins`, which
+    this same requirement (`LIVE-001`) removed entirely; the one
+    construction site (`diagnostics.rs`) always built it as `Vec::new()`,
+    with a comment already admitting as much (`// LIVE-001 removed the
+    pending-join queue; always empty.`). Verified zero consumers in
+    *either* output mode this time — `grep -rn "pending_networks"
+    src/cli/*.rs` returns nothing, and `status.rs`'s `--json` `json!({...})`
+    block doesn't even include the field. Removed: the field, its
+    construction site, and its slot in `status()`'s destructured tuple.
+    Bundled into the `STATUS-002` implementation commit rather than a
+    separate change, since it lives on the exact `StatusResponse` struct
+    that redesign was already editing.
     """
     req_id = "LIVE-001"
 
@@ -4602,4 +4619,107 @@ class LeaveAcceptsNetworkKey(Requirement):
     document the fallback.
     """
     req_id = "LEAVE-NETWORK-KEY-001"
+
+
+class StatusOutputRedesign(Requirement):
+    """REQUIREMENT-ID: STATUS-002
+
+    `tetron status` is the primary information surface end users have, and
+    Erik flagged it as difficult to read and ambiguous: unlabeled fields
+    inconsistent with the labeled ones next to them, a bare `id` line with
+    no indication of what it identified, and a `join <64-char-hash>` line
+    duplicating that same value in full under a stale, actively misleading
+    label (a bare room id/public key was never sufficient to join even
+    before `LIVE-001`, and is explicitly discovery-only after it).
+
+    Redesigned through iterative mockups in the (gitignored, not shipped)
+    `DO-NOT-COMMIT/MOCKUP_tetron_status_output_redesign.md`, landing on:
+
+    - **Daemon header**: `tetron v<version>  state <active|standby>
+      endpoint <short>`, plus a `traffic` line (`bytes_tx`/`bytes_rx`,
+      previously computed and sent over IPC but discarded by the text
+      renderer -- `let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);`).
+      `packets_rx`/`packets_tx` remain unused in text mode, still available
+      via `--json`.
+    - **Per-network header**: `network <name>   subnet <cidr>   admins
+      <online>/<total>   members <online>/<total>   interface <tun_name>`.
+      `subnet` is a new `NetworkStatus` field (CIDR string, formatted
+      daemon-side from `membership::Subnet`'s bare `(Ipv4Addr, u8)` tuple,
+      which has no serde/Display impl of its own) -- previously not
+      exposed anywhere, despite subnet collision being an
+      explicitly named troubleshooting category in this project
+      (`SUBNET_COLLISION.md`, `SUBNET-BUG-001`). `admins online/total`
+      needs no new wire field beyond the `is_coordinator` addition below --
+      computed client-side in `status.rs` from `net.role.is_coordinator()`
+      (self) plus each peer's `is_coordinator` + `connection.is_some()`.
+    - **`network_key`**: kept, but truncated to a short prefix (~10 chars,
+      matching `resolve_network_short_id`'s own `>=10`-char minimum -- both
+      `nuke`/`kick` already accept a prefix, nothing lost), and shown only
+      when the viewer's own role for that network is admin/coordinator. A
+      plain member can't act on it regardless (`nuke`/`kick` would reject
+      them independent of whether they know the value), so showing it to
+      them was pure clutter. The NUKE-CONSENSUS pending-proposal hint's
+      actionable `tetron nuke <key> ...` suggestion is likewise only
+      included when the viewer has that value; a non-admin still sees a
+      proposal exists, just without a command they couldn't use anyway.
+    - **Peer table**: real column-aligned `role / host / ip / via`, the
+      local node included as its own first row (`via` = `(you)`), rendered
+      by a new `render_aligned_table` helper (`src/cli/status.rs`) that
+      computes real per-column max width across all rows including the
+      header -- the pre-existing `table()` helper explicitly does *not* do
+      this ("No column alignment in plain mode"), so a new helper was
+      needed rather than reusing it. `role` is `admin`/`member`, driven by
+      a new `PeerStatus.is_coordinator: bool` field (the data already
+      existed internally on `membership::Member`, just never threaded onto
+      the wire type). `via` is `direct`/`relay`/`tor`/`offline`/`(you)` --
+      covers every `ConnType` plus self plus disconnected, decided
+      sufficient with no further states needed.
+    - **Deliberately dropped from the default text view**: per-peer IPv6
+      (own and peers'), and per-peer connection health (rtt/tx/rx byte
+      counts). Both remain fully available via `--json`. IPv6 in
+      particular was a real, discussed tension -- dual-stack is a shipped,
+      deliberate feature (`IPV6-001..003`), and never showing it anywhere
+      risks the feature becoming invisible by default permanently, not
+      just hidden from casual users. A middle option (show only the
+      viewer's own IPv6 once, since that's a single line regardless of
+      peer count, while still dropping *peer* IPv6 from the table where
+      the real per-row width cost lives) was raised and rejected in favor
+      of the simpler full drop -- Erik's call, made knowingly rather than
+      by default.
+    - **`coordinator` -> `admin`, display string only.** `tetron admin
+      <net> add/list` already used "admin" as the CLI command name for
+      this exact concept (granting/listing the network key) while
+      `tetron status`, error messages, and docs called it "coordinator" --
+      an existing internal inconsistency, not a new term being
+      introduced. Scoped narrowly: only `NetworkRole`'s `derive_more::
+      Display` output (`#[display("coordinator")]` -> `#[display("admin")]`
+      on the `Coordinator` variant) changed. The variant name itself,
+      `is_coordinator`, `coordinator_count()`, and every spec requirement
+      ID/prose referencing "coordinator" (`NUKE-CONSENSUS`,
+      `STRANDED-COORDINATOR-WARN`, etc.) are unchanged -- same decoupling
+      already used successfully this session for `resolve_network_short_id`'s
+      internal `short` parameter staying put while user-facing labels moved.
+
+    **Bundled in the same implementation pass**: `StatusResponse.
+    pending_networks` removed as dead code (found while surveying
+    available-but-unshown fields for this redesign, unrelated to it
+    otherwise) -- its own doc comment claimed to reflect `AppConfig.
+    pending_joins`, which `LIVE-001` removed entirely; the one
+    construction site (`diagnostics.rs`) always built it as `Vec::new()`
+    with a comment already admitting as much; zero consumers in either
+    text or `--json` output. Exact same shape as `NetworkStatus.
+    pending_requests`, already found and removed under `LIVE-001`'s own
+    addendum -- this was that fix's twin, missed by the same cleanup
+    pass. Bundled here rather than as a separate change since it lives on
+    the exact `StatusResponse` struct this redesign already edits.
+
+    Wire changes: `PeerStatus.is_coordinator: bool` (new, `#[serde(default)]`),
+    `NetworkStatus.subnet: String` (new, `#[serde(default)]`),
+    `StatusResponse.pending_networks` (removed). All three are
+    `#[serde(default)]`-compatible or outright removed, so an old daemon's
+    response still decodes against a new CLI (missing fields default;
+    the removed field is simply never read, whether or not an old daemon
+    still sends it).
+    """
+    req_id = "STATUS-002"
 

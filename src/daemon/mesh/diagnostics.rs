@@ -24,8 +24,6 @@ impl MeshManager {
             .iter()
             .map(|h| self.network_status(&h, my_id, &direct_names))
             .collect();
-        // LIVE-001 removed the pending-join queue; always empty.
-        let pending_networks: Vec<String> = Vec::new();
 
         // STANDBY-PER-NETWORK: the top-level `active` used to mirror the one
         // daemon-wide flag directly; now that data-plane activation is
@@ -43,7 +41,6 @@ impl MeshManager {
             packets_tx: self.stats.packets_tx.get(),
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
-            pending_networks,
         }
     }
 
@@ -62,7 +59,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, nuke_proposals) = {
+        let (members, member_count, nuke_proposals, subnet_str) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -78,6 +75,10 @@ impl MeshManager {
                         nuke_proposals: vec![],
                         tun_name: h.tun_name.lock().unwrap().clone(),
                         active: h.active.load(Ordering::SeqCst),
+                        subnet: {
+                            let (base, prefix) = crate::membership::default_subnet();
+                            format!("{base}/{prefix}")
+                        },
                     };
                 }
             };
@@ -90,7 +91,8 @@ impl MeshManager {
                     proposed_at: s.nuke_proposals[id],
                 })
                 .collect();
-            (s.roster(), count, proposals)
+            let (base, prefix) = s.subnet;
+            (s.roster(), count, proposals, format!("{base}/{prefix}"))
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = h
@@ -110,6 +112,7 @@ impl MeshManager {
                     ipv6: Some(derive_ipv6(&m.identity, &h.network_key)),
                     hostname: m.hostname.clone(),
                     connection,
+                    is_coordinator: m.is_coordinator,
                 }
             })
             .collect();
@@ -130,6 +133,7 @@ impl MeshManager {
             nuke_proposals,
             tun_name: h.tun_name.lock().unwrap().clone(),
             active: h.active.load(Ordering::SeqCst),
+            subnet: subnet_str,
         }
     }
 

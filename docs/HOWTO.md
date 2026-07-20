@@ -594,5 +594,5 @@ Useful for auditing which invites have not been redeemed before they expire.
 ### Evaluate peer traffic stats
 
 ```bash
-tetron status --json | jq '.networks[].peers[] | {hostname: .hostname, ip: .ip, tx_bytes: .tx_bytes, rx_bytes: .rx_bytes}'
+tetron status --json | jq '.networks[].peers[] | {hostname: .hostname, ip: .ip, tx_bytes: .connection.bytes_tx, rx_bytes: .connection.bytes_rx}'
 ```

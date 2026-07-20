@@ -160,11 +160,6 @@ pub enum IpcMessage {
         packets_tx: u64,
         bytes_rx: u64,
         bytes_tx: u64,
-        /// Networks this node has asked to join but has not yet been admitted
-        /// to (persisted `AppConfig.pending_joins`), minus any that are now
-        /// active. Shown in the UI as "waiting for approval".
-        #[serde(default)]
-        pending_networks: Vec<String>,
     },
     /// The list of network key-holders (reply to `AdminList`): the local node
     /// plus every identity it has granted the key to.
@@ -243,6 +238,13 @@ pub struct NetworkStatus {
     /// `false`) so an older daemon's response still decodes.
     #[serde(default)]
     pub active: bool,
+    /// This network's overlay subnet as a CIDR string (e.g. `"10.88.0.0/24"`),
+    /// resolved from the signed `GroupBlob`/config (`membership::Subnet` is a
+    /// bare `(Ipv4Addr, u8)` tuple with no serde impl of its own, so this is
+    /// formatted client-side rather than carrying the tuple type across the
+    /// wire). `#[serde(default)]` so an older daemon's response still decodes.
+    #[serde(default)]
+    pub subnet: String,
 }
 
 /// One pending nuke proposal, as surfaced by `tetron status` (NUKE-CONSENSUS).
@@ -258,7 +260,11 @@ pub struct NukeProposalInfo {
     Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::IsVariant, derive_more::Display,
 )]
 pub enum NetworkRole {
-    #[display("coordinator")]
+    /// Display string is "admin," not "coordinator" -- user-facing rename
+    /// only (matches `tetron admin`, the CLI command that already used this
+    /// word for the same concept); the variant name and internal identifiers
+    /// (`is_coordinator`, `coordinator_count()`, spec IDs) are unchanged.
+    #[display("admin")]
     Coordinator,
     #[display("member")]
     Member,
@@ -276,6 +282,11 @@ pub struct PeerStatus {
     pub ipv6: Option<Ipv6Addr>,
     pub hostname: Option<String>,
     pub connection: Option<ConnectionInfo>,
+    /// Whether this peer holds the network key (`tetron status`'s `role`
+    /// column: admin/member). `#[serde(default)]` so an older daemon's
+    /// response still decodes (defaults to `false`, i.e. "member").
+    #[serde(default)]
+    pub is_coordinator: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -573,16 +584,17 @@ mod tests {
                     ipv6: None,
                     hostname: None,
                     connection: None,
+                    is_coordinator: false,
                 }],
                 nuke_proposals: vec![],
                 tun_name: "tun0".to_string(),
                 active: true,
+                subnet: "100.64.0.0/24".to_string(),
             }],
             packets_rx: 0,
             packets_tx: 0,
             bytes_rx: 0,
             bytes_tx: 0,
-            pending_networks: vec![],
         };
         let bytes = rmp_serde::to_vec(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();

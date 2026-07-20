@@ -9,8 +9,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`tetron leave` now accepts a network key, not just the local display name (LEAVE-NETWORK-KEY-001)**: previously the only way to identify which network to leave was its locally-assigned display name (as shown in `tetron status`) -- if you only had the invite key or room id handy (e.g. at uninstall time), there was no way to `leave` at all. `tetron leave` now tries the local name first (unchanged), then falls back to a `network_key` prefix match (same rules `nuke`/`kick` already use: >=10 characters, or the full key).
+- **`tetron status` now shows each network's subnet, and a real aligned peer table (STATUS-002)**: a `network <name>  subnet <cidr>  admins <online>/<total>  members <online>/<total>  interface <tun_name>` header, followed by a column-aligned `role / host / ip / via` table (real per-column width, not just consistent spacing) with your own node included as the first row. `role` (`admin`/`member`) is new -- shows who else holds the network key at a glance, without a separate `tetron admin list` call.
 
 ### Changed
+
+- **`tetron status`'s output redesigned for clarity (STATUS-002)**: the ambiguous `id`/`join` lines (same value, two different labels, two different lengths, one of them stale/misleading post-invite-only) are now one `network_key` line -- shown only to admins, since a plain member can't use it anyway. The daemon header gained a `traffic` line (previously computed, never shown in text mode). Per-peer IPv6 and connection-health metrics (rtt/tx/rx) are no longer in the default text view -- both were adding width/clutter for detail most users don't need day to day, and remain fully available via `--json`. `coordinator` is now displayed as `admin` throughout `tetron status` (matches `tetron admin`, the command that already used that word for the same concept) -- display text only, no behavior change.
+
+### Removed
+
+- **`StatusResponse.pending_networks` (dead field, never displayed)**: same shape as the already-removed `pending_requests` -- claimed to reflect a live-approval queue removed by `LIVE-001`, was always empty, and nothing ever read it in either text or `--json` output.
 
 - **`sudo tetron install` now says what it's actually doing (INSTALL-OUTPUT-001)**: previously ran silently until "waiting for daemon…", giving no indication a privileged system service was being written and enabled. Now prints the concrete unit/job name and exact file path before writing it (e.g. `installing systemd service 'tetron' -> /etc/systemd/system/tetron.service`), and announces the enable/restart (or launchd load) step.
 - **`tetron kick` no longer claims to refuse on "open networks" (RENAME-M02 follow-up)**: dead code left over from the D1 severance cleanup -- tetron has never been able to create an open network (`MINIMAL-013`) and can't coordinate a full-torpedo one either (D1's ALPN split makes that connection impossible), so this branch could never actually trigger. Removed the check and the doc/help text implying it was a real behavior. `kick` is now refused only against a coordinator or yourself.

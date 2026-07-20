@@ -83,6 +83,36 @@ pub(crate) fn indent(block: &str, indent: usize) -> String {
         .join("\n")
 }
 
+/// Render rows into real left-aligned columns: each column padded to the
+/// widest cell in that column (header included), so e.g. a row of IP
+/// addresses actually lines up under each other -- unlike `table()` above,
+/// which deliberately does not align columns. Returns each line without a
+/// leading indent; callers prepend their own.
+fn render_aligned_table(headers: &[&str], rows: &[Vec<String>]) -> Vec<String> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if let Some(w) = widths.get_mut(i) {
+                *w = (*w).max(cell.len());
+            }
+        }
+    }
+    let pad_row = |cells: &[String]| -> String {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
+            .collect::<Vec<_>>()
+            .join("  ")
+            .trim_end()
+            .to_string()
+    };
+    let header_cells: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+    let mut lines = vec![pad_row(&header_cells)];
+    lines.extend(rows.iter().map(|row| pad_row(row)));
+    lines
+}
+
 pub(crate) async fn ipc_status() -> Result<()> {
     let Ok(mut stream) = ipc::connect().await else {
         // Daemon not running — show saved config
@@ -138,13 +168,25 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 }));
                 return Ok(());
             }
-            let _ = (packets_rx, packets_tx, bytes_rx, bytes_tx);
+            let _ = (packets_rx, packets_tx);
             let state = if active { "active" } else { "standby" };
+            let cli_version = env!("CARGO_PKG_VERSION");
+            let shown_version = if daemon_version.is_empty() {
+                cli_version
+            } else {
+                daemon_version.as_str()
+            };
             println!();
             println!(
-                "  tetron  {}      endpoint {}",
+                "  tetron v{}  state {}  endpoint {}",
+                shown_version,
                 state,
                 endpoint_id.fmt_short(),
+            );
+            println!(
+                "    traffic  ↑{}  ↓{}",
+                format_bytes(bytes_tx),
+                format_bytes(bytes_rx),
             );
             if !active {
                 println!("  (run `tetron resume` to activate)");
@@ -178,7 +220,6 @@ pub(crate) async fn ipc_status() -> Result<()> {
             // new but the long-running daemon may still be the old one (e.g. it
             // was never restarted). Empty `daemon_version` means the daemon
             // predates this field — say nothing rather than guess.
-            let cli_version = env!("CARGO_PKG_VERSION");
             if !daemon_version.is_empty() && daemon_version != cli_version {
                 println!();
                 println!(
@@ -195,96 +236,108 @@ pub(crate) async fn ipc_status() -> Result<()> {
     Ok(())
 }
 
-/// Render one network block: header (name, role, hostname, ip, member count),
-/// the peer list, and the shareable join code.
+/// Render one network block: header (name, subnet, admin/member counts,
+/// interface), the network key (admins only), and an aligned role/host/ip/via
+/// table with the local node as its own `(you)` row first.
 fn print_network(net: &ipc::NetworkStatus) {
-    let role = net.role.to_string();
-    let dns_name = net.my_hostname.clone();
+    let am_i_admin = net.role.is_coordinator();
     let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
-    // The network's own short id (its public key, truncated the same way
-    // peer short ids are). `nuke`/`kick` require this, not the display name
-    // above — computed once here since both the network_key line and the
-    // nuke-proposal hint below need it.
-    let short_id: Option<String> = net
-        .network_key
-        .as_ref()
-        .map(|key| key.chars().take(10).collect());
+    let admins_total =
+        net.peers.iter().filter(|p| p.is_coordinator).count() + if am_i_admin { 1 } else { 0 };
+    let admins_online = net
+        .peers
+        .iter()
+        .filter(|p| p.is_coordinator && p.connection.is_some())
+        .count()
+        + if am_i_admin { 1 } else { 0 };
+
     println!();
-    print!("  {}  ·{role}·", net.name);
-    if let Some(ref dns) = dns_name {
-        print!("   {dns}");
+    print!(
+        "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{}",
+        net.name,
+        net.subnet,
+        net.peers.len(),
+    );
+    if !net.tun_name.is_empty() && net.tun_name != "pending" {
+        print!("   interface {}", net.tun_name);
     }
-    print!("   {}", net.my_ip);
-    print!("   members {online}/{}", net.peers.len());
     if !net.active {
         print!("   ·standby·");
     }
     println!();
 
-    // Shown unconditionally so it is always discoverable, unlike the "join"
-    // line below. Labeled to match `--json`'s `network_key` field and the
-    // `nuke`/`kick` positional -- one name for this value everywhere.
+    // network_key: only shown to admins -- a plain member can't act on it
+    // (`nuke`/`kick` would reject them regardless of whether they know the
+    // value), so showing it to non-admins is pure clutter. Short prefix only
+    // (nuke/kick both accept an unambiguous >=10-char prefix); the full value
+    // remains available via `--json` for everyone regardless of role.
+    let short_id: Option<String> = if am_i_admin {
+        net.network_key.as_ref().map(|key| key.chars().take(10).collect())
+    } else {
+        None
+    };
     if let Some(ref short) = short_id {
         println!("    network_key {short}");
     }
-    if !net.tun_name.is_empty() && net.tun_name != "pending" {
-        println!("    interface {}", net.tun_name);
-    }
 
-    // Peer rows as text lines
-    if net.peers.is_empty() {
-        println!("    (no other members)");
-    } else {
-        for peer in &net.peers {
-            let line = render_peer_line(peer);
-            println!("    {line}");
-        }
+    println!();
+    let headers = ["role", "host", "ip", "via"];
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let my_host = net
+        .my_hostname
+        .clone()
+        .unwrap_or_else(|| net.my_ip.to_string());
+    rows.push(vec![
+        (if am_i_admin { "admin" } else { "member" }).to_string(),
+        my_host,
+        net.my_ip.to_string(),
+        "(you)".to_string(),
+    ]);
+    for peer in &net.peers {
+        let host = peer.hostname.clone().unwrap_or_else(|| peer.ip.to_string());
+        let via = match &peer.connection {
+            Some(ci) => match ci.conn_type {
+                ipc::ConnType::Direct => "direct",
+                ipc::ConnType::Relay => "relay",
+                ipc::ConnType::Tor => "tor",
+                ipc::ConnType::Unknown => "?",
+            },
+            None => "offline",
+        };
+        rows.push(vec![
+            (if peer.is_coordinator { "admin" } else { "member" }).to_string(),
+            host,
+            peer.ip.to_string(),
+            via.to_string(),
+        ]);
     }
-
-    // join code
-    if let Some(ref key) = net.network_key
-        && !net.role.is_direct()
-    {
-        println!("    join {key}");
+    for line in render_aligned_table(&headers, &rows) {
+        println!("    {line}");
     }
 
     // NUKE-CONSENSUS: pending proposals, so members see one being considered
-    // before it executes.
+    // before it executes. The actionable "run tetron nuke ..." suggestion
+    // needs the network_key value, so it's only included for admins (who
+    // have `short_id`) -- a non-admin still sees that a proposal exists, just
+    // without a command they couldn't use anyway.
     if !net.nuke_proposals.is_empty() {
         let ids: Vec<&str> = net
             .nuke_proposals
             .iter()
             .map(|p| p.short_id.as_str())
             .collect();
-        let id_hint = short_id.as_deref().unwrap_or(net.name.as_str());
-        println!(
-            "    ! nuke proposed by {} ({}/2) — run `tetron nuke {id_hint}` to second, or `tetron nuke {id_hint} --cancel` to withdraw yours",
-            ids.join(", "),
-            net.nuke_proposals.len(),
-        );
-    }
-}
-
-/// Build one peer's status line (host, ipv4, via, rtt, tx, rx).
-fn render_peer_line(peer: &ipc::PeerStatus) -> String {
-    let host = peer.hostname.clone().unwrap_or_else(|| peer.ip.to_string());
-    match &peer.connection {
-        Some(ci) => {
-            let via = match ci.conn_type {
-                ipc::ConnType::Direct => "direct",
-                ipc::ConnType::Relay => "relay",
-                ipc::ConnType::Tor => "tor",
-                ipc::ConnType::Unknown => "?",
-            };
-            let rtt = match ci.rtt_ms {
-                Some(ms) => format!("{ms:.0}ms"),
-                None => "—".into(),
-            };
-            let up = format_bytes(ci.bytes_tx);
-            let down = format_bytes(ci.bytes_rx);
-            format!("{host}  {}  {via}  {rtt}  ↑{up}  ↓{down}", peer.ip)
+        match short_id.as_deref() {
+            Some(id_hint) => println!(
+                "    ! nuke proposed by {} ({}/2) — run `tetron nuke {id_hint}` to second, or `tetron nuke {id_hint} --cancel` to withdraw yours",
+                ids.join(", "),
+                net.nuke_proposals.len(),
+            ),
+            None => println!(
+                "    ! nuke proposed by {} ({}/2)",
+                ids.join(", "),
+                net.nuke_proposals.len(),
+            ),
         }
-        None => format!("{host}  {}  —  offline", peer.ip),
     }
 }
 
