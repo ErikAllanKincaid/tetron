@@ -6,6 +6,13 @@ Electric ray *Tetronarce californica*
 
 **A standalone P2P mesh VPN.** tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish), stripped to a single purpose: connect machines into a private overlay with stable identity-derived addresses. It defaults to `10.88.0.0/24` (an uncommon 10.x slice that avoids Tailscale's `100.64.0.0/10`).
 
+**Prefer a browser or a menu bar to a terminal?** Everything below is the CLI, but you don't have to use it directly:
+
+- **[tetron-webui](https://github.com/ErikAllanKincaid/tetron-webui)** -- a browser dashboard: status, create/join/leave, invites, and the full coordinator admin surface. This is likely the easiest way to run tetron day to day if you're not looking to live in a terminal.
+- **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client for glanceable status and quick per-network toggling.
+
+Both are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
+
 ### TL;DR
 
 ```bash
@@ -150,13 +157,6 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin` (add/list)/`kick`, `config` (get/set/unset), `status` (`--json`), `resume`/`standby`, `install`/`restart`/`uninstall`/`start`/`stop`, `set-operator`, `version`, and `completions`.
 
 > **Removed from upstream rayfish**: file sharing and multi-device pairing, declarative apply layer (`apply`/`alias`), Magic DNS and all OS DNS mutation, userspace firewall, permissionless ("open") networks, hostname renaming, ephemeral members, and self-update. Packet filtering is the host firewall's job; name resolution is `/etc/hosts`'s job; copy files with `scp`/`rsync` over mesh IPs; upgrade by replacing the binary.
-
-## Optional addons
-
-tetron itself stays CLI-only by design. Two genuinely separate, opt-in clients talk to the same daemon over its existing IPC socket -- no daemon changes required either way, and nothing about tetron's own behavior changes whether you install them or not.
-
-- **[tetron-webui](https://github.com/ErikAllanKincaid/tetron-webui)** -- a browser dashboard: live status, network create/join/leave, invite management, and the full coordinator admin surface (kick, promote, nuke) with the same consensus/force safeguards the CLI has. Binds `127.0.0.1` only. Ships as a per-user service (`tetron-webui install`) and pre-built binaries.
-- **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client: glanceable status, per-network resume/standby toggling, a member list with click-to-copy IPs, and clipboard-detect join (copy an invite key, click "Join" -- no typed entry). Deliberately non-destructive: no leave/kick/nuke/admin from the tray, ever. Same per-user-service and pre-built-binary deployment as tetron-webui. Early-stage (v1 function list implemented; not yet visually verified beyond service-level testing).
 
 ## Permissions
 
