@@ -379,12 +379,13 @@ impl MeshManager {
             transport,
             admins: vec![],
             direct,
-            // MULTISEG-001's field, now populated: `None` when the network runs
-            // the node-wide default (keeps existing configs byte-identical),
-            // `Some` only when this network's subnet actually differs from it.
-            subnet: (subnet != crate::membership::default_subnet()
-                && Some(subnet) != persisted)
-                .then_some(subnet),
+            // SUBNET-DRIFT-001: always explicit, never omitted -- MULTISEG-001's
+            // original "None when it matches the node default, to keep configs
+            // byte-identical" scheme meant `None` could no longer be told apart
+            // from "the node's default subnet has since changed" on a later
+            // restore, which silently mis-resolved this exact value. Persisting
+            // it explicitly removes the ambiguity at the source.
+            subnet: Some(subnet),
         })?;
 
         let cancel = self.shutdown_token.child_token();
@@ -588,6 +589,18 @@ impl MeshManager {
         } else {
             crate::membership::derive_ip(&self.identity.local_identity(), network_subnet)
         };
+        // SUBNET-DRIFT-001: on a reconnect/restore (not a fresh join -- the
+        // roster won't contain us yet in that case, so this is a no-op),
+        // this must agree with what the roster already says our address is.
+        // Same defense-in-depth as `restore_coordinator_network`'s check,
+        // for the member-side restore path.
+        if let Err(message) = crate::membership::validate_subnet_matches_roster(
+            network_subnet,
+            &data.members,
+            &self.identity.local_identity(),
+        ) {
+            anyhow::bail!(message);
+        }
         // Use coordinator's network name from GroupBlob, or user alias, or truncated key as fallback
         let blob_name = data
             .name
@@ -742,10 +755,24 @@ impl MeshManager {
             members,
             approved,
             name: Some(name.to_string()),
-            // Safe per the SUBNET-BUG-001 invariant: an already-joined member's
-            // node subnet already matches its network's, so the node's own
-            // configured subnet is the correct value here, not the default.
-            subnet: Some(config::node_subnet()),
+            // SUBNET-DRIFT-001: this network's own persisted subnet, not the
+            // node's current global default. The previous version used
+            // `config::node_subnet()` here, reasoning it was "safe per the
+            // SUBNET-BUG-001 invariant: an already-joined member's node subnet
+            // already matches its network's" -- true only in the pre-multi-
+            // segment world where a node ran one shared TUN/subnet for
+            // everything. Since MULTISEG-002..007 let each network keep its
+            // own independent subnet, and `finalize_join`/`create_network_inner`
+            // both mutate this same node-wide default as a side effect on
+            // every join/create, that invariant no longer holds the moment a
+            // node's second network uses a different subnet -- this fallback
+            // was then silently substituting an unrelated network's subnet
+            // for this one's. `nc.subnet` is `None` only for a legacy config
+            // predating the fix that made this field always explicit; the
+            // caller's `resolve_subnet` falls back to the compiled default in
+            // that case, and `validate_subnet_matches_roster` catches a real
+            // mismatch rather than silently accepting it.
+            subnet: nc.subnet,
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),

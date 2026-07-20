@@ -347,6 +347,42 @@ pub fn ip_in_subnet(ip: Ipv4Addr, subnet: Subnet) -> bool {
     (u32::from(ip) & !host_mask) == base
 }
 
+/// Checks a resolved subnet against this identity's own already-recorded
+/// roster IP (SUBNET-DRIFT-001). A daemon restart re-resolves a network's
+/// subnet independently of the roster; if that resolution ever disagrees
+/// with what the signed roster already says this identity's address is,
+/// attaching a TUN in the newly (wrongly) resolved subnet silently breaks
+/// data-plane routing to every peer -- the underlying transport connection
+/// stays up (control-channel traffic doesn't care about TUN addressing),
+/// so nothing looks obviously broken in `tetron status` even though no
+/// application traffic can actually reach anyone. Returns an error instead
+/// of a bool so callers can propagate a message that names both values.
+/// A no-op (`Ok`) when the identity isn't in the roster yet -- nothing to
+/// check against.
+pub fn validate_subnet_matches_roster<'a>(
+    subnet: Subnet,
+    roster: impl IntoIterator<Item = &'a Member>,
+    self_identity: &EndpointId,
+) -> Result<(), String> {
+    let Some(member) = roster.into_iter().find(|m| &m.identity == self_identity) else {
+        return Ok(());
+    };
+    if ip_in_subnet(member.ip, subnet) {
+        Ok(())
+    } else {
+        Err(format!(
+            "this network's signed roster records this node's address as {} \
+             (identity {}), but the resolved subnet is {}/{} -- refusing to \
+             start with inconsistent state rather than silently break \
+             data-plane routing to every peer",
+            member.ip,
+            self_identity.fmt_short(),
+            subnet.0,
+            subnet.1,
+        ))
+    }
+}
+
 /// True if two IPv4 subnets share any address. Compares network bits at the
 /// shorter (less specific) prefix, so it catches overlap in both directions —
 /// a smaller range inside a larger one, or vice versa (SUBNET-012). Two ranges
@@ -2679,5 +2715,50 @@ mod tests {
             &BTreeMap::new(),
         );
         assert!(try_decode_tombstone(hash, 7).is_none());
+    }
+
+    #[test]
+    fn validate_subnet_matches_roster_ok_when_consistent() {
+        // The roster's own recorded IP for this identity actually falls
+        // within the subnet being validated -- no mismatch, no error.
+        let subnet = default_subnet();
+        let members = make_member_list_in(&[1, 2], subnet);
+        let me = test_id(1);
+        assert!(validate_subnet_matches_roster(subnet, members.all(), &me).is_ok());
+    }
+
+    #[test]
+    fn validate_subnet_matches_roster_rejects_mismatch() {
+        // SUBNET-DRIFT-001: this is the exact shape of the live bug -- a
+        // roster whose own recorded IP for this identity was assigned in one
+        // subnet, checked against a *different*, wrongly re-resolved one.
+        const OTHER: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 24);
+        let subnet = default_subnet();
+        let members = make_member_list_in(&[1, 2], subnet);
+        let me = test_id(1);
+        let recorded_ip = members
+            .all()
+            .into_iter()
+            .find(|m| m.identity == me)
+            .unwrap()
+            .ip
+            .to_string();
+        let err = validate_subnet_matches_roster(OTHER, members.all(), &me)
+            .expect_err("mismatched subnet must be rejected, not silently accepted");
+        // Names both the roster's recorded address and the wrongly-resolved
+        // subnet, so an operator (or a bug report) has enough to act on.
+        assert!(err.contains(&recorded_ip));
+        assert!(err.contains("10.99.0.0"));
+    }
+
+    #[test]
+    fn validate_subnet_matches_roster_ok_when_identity_absent() {
+        // A fresh join: the roster doesn't contain this identity yet (not
+        // admitted), so there is nothing to check against -- must not error.
+        let subnet = default_subnet();
+        let members = make_member_list_in(&[1, 2], subnet);
+        let not_yet_a_member = test_id(99);
+        const OTHER: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 24);
+        assert!(validate_subnet_matches_roster(OTHER, members.all(), &not_yet_a_member).is_ok());
     }
 }

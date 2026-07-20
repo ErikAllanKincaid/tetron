@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A daemon restart could silently break a network's own data-plane routing (SUBNET-DRIFT-001)**: found live-testing the `tetron status` subnet display -- a coordinator restart could silently re-resolve its own network to the wrong subnet (falling back to the compiled default instead of the network's actual one), attach its TUN there, and republish that wrong value into the signed roster every other member trusts, spreading the corruption. The underlying encrypted connection stayed up and even exchanged control-channel bytes, so nothing looked broken in `tetron status` -- but real application traffic over the mesh was silently dropped (confirmed: 100% ping loss). Fixed at the root: a network's subnet is now always persisted explicitly (never inferred from the node's current, unrelated default), and the daemon now refuses to bring a network up at all -- with a clear error -- if the resolved subnet ever disagrees with what that network's own signed roster already says this node's address is, rather than silently routing on top of the inconsistency.
+
 ### Added
 
 - **`tetron leave` now accepts a network key, not just the local display name (LEAVE-NETWORK-KEY-001)**: previously the only way to identify which network to leave was its locally-assigned display name (as shown in `tetron status`) -- if you only had the invite key or room id handy (e.g. at uninstall time), there was no way to `leave` at all. `tetron leave` now tries the local name first (unchanged), then falls back to a `network_key` prefix match (same rules `nuke`/`kick` already use: >=10 characters, or the full key).

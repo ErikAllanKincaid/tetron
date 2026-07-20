@@ -139,10 +139,17 @@ impl MeshManager {
         let persisted_hostname = net_config.and_then(|nc| nc.my_hostname.clone());
 
         // MULTISEG-001/004: this network's own persisted subnet (first real
-        // read of `NetworkConfig.subnet`), falling back to the default rather
-        // than the node-wide cache — a restored network no longer shares a
-        // TUN with any other network, so there is nothing node-wide left for
-        // it to be coherent with.
+        // read of `NetworkConfig.subnet`). `net_config.subnet` is always
+        // explicit (`Some`) for anything created/joined under the current
+        // code (SUBNET-DRIFT-001); the compiled-default fallback below only
+        // fires for a legacy config predating that fix, and is caught by the
+        // `validate_subnet_matches_roster` check below rather than trusted
+        // silently -- falling back to the compiled default here is *not*
+        // guaranteed correct just because "a restored network no longer
+        // shares a TUN with any other network" (this fallback's old
+        // justification): a network created while this node's own default
+        // subnet was something other than the compiled one has no reason to
+        // suddenly match it on restore.
         let subnet = net_config
             .and_then(|nc| nc.subnet)
             .unwrap_or_else(crate::membership::default_subnet);
@@ -172,6 +179,25 @@ impl MeshManager {
         } = self
             .restore_member_roster(name, net_public_key, net_config, my_ip, &persisted_hostname)
             .await;
+
+        // SUBNET-DRIFT-001: the resolved subnet must agree with what this
+        // network's own signed roster already says this node's address is.
+        // A mismatch here means the resolution above got it wrong (most
+        // likely a legacy config's ambiguous `None` falling back to the
+        // compiled default when the network's real subnet was something
+        // else) -- proceeding anyway would attach a TUN that cannot route
+        // to any peer, and then republish that same wrong subnet into the
+        // signed blob, spreading the corruption to every other member.
+        // Checked before `seal_and_publish` runs, so a bad resolution is
+        // never written back anywhere.
+        let my_identity = self.identity.local_identity();
+        if let Err(message) = crate::membership::validate_subnet_matches_roster(
+            subnet,
+            member_list.all(),
+            &my_identity,
+        ) {
+            return Ok(IpcMessage::Error { message });
+        }
 
         let mut net_state = NetworkState {
             generation,
@@ -211,10 +237,11 @@ impl MeshManager {
             // roster (members/approved) is authoritative from the blob.
             admins: net_config.map(|nc| nc.admins.clone()).unwrap_or_default(),
             direct: net_config.map(|nc| nc.direct).unwrap_or(false),
-            // Preserve whatever was persisted (MULTISEG-001's field is the one
-            // just read above into `subnet`; write the same value back so a
-            // restore is idempotent).
-            subnet: net_config.and_then(|nc| nc.subnet),
+            // SUBNET-DRIFT-001: persist the resolved-and-validated value
+            // explicitly, not whatever was in config before this restore --
+            // self-heals a legacy `None` the first time it successfully
+            // restores post-fix, instead of perpetuating the ambiguity.
+            subnet: Some(subnet),
         })?;
 
         let cancel = self.shutdown_token.child_token();

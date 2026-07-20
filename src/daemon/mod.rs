@@ -72,8 +72,7 @@ use crate::identity;
 use crate::ipc::{self, IpcMessage, NetworkRole, NetworkStatus, PeerStatus};
 use crate::membership::{
     ApprovedEntry, ApprovedList, GroupMode, IdentityProvider, IrohIdentityProvider, Member,
-    MemberList, Subnet, canonical_group_bytes, default_subnet, derive_ipv6, group_blob_hash,
-    verify_group_blob,
+    MemberList, Subnet, canonical_group_bytes, derive_ipv6, group_blob_hash, verify_group_blob,
 };
 use crate::network_name;
 use crate::peers::PeerTable;
@@ -290,15 +289,19 @@ impl NetworkState {
         self.refresh_snapshot();
     }
 
-    /// The subnet as it should appear in the published blob: `None` for the
-    /// default subnet (keeping default-range networks byte-identical), `Some`
-    /// for a custom one.
+    /// The subnet as it should appear in the published blob: always the
+    /// network's actual, currently-resolved subnet (SUBNET-DRIFT-001).
+    /// Previously omitted (`None`) whenever it matched the compiled default,
+    /// to keep default-range networks byte-identical -- but `self.subnet`
+    /// here is only ever correct if it was resolved correctly in the first
+    /// place, and a restart that mis-resolves it (falling back to the
+    /// compiled default when nothing else is known) would then have this
+    /// method collapse that wrong value back to `None` too, republishing
+    /// the ambiguity into the signed blob and spreading the corruption to
+    /// every peer that fetches it. Explicit always, so a correctly-resolved
+    /// subnet is never lost to a later mis-resolution's `None`.
     fn blob_subnet(&self) -> Option<Subnet> {
-        if self.subnet == default_subnet() {
-            None
-        } else {
-            Some(self.subnet)
-        }
+        Some(self.subnet)
     }
 }
 
@@ -1120,6 +1123,7 @@ async fn broadcast_control_msg(peers: &PeerTable, msg: &ControlMsg) {
 #[cfg(test)]
 mod accept_handler_tests {
     use super::*;
+    use crate::membership::default_subnet;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -1244,7 +1248,7 @@ mod accept_handler_tests {
 #[cfg(test)]
 mod coordinator_dial_order_tests {
     use super::*;
-    use crate::membership::{Member, derive_ip};
+    use crate::membership::{Member, default_subnet, derive_ip};
 
     fn test_id(seed: u8) -> EndpointId {
         let mut key_bytes = [0u8; 32];
@@ -1374,6 +1378,7 @@ mod dial_fallback_tests {
 #[cfg(test)]
 mod headless_tests {
     use super::*;
+    use crate::membership::default_subnet;
 
     /// `build_headless()` constructs a usable `Arc<DaemonState>` (identity,
     /// endpoint, blob store, DNS, pollers) in an isolated config dir and answers a

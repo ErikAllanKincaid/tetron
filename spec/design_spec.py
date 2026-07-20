@@ -4723,3 +4723,121 @@ class StatusOutputRedesign(Requirement):
     """
     req_id = "STATUS-002"
 
+
+class SubnetDriftOnRestart(Requirement):
+    """REQUIREMENT-ID: SUBNET-DRIFT-001
+
+    Found live-testing `STATUS-002` on real hardware (2026-07-20): exposing
+    a network's subnet in `tetron status` for the first time immediately
+    surfaced that a real, long-running test network's two peers disagreed
+    about their own shared network's subnet, and about each other's IP.
+    Confirmed as an actual data-plane break, not cosmetic: the coordinator's
+    real TUN device (`ip addr`) was on a completely different subnet than
+    either peer's roster-recorded IP, and `ping` between them showed 100%
+    loss both ways -- despite `tetron status` (both before and after
+    `STATUS-002`) showing "direct" connectivity with real, non-zero byte
+    counters, because that traffic was control-channel/QUIC-transport
+    chatter, not application-level TUN-forwarded packets, which don't
+    exercise the same code path at all.
+
+    **Root cause, two independent bugs, one shared design flaw.** Both
+    `NetworkConfig.subnet` (local per-network config) and `GroupBlob.subnet`
+    (the signed, network-wide DHT record every peer trusts) used the same
+    convention: `None` means "the compiled `default_subnet()`," kept so a
+    default-subnet network's config/blob stays byte-identical
+    (`MULTISEG-001`). This is lossy the moment a node's own subnet
+    preference can differ from the compiled default *and* can drift
+    independently over time (true since `MULTISEG-002..007` let each
+    network keep an independent subnet) -- `None` can no longer distinguish
+    "this network genuinely wants the compiled default" from "this network
+    wants whatever the node's default happened to be back when it was
+    created."
+
+    1. **Coordinator restart** (`restore_coordinator_network`,
+       `src/daemon/mesh/runtime.rs`): resolved a restored network's subnet as
+       `net_config.subnet.unwrap_or_else(default_subnet)` -- falling back to
+       the compiled constant whenever the local config's `subnet` was
+       `None`, without ever consulting the node's actual current subnet
+       setting, let alone the network's *original* one. A network created
+       while the node's default was e.g. `10.77.0.0/24` (so `subnet: None`
+       was correctly persisted at the time, matching what was then the
+       node's default) gets silently repinned to the compiled
+       `10.88.0.0/24` on every subsequent restart.
+    2. **Member restart when the DHT/blob is transiently unreachable**
+       (`fallback_blob_from_config`, `src/daemon/mesh/create_join.rs`):
+       synthesized a fallback blob with `subnet: Some(config::node_subnet())`,
+       reasoning (per its own comment) that this was "safe per the
+       SUBNET-BUG-001 invariant: an already-joined member's node subnet
+       already matches its network's." That invariant held only in the
+       pre-multi-segment world where a node ran one shared TUN/subnet for
+       everything; `AGENTS.md` itself documents that `SUBNET-010`'s
+       node-wide coherence check was removed once each network could keep
+       its own subnet. Worse, both `create_network_inner` and
+       `finalize_join` *mutate* the node's global default subnet as a side
+       effect of every create/join (`config::set_node_subnet`), so the
+       invariant breaks the moment a node's *second* network uses a
+       different subnet -- every previously-joined network relying on this
+       fallback silently inherits whatever unrelated network was created or
+       joined most recently.
+
+    **Compounding, not just repeating:** `NetworkState.subnet`'s only path
+    into the signed blob is `blob_subnet()` (`src/daemon/mod.rs`), which had
+    the identical "`None` for the compiled default" collapse. So bug 1
+    firing on a coordinator doesn't just corrupt that coordinator's own
+    local state -- `seal_and_publish` immediately afterward republishes the
+    now-wrong subnet into the canonical blob (as `None`, since the
+    in-memory value now equals the compiled default), spreading the
+    corruption to every peer that fetches the blob fresh afterward,
+    independent of whether they hit bug 2 themselves.
+
+    **Fix, three parts, per due-diligence discussion with Erik (chose
+    "always persist explicitly" over an IP-address-inference self-heal,
+    which would have to assume a prefix length the project's own history
+    doesn't guarantee -- default_subnet() was `/16` before an earlier
+    project-wide change to `/24`):**
+
+    1. **Stop omitting the value, everywhere.** `blob_subnet()` now always
+       returns `Some(self.subnet)`. `create_network_inner`'s config save,
+       `restore_coordinator_network`'s config save, and `persist_join_config`
+       (`src/daemon/mesh/join.rs`, which previously hardcoded `subnet: None`
+       unconditionally on every fresh join) all persist the actual resolved
+       subnet explicitly now, never conditionally collapsed. `fallback_blob_from_config`
+       reads the network's own persisted `nc.subnet` instead of the
+       unrelated node-wide `config::node_subnet()`. Removes the ambiguity at
+       the source for anything created/joined/restored under this fix;
+       self-heals a legacy `None` the first time it successfully restores,
+       since the now-validated, correctly-resolved value gets persisted
+       back explicitly.
+    2. **Hard-fail instead of silently drifting, as a safety net independent
+       of (1).** New `membership::validate_subnet_matches_roster(subnet,
+       roster, self_identity)`: checks the resolved subnet against this
+       identity's own already-signed roster IP (still reliably correct even
+       when the top-level subnet cache has drifted, since member IPs are
+       always persisted as absolute values, never conditionally omitted).
+       A no-op if the identity isn't in the roster yet (a fresh join, not a
+       restore -- nothing to check). Called in `restore_coordinator_network`
+       (before `seal_and_publish`, so a bad resolution is never written back
+       anywhere) and in `join_network_inner`'s restore/reconnect path, both
+       returning a clear error naming both values instead of proceeding to
+       attach a TUN that cannot route to any peer. Unit-tested directly
+       (`validate_subnet_matches_roster_{ok_when_consistent,
+       rejects_mismatch, ok_when_identity_absent}`, `src/membership.rs`).
+    3. **Self-heal via IP inference: considered, not implemented.** Would
+       need to assume a prefix length to back out a subnet from an existing
+       roster IP alone, which isn't guaranteed sound given the project's own
+       history (the compiled default itself changed prefix length once).
+       (2) converts an already-corrupted network from "silently broken" to
+       "loudly refuses to restore, names the inconsistency" -- sufficient
+       without guessing. The one specific network found broken live-testing
+       this is disposable test infrastructure; recreating it fresh (not a
+       code change) is the pragmatic remediation for that specific instance.
+
+    **Not yet re-verified live** after this fix (the bug was found via, but
+    fixed after, the `STATUS-002` live-testing session) -- `cargo build`/
+    `clippy`/`test` (220 tests, +3 new) and `reconcile.py` green. Redeploying
+    to the same real hardware to confirm (2) actually catches the existing
+    broken network and that a clean network's restart round-trips its
+    subnet correctly is the natural next step.
+    """
+    req_id = "SUBNET-DRIFT-001"
+

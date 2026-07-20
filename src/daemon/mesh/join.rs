@@ -156,6 +156,7 @@ pub(crate) async fn join_mesh_shared(
         net_pubkey,
         &my_hostname,
         transport,
+        network_subnet,
     )?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
@@ -282,6 +283,7 @@ fn persist_join_config(
     net_pubkey: EndpointId,
     my_hostname: &Option<String>,
     transport: Option<TransportMode>,
+    network_subnet: crate::membership::Subnet,
 ) -> Result<()> {
     let persisted_hostname = members
         .iter()
@@ -303,7 +305,10 @@ fn persist_join_config(
         transport,
         admins: vec![],
         direct,
-        subnet: None,
+        // SUBNET-DRIFT-001: previously hardcoded `None` unconditionally,
+        // meaning a member's own config never recorded which subnet it
+        // actually joined under. Persist the real, resolved value instead.
+        subnet: Some(network_subnet),
     })
 }
 
