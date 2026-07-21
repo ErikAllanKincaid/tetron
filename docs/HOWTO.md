@@ -586,7 +586,7 @@ Run this from a cron job or after network changes to keep names resolved.
 ### Check which invite keys are outstanding
 
 ```bash
-tetron invite mynetwork list --json | jq '.[] | select(.used == false)'
+tetron invite mynetwork list --json | jq '.[] | select(.revoked == false)'
 ```
 
 Useful for auditing which invites have not been redeemed before they expire.

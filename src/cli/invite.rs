@@ -50,7 +50,7 @@ pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()
                         "id": i.id,
                         "created_at": i.created_at,
                         "expires_at": i.expires_at,
-                        "used": i.used,
+                        "revoked": i.revoked,
                     }))
                     .collect::<Vec<_>>()));
             } else if invites.is_empty() {
@@ -59,8 +59,8 @@ pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()
                 let rows: Vec<Vec<String>> = invites
                     .iter()
                     .map(|i| {
-                        let status = if i.used {
-                            "used".to_string()
+                        let status = if i.revoked {
+                            "revoked".to_string()
                         } else if i.expires_at > 0 && i.expires_at <= crate::membership::now_secs() {
                             "expired".to_string()
                         } else {

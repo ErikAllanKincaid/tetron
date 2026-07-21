@@ -4937,3 +4937,32 @@ class EachNetworkGetsADistinctSubnet(Requirement):
     """
     req_id = "SUBNET-UNIQUE-001"
 
+
+class InviteListRevokedNotUsed(Requirement):
+    """REQUIREMENT-ID: INVITE-STATUS-001
+
+    Found live bug-hunting after `SUBNET-UNIQUE-001`: `tetron invite <net>
+    revoke <id>` followed by `tetron invite <net> list` showed the just-
+    revoked invite's status as `used` -- indistinguishable from one someone
+    had actually redeemed. `InviteInfo.used` (`tetron-proto/src/ipc.rs`) was
+    populated as `used: entry.revoked` (`src/daemon/mesh/invite_handler.rs`),
+    with a comment claiming "revoked flag means consumed."
+
+    That's not just misleadingly named -- `InviteEntry` has no field that
+    could ever represent "actually redeemed" in the first place. An invite
+    that's genuinely used is removed from the blob entirely on successful
+    redemption (`src/daemon/mesh/accept.rs`'s "burn the invite" step), so
+    it's never listed again at all once that happens. The only thing
+    `InviteEntry.revoked` can ever mean, for any entry still present to
+    list, is "an admin explicitly revoked this" -- calling it `used` claimed
+    a distinction (redeemed vs. cancelled) the data model was never capable
+    of drawing, and actively misled anyone auditing which invites were
+    manually revoked vs. genuinely consumed by a joiner.
+
+    **Fix:** renamed `InviteInfo.used` -> `revoked` (wire field), the
+    daemon's construction site, `tetron invite list`'s `--json` key and text
+    `status` column (now prints `revoked` instead of `used` for that case;
+    `active`/`expired` unchanged), and `docs/HOWTO.md`'s `jq` example.
+    """
+    req_id = "INVITE-STATUS-001"
+

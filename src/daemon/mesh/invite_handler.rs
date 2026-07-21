@@ -108,7 +108,7 @@ impl MeshManager {
                     id: entry.id.clone(),
                     created_at: entry.created,
                     expires_at: entry.expires,
-                    used: entry.revoked, // revoked flag means "consumed"
+                    revoked: entry.revoked,
                 })
                 .collect::<Vec<_>>()
         };

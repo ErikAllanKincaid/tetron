@@ -208,7 +208,14 @@ pub struct InviteInfo {
     pub id: String,
     pub created_at: u64,
     pub expires_at: u64,
-    pub used: bool,
+    /// Whether this invite was explicitly revoked (`tetron invite revoke`).
+    /// This is the *only* thing this field can ever mean -- an invite that
+    /// was actually redeemed by a joiner is removed from the blob entirely
+    /// on successful redemption, so it's never listed again at all. A
+    /// field/label calling this "used" (as it briefly did) would be
+    /// actively wrong: revoking an invite nobody ever redeemed showed up
+    /// identically to one that was, with no way to tell them apart.
+    pub revoked: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -545,7 +552,7 @@ mod tests {
                 id: "abc".to_string(),
                 created_at: 1719000000,
                 expires_at: 0,
-                used: false,
+                revoked: false,
             }],
         };
         let bytes = rmp_serde::to_vec_named(&resp).unwrap();
