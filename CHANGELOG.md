@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-20
+
 ### Fixed
 
 - **A second network created without an explicit `--subnet` silently reused the first one's (SUBNET-UNIQUE-001)**: found immediately while live-testing `SUBNET-DRIFT-001` with a second network -- the same node ended up with the identical address on two supposedly-independent networks. Harmless functionally (each network's TUN is already isolated), but defeats a real point of configurable subnets and is a foreseeable source of routing/firewall confusion. `tetron create` now automatically picks a genuinely free subnet (advancing past any collision with a network this node already has) when `--subnet` isn't given, and rejects an explicit `--subnet` outright (rather than silently overriding it) if it collides with one you already have. The resolved subnet is now always printed in `create`'s own output, so the choice is never silent even when auto-picked.
