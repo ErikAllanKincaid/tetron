@@ -4,7 +4,11 @@
 
 Electric ray *Tetronarce californica*
 
-**A standalone P2P mesh VPN.** tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish), stripped to a single purpose: connect machines into a private overlay with stable identity-derived addresses. It defaults to `10.88.0.0/24` (an uncommon 10.x slice that avoids Tailscale's `100.64.0.0/10`).
+**Tetron turns any group of machines into one private network, wherever they are.**
+
+Tetron lets you reach every computer you own as if they were sitting on the same desk, no matter where they actually are. Turn on your laptop from a coffee shop and it can talk straight to your home server, your NAS, or your other laptop -- no port forwarding, no static IPs, nothing exposed to the open internet. Install it, invite your other machines, and they're on your network.
+
+It's a standalone P2P mesh VPN: every device gets a stable, identity-derived address automatically the moment it joins. Peers connect directly over an encrypted tunnel, falling back to relay only when a direct path isn't possible, and the only way onto a network is an invite key you control.
 
 **Prefer a browser or a menu bar to a terminal?** Everything below is the CLI, but you don't have to use it directly:
 
@@ -32,8 +36,6 @@ ping 10.88.x.y                                    # reach the other node by its 
 [![License: MPL 2.0](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 ![Fork of: rayfish](https://img.shields.io/badge/fork%20of-rayfish-blue.svg)
-
-> **This is not original software.** tetron is rayfish with a focused set of changes, kept as an honest fork under the same MPL-2.0 license. All credit for the mesh-VPN design belongs to [upstream rayfish](https://github.com/rayfish/rayfish).
 
 **Want more?** This README covers getting started. For detailed walkthroughs, troubleshooting, and less-common scenarios (custom subnets, Tor transport, multi-machine deployment scripts), see **[docs/HOWTO.md](docs/HOWTO.md)**. For the ideas tetron is built on -- iroh, QUIC, WireGuard -- see **[docs/BACKGROUND.md](docs/BACKGROUND.md)**.
 
@@ -80,11 +82,11 @@ tetron status --json               # machine-readable, for scripting
 ping <other-ip>                     # reach the other node by its mesh IP (from status)
 ```
 
-Tailscale keeps working throughout -- tetron's default `10.88.0.0/24` does not overlap Tailscale's `100.64.0.0/10`. If that default collides with a network you already use, pass `--subnet` at create time (above) or set a new node-wide default with `tetron config set subnet <cidr>`; see [docs/HOWTO.md](docs/HOWTO.md) for details.
+If the default `10.88.0.0/24` collides with a network you already use, pass `--subnet` at create time (above) or set a new node-wide default with `tetron config set subnet <cidr>`; see [docs/HOWTO.md](docs/HOWTO.md) for details.
 
 ## Why this fork
 
-Upstream rayfish hardcodes its overlay IPv4 range to `100.64.0.0/10` (the CGNAT range) and refuses to start if another interface already holds an address there -- exactly the range **Tailscale** uses, so stock rayfish and Tailscale cannot run on the same host. tetron makes the overlay subnet configurable and defaults it to a range that coexists with Tailscale, so both meshes run side by side. It also takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic can never collide with rayfish on the same host, and strips several subsystems -- userspace firewall, Magic DNS, file sharing, device pairing, hostname rename, the declarative apply layer, self-update, and more -- because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method.
+Upstream hardcodes its overlay IPv4 range to the CGNAT block Tailscale and rayfish also use (100.64.0.0/10), and refuses to start if another interface already holds an address there -- so the two cannot run on the same host. tetron makes the subnet configurable instead (see above), and takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic never collides with rayfish's either. It also strips several subsystems -- see [Features](#features) below for the full list -- because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method.
 
 ## How it works
 
@@ -135,7 +137,7 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 
 - **Invite-only closed networks** -- the only way onto a network is an invite key minted by a coordinator (`tetron invite <net> create`, single-use by default with configurable expiry). A bare room id is discovery-only and never admits.
 - **Multi-segment TUN** -- every network you join gets its own TUN device and its own subnet, structurally isolated like two separate physical NICs. `tetron create --subnet <cidr>` sets a network's own subnet on the spot, no restart needed; `tetron config set subnet` changes the node-wide default for future creates.
-- **Configurable overlay subnet** -- default `10.88.0.0/24` avoids Tailscale's `100.64.0.0/10`, so both run side by side on the same host.
+- **Configurable overlay subnet** -- the default range avoids colliding with other common overlay networks on the same host (see intro above); override per-network or node-wide.
 - **Co-coordinators / multi-admin** -- `tetron admin <net> add <peer>` grants the network key to any trusted member, so admission, invite-minting, and member management don't depend on one machine staying online.
 - **Nuke consensus** -- destroying a network with a single coordinator is immediate; with two or more coordinators, it requires a second coordinator to independently agree (`tetron nuke <network-key>` proposes/seconds, `--cancel` withdraws, `--second <id>` seconds explicitly) within a 24h window, so one compromised or reckless coordinator can't unilaterally destroy a network nobody else agreed to lose.
 - **Kick** -- coordinators remove a member by cryptographic short id (`tetron kick <network-key> <endpoint-id>`); the target is dropped mesh-wide and can't rejoin without a fresh invite.
@@ -150,7 +152,7 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 **Operations:**
 
 - **Cross-platform service management** -- systemd on Linux, launchd on macOS; `tetron resume`/`install`/`restart`/`uninstall` handle it uniformly.
-- **Tailscale-style permission model** -- the daemon authorizes by caller UID, not socket permissions; read-only commands are open to any local user, mutating commands need root or the configured operator (`set-operator`), auto-granted to whoever ran `tetron install`.
+- **UID-based permission model** -- authorizes by caller UID, not file permissions; see [Permissions](#permissions) below.
 - **`--json` on every read command** -- `status`, `invite list`, `admin list`, `config get`, for scripting.
 - **Near-instant standby** -- `tetron standby`/`resume` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online. Add `--network <name>` to either to standby just one joined network instead of all of them.
 
@@ -216,4 +218,4 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 
 ## Relationship to upstream & license
 
-tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish), licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The entire mesh-VPN design, and the overwhelming majority of the code, is rayfish's work; see the [changelog](CHANGELOG.md) for what this fork changes. If you want the general, upstream-quality version of configurable subnets, that belongs in rayfish itself -- this fork is a scrappier, personal-use variant.
+tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish), licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is its work; see the [changelog](CHANGELOG.md) for what this fork changes. 
