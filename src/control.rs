@@ -300,10 +300,10 @@ mod tests {
     #[test]
     fn test_roundtrip_join_approved() {
         let msg = ControlMsg::JoinApproved {
-            your_ip: Ipv4Addr::new(100, 64, 0, 3),
+            your_ip: Ipv4Addr::new(10, 88, 0, 3),
             members: vec![Member {
                 identity: test_id(1),
-                ip: Ipv4Addr::new(100, 64, 0, 2),
+                ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: true,
                 hostname: None,
                 user_identity: None,
@@ -321,7 +321,7 @@ mod tests {
     fn test_roundtrip_mesh_hello() {
         let msg = ControlMsg::MeshHello {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 0, 4),
+            ip: Ipv4Addr::new(10, 88, 0, 4),
             hostname: None,
             device_cert: None,
         };
@@ -384,7 +384,7 @@ mod tests {
     fn test_roundtrip_member_approved() {
         let msg = ControlMsg::MemberApproved {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 12, 34),
+            ip: Ipv4Addr::new(10, 88, 12, 34),
             hostname: None,
             device_cert: None,
         };
@@ -399,7 +399,7 @@ mod tests {
         let msg = ControlMsg::Welcome {
             members: vec![Member {
                 identity: test_id(1),
-                ip: Ipv4Addr::new(100, 64, 0, 2),
+                ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: true,
                 hostname: None,
                 user_identity: None,
@@ -409,7 +409,7 @@ mod tests {
             }],
             approved: vec![ApprovedEntry {
                 identity: test_id(2),
-                ip: Ipv4Addr::new(100, 64, 0, 5),
+                ip: Ipv4Addr::new(10, 88, 0, 5),
                 hostname: None,
                 user_identity: None,
                 device_cert: None,
@@ -526,7 +526,7 @@ mod tests {
         let cert = DeviceCert::create(&user_key, &device_key.public(), 0);
         let msg = ControlMsg::MeshHello {
             identity: device_key.public(),
-            ip: Ipv4Addr::new(100, 64, 0, 5),
+            ip: Ipv4Addr::new(10, 88, 0, 5),
             hostname: Some("alice".to_string()),
             device_cert: Some(cert),
         };

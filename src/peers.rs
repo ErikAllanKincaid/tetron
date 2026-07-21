@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn test_peer_table_empty_lookup() {
         let table = PeerTable::new();
-        assert!(table.lookup_v4(&Ipv4Addr::new(100, 64, 0, 5)).is_none());
+        assert!(table.lookup_v4(&Ipv4Addr::new(10, 88, 0, 5)).is_none());
         assert!(
             table
                 .lookup_v6(&Ipv6Addr::new(0x0200, 0, 0, 0, 0, 0, 0, 1))

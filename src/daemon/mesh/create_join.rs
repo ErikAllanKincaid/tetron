@@ -319,14 +319,41 @@ impl MeshManager {
         // explicit `--subnet` and nothing persisted yet; an explicit `--subnet`
         // still updates that default for the node's next unspecified create.
         let persisted = config::load().ok().and_then(|c| c.subnet);
+        // Every network on this node must land on a genuinely distinct
+        // subnet -- otherwise two networks created without an explicit
+        // `--subnet` both silently get the node's one default (found live-
+        // testing: this node's own address ended up identical, 10.77.0.200,
+        // on two supposedly-independent networks). Explicit `--subnet` is
+        // still honored exactly, but rejected outright if it collides with
+        // a network this node already has -- an explicit request deserves a
+        // clear error, not a silent substitution. An unspecified `--subnet`
+        // instead auto-advances past any collision, silently as far as the
+        // resolution logic is concerned, but the actual chosen value is
+        // always reported back in the command's own success output so it's
+        // never a surprise later.
+        let existing_subnets: Vec<crate::membership::Subnet> = config::load()
+            .map(|c| c.networks.iter().filter_map(|n| n.subnet).collect())
+            .unwrap_or_default();
         let subnet = match subnet {
             Some(requested) => {
+                anyhow::ensure!(
+                    !existing_subnets
+                        .iter()
+                        .any(|&e| crate::membership::subnets_overlap(e, requested)),
+                    "--subnet {}/{} overlaps a network this node already has -- pick a distinct \
+                     range (see `tetron status`'s `subnet` line for what's already in use)",
+                    requested.0,
+                    requested.1,
+                );
                 if let Err(e) = config::set_node_subnet(requested) {
                     tracing::warn!(error = %e, "failed to persist node subnet");
                 }
                 requested
             }
-            None => persisted.unwrap_or_else(crate::membership::default_subnet),
+            None => {
+                let candidate = persisted.unwrap_or_else(crate::membership::default_subnet);
+                crate::membership::next_available_subnet(candidate, existing_subnets.into_iter())
+            }
         };
         // The creator's own IP must land in the chosen subnet. When it matches the
         // provider's (node) subnet the cached local_ip is correct; otherwise it is
@@ -491,6 +518,7 @@ impl MeshManager {
             // effect on the one shared TUN. That scenario no longer exists.
             warning: None,
             initial_invite_key: Some(initial_invite_key),
+            subnet: format!("{}/{}", subnet.0, subnet.1),
         })
     }
 

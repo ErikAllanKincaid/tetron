@@ -471,15 +471,15 @@ mod tests {
     /// Mesh address the test packets are sourced from; passed to
     /// `evaluate_inbound` as the sending peer's assigned IP so the ingress
     /// anti-spoof check passes.
-    const TEST_V4: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 5);
+    const TEST_V4: Ipv4Addr = Ipv4Addr::new(10, 88, 0, 5);
     const TEST_V6: Ipv6Addr = Ipv6Addr::UNSPECIFIED;
 
     fn make_tcp_packet(dst_port: u16) -> Vec<u8> {
         let mut p = vec![0u8; 24];
         p[0] = 0x45; // IPv4, IHL=5
         p[9] = 6; // TCP
-        p[12..16].copy_from_slice(&[100, 64, 0, 5]); // src ip (TEST_V4)
-        p[16..20].copy_from_slice(&[100, 64, 0, 3]); // dst ip
+        p[12..16].copy_from_slice(&[10, 88, 0, 5]); // src ip (TEST_V4)
+        p[16..20].copy_from_slice(&[10, 88, 0, 3]); // dst ip
         p[20] = 0;
         p[21] = 80; // src port 80
         p[22] = (dst_port >> 8) as u8;
@@ -510,10 +510,10 @@ mod tests {
     fn inbound_spoofed_source_ip_dropped() {
         // A packet whose source IP isn't the sending peer's assigned mesh IP is
         // dropped as spoofed, before any in-daemon listener sees it.
-        let pkt = make_tcp_packet(80); // sourced from TEST_V4 (100.64.0.5)
+        let pkt = make_tcp_packet(80); // sourced from TEST_V4 (10.88.0.5)
         // Same packet, but the peer is supposedly assigned a different IP.
         assert!(matches!(
-            evaluate_inbound(&pkt, Ipv4Addr::new(100, 64, 0, 9), TEST_V6),
+            evaluate_inbound(&pkt, Ipv4Addr::new(10, 88, 0, 9), TEST_V6),
             InboundDecision::DropSpoof
         ));
         // With the matching peer IP it passes.

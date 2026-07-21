@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A second network created without an explicit `--subnet` silently reused the first one's (SUBNET-UNIQUE-001)**: found immediately while live-testing `SUBNET-DRIFT-001` with a second network -- the same node ended up with the identical address on two supposedly-independent networks. Harmless functionally (each network's TUN is already isolated), but defeats a real point of configurable subnets and is a foreseeable source of routing/firewall confusion. `tetron create` now automatically picks a genuinely free subnet (advancing past any collision with a network this node already has) when `--subnet` isn't given, and rejects an explicit `--subnet` outright (rather than silently overriding it) if it collides with one you already have. The resolved subnet is now always printed in `create`'s own output, so the choice is never silent even when auto-picked.
+- **A handful of unit tests were silently testing nothing (found while fixing the above)**: several tests across `membership.rs`/`config.rs`/`control.rs`/`packet.rs`/`peers.rs`/`forward.rs` used `100.64.x.x` (the pre-fork default subnet) as test data, inherited from before this fork changed the default and never updated. Most were harmless placeholder values, but three genuinely passed for the wrong reason -- e.g. a test checking that derived addresses avoid the *reserved* addresses of the current default subnet was comparing against the *old* subnet's reserved addresses, so the assertion was vacuously true no matter what. Fixed the vacuous ones to test what they actually claim to; swapped the rest to the current default for consistency.
+
 ## [0.6.0] - 2026-07-20
 
 ### Fixed

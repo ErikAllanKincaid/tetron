@@ -350,6 +350,7 @@ impl MeshManager {
             // `create_network_inner`'s `Created` response.
             warning: None,
             initial_invite_key: None,
+            subnet: format!("{}/{}", subnet.0, subnet.1),
         })
     }
 

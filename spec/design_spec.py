@@ -4838,6 +4838,102 @@ class SubnetDriftOnRestart(Requirement):
     to the same real hardware to confirm (2) actually catches the existing
     broken network and that a clean network's restart round-trips its
     subnet correctly is the natural next step.
+
+    **Addendum, live-tested 2026-07-20:** verified end-to-end on real
+    hardware (aorus, xps) exactly as planned above. Removed both machines'
+    broken `systray-func-test` config (found along the way: `tetron leave`
+    can't remove a network that failed to restore -- both its resolution
+    paths only scan currently-*loaded* networks, never the full persisted
+    config list; logged as a separate, low-urgency gap in
+    `DO-NOT-COMMIT/TODO.md`, not fixed here), recreated it fresh, and
+    confirmed: subnet persists identically on both sides across a create +
+    join + restart cycle, real data-plane traffic (`ping`, then 20MB `scp`
+    with a SHA-256 check) works with 0% loss, and it survives a second
+    restart on both machines with no drift. Also joined a fourth machine
+    (a MacBook Pro, Apple Silicon/macOS -- built natively there, synced
+    from this repo directly over SSH rather than GitHub) to the same
+    network with identical results, confirming the fix holds across
+    architectures and operating systems, not just Linux x86_64.
     """
     req_id = "SUBNET-DRIFT-001"
+
+
+class EachNetworkGetsADistinctSubnet(Requirement):
+    """REQUIREMENT-ID: SUBNET-UNIQUE-001
+
+    Found immediately during the `SUBNET-DRIFT-001` live-test follow-up:
+    creating a second network on a node that already had one, without an
+    explicit `--subnet`, silently gave it the *exact same* subnet as the
+    first (`create_network_inner`'s unspecified-subnet path just resolves
+    to the node's one persisted/compiled default, with no awareness of what
+    other networks that same node already has). Concretely: the same node
+    ended up with the identical address (`10.77.0.200`) on two supposedly-
+    independent networks -- harmless given per-network TUN isolation
+    (`MULTISEG-002..007`), but defeating a real purpose of configurable
+    subnets, confusing to read, and a foreseeable source of firewall/
+    routing-rule mistakes for anyone trying to distinguish networks by IP
+    range. Erik: "MUST be a new subnet, always."
+
+    **Fix:** new `membership::next_available_subnet(candidate, existing)` --
+    given a starting candidate and every subnet already in use, advances by
+    one full block (`2^(32-prefix)` addresses) per collision, prefix length
+    fixed, until it finds one that overlaps nothing in `existing` (capped at
+    4096 attempts, far beyond any real node's network count, after which it
+    gives up and returns the last candidate rather than looping forever).
+    Wired into `create_network_inner` (`src/daemon/mesh/create_join.rs`):
+
+    - **No explicit `--subnet`** (the common path): the resolved default
+      candidate is silently advanced past any collision with an existing
+      network's persisted subnet (`config::load()?.networks[].subnet` --
+      always populated now thanks to `SUBNET-DRIFT-001`'s "persist
+      explicitly, never omit" fix, so this list is reliable). "Silently" as
+      far as the resolution logic goes, but never silent to the *caller*:
+      `IpcMessage::Created` gained a `subnet: String` field (both
+      `create_network_inner` and `restore_coordinator_network`'s success
+      responses), and `tetron create`'s own CLI output now prints a
+      `subnet <cidr>` line unconditionally -- the actual chosen value is
+      always visible, whether or not it's the one a caller might have
+      expected.
+    - **Explicit `--subnet`**: honored exactly, never silently substituted
+      -- but rejected outright with a clear error if it collides with a
+      network this node already has. An explicit request deserves a
+      correction, not a silent override to something else.
+
+    Unit-tested directly (`next_available_subnet_returns_candidate_when_free`,
+    `_advances_past_one_collision`, `_advances_past_several_collisions_in_order`,
+    `_keeps_prefix_length`, `src/membership.rs`) -- the "several collisions
+    in order" case exercises exactly the reported scenario (candidate
+    already taken, verifies it lands on the correct next free block, not
+    just *some* free block).
+
+    **Bundled discovery while fixing this, unrelated to the feature
+    itself:** several existing unit tests across `src/membership.rs`,
+    `src/config.rs`, `src/control.rs`, `src/packet.rs`, `src/peers.rs`, and
+    `src/forward.rs` used `100.64.x.x` (the pre-fork default subnet,
+    inherited from upstream and never updated after this fork changed the
+    default to `10.88.0.0/24`) as test-fixture data. Most were harmless --
+    arbitrary placeholder IPs where the specific value never mattered to
+    what was being tested -- but three were genuinely **vacuous**, passing
+    for an unintended reason rather than testing what they claimed to:
+    `test_derive_ip_avoids_reserved` compared derived IPs (always inside
+    `10.88.0.0/24`) against the *wrong* subnet's reserved addresses, so the
+    assertion was vacuously true for every input, testing nothing;
+    `validate_member_rejects_mismatched_ip`, `validate_member_rejects_
+    reserved_addresses`, `validate_approved_rejects_mismatched_ip`, and two
+    `decode_group_blob_rejects_*` tests all used out-of-`10.88.0.0/24`
+    addresses where an *in-range* one was needed to actually exercise the
+    specific rule each test was named for (mismatch / reserved-address
+    rejection), instead accidentally passing via the unrelated out-of-range
+    check every time. Fixed all of these to use addresses actually inside
+    `default_subnet()`; mechanically swapped the remaining, genuinely
+    arbitrary occurrences to `10.88.x.x` for consistency (`sed`-scoped to
+    each file's test module, verified by rerunning every affected module's
+    tests before and after). Left untouched: doc comments/prose correctly
+    citing the real Tailscale range, and the two tests in `membership.rs`
+    that deliberately compare against `100.64.0.0/10` on purpose
+    (`subnets_overlap_detects_both_directions_but_not_disjoint`,
+    `ensure_in_range_respects_custom_subnet`) -- changing either of those
+    would have broken the actual thing they're testing.
+    """
+    req_id = "SUBNET-UNIQUE-001"
 

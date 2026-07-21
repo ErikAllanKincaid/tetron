@@ -40,6 +40,7 @@ pub(crate) async fn ipc_create(
             my_ipv6,
             warning,
             initial_invite_key,
+            subnet,
         } => {
             let key_str = network_key.to_string();
             let short = if key_str.len() > 12 {
@@ -51,6 +52,14 @@ pub(crate) async fn ipc_create(
             println!();
             println!("  created {network}");
             println!("    address  {}  ·  {}", my_ip, short);
+            if !subnet.is_empty() {
+                // Always shown, not just when it differs from what the caller
+                // expected -- every network on this node gets a genuinely
+                // distinct subnet now (auto-advanced past a collision when
+                // `--subnet` wasn't given), so this is the one place that
+                // choice becomes visible instead of being silent.
+                println!("    subnet   {subnet}");
+            }
             match &initial_invite_key {
                 Some(invite) => {
                     let share = format!("tetron join {invite}");

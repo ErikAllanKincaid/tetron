@@ -395,6 +395,37 @@ pub fn subnets_overlap(a: Subnet, b: Subnet) -> bool {
     (u32::from(a_addr) & !host_mask) == (u32::from(b_addr) & !host_mask)
 }
 
+/// Finds a subnet that doesn't overlap any of `existing`, starting from
+/// `candidate` and keeping its prefix length fixed -- every network on a
+/// node must get a genuinely distinct subnet, not silently reuse whatever
+/// the node's single default happens to be (found live-testing: two
+/// networks created back to back without an explicit `--subnet` both got
+/// `10.77.0.0/24`, giving the same node the identical address on both and
+/// defeating the whole point of per-network subnets). Advances by one
+/// block size (`2^(32-prefix)` addresses) per attempt so successive
+/// candidates never overlap each other either. Capped at 4096 attempts --
+/// astronomically more than any real node's network count -- after which
+/// it gives up and returns `candidate` unchanged rather than looping
+/// forever; a caller can still detect that case by checking for overlap
+/// again if it cares.
+pub fn next_available_subnet(candidate: Subnet, existing: impl Iterator<Item = Subnet>) -> Subnet {
+    let existing: Vec<Subnet> = existing.collect();
+    let (base, prefix) = candidate;
+    let block_size = 1u32.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
+    let mut attempt = (base, prefix);
+    for _ in 0..4096 {
+        if !existing.iter().any(|&e| subnets_overlap(e, attempt)) {
+            return attempt;
+        }
+        if block_size == 0 {
+            break;
+        }
+        let next_base = Ipv4Addr::from(u32::from(attempt.0).wrapping_add(block_size));
+        attempt = (next_base, prefix);
+    }
+    attempt
+}
+
 /// The gateway address for a subnet: base + 1 (the `.1` the TUN takes).
 pub fn subnet_gateway(subnet: Subnet) -> Ipv4Addr {
     let (base, _) = subnet;
@@ -1116,8 +1147,14 @@ mod tests {
 
     #[test]
     fn test_derive_ip_avoids_reserved() {
-        let reserved1 = Ipv4Addr::new(100, 64, 0, 0);
-        let reserved2 = Ipv4Addr::new(100, 64, 0, 1);
+        // Was previously checked against 100.64.0.0/100.64.0.1 -- reserved
+        // addresses for the pre-fork default subnet, not this one. Since
+        // `default_subnet()` never derives an address outside 10.88.0.0/24,
+        // that comparison was vacuously true for every `i`, silently testing
+        // nothing. Must be this subnet's own reserved addresses.
+        let (base, _) = default_subnet();
+        let reserved1 = base;
+        let reserved2 = Ipv4Addr::from(u32::from(base) + 1);
         for i in 0..=255u8 {
             let ip = derive_ip(&test_id(i), default_subnet());
             assert_ne!(ip, reserved1);
@@ -1222,7 +1259,7 @@ mod tests {
         let mut list = MemberList::new();
         let member = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1233,7 +1270,7 @@ mod tests {
         list.add(member.clone()).unwrap();
         assert!(list.is_member(&id));
         assert!(!list.is_member(&test_id(2)));
-        assert_eq!(list.get(&id).unwrap().ip, Ipv4Addr::new(100, 64, 10, 5));
+        assert_eq!(list.get(&id).unwrap().ip, Ipv4Addr::new(10, 88, 10, 5));
     }
 
     #[test]
@@ -1242,7 +1279,7 @@ mod tests {
         let mut list = MemberList::new();
         let member = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1251,9 +1288,9 @@ mod tests {
             last_seen: None,
         };
         list.add(member).unwrap();
-        let found = list.get_by_ip(Ipv4Addr::new(100, 64, 10, 5)).unwrap();
+        let found = list.get_by_ip(Ipv4Addr::new(10, 88, 10, 5)).unwrap();
         assert_eq!(found.identity, id);
-        assert!(list.get_by_ip(Ipv4Addr::new(100, 64, 10, 6)).is_none());
+        assert!(list.get_by_ip(Ipv4Addr::new(10, 88, 10, 6)).is_none());
     }
 
     #[test]
@@ -1261,7 +1298,7 @@ mod tests {
         let mut list = MemberList::new();
         list.add(Member {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1272,7 +1309,7 @@ mod tests {
         .unwrap();
         let result = list.add(Member {
             identity: test_id(2),
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1289,7 +1326,7 @@ mod tests {
         let mut list = MemberList::new();
         list.add(Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1300,7 +1337,7 @@ mod tests {
         .unwrap();
         list.add(Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: true,
             hostname: None,
             user_identity: None,
@@ -1318,7 +1355,7 @@ mod tests {
         let mut list = MemberList::new();
         list.add(Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5),
+            ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1338,7 +1375,7 @@ mod tests {
         let mut list = MemberList::new();
         list.add(Member {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 0, 2),
+            ip: Ipv4Addr::new(10, 88, 0, 2),
             is_coordinator: true,
             hostname: None,
             user_identity: None,
@@ -1349,7 +1386,7 @@ mod tests {
         .unwrap();
         list.add(Member {
             identity: test_id(2),
-            ip: Ipv4Addr::new(100, 64, 0, 3),
+            ip: Ipv4Addr::new(10, 88, 0, 3),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1366,7 +1403,7 @@ mod tests {
         let policy = OpenPolicy;
         let member = Member {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 0, 5),
+            ip: Ipv4Addr::new(10, 88, 0, 5),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1382,7 +1419,7 @@ mod tests {
         let policy = RestrictedPolicy;
         let coordinator = Member {
             identity: test_id(1),
-            ip: Ipv4Addr::new(100, 64, 0, 2),
+            ip: Ipv4Addr::new(10, 88, 0, 2),
             is_coordinator: true,
             hostname: None,
             user_identity: None,
@@ -1392,7 +1429,7 @@ mod tests {
         };
         let regular = Member {
             identity: test_id(2),
-            ip: Ipv4Addr::new(100, 64, 0, 3),
+            ip: Ipv4Addr::new(10, 88, 0, 3),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -1410,7 +1447,7 @@ mod tests {
         let mut list = ApprovedList::new();
         let entry = ApprovedEntry {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 5, 10),
+            ip: Ipv4Addr::new(10, 88, 5, 10),
             hostname: None,
             user_identity: None,
             device_cert: None,
@@ -1429,7 +1466,7 @@ mod tests {
         members
             .add(Member {
                 identity: test_id(1),
-                ip: Ipv4Addr::new(100, 64, 5, 10),
+                ip: Ipv4Addr::new(10, 88, 5, 10),
                 is_coordinator: false,
                 hostname: None,
                 user_identity: None,
@@ -1440,7 +1477,7 @@ mod tests {
             .unwrap();
         let entry = ApprovedEntry {
             identity: test_id(2),
-            ip: Ipv4Addr::new(100, 64, 5, 10),
+            ip: Ipv4Addr::new(10, 88, 5, 10),
             hostname: None,
             user_identity: None,
             device_cert: None,
@@ -1457,7 +1494,7 @@ mod tests {
             .approve(
                 ApprovedEntry {
                     identity: test_id(1),
-                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                    ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
                     user_identity: None,
                     device_cert: None,
@@ -1469,7 +1506,7 @@ mod tests {
         let result = approved.approve(
             ApprovedEntry {
                 identity: test_id(2),
-                ip: Ipv4Addr::new(100, 64, 5, 10),
+                ip: Ipv4Addr::new(10, 88, 5, 10),
                 hostname: None,
                 user_identity: None,
                 device_cert: None,
@@ -1489,7 +1526,7 @@ mod tests {
             .approve(
                 ApprovedEntry {
                     identity: id,
-                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                    ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
                     user_identity: None,
                     device_cert: None,
@@ -1502,7 +1539,7 @@ mod tests {
             .approve(
                 ApprovedEntry {
                     identity: id,
-                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                    ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
                     user_identity: None,
                     device_cert: None,
@@ -1523,7 +1560,7 @@ mod tests {
             .approve(
                 ApprovedEntry {
                     identity: id,
-                    ip: Ipv4Addr::new(100, 64, 5, 10),
+                    ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
                     user_identity: None,
                     device_cert: None,
@@ -1542,7 +1579,7 @@ mod tests {
         let entries = vec![
             ApprovedEntry {
                 identity: test_id(1),
-                ip: Ipv4Addr::new(100, 64, 0, 2),
+                ip: Ipv4Addr::new(10, 88, 0, 2),
                 hostname: None,
                 user_identity: None,
                 device_cert: None,
@@ -1550,7 +1587,7 @@ mod tests {
             },
             ApprovedEntry {
                 identity: test_id(2),
-                ip: Ipv4Addr::new(100, 64, 0, 3),
+                ip: Ipv4Addr::new(10, 88, 0, 3),
                 hostname: None,
                 user_identity: None,
                 device_cert: None,
@@ -2075,11 +2112,15 @@ mod tests {
     #[test]
     fn validate_member_rejects_mismatched_ip() {
         // A peer/ coordinator must not be able to assign an arbitrary IP to an
-        // identity. This is the invariant that prevents IP hijacking.
+        // identity. This is the invariant that prevents IP hijacking. Must be
+        // an address that's actually *inside* default_subnet() -- otherwise
+        // this and validate_member_rejects_out_of_range_ip below could both
+        // pass for the same "out of range" reason, never actually exercising
+        // the in-range-but-mismatched (hijack) check this test names.
         let id = test_id(7);
         let member = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5), // does NOT equal derive_ip(test_id(7))
+            ip: Ipv4Addr::new(10, 88, 0, 99), // in-subnet, but does NOT equal derive_ip(test_id(7))
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -2111,11 +2152,15 @@ mod tests {
 
     #[test]
     fn validate_member_rejects_reserved_addresses() {
-        // .0 (network) and .1 (gateway) are reserved even if derive_ip avoids them.
+        // .0 (network) and .1 (gateway) are reserved even if derive_ip avoids
+        // them. Must be default_subnet()'s own .0/.1 -- 100.64.0.0/100.64.0.1
+        // are outside 10.88.0.0/24 entirely, so this test previously passed
+        // only because of the (unrelated) out-of-range check, never actually
+        // exercising the reserved-address rule it's named for.
         let id = test_id(7);
         let net = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 0, 0),
+            ip: Ipv4Addr::new(10, 88, 0, 0),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -2125,7 +2170,7 @@ mod tests {
         };
         let gw = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 0, 1),
+            ip: Ipv4Addr::new(10, 88, 0, 1),
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -2139,10 +2184,13 @@ mod tests {
 
     #[test]
     fn validate_approved_rejects_mismatched_ip() {
+        // Must be in-subnet (same reasoning as validate_member_rejects_
+        // mismatched_ip above) so this exercises the mismatch check itself,
+        // not an incidental out-of-range rejection.
         let id = test_id(9);
         let entry = ApprovedEntry {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 99, 99),
+            ip: Ipv4Addr::new(10, 88, 0, 99),
             hostname: None,
             user_identity: None,
             device_cert: None,
@@ -2195,10 +2243,13 @@ mod tests {
         // A tampered blob carrying a member whose IP doesn't match its identity
         // must be rejected at the decode boundary, even if the bytes are
         // otherwise valid msgpack.
+        // Blob has subnet: None -> resolves to default_subnet() (10.88.0.0/24);
+        // the member ip below must actually be inside that range, or this
+        // passes for the wrong reason (out of range, not mismatched).
         let id = test_id(1);
         let bad_member = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 10, 5), // not derive_ip(test_id(1))
+            ip: Ipv4Addr::new(10, 88, 0, 99), // in-subnet, but not derive_ip(test_id(1))
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -2223,10 +2274,13 @@ mod tests {
 
     #[test]
     fn decode_group_blob_rejects_reserved_gateway_ip() {
+        // Must be default_subnet()'s own gateway (10.88.0.1), not the
+        // pre-fork subnet's -- otherwise this is rejected as merely
+        // out-of-range, never actually reaching the reserved-gateway check.
         let id = test_id(2);
         let bad_member = Member {
             identity: id,
-            ip: Ipv4Addr::new(100, 64, 0, 1), // TUN gateway
+            ip: Ipv4Addr::new(10, 88, 0, 1), // TUN gateway
             is_coordinator: false,
             hostname: None,
             user_identity: None,
@@ -2465,6 +2519,49 @@ mod tests {
             (Ipv4Addr::new(100, 64, 0, 1), 10),
             overlay
         ));
+    }
+
+    #[test]
+    fn next_available_subnet_returns_candidate_when_free() {
+        let candidate = (Ipv4Addr::new(10, 88, 0, 0), 24);
+        let existing = vec![(Ipv4Addr::new(10, 77, 0, 0), 24)];
+        assert_eq!(
+            next_available_subnet(candidate, existing.into_iter()),
+            candidate
+        );
+    }
+
+    #[test]
+    fn next_available_subnet_advances_past_one_collision() {
+        // Exactly the live-testing scenario: a second network created with no
+        // explicit --subnet must not silently reuse the first one's.
+        let candidate = (Ipv4Addr::new(10, 77, 0, 0), 24);
+        let existing = vec![(Ipv4Addr::new(10, 77, 0, 0), 24)];
+        let picked = next_available_subnet(candidate, existing.clone().into_iter());
+        assert_ne!(picked, candidate);
+        assert!(!existing.iter().any(|&e| subnets_overlap(e, picked)));
+    }
+
+    #[test]
+    fn next_available_subnet_advances_past_several_collisions_in_order() {
+        let candidate = (Ipv4Addr::new(10, 77, 0, 0), 24);
+        // Three networks already occupy the first three /24 blocks in order.
+        let existing = vec![
+            (Ipv4Addr::new(10, 77, 0, 0), 24),
+            (Ipv4Addr::new(10, 77, 1, 0), 24),
+            (Ipv4Addr::new(10, 77, 2, 0), 24),
+        ];
+        let picked = next_available_subnet(candidate, existing.clone().into_iter());
+        assert_eq!(picked, (Ipv4Addr::new(10, 77, 3, 0), 24));
+        assert!(!existing.iter().any(|&e| subnets_overlap(e, picked)));
+    }
+
+    #[test]
+    fn next_available_subnet_keeps_prefix_length() {
+        let candidate = (Ipv4Addr::new(10, 88, 0, 0), 16);
+        let existing = vec![(Ipv4Addr::new(10, 88, 0, 0), 16)];
+        let picked = next_available_subnet(candidate, existing.into_iter());
+        assert_eq!(picked.1, 16);
     }
 
     #[test]

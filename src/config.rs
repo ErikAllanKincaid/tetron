@@ -803,17 +803,17 @@ mod tests {
                 NetworkConfig {
                     name: "gaming".to_string(),
                     group_mode: GroupMode::Open,
-                    my_ip: Some(Ipv4Addr::new(100, 64, 10, 5)),
+                    my_ip: Some(Ipv4Addr::new(10, 88, 10, 5)),
                     members: vec![
                         MemberEntry {
                             identity: test_id(2),
-                            ip: Ipv4Addr::new(100, 64, 5, 3),
+                            ip: Ipv4Addr::new(10, 88, 5, 3),
                             is_coordinator: true,
                             hostname: None,
                         },
                         MemberEntry {
                             identity: test_id(3),
-                            ip: Ipv4Addr::new(100, 64, 10, 5),
+                            ip: Ipv4Addr::new(10, 88, 10, 5),
                             is_coordinator: false,
                             hostname: None,
                         },
@@ -865,7 +865,7 @@ mod tests {
         let net = NetworkConfig {
             name: "test".to_string(),
             group_mode: GroupMode::Open,
-            my_ip: Some(Ipv4Addr::new(100, 64, 10, 5)),
+            my_ip: Some(Ipv4Addr::new(10, 88, 10, 5)),
             members: vec![],
             approved: vec![],
             network_secret_key: None,
@@ -904,7 +904,7 @@ mod tests {
         let updated = NetworkConfig {
             name: "test".to_string(),
             group_mode: GroupMode::Open,
-            my_ip: Some(Ipv4Addr::new(100, 64, 10, 5)),
+            my_ip: Some(Ipv4Addr::new(10, 88, 10, 5)),
             members: vec![],
             approved: vec![],
             network_secret_key: None,
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(config.networks[0].group_mode, GroupMode::Open);
         assert_eq!(
             config.networks[0].my_ip,
-            Some(Ipv4Addr::new(100, 64, 10, 5))
+            Some(Ipv4Addr::new(10, 88, 10, 5))
         );
     }
 
@@ -978,16 +978,16 @@ mod tests {
             networks: vec![NetworkConfig {
                 name: "gaming".to_string(),
                 group_mode: GroupMode::Restricted,
-                my_ip: Some(Ipv4Addr::new(100, 64, 10, 5)),
+                my_ip: Some(Ipv4Addr::new(10, 88, 10, 5)),
                 members: vec![MemberEntry {
                     identity: id1,
-                    ip: Ipv4Addr::new(100, 64, 5, 3),
+                    ip: Ipv4Addr::new(10, 88, 5, 3),
                     is_coordinator: true,
                     hostname: None,
                 }],
                 approved: vec![ApprovedConfigEntry {
                     identity: id2,
-                    ip: Ipv4Addr::new(100, 64, 12, 34),
+                    ip: Ipv4Addr::new(10, 88, 12, 34),
                     hostname: None,
                 }],
                 network_secret_key: None,
@@ -1014,7 +1014,7 @@ mod tests {
             networks: vec![NetworkConfig {
                 name: "gaming".to_string(),
                 group_mode: GroupMode::Restricted,
-                my_ip: Some(Ipv4Addr::new(100, 64, 10, 5)),
+                my_ip: Some(Ipv4Addr::new(10, 88, 10, 5)),
                 members: vec![],
                 approved: vec![],
                 network_secret_key: Some(secret.clone()),

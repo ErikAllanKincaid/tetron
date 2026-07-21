@@ -268,12 +268,12 @@ mod tests {
         let mut packet = vec![0u8; 24];
         packet[0] = 0x45;
         packet[9] = 6; // TCP
-        packet[16] = 100;
-        packet[17] = 64;
+        packet[16] = 10;
+        packet[17] = 88;
         packet[18] = 0;
         packet[19] = 3;
         let info = parse_packet_info(&packet).unwrap();
-        assert_eq!(info.dst_ip, Ipv4Addr::new(100, 64, 0, 3));
+        assert_eq!(info.dst_ip, Ipv4Addr::new(10, 88, 0, 3));
         assert_eq!(info.protocol, 6);
     }
 

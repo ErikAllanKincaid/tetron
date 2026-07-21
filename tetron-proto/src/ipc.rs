@@ -135,6 +135,13 @@ pub enum IpcMessage {
         /// Present when the coordinator mints one on create.
         #[serde(default)]
         initial_invite_key: Option<String>,
+        /// This network's resolved overlay subnet as a CIDR string (e.g.
+        /// `"10.88.1.0/24"`). Every network on a node gets a genuinely
+        /// distinct one now (auto-advanced past a collision when unspecified
+        /// -- see `next_available_subnet`), so it's surfaced here rather
+        /// than left implicit, in case it's not the one the caller expected.
+        #[serde(default)]
+        subnet: String,
     },
     Joined {
         network: String,
@@ -437,10 +444,11 @@ mod tests {
         let resp = IpcMessage::Created {
             network: "test".to_string(),
             network_key: key,
-            my_ip: Ipv4Addr::new(100, 64, 10, 5),
+            my_ip: Ipv4Addr::new(10, 88, 10, 5),
             my_ipv6: None,
             warning: None,
             initial_invite_key: Some("bs58key123".to_string()),
+            subnet: "10.88.0.0/24".to_string(),
         };
         let bytes = rmp_serde::to_vec_named(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -454,7 +462,7 @@ mod tests {
             } => {
                 assert_eq!(network, "test");
                 assert_eq!(network_key, key);
-                assert_eq!(my_ip, Ipv4Addr::new(100, 64, 10, 5));
+                assert_eq!(my_ip, Ipv4Addr::new(10, 88, 10, 5));
                 assert_eq!(initial_invite_key, Some("bs58key123".to_string()));
             }
             _ => panic!("wrong variant"),
@@ -573,14 +581,14 @@ mod tests {
             networks: vec![NetworkStatus {
                 name: "gaming".to_string(),
                 role: NetworkRole::Coordinator,
-                my_ip: Ipv4Addr::new(100, 64, 10, 5),
+                my_ip: Ipv4Addr::new(10, 88, 10, 5),
                 my_ipv6: None,
                 my_hostname: Some("alice".to_string()),
                 network_key: Some("abc123".to_string()),
                 member_count: 2,
                 peers: vec![PeerStatus {
                     endpoint_id: peer_id,
-                    ip: Ipv4Addr::new(100, 64, 10, 6),
+                    ip: Ipv4Addr::new(10, 88, 10, 6),
                     ipv6: None,
                     hostname: None,
                     connection: None,
@@ -589,7 +597,7 @@ mod tests {
                 nuke_proposals: vec![],
                 tun_name: "tun0".to_string(),
                 active: true,
-                subnet: "100.64.0.0/24".to_string(),
+                subnet: "10.88.0.0/24".to_string(),
             }],
             packets_rx: 0,
             packets_tx: 0,
