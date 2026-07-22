@@ -597,12 +597,18 @@ impl MeshManager {
     ) -> Result<EndpointId, String> {
         if let Some(entry) = self.networks.get(network) {
             let state = entry.state.read().unwrap();
-            if let Some(m) = state
-                .members
-                .all()
-                .iter()
-                .find(|m| m.hostname.as_deref() == Some(name))
-            {
+            // Case-insensitive: every hostname a member could ever have was
+            // already lowercased at creation (`hostname::sanitize_hostname`),
+            // so two roster hostnames can never differ only by case -- a
+            // case-insensitive match can't introduce ambiguity, only forgive
+            // a user typing the name back with different capitalization
+            // (STATUS-004, found live: `erikk-thinkpad-p1` shown in `tetron
+            // status` failed to resolve as `erikk-ThinkPad-P1`).
+            if let Some(m) = state.members.all().iter().find(|m| {
+                m.hostname
+                    .as_deref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(name))
+            }) {
                 return Ok(m.identity);
             }
         }

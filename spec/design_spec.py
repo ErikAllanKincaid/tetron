@@ -4966,3 +4966,76 @@ class InviteListRevokedNotUsed(Requirement):
     """
     req_id = "INVITE-STATUS-001"
 
+
+class StatusMemberCountExcludesAdmins(Requirement):
+    """REQUIREMENT-ID: STATUS-003
+
+    Found live on a real multi-admin network (USER's "shallows" network,
+    2026-07-22): `tetron status`'s per-network header line showed `admins
+    2/2   members 4/5`, but the peer table right below it listed only 4
+    non-admin members total (one, `air`, offline) -- the "members" total
+    should have read `3/4`, not `4/5`.
+
+    **Root cause:** `print_network` (`src/cli/status.rs`, added by
+    `STATUS-002`) computed the `members` column from *all* peers, admins
+    included:
+
+    ```rust
+    let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
+    ...
+    "members {online}/{}", net.peers.len()
+    ```
+
+    `net.peers` (the wire `PeerStatus` list) holds every peer regardless of
+    role, so an admin peer (in the reported case, a co-coordinator with a
+    live connection) was counted into both the numerator and denominator of
+    "members" -- on top of already being counted in `admins` just to its
+    left. Both header numbers were inflated by exactly one for each online
+    admin peer; a network with only one admin (self, never in `net.peers`)
+    would never have shown the bug, which is why `STATUS-002`'s own
+    live-testing pass didn't catch it.
+
+    **Fix:** `online` and the denominator both filter to `!p.is_coordinator`
+    before counting, matching the `admins_online`/`admins_total` pair's own
+    care to count each role exactly once. `--json` output was never
+    affected -- `PeerStatus.is_coordinator` and `connection` were already
+    correct per-peer; only the derived text-mode aggregate was wrong.
+    """
+    req_id = "STATUS-003"
+
+
+class AdminAddHostnameResolutionCaseInsensitive(Requirement):
+    """REQUIREMENT-ID: STATUS-004
+
+    Found live immediately after `STATUS-003`, same "shallows" network:
+    `tetron admin shallows add erikk-ThinkPad-P1` failed with `could not
+    resolve peer 'erikk-ThinkPad-P1'`, even though that exact host was
+    listed in `tetron status` moments earlier -- as `erikk-thinkpad-p1`.
+
+    **Root cause:** every hostname a member can ever have is lowercased at
+    creation (`hostname::sanitize_hostname`, called from `generate_hostname`
+    and any explicit `--hostname`) -- OS hostnames especially are routinely
+    mixed-case (`erikk-ThinkPad-P1` was this host's actual OS hostname), so
+    a user recalling or retyping it from memory has every reason to type it
+    back with its original casing. `MeshManager::resolve_peer_name`
+    (`src/daemon/mesh/runtime.rs`) compared with a case-sensitive `==`,
+    so the mismatch was silently a no-match rather than a resolvable typo.
+
+    **Why this is safe, not just convenient:** because every stored
+    hostname is already guaranteed lowercase, two roster entries can never
+    differ *only* by case -- there is no real hostname a case-insensitive
+    match could confuse for another. Loosening the comparison forgives
+    exactly one thing: a user's own capitalization habits, never a
+    genuinely ambiguous choice between two peers.
+
+    **Fix:** `resolve_peer_name`'s hostname branch now compares with
+    `str::eq_ignore_ascii_case` instead of `==`. Scoped narrowly to this one
+    resolver -- `resolve_short_id_any_network` (short id / endpoint id
+    prefix matching, used by `kick`/`nuke --second`) is unaffected and
+    correctly stays exact: those are cryptographic identifiers a user is
+    expected to copy from `tetron status` output verbatim, not recall from
+    memory, and hex ids carry no meaningful capitalization ambiguity to
+    begin with.
+    """
+    req_id = "STATUS-004"
+

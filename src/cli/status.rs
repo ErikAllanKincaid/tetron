@@ -241,7 +241,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
 /// table with the local node as its own `(you)` row first.
 fn print_network(net: &ipc::NetworkStatus) {
     let am_i_admin = net.role.is_coordinator();
-    let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
+    let online = net
+        .peers
+        .iter()
+        .filter(|p| !p.is_coordinator && p.connection.is_some())
+        .count();
+    let members_total = net.peers.iter().filter(|p| !p.is_coordinator).count();
     let admins_total =
         net.peers.iter().filter(|p| p.is_coordinator).count() + if am_i_admin { 1 } else { 0 };
     let admins_online = net
@@ -253,10 +258,8 @@ fn print_network(net: &ipc::NetworkStatus) {
 
     println!();
     print!(
-        "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{}",
-        net.name,
-        net.subnet,
-        net.peers.len(),
+        "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{members_total}",
+        net.name, net.subnet,
     );
     if !net.tun_name.is_empty() && net.tun_name != "pending" {
         print!("   interface {}", net.tun_name);
@@ -272,7 +275,9 @@ fn print_network(net: &ipc::NetworkStatus) {
     // (nuke/kick both accept an unambiguous >=10-char prefix); the full value
     // remains available via `--json` for everyone regardless of role.
     let short_id: Option<String> = if am_i_admin {
-        net.network_key.as_ref().map(|key| key.chars().take(10).collect())
+        net.network_key
+            .as_ref()
+            .map(|key| key.chars().take(10).collect())
     } else {
         None
     };
@@ -305,7 +310,12 @@ fn print_network(net: &ipc::NetworkStatus) {
             None => "offline",
         };
         rows.push(vec![
-            (if peer.is_coordinator { "admin" } else { "member" }).to_string(),
+            (if peer.is_coordinator {
+                "admin"
+            } else {
+                "member"
+            })
+            .to_string(),
             host,
             peer.ip.to_string(),
             via.to_string(),

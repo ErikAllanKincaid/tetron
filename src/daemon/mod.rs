@@ -1916,4 +1916,95 @@ mod headless_tests {
         assert!(matches!(resp, IpcMessage::Ok { .. }));
         assert!(!daemon.networks.contains_key(NET));
     }
+
+    /// STATUS-004: hostname resolution (`admin add`, etc.) must be
+    /// case-insensitive. Every roster hostname is already lowercased at
+    /// creation (`hostname::sanitize_hostname`), so a user typing it back
+    /// with different capitalization (e.g. mirroring their OS hostname's own
+    /// casing) should still resolve -- found live when `erikk-ThinkPad-P1`
+    /// failed to resolve against the roster's `erikk-thinkpad-p1`.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolve_peer_name_is_case_insensitive() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        const NET: &str = "test-net";
+        let member = SecretKey::from_bytes(&[40u8; 32]).public();
+
+        let mut members = MemberList::new();
+        members
+            .add(Member {
+                identity: member,
+                ip: Ipv4Addr::new(10, 88, 0, 2),
+                is_coordinator: false,
+                hostname: Some("erikk-thinkpad-p1".to_string()),
+                user_identity: None,
+                device_cert: None,
+                collision_index: 0,
+                last_seen: None,
+            })
+            .unwrap();
+
+        let net_secret = SecretKey::from_bytes(&[41u8; 32]);
+        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
+        daemon.networks.insert(
+            NET.to_string(),
+            NetworkHandle {
+                name: NET.to_string(),
+                network_key: net_secret.public(),
+                role: NetworkRole::Coordinator,
+                my_ip: daemon.identity.local_ip(),
+                state: Arc::new(RwLock::new(NetworkState {
+                    generation: 0,
+                    members,
+                    approved: ApprovedList::new(),
+                    snapshot: None,
+                    network_secret_key: Some(net_secret.clone()),
+                    network_public_key: net_secret.public(),
+                    network_name: Some(NET.to_string()),
+                    mode: GroupMode::Restricted,
+                    subnet: default_subnet(),
+                    reusable_keys: BTreeMap::new(),
+                    invites: BTreeMap::new(),
+                    nuke_proposals: BTreeMap::new(),
+                })),
+                dht_notify: None,
+                cancel: CancellationToken::new(),
+                tasks: Vec::new(),
+                disconnect_tx,
+                peers: PeerTable::new(),
+                tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                tun_tasks: std::sync::Mutex::new(None),
+                active: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        for candidate in [
+            "erikk-ThinkPad-P1",
+            "ERIKK-THINKPAD-P1",
+            "erikk-thinkpad-p1",
+        ] {
+            assert_eq!(
+                daemon.resolve_peer_name(NET, candidate).await,
+                Ok(member),
+                "hostname resolution should be case-insensitive for '{candidate}'"
+            );
+        }
+
+        assert!(
+            daemon
+                .resolve_peer_name(NET, "not-a-real-host")
+                .await
+                .is_err()
+        );
+    }
 }
