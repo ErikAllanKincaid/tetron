@@ -86,7 +86,7 @@ If the default `10.88.0.0/24` collides with a network you already use, pass `--s
 
 ## Why this fork
 
-Upstream hardcodes its overlay IPv4 range to the CGNAT block Tailscale and rayfish also use (100.64.0.0/10), and refuses to start if another interface already holds an address there -- so the two cannot run on the same host. tetron makes the subnet configurable instead (see above), and takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic never collides with rayfish's either. It also strips several subsystems -- see [Features](#features) below for the full list -- because the purpose is a minimal, single-purpose mesh. Invite-key admission was re-added as the sole enrollment method.
+Upstream hardcodes its overlay IPv4 range to the CGNAT block (100.64.0.0/10) Tailscale and rayfish use, and refuses to start if another interface already holds an address there, so the two cannot run on the same host. Tetron makes the subnet configurable instead (see above), and takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic never collides with rayfish either. It also strips several subsystems, see [Features](#features) below for the full list, because the purpose is a "do one thing well", single-purpose mesh, with Invite-key admission as the sole enrollment method.
 
 ## How it works
 
@@ -199,7 +199,7 @@ just deploy <ip>                # cross-build release + install + start on a rem
 just deploy-dev <ip>            # same, but a debug build (faster iteration)
 ```
 
-tetron targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64). Prebuilt binaries for both platforms are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases) (`tetron-linux-x86_64`/`tetron-linux-aarch64`/`tetron-macos-aarch64`/`tetron-macos-x86_64`) -- macOS support is live-verified on real Apple Silicon hardware, not just compiled. Android support is deferred.
+Tetron primarily targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64). Prebuilt binaries for both platforms are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases) (`tetron-linux-x86_64`/`tetron-linux-aarch64`/`tetron-macos-aarch64`/`tetron-macos-x86_64`) -- macOS support is live-verified on real Apple Silicon hardware, not just compiled. Android support is deferred.
 
 ## Uninstall
 
@@ -210,7 +210,7 @@ sudo rm -rf /etc/tetron/          # optional: wipe config + identity on Linux (~
                                    # macOS) -- back up /etc/tetron/secret_key first if you need the key
 ```
 
-Don't run `tetron nuke <network-key>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).
+Do not run `tetron nuke <network-key>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).
 
 ## Development
 
@@ -218,4 +218,4 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 
 ## Relationship to upstream & license
 
-tetron is a derivative of [rayfish](https://github.com/rayfish/rayfish), licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is its work; see the [changelog](CHANGELOG.md) for what this fork changes. 
+Tetron is an honest  derivative of [rayfish](https://github.com/rayfish/rayfish), licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is it's work; see the [changelog](CHANGELOG.md) for what this fork changes. 
