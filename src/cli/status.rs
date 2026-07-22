@@ -241,7 +241,12 @@ pub(crate) async fn ipc_status() -> Result<()> {
 /// table with the local node as its own `(you)` row first.
 fn print_network(net: &ipc::NetworkStatus) {
     let am_i_admin = net.role.is_coordinator();
-    let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
+    let online = net
+        .peers
+        .iter()
+        .filter(|p| !p.is_coordinator && p.connection.is_some())
+        .count();
+    let members_total = net.peers.iter().filter(|p| !p.is_coordinator).count();
     let admins_total =
         net.peers.iter().filter(|p| p.is_coordinator).count() + if am_i_admin { 1 } else { 0 };
     let admins_online = net
@@ -253,10 +258,9 @@ fn print_network(net: &ipc::NetworkStatus) {
 
     println!();
     print!(
-        "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{}",
+        "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{members_total}",
         net.name,
         net.subnet,
-        net.peers.len(),
     );
     if !net.tun_name.is_empty() && net.tun_name != "pending" {
         print!("   interface {}", net.tun_name);

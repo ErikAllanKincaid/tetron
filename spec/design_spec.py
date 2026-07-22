@@ -4966,3 +4966,40 @@ class InviteListRevokedNotUsed(Requirement):
     """
     req_id = "INVITE-STATUS-001"
 
+
+class StatusMemberCountExcludesAdmins(Requirement):
+    """REQUIREMENT-ID: STATUS-003
+
+    Found live on a real multi-admin network (USER's "shallows" network,
+    2026-07-22): `tetron status`'s per-network header line showed `admins
+    2/2   members 4/5`, but the peer table right below it listed only 4
+    non-admin members total (one, `air`, offline) -- the "members" total
+    should have read `3/4`, not `4/5`.
+
+    **Root cause:** `print_network` (`src/cli/status.rs`, added by
+    `STATUS-002`) computed the `members` column from *all* peers, admins
+    included:
+
+    ```rust
+    let online = net.peers.iter().filter(|p| p.connection.is_some()).count();
+    ...
+    "members {online}/{}", net.peers.len()
+    ```
+
+    `net.peers` (the wire `PeerStatus` list) holds every peer regardless of
+    role, so an admin peer (in the reported case, a co-coordinator with a
+    live connection) was counted into both the numerator and denominator of
+    "members" -- on top of already being counted in `admins` just to its
+    left. Both header numbers were inflated by exactly one for each online
+    admin peer; a network with only one admin (self, never in `net.peers`)
+    would never have shown the bug, which is why `STATUS-002`'s own
+    live-testing pass didn't catch it.
+
+    **Fix:** `online` and the denominator both filter to `!p.is_coordinator`
+    before counting, matching the `admins_online`/`admins_total` pair's own
+    care to count each role exactly once. `--json` output was never
+    affected -- `PeerStatus.is_coordinator` and `connection` were already
+    correct per-peer; only the derived text-mode aggregate was wrong.
+    """
+    req_id = "STATUS-003"
+

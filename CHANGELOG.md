@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tetron status`'s "members" count included admins (STATUS-003)**: found live on a real multi-admin network -- the per-network header's `members <online>/<total>` counted every peer, admin or not, so an online co-coordinator was counted twice (once under `admins`, again under `members`), inflating both numbers. Now filtered to non-admin peers only, matching the peer table directly below it. `--json` output was never affected, only the derived text-mode header.
+
 ## [0.7.0] - 2026-07-20
 
 ### Fixed
