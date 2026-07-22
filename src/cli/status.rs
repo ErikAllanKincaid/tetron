@@ -259,8 +259,7 @@ fn print_network(net: &ipc::NetworkStatus) {
     println!();
     print!(
         "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{members_total}",
-        net.name,
-        net.subnet,
+        net.name, net.subnet,
     );
     if !net.tun_name.is_empty() && net.tun_name != "pending" {
         print!("   interface {}", net.tun_name);
@@ -276,7 +275,9 @@ fn print_network(net: &ipc::NetworkStatus) {
     // (nuke/kick both accept an unambiguous >=10-char prefix); the full value
     // remains available via `--json` for everyone regardless of role.
     let short_id: Option<String> = if am_i_admin {
-        net.network_key.as_ref().map(|key| key.chars().take(10).collect())
+        net.network_key
+            .as_ref()
+            .map(|key| key.chars().take(10).collect())
     } else {
         None
     };
@@ -309,7 +310,12 @@ fn print_network(net: &ipc::NetworkStatus) {
             None => "offline",
         };
         rows.push(vec![
-            (if peer.is_coordinator { "admin" } else { "member" }).to_string(),
+            (if peer.is_coordinator {
+                "admin"
+            } else {
+                "member"
+            })
+            .to_string(),
             host,
             peer.ip.to_string(),
             via.to_string(),

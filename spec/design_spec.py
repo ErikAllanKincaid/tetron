@@ -5003,3 +5003,39 @@ class StatusMemberCountExcludesAdmins(Requirement):
     """
     req_id = "STATUS-003"
 
+
+class AdminAddHostnameResolutionCaseInsensitive(Requirement):
+    """REQUIREMENT-ID: STATUS-004
+
+    Found live immediately after `STATUS-003`, same "shallows" network:
+    `tetron admin shallows add erikk-ThinkPad-P1` failed with `could not
+    resolve peer 'erikk-ThinkPad-P1'`, even though that exact host was
+    listed in `tetron status` moments earlier -- as `erikk-thinkpad-p1`.
+
+    **Root cause:** every hostname a member can ever have is lowercased at
+    creation (`hostname::sanitize_hostname`, called from `generate_hostname`
+    and any explicit `--hostname`) -- OS hostnames especially are routinely
+    mixed-case (`erikk-ThinkPad-P1` was this host's actual OS hostname), so
+    a user recalling or retyping it from memory has every reason to type it
+    back with its original casing. `MeshManager::resolve_peer_name`
+    (`src/daemon/mesh/runtime.rs`) compared with a case-sensitive `==`,
+    so the mismatch was silently a no-match rather than a resolvable typo.
+
+    **Why this is safe, not just convenient:** because every stored
+    hostname is already guaranteed lowercase, two roster entries can never
+    differ *only* by case -- there is no real hostname a case-insensitive
+    match could confuse for another. Loosening the comparison forgives
+    exactly one thing: a user's own capitalization habits, never a
+    genuinely ambiguous choice between two peers.
+
+    **Fix:** `resolve_peer_name`'s hostname branch now compares with
+    `str::eq_ignore_ascii_case` instead of `==`. Scoped narrowly to this one
+    resolver -- `resolve_short_id_any_network` (short id / endpoint id
+    prefix matching, used by `kick`/`nuke --second`) is unaffected and
+    correctly stays exact: those are cryptographic identifiers a user is
+    expected to copy from `tetron status` output verbatim, not recall from
+    memory, and hex ids carry no meaningful capitalization ambiguity to
+    begin with.
+    """
+    req_id = "STATUS-004"
+

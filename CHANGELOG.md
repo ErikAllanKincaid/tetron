@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **`tetron status`'s "members" count included admins (STATUS-003)**: found live on a real multi-admin network -- the per-network header's `members <online>/<total>` counted every peer, admin or not, so an online co-coordinator was counted twice (once under `admins`, again under `members`), inflating both numbers. Now filtered to non-admin peers only, matching the peer table directly below it. `--json` output was never affected, only the derived text-mode header.
+- **`tetron admin <net> add <hostname>` failed against a hostname shown in `tetron status` moments earlier (STATUS-004)**: found live right after the above -- `erikk-ThinkPad-P1` (the host's real OS hostname, mixed-case) failed to resolve, even though `tetron status` had just displayed it as `erikk-thinkpad-p1`. Every stored hostname is always lowercased, so a user typing it back with its original casing had no way to match. Hostname resolution for `admin add` is now case-insensitive; `kick`/`nuke --second`'s short-id resolution (a cryptographic identifier, not a recalled name) is unaffected.
 
 ## [0.7.0] - 2026-07-20
 
