@@ -279,6 +279,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
                                 "fragmenting oversized IP packet",
                             );
+                            stats.record_fragmented_ipv4();
                             for frag in &fragments {
                                 match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
                                     Ok(()) => stats.record_tx(frag.len()),
@@ -297,7 +298,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 dst = %info.dst_ip, len = n, max = max_dgram,
                                 "cannot fragment IPv4 packet (options or malformed)",
                             );
-                            stats.record_drop(DropReason::SendFailure);
+                            stats.record_drop(DropReason::FragmentationFailed);
                         }
                     }
                 }
@@ -314,6 +315,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
                                 "fragmenting oversized IPv6 packet (tetron-internal envelope)",
                             );
+                            stats.record_fragmented_ipv6();
                             for frag in &fragments {
                                 match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
                                     Ok(()) => stats.record_tx(frag.len()),
@@ -332,7 +334,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 dst = %info.dst_ip, len = n, max = max_dgram,
                                 "cannot fragment IPv6 packet (max_dgram too small for envelope)",
                             );
-                            stats.record_drop(DropReason::SendFailure);
+                            stats.record_drop(DropReason::FragmentationFailed);
                         }
                     }
                 }

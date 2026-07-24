@@ -173,6 +173,16 @@ pub enum IpcMessage {
         packets_tx: u64,
         bytes_rx: u64,
         bytes_tx: u64,
+        /// Daemon-wide drop counters by reason (MTU-DIAG-001).
+        /// `#[serde(default)]` so an older daemon's response still decodes.
+        #[serde(default)]
+        drops: DropCounts,
+        /// Original oversized packets successfully fragmented, by IP version
+        /// (MTU-DIAG-001) -- once per packet, not once per wire fragment.
+        #[serde(default)]
+        fragmented_ipv4: u64,
+        #[serde(default)]
+        fragmented_ipv6: u64,
     },
     /// The list of network key-holders (reply to `AdminList`): the local node
     /// plus every identity it has granted the key to.
@@ -351,6 +361,28 @@ pub struct ConnectionInfo {
     pub datagrams_tx: u64,
     pub datagrams_rx: u64,
     pub lost_packets: u64,
+    /// This connection's current QUIC datagram-size ceiling (MTU-DIAG-001),
+    /// read fresh from `Connection::max_datagram_size()` at status-query time
+    /// -- Quinn's DPLPMTUD ceiling changes over a connection's lifetime, so a
+    /// stored/cached value would go stale. `None` if the connection doesn't
+    /// currently support datagrams at all. `#[serde(default)]` so an older
+    /// daemon's response still decodes.
+    #[serde(default)]
+    pub max_datagram_size: Option<u64>,
+}
+
+/// Per-`DropReason` drop counters (MTU-DIAG-001), surfaced daemon-wide via
+/// `StatusResponse` so the exact signal that would have caught the
+/// FRAG-001/F-04 live regression -- `FragmentationFailed` counting up --
+/// shows in `tetron status` instead of requiring a raw log grep.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct DropCounts {
+    pub send_failure: u64,
+    pub no_peer: u64,
+    pub malformed: u64,
+    pub backpressure: u64,
+    pub spoof: u64,
+    pub fragmentation_failed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::IsVariant)]
@@ -638,7 +670,17 @@ mod tests {
                     ip: Ipv4Addr::new(10, 88, 10, 6),
                     ipv6: None,
                     hostname: None,
-                    connection: None,
+                    connection: Some(ConnectionInfo {
+                        conn_type: ConnType::Direct,
+                        remote_addr: Some("1.2.3.4:43737".to_string()),
+                        rtt_ms: Some(5.0),
+                        bytes_tx: 0,
+                        bytes_rx: 0,
+                        datagrams_tx: 0,
+                        datagrams_rx: 0,
+                        lost_packets: 0,
+                        max_datagram_size: Some(1162),
+                    }),
                     is_coordinator: false,
                 }],
                 nuke_proposals: vec![],
@@ -651,6 +693,12 @@ mod tests {
             packets_tx: 0,
             bytes_rx: 0,
             bytes_tx: 0,
+            drops: DropCounts {
+                fragmentation_failed: 5,
+                ..Default::default()
+            },
+            fragmented_ipv4: 3,
+            fragmented_ipv6: 1,
         };
         let bytes = rmp_serde::to_vec(&resp).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -658,11 +706,25 @@ mod tests {
             IpcMessage::StatusResponse {
                 endpoint_id,
                 networks,
+                drops,
+                fragmented_ipv4,
+                fragmented_ipv6,
                 ..
             } => {
                 assert_eq!(endpoint_id, ep_id);
                 assert_eq!(networks.len(), 1);
                 assert_eq!(networks[0].peers[0].endpoint_id, peer_id);
+                assert_eq!(
+                    networks[0].peers[0]
+                        .connection
+                        .as_ref()
+                        .unwrap()
+                        .max_datagram_size,
+                    Some(1162)
+                );
+                assert_eq!(drops.fragmentation_failed, 5);
+                assert_eq!(fragmented_ipv4, 3);
+                assert_eq!(fragmented_ipv6, 1);
             }
             _ => panic!("wrong variant"),
         }

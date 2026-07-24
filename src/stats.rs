@@ -27,15 +27,23 @@ pub enum DropReason {
     /// assigned mesh address (ingress anti-spoofing). A peer may only inject
     /// packets sourced from its own mesh IP.
     Spoof,
+    /// An oversized outbound packet could not be fragmented at all (MTU-DIAG-001):
+    /// IPv4's checksum/options guard rejected it, or the IPv6 envelope
+    /// header didn't fit under the connection's `max_datagram_size`.
+    /// Previously indistinguishable from a generic `SendFailure` -- this is
+    /// the exact signal that would have surfaced the FRAG-001/F-04
+    /// live regression without needing to grep raw logs.
+    FragmentationFailed,
 }
 
 impl DropReason {
-    const ALL: [DropReason; 5] = [
+    const ALL: [DropReason; 6] = [
         DropReason::SendFailure,
         DropReason::NoPeer,
         DropReason::Malformed,
         DropReason::Backpressure,
         DropReason::Spoof,
+        DropReason::FragmentationFailed,
     ];
 }
 
@@ -58,6 +66,14 @@ pub struct ForwardMetrics {
     pub bytes_tx: Counter,
     /// Dropped packets by reason
     pub drops: Family<DropLabels, Counter>,
+    /// Original oversized IPv4 packets that were successfully split
+    /// (MTU-DIAG-001) -- incremented once per packet, not once per wire
+    /// fragment.
+    pub fragmented_ipv4: Counter,
+    /// Original oversized IPv6 packets that were successfully split into the
+    /// tetron-internal envelope (MTU-DIAG-001) -- incremented once per
+    /// packet, not once per wire fragment.
+    pub fragmented_ipv6: Counter,
 }
 
 impl ForwardMetrics {
@@ -75,7 +91,15 @@ impl ForwardMetrics {
         self.drops.get_or_create(&DropLabels { reason }).inc();
     }
 
-    fn drop_count(&self, reason: DropReason) -> u64 {
+    pub fn record_fragmented_ipv4(&self) {
+        self.fragmented_ipv4.inc();
+    }
+
+    pub fn record_fragmented_ipv6(&self) {
+        self.fragmented_ipv6.inc();
+    }
+
+    pub(crate) fn drop_count(&self, reason: DropReason) -> u64 {
         self.drops
             .get(&DropLabels { reason })
             .map(|c| c.get())
@@ -192,4 +216,23 @@ mod tests {
         assert_eq!(stats.total_drops(), 3);
     }
 
+    #[test]
+    fn test_fragmentation_failed_is_distinct_from_send_failure() {
+        let stats = ForwardMetrics::default();
+        stats.record_drop(DropReason::FragmentationFailed);
+        stats.record_drop(DropReason::SendFailure);
+        assert_eq!(stats.drop_count(DropReason::FragmentationFailed), 1);
+        assert_eq!(stats.drop_count(DropReason::SendFailure), 1);
+        assert_eq!(stats.total_drops(), 2);
+    }
+
+    #[test]
+    fn test_record_fragmented_counters() {
+        let stats = ForwardMetrics::default();
+        stats.record_fragmented_ipv4();
+        stats.record_fragmented_ipv4();
+        stats.record_fragmented_ipv6();
+        assert_eq!(stats.fragmented_ipv4.get(), 2);
+        assert_eq!(stats.fragmented_ipv6.get(), 1);
+    }
 }

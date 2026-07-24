@@ -5483,3 +5483,70 @@ class RateLimitHardening(Requirement):
     """
     req_id = "HARDEN-002"
 
+
+# --------------------------------------------------------------------------
+# MTU-DIAG-001: surface MTU/fragmentation diagnostics instead of raw logs
+# --------------------------------------------------------------------------
+
+class MtuFragmentationDiagnostics(Requirement):
+    """REQUIREMENT-ID: MTU-DIAG-001
+
+    Directly motivated by the live regression found and fixed the same day
+    (see `Ipv4Fragmentation`/FRAG-001's second follow-up addendum): diagnosing
+    that F-04's checksum-verify bug had silently disabled all IPv4
+    fragmentation required manually SSHing into a live peer and grepping its
+    rolling log file for `"cannot fragment"`/`"fragmenting oversized"` --
+    nothing about fragmentation activity, drop reasons, or per-peer QUIC
+    datagram-size ceilings was ever visible through `tetron status`. This
+    closes that gap: the same class of bug should surface as a clear signal
+    the next time, not require raw log archaeology.
+
+    **Drop-reason granularity (`src/stats.rs`):** `DropReason` gains
+    `FragmentationFailed`, applied at both of `forward.rs`'s "cannot
+    fragment" `None` branches (IPv4 checksum/options-reject, IPv6
+    envelope-too-small) -- previously indistinguishable from a generic QUIC
+    `SendFailure`. `DropReason::ALL` grows to 6 entries accordingly.
+
+    **Fragmentation-activity counters:** `ForwardMetrics` gains
+    `fragmented_ipv4`/`fragmented_ipv6` counters (`record_fragmented_ipv4`/
+    `record_fragmented_ipv6`), each incremented once per *original* oversized
+    packet that successfully split (not once per wire fragment) -- so
+    "is fragmentation actually happening on this daemon" becomes a queryable
+    number instead of a debug-level log line nobody watches by default.
+
+    **Per-peer datagram-size ceiling (`tetron-proto::ipc::ConnectionInfo`):**
+    gains `max_datagram_size: Option<u64>`, populated live in
+    `diagnostics::gather_conn_info` from `conn.max_datagram_size()` at
+    status-query time (not a stored counter -- Quinn's DPLPMTUD ceiling
+    changes over a connection's lifetime, so a fresh read is the only
+    meaningful value). `None` on a connection that doesn't currently support
+    QUIC datagrams at all, mirroring the `Option` `forward.rs` already
+    handles the same way. Flows into `--json` automatically since
+    `ConnectionInfo` already serializes wholesale; no plain-text change --
+    matches `STATUS-002`'s existing precedent that per-peer connection-health
+    detail (rtt/tx/rx/ipv6) is `--json`-only, keeping the default aligned
+    table uncluttered.
+
+    **Daemon-wide summary (`IpcMessage::StatusResponse`):** gains
+    `drops: DropCounts` (one field per `DropReason` variant) and
+    `fragmented_ipv4`/`fragmented_ipv6: u64`, all `#[serde(default)]` so an
+    older daemon's response still decodes. `--json` surfaces all of it
+    (`"drops": {...}`, `"fragmented_ipv4"`, `"fragmented_ipv6"` alongside the
+    existing `"traffic"` object). The plain-text view gains exactly one new
+    line, shown only when at least one drop has occurred (matching the
+    existing convention of omitting empty sections -- "no active networks",
+    nuke-proposals only when non-empty): `drops N total (reason count, ...)`
+    listing only the non-zero reasons by name, directly under the existing
+    `traffic` line. A perfectly healthy daemon's default output is unchanged
+    byte-for-byte.
+
+    **Explicitly out of scope for this pass** (the TODO item's own
+    "diagnostic tooling" bullet also floated an active MTU black-hole probe):
+    no new active probing mechanism is added here -- this is purely surfacing
+    state the daemon already computes internally on every packet. An active
+    probe (deliberately sending oversized test traffic and confirming
+    round-trip / PMTU convergence) is a separate, larger feature and remains
+    unbuilt.
+    """
+    req_id = "MTU-DIAG-001"
+

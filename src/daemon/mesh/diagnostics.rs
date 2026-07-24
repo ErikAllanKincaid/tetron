@@ -41,6 +41,18 @@ impl MeshManager {
             packets_tx: self.stats.packets_tx.get(),
             bytes_rx: self.stats.bytes_rx.get(),
             bytes_tx: self.stats.bytes_tx.get(),
+            drops: ipc::DropCounts {
+                send_failure: self.stats.drop_count(crate::stats::DropReason::SendFailure),
+                no_peer: self.stats.drop_count(crate::stats::DropReason::NoPeer),
+                malformed: self.stats.drop_count(crate::stats::DropReason::Malformed),
+                backpressure: self.stats.drop_count(crate::stats::DropReason::Backpressure),
+                spoof: self.stats.drop_count(crate::stats::DropReason::Spoof),
+                fragmentation_failed: self
+                    .stats
+                    .drop_count(crate::stats::DropReason::FragmentationFailed),
+            },
+            fragmented_ipv4: self.stats.fragmented_ipv4.get(),
+            fragmented_ipv6: self.stats.fragmented_ipv6.get(),
         }
     }
 
@@ -195,6 +207,7 @@ impl MeshManager {
             datagrams_tx: stats.udp_tx.datagrams,
             datagrams_rx: stats.udp_rx.datagrams,
             lost_packets: stats.lost_packets,
+            max_datagram_size: conn.max_datagram_size().map(|sz| sz as u64),
         }
     }
 }

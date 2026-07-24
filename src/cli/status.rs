@@ -153,6 +153,9 @@ pub(crate) async fn ipc_status() -> Result<()> {
             packets_tx,
             bytes_rx,
             bytes_tx,
+            drops,
+            fragmented_ipv4,
+            fragmented_ipv6,
             ..
         } => {
             if json_enabled() {
@@ -165,6 +168,9 @@ pub(crate) async fn ipc_status() -> Result<()> {
                         "packets_rx": packets_rx, "packets_tx": packets_tx,
                         "bytes_rx": bytes_rx, "bytes_tx": bytes_tx,
                     },
+                    "drops": drops,
+                    "fragmented_ipv4": fragmented_ipv4,
+                    "fragmented_ipv6": fragmented_ipv6,
                 }));
                 return Ok(());
             }
@@ -188,6 +194,29 @@ pub(crate) async fn ipc_status() -> Result<()> {
                 format_bytes(bytes_tx),
                 format_bytes(bytes_rx),
             );
+            // MTU-DIAG-001: surface drop activity so a stuck fragmentation
+            // path (or any other drop reason) shows up here instead of
+            // requiring a raw log grep. Silent when nothing has dropped, to
+            // keep a healthy daemon's output unchanged.
+            let drop_reasons: Vec<(&str, u64)> = [
+                ("send_failure", drops.send_failure),
+                ("no_peer", drops.no_peer),
+                ("malformed", drops.malformed),
+                ("backpressure", drops.backpressure),
+                ("spoof", drops.spoof),
+                ("fragmentation_failed", drops.fragmentation_failed),
+            ]
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .collect();
+            let total_drops: u64 = drop_reasons.iter().map(|(_, n)| n).sum();
+            if total_drops > 0 {
+                let breakdown: Vec<String> = drop_reasons
+                    .iter()
+                    .map(|(reason, n)| format!("{reason} {n}"))
+                    .collect();
+                println!("    drops    {total_drops} total ({})", breakdown.join(", "));
+            }
             if !active {
                 println!("  (run `tetron resume` to activate)");
             }
