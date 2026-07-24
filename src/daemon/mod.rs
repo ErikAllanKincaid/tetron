@@ -1932,6 +1932,70 @@ mod headless_tests {
         assert!(!daemon.networks.contains_key(NET));
     }
 
+    /// LEAVE-STUCK-NETWORK-001: a network that failed to restore never gets
+    /// a `self.networks` entry at all -- previously there was no CLI path to
+    /// remove it (the live-only resolver couldn't find it by name or key
+    /// prefix). `leave_network` must still succeed via a persisted-config
+    /// fallback and actually delete the stuck config entry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leave_removes_a_network_that_never_restored() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        const NET: &str = "stuck-net";
+        config::save_network(&config::NetworkConfig {
+            name: NET.to_string(),
+            group_mode: GroupMode::Restricted,
+            my_ip: None,
+            my_hostname: None,
+            members: vec![],
+            approved: vec![],
+            network_secret_key: None,
+            network_public_key: None,
+            transport: None,
+            admins: vec![],
+            direct: false,
+            subnet: Some(default_subnet()),
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+        })
+        .unwrap();
+
+        // Never inserted into `daemon.networks` -- simulates a restore that
+        // failed outright (DHT/blob unreachable, no config fallback either).
+        assert!(!daemon.networks.contains_key(NET));
+        assert!(config::load_network(NET).unwrap().is_some());
+
+        let resp = daemon.leave_network(NET, false).await;
+        assert!(matches!(resp, IpcMessage::Ok { .. }), "expected Ok, got {resp:?}");
+        assert!(
+            config::load_network(NET).unwrap().is_none(),
+            "the stuck config entry must actually be removed"
+        );
+    }
+
+    /// A name that resolves neither live nor in persisted config still
+    /// fails cleanly, with the original (not a fabricated) error message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leave_unknown_network_still_errors() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        let resp = daemon.leave_network("no-such-network", false).await;
+        assert!(matches!(resp, IpcMessage::Error { .. }), "expected Error, got {resp:?}");
+    }
+
     /// STATUS-004: hostname resolution (`admin add`, etc.) must be
     /// case-insensitive. Every roster hostname is already lowercased at
     /// creation (`hostname::sanitize_hostname`), so a user typing it back

@@ -1085,7 +1085,27 @@ impl MeshManager {
     pub async fn leave_network(&self, network: &str, force: bool) -> IpcMessage {
         let network = match self.resolve_network_name_or_key(network) {
             Ok(name) => name,
-            Err(message) => return IpcMessage::Error { message },
+            Err(message) => {
+                // LEAVE-STUCK-NETWORK-001: a network that failed to restore
+                // (DHT/blob unreachable, `self.networks` never got an entry)
+                // is invisible to the live-only resolver above -- but its
+                // config entry (`networks/<name>.toml`) can still be sitting
+                // there, permanently stuck, with no other CLI path to remove
+                // it (`resolve_network_short_id`'s key-prefix fallback only
+                // ever scans `self.networks` too). Fall back to an exact
+                // match against the persisted config before giving up.
+                // Deliberately exact-name only, no key-prefix fallback here:
+                // with no live roster there's nothing to resolve a prefix
+                // against safely, and this path only ever acts on the
+                // caller's own already-broken config entry, so requiring the
+                // exact local name (as shown by `tetron status`'s "saved
+                // networks" listing when the daemon can't reach it) is
+                // enough.
+                match config::load_network(network) {
+                    Ok(Some(_)) => network.to_string(),
+                    _ => return IpcMessage::Error { message },
+                }
+            }
         };
         let network = network.as_str();
         // If leaving would strand the rest of the network (sole coordinator,

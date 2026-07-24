@@ -4794,6 +4794,34 @@ class InviteAdminAcceptNetworkKey(Requirement):
     req_id = "INVITE-ADMIN-NETWORK-KEY-001"
 
 
+class LeaveRemovesStuckNetwork(Requirement):
+    """REQUIREMENT-ID: LEAVE-STUCK-NETWORK-001
+
+    Found 2026-07-20: a network whose restore fails outright (DHT/blob
+    unreachable, no config fallback either) never gets a `self.networks`
+    entry -- but both of `leave_network`'s resolution paths
+    (`resolve_network_name_or_key`'s exact-name check and its
+    `resolve_network_short_id` key-prefix fallback) only ever scan
+    `self.networks`. So a network stuck in this state had no CLI path to
+    remove it at all -- the only workaround was deleting
+    `networks/<name>.toml` directly as root.
+
+    Fix: `leave_network` (`src/daemon/mesh/runtime.rs`) falls back to an
+    exact match against the persisted `NetworkConfig` (`config::
+    load_network`) when the live-only resolver fails, before giving up.
+    Deliberately exact-name only, no key-prefix fallback added here: with no
+    live roster there's nothing to resolve a prefix against safely, and this
+    path only ever acts on the caller's own already-broken config entry, so
+    the exact local name (as shown by `tetron status`'s "saved networks"
+    listing when the daemon can't reach it) is enough. Every step below the
+    resolution point (`teardown_network_runtime`, the sole-coordinator
+    stranding check) already degrades gracefully to a no-op when the network
+    isn't in `self.networks` -- this was purely a resolution-layer gap, not
+    a teardown-logic one, so no changes were needed there.
+    """
+    req_id = "LEAVE-STUCK-NETWORK-001"
+
+
 class StatusOutputRedesign(Requirement):
     """REQUIREMENT-ID: STATUS-002
 
