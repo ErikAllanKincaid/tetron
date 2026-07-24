@@ -6,7 +6,9 @@
 //! forwarder still needs it for peer routing, the ingress anti-spoof check, and
 //! the port-53 Magic-DNS intercept, none of which are firewall logic.
 
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 pub struct PacketInfo {
@@ -254,6 +256,206 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     Some(fragments)
 }
 
+/// Marker byte for a tetron-internal IPv6 fragment envelope (see
+/// [`fragment_ipv6`]). Its top nibble (0xF) can never collide with a real IP
+/// packet's first byte, whose top nibble is always the IP version (4 or 6).
+pub const FRAG6_MAGIC: u8 = 0xF6;
+
+/// Wire size of the tetron-internal fragment envelope: magic(1) + id(4) +
+/// offset(2) + more-flag(1).
+const FRAG6_HEADER_LEN: usize = 8;
+
+/// A reassembled IPv6 packet claiming to be bigger than this is refused.
+/// Mirrors `tun::TUN_MTU` (1280) -- no packet [`fragment_ipv6`] ever produced
+/// can legitimately be bigger than the TUN device's own MTU, so a bigger
+/// claim is either a bug or a malicious peer inflating offsets, never
+/// legitimate mesh traffic.
+const MAX_REASSEMBLED_IPV6_PACKET: usize = 1280;
+
+/// Fragment an oversized IPv6 packet into tetron-internal envelopes that each
+/// fit in `max_size` bytes on the wire (envelope + payload slice).
+///
+/// Unlike IPv4, an IPv6 packet has no fragmentation fields in its base
+/// header -- RFC 8200 SS4.5 requires a separate Fragment extension header,
+/// legal only at the packet's true originating host, reassembled by a
+/// generic IP stack. tetron is both the true origin (reads the whole packet
+/// off its own TUN) and the reassembling party (its own code,
+/// [`Ipv6Reassembler`], not a generic IP stack) for both ends of this hop, so
+/// a small tetron-internal envelope is the natural fit here rather than
+/// reimplementing RFC 8200 SS4.5 verbatim (see `FRAG-002` in
+/// `spec/design_spec.py`). `id` should be unique per fragmented packet on
+/// this connection (the caller supplies it, typically from a per-connection
+/// counter) so concurrent or overlapping fragment sets can't be confused
+/// with each other by the receiver.
+///
+/// Returns `None` when the packet already fits in `max_size` (no
+/// fragmentation needed) or `max_size` leaves no room for the envelope
+/// header plus at least one payload byte.
+pub fn fragment_ipv6(packet: &[u8], id: u32, max_size: usize) -> Option<Vec<Vec<u8>>> {
+    if packet.len() <= max_size {
+        return None;
+    }
+    if max_size <= FRAG6_HEADER_LEN {
+        return None;
+    }
+    let max_payload = max_size - FRAG6_HEADER_LEN;
+    let mut fragments = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < packet.len() {
+        let frag_len = max_payload.min(packet.len() - offset);
+        let more: u8 = if offset + frag_len < packet.len() { 1 } else { 0 };
+
+        let mut frag = Vec::with_capacity(FRAG6_HEADER_LEN + frag_len);
+        frag.push(FRAG6_MAGIC);
+        frag.extend_from_slice(&id.to_be_bytes());
+        frag.extend_from_slice(&(offset as u16).to_be_bytes());
+        frag.push(more);
+        frag.extend_from_slice(&packet[offset..offset + frag_len]);
+
+        fragments.push(frag);
+        offset += frag_len;
+    }
+
+    Some(fragments)
+}
+
+/// Outcome of feeding one raw peer datagram to [`Ipv6Reassembler::accept`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ipv6FragmentOutcome {
+    /// Every fragment for this id has now arrived; the reassembled packet is
+    /// ready to forward.
+    Complete(Vec<u8>),
+    /// A valid fragment was accepted; still waiting on the rest of its set.
+    Waiting,
+    /// The datagram doesn't carry the fragment magic byte at all -- the
+    /// ordinary, unfragmented path. Callers should process it as a normal
+    /// packet, not wait on it.
+    NotAFragment,
+    /// A fragment envelope was truncated/malformed, or its claimed offset
+    /// would grow the reassembled packet past what tetron could have
+    /// legitimately produced -- discarded outright.
+    Rejected,
+}
+
+struct PartialIpv6 {
+    chunks: BTreeMap<u16, Vec<u8>>,
+    total_len: Option<usize>,
+    last_seen: Instant,
+}
+
+impl PartialIpv6 {
+    /// `Some(packet)` once `chunks` covers `[0, total_len)` with no gaps or
+    /// overlaps (checked by walking offsets in order and requiring each to
+    /// start exactly where the previous one ended); `None` while any part is
+    /// still missing, out of order, or the final (more=0) fragment hasn't
+    /// arrived yet to reveal `total_len`.
+    fn try_complete(&self) -> Option<Vec<u8>> {
+        let total = self.total_len?;
+        let mut out = Vec::with_capacity(total);
+        let mut expected = 0usize;
+        for (&offset, bytes) in &self.chunks {
+            if offset as usize != expected {
+                return None;
+            }
+            out.extend_from_slice(bytes);
+            expected += bytes.len();
+        }
+        (expected == total).then_some(out)
+    }
+}
+
+/// Bounds how many distinct fragment sets ("ids") a single connection may
+/// have in flight at once. A peer that opens many fragment sets and never
+/// completes any of them (accidentally or maliciously) evicts its own
+/// oldest entry here, rather than growing this map without limit.
+const MAX_REASSEMBLY_ENTRIES: usize = 16;
+
+/// A fragment set that hasn't received a new fragment within this long is
+/// abandoned and its partial state freed -- covers a dropped final fragment,
+/// which would otherwise leak memory for the life of the connection.
+const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-peer-connection reassembly state for [`fragment_ipv6`] envelopes. One
+/// instance lives for the lifetime of a single peer's reader task
+/// (`forward::spawn_peer_reader`) -- reassembly is connection-scoped, so no
+/// locking is needed.
+pub struct Ipv6Reassembler {
+    partial: HashMap<u32, PartialIpv6>,
+}
+
+impl Ipv6Reassembler {
+    pub fn new() -> Self {
+        Self {
+            partial: HashMap::new(),
+        }
+    }
+
+    /// Feed one raw datagram read from the peer connection. See
+    /// [`Ipv6FragmentOutcome`] for what each outcome means.
+    pub fn accept(&mut self, datagram: &[u8]) -> Ipv6FragmentOutcome {
+        if datagram.first() != Some(&FRAG6_MAGIC) {
+            return Ipv6FragmentOutcome::NotAFragment;
+        }
+        if datagram.len() < FRAG6_HEADER_LEN {
+            return Ipv6FragmentOutcome::Rejected;
+        }
+        self.gc_stale();
+
+        let id = u32::from_be_bytes([datagram[1], datagram[2], datagram[3], datagram[4]]);
+        let offset = u16::from_be_bytes([datagram[5], datagram[6]]);
+        let more = datagram[7] != 0;
+        let payload = &datagram[FRAG6_HEADER_LEN..];
+
+        if offset as usize + payload.len() > MAX_REASSEMBLED_IPV6_PACKET {
+            self.partial.remove(&id);
+            return Ipv6FragmentOutcome::Rejected;
+        }
+
+        if !self.partial.contains_key(&id)
+            && self.partial.len() >= MAX_REASSEMBLY_ENTRIES
+            && let Some(oldest) = self
+                .partial
+                .iter()
+                .min_by_key(|(_, p)| p.last_seen)
+                .map(|(k, _)| *k)
+        {
+            self.partial.remove(&oldest);
+        }
+
+        let entry = self.partial.entry(id).or_insert_with(|| PartialIpv6 {
+            chunks: BTreeMap::new(),
+            total_len: None,
+            last_seen: Instant::now(),
+        });
+        entry.last_seen = Instant::now();
+        if !more {
+            entry.total_len = Some(offset as usize + payload.len());
+        }
+        entry.chunks.insert(offset, payload.to_vec());
+
+        match entry.try_complete() {
+            Some(full) => {
+                self.partial.remove(&id);
+                Ipv6FragmentOutcome::Complete(full)
+            }
+            None => Ipv6FragmentOutcome::Waiting,
+        }
+    }
+
+    fn gc_stale(&mut self) {
+        let now = Instant::now();
+        self.partial
+            .retain(|_, p| now.duration_since(p.last_seen) < REASSEMBLY_TIMEOUT);
+    }
+}
+
+impl Default for Ipv6Reassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Internet checksum (RFC 1071) over an even-length byte slice. The caller must
 /// zero the checksum field before passing the data in.
 fn ip_checksum(data: &[u8]) -> u16 {
@@ -496,5 +698,123 @@ mod tests {
             let computed = !ip_checksum(&hdr);
             assert_eq!(stored, computed, "frag {i} checksum mismatch");
         }
+    }
+
+    // ── IPv6 fragmentation tests (FRAG-002) ──────────────────────────────
+
+    fn make_ipv6(payload_len: usize) -> Vec<u8> {
+        let mut p = vec![0u8; 40 + payload_len];
+        p[0] = 0x60; // IPv6
+        p[6] = 6; // TCP next header
+        for i in 0..payload_len {
+            p[40 + i] = (i & 0xFF) as u8;
+        }
+        p
+    }
+
+    #[test]
+    fn frag6_no_fragmentation_needed() {
+        let pkt = make_ipv6(40);
+        assert!(fragment_ipv6(&pkt, 1, 1200).is_none());
+    }
+
+    #[test]
+    fn frag6_max_size_too_small() {
+        let pkt = make_ipv6(1240);
+        assert!(fragment_ipv6(&pkt, 1, FRAG6_HEADER_LEN).is_none());
+    }
+
+    #[test]
+    fn frag6_splits_into_two_and_reassembles() {
+        // 1280-byte packet (TUN_MTU), max_dgram=1200 -- the real-world case.
+        let pkt = make_ipv6(1240);
+        let frags = fragment_ipv6(&pkt, 42, 1200).expect("should fragment");
+        assert_eq!(frags.len(), 2);
+        for f in &frags {
+            assert!(f.len() <= 1200);
+            assert_eq!(f[0], FRAG6_MAGIC);
+            assert_eq!(u32::from_be_bytes([f[1], f[2], f[3], f[4]]), 42);
+        }
+        // MF set on first, clear on last
+        assert_eq!(frags[0][7], 1);
+        assert_eq!(frags[1][7], 0);
+
+        let mut r = Ipv6Reassembler::new();
+        assert_eq!(r.accept(&frags[0]), Ipv6FragmentOutcome::Waiting);
+        match r.accept(&frags[1]) {
+            Ipv6FragmentOutcome::Complete(full) => assert_eq!(full, pkt),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frag6_reassembles_out_of_order() {
+        let pkt = make_ipv6(1240);
+        let frags = fragment_ipv6(&pkt, 7, 1200).expect("should fragment");
+        assert_eq!(frags.len(), 2);
+
+        let mut r = Ipv6Reassembler::new();
+        assert_eq!(r.accept(&frags[1]), Ipv6FragmentOutcome::Waiting);
+        match r.accept(&frags[0]) {
+            Ipv6FragmentOutcome::Complete(full) => assert_eq!(full, pkt),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frag6_three_fragments_reassemble() {
+        // 1250-byte packet (under the 1280 TUN_MTU ceiling), small max_dgram
+        // forces 3 fragments: 492 + 492 + 266.
+        let pkt = make_ipv6(1210);
+        let frags = fragment_ipv6(&pkt, 99, 500).expect("should fragment");
+        assert_eq!(frags.len(), 3);
+
+        let mut r = Ipv6Reassembler::new();
+        assert_eq!(r.accept(&frags[0]), Ipv6FragmentOutcome::Waiting);
+        assert_eq!(r.accept(&frags[1]), Ipv6FragmentOutcome::Waiting);
+        match r.accept(&frags[2]) {
+            Ipv6FragmentOutcome::Complete(full) => assert_eq!(full, pkt),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frag6_not_a_fragment_passthrough() {
+        let mut r = Ipv6Reassembler::new();
+        let ordinary = make_ipv6(40);
+        assert_eq!(r.accept(&ordinary), Ipv6FragmentOutcome::NotAFragment);
+    }
+
+    #[test]
+    fn frag6_truncated_envelope_rejected() {
+        let mut r = Ipv6Reassembler::new();
+        let truncated = [FRAG6_MAGIC, 0, 0, 0];
+        assert_eq!(r.accept(&truncated), Ipv6FragmentOutcome::Rejected);
+    }
+
+    #[test]
+    fn frag6_oversized_claim_rejected() {
+        // Claims an offset that would put the reassembled packet over
+        // MAX_REASSEMBLED_IPV6_PACKET (1280).
+        let mut r = Ipv6Reassembler::new();
+        let mut bogus = vec![FRAG6_MAGIC, 0, 0, 0, 1]; // id=1
+        bogus.extend_from_slice(&2000u16.to_be_bytes()); // offset=2000
+        bogus.push(0); // more=0
+        bogus.extend_from_slice(&[0u8; 10]); // payload
+        assert_eq!(r.accept(&bogus), Ipv6FragmentOutcome::Rejected);
+    }
+
+    #[test]
+    fn frag6_stale_entry_gc_prevents_unbounded_growth() {
+        let mut r = Ipv6Reassembler::new();
+        let pkt = make_ipv6(1240);
+        let frags = fragment_ipv6(&pkt, 1, 1200).expect("should fragment");
+        // Only send the first fragment of many distinct ids, never completing any.
+        for id in 0..(MAX_REASSEMBLY_ENTRIES as u32 + 5) {
+            let mut f = frags[0].clone();
+            f[1..5].copy_from_slice(&id.to_be_bytes());
+            assert_eq!(r.accept(&f), Ipv6FragmentOutcome::Waiting);
+        }
+        assert!(r.partial.len() <= MAX_REASSEMBLY_ENTRIES);
     }
 }

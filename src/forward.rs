@@ -7,7 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
@@ -32,6 +32,13 @@ const MAX_PEER_DATAGRAM: usize = 1500;
 /// one is exhausted (the old chunk stays alive via the `Bytes` already handed to
 /// quinn and is freed as those datagrams are sent).
 const TX_POOL_CHUNK: usize = 64 * 1024;
+
+/// Monotonic id source for `packet::fragment_ipv6` fragment sets sent by
+/// this process (FRAG-002). Only needs to disambiguate concurrently
+/// in-flight fragment sets on the same connection from each other -- the
+/// receiver's own GC/eviction bounds (`packet::Ipv6Reassembler`) already
+/// handle collisions after wraparound or across peers.
+static NEXT_FRAG6_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Decision returned by [`evaluate_inbound`] for a datagram received from a peer.
 pub(crate) enum InboundDecision {
@@ -295,12 +302,39 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                     }
                 }
                 Some(6) => {
-                    tracing::warn!(
-                        dst = %info.dst_ip, len = n, max = max_dgram,
-                        "packet exceeds QUIC max datagram size and IPv6 fragmentation \
-                         is not yet implemented — dropping",
-                    );
-                    stats.record_drop(DropReason::SendFailure);
+                    // FRAG-002: no in-network IPv6 fragmentation exists (RFC 8200
+                    // reserves fragmenting to the originating host), so this uses a
+                    // tetron-internal envelope instead of a literal Fragment
+                    // extension header -- see `packet::fragment_ipv6` and
+                    // `Ipv6Fragmentation` in spec/design_spec.py.
+                    let id = NEXT_FRAG6_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    match packet::fragment_ipv6(&pkt, id, max_dgram) {
+                        Some(fragments) => {
+                            tracing::debug!(
+                                dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
+                                "fragmenting oversized IPv6 packet (tetron-internal envelope)",
+                            );
+                            for frag in &fragments {
+                                match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
+                                    Ok(()) => stats.record_tx(frag.len()),
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            dst = %info.dst_ip, error = %e, frag_len = frag.len(),
+                                            "IPv6 fragment send failed",
+                                        );
+                                        stats.record_drop(DropReason::SendFailure);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                dst = %info.dst_ip, len = n, max = max_dgram,
+                                "cannot fragment IPv6 packet (max_dgram too small for envelope)",
+                            );
+                            stats.record_drop(DropReason::SendFailure);
+                        }
+                    }
                 }
                 _ => {
                     tracing::debug!(
@@ -336,6 +370,9 @@ pub fn spawn_peer_reader(
     // and network so the report bundle's logs are correlatable per peer.
     let span = tracing::info_span!("peer", peer = %peer_id.fmt_short(), net = %network);
     let reader = async move {
+        // FRAG-002: per-connection IPv6 reassembly state. Lives for the
+        // reader task's lifetime; never shared across peers, so no locking.
+        let mut reassembler = packet::Ipv6Reassembler::new();
         loop {
             // Wait for the next datagram, exiting on cancellation or connection
             // loss. Keeping the `select!` to "yield a datagram or return" leaves
@@ -374,15 +411,29 @@ pub fn spawn_peer_reader(
                 },
             };
 
-            match evaluate_inbound(&datagram, peer_ip, peer_ipv6) {
+            // FRAG-002: intercept a tetron-internal IPv6 fragment envelope
+            // before ordinary packet validation -- it isn't a real IP packet
+            // on the wire, so `evaluate_inbound` must only ever see the fully
+            // reassembled result.
+            let packet_to_process: Bytes = match reassembler.accept(&datagram) {
+                packet::Ipv6FragmentOutcome::NotAFragment => datagram,
+                packet::Ipv6FragmentOutcome::Complete(full) => Bytes::from(full),
+                packet::Ipv6FragmentOutcome::Waiting => continue,
+                packet::Ipv6FragmentOutcome::Rejected => {
+                    stats.record_drop(DropReason::Malformed);
+                    continue;
+                }
+            };
+
+            match evaluate_inbound(&packet_to_process, peer_ip, peer_ipv6) {
                 InboundDecision::Accept => {
-                    stats.record_rx(datagram.len());
+                    stats.record_rx(packet_to_process.len());
                     // Resolve the live writer for each packet: the sender is
                     // swapped on every TUN re-attach (VPN toggle). A send error
                     // means the writer is currently down (standby between a
                     // detach and the next attach); drop the packet and keep the
                     // reader alive so it forwards again once a new TUN attaches.
-                    let _ = tun_tx.load_full().send(datagram).await;
+                    let _ = tun_tx.load_full().send(packet_to_process).await;
                 }
                 InboundDecision::DropMalformed => stats.record_drop(DropReason::Malformed),
                 InboundDecision::DropSpoof => {

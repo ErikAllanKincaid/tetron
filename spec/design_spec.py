@@ -2603,6 +2603,80 @@ class Ipv4Fragmentation(Requirement):
 
 
 # --------------------------------------------------------------------------
+# FRAG-002: IPv6 fragmentation for QUIC datagram size limits
+# --------------------------------------------------------------------------
+
+class Ipv6Fragmentation(Requirement):
+    """REQUIREMENT-ID: FRAG-002
+
+    Closes the gap `FRAG-001` explicitly left open: an oversized IPv6 packet
+    hitting `route.conn.max_datagram_size()` in `src/forward.rs` was dropped
+    outright ("IPv6 fragmentation is not yet implemented"), so any mesh
+    traffic between two peers' tetron IPv6 addresses (the `200::/7` range)
+    was exposed to the same silent-stall bug FRAG-001 fixed for IPv4 -- e.g.
+    an SSH session over a peer's IPv6 mesh address hanging at KEX exactly
+    like the original FRAG-001 report, unfixed by FRAG-001 alone.
+
+    Unlike IPv4, an IPv6 packet has no fragmentation fields in its base
+    header -- RFC 8200 SS4.5 requires a separate Fragment extension header,
+    and by RFC 8200's own rule only the packet's true originating host may
+    ever fragment an IPv6 packet; there is no in-network router
+    fragmentation the way IPv4 allows. A literal RFC 8200 implementation
+    would also depend on the receiving peer's *kernel* recognizing and
+    reassembling that extension header the way it does for real IPv6
+    fragments delivered over a physical link.
+
+    tetron is not a generic router relaying between two unrelated stacks
+    here: it reads the whole packet off its own TUN (the true origin) and
+    the reassembling party is its own code on the receiving peer (not a
+    generic IP stack) -- `forward::spawn_peer_reader`. So FRAG-002 is
+    implemented as a **tetron-internal protocol concern**, not a literal RFC
+    8200 extension header:
+
+    - `packet::fragment_ipv6(packet, id, max_size)` splits an oversized IPv6
+      packet into wire envelopes, each `<= max_size` bytes: a 1-byte magic
+      (`FRAG6_MAGIC = 0xF6`, chosen so its top nibble -- 0xF -- can never
+      collide with a real IP packet's version nibble, 4 or 6), a 4-byte
+      fragment-set id, a 2-byte byte offset, a 1-byte more-fragments flag,
+      then the payload slice. `id` disambiguates concurrent/overlapping
+      fragment sets on the same connection from each other; the sender uses
+      a per-process monotonic counter.
+    - `packet::Ipv6Reassembler` is per-peer-connection state living inside
+      `spawn_peer_reader`'s own task (no locking needed -- one reader per
+      peer connection). `accept(datagram)` returns `Complete(Vec<u8>)` once
+      every fragment for an id has arrived (checked via a `BTreeMap` keyed
+      by offset -- complete only when contiguous from 0 to the total length
+      the final fragment revealed), `Waiting` while incomplete, `Rejected`
+      for a malformed/truncated envelope or one whose claimed offset would
+      grow the reassembled packet past `tun::TUN_MTU` (1280) -- no packet
+      `fragment_ipv6` ever produced can legitimately claim to be bigger than
+      the TUN device's own MTU, so a bigger claim is either a bug or a
+      malicious peer, never legitimate mesh traffic -- and `NotAFragment`
+      for anything not carrying the magic byte (the ordinary, unfragmented
+      path, unchanged).
+    - Bounded against a peer that opens many fragment sets and never
+      completes any of them (accidental or malicious): at most 16 concurrent
+      in-flight ids per connection (oldest evicted past that), and any id
+      untouched for 5 seconds is garbage-collected. Both bounds are cheap
+      because a real fragmented packet here is bounded at `TUN_MTU` (1280
+      bytes) and in practice almost always splits into exactly two
+      fragments.
+    - `forward::run_mesh`'s `Some(6) => { ... }` arm mirrors the `Some(4)`
+      arm: calls `fragment_ipv6` with a fresh id from `NEXT_FRAG6_ID`, sends
+      each envelope as its own QUIC datagram, drops with a warning log only
+      when `max_dgram` is too small to fit even the 8-byte envelope header
+      plus one payload byte (practically never, since `max_dgram` is always
+      well above that in real QUIC connections).
+
+    A reassembled/rejected fragment is accounted in `stats::DropReason` the
+    same as any other inbound packet (`Malformed` on `Rejected`); a `Waiting`
+    outcome records nothing yet, matching the existing behavior that stats
+    are recorded once a deliverable unit exists, not per raw wire datagram.
+    """
+    req_id = "FRAG-002"
+
+
+# --------------------------------------------------------------------------
 # ADMIN-ADD-EASY-ID: tetron admin add should accept hostname or mesh IP
 # --------------------------------------------------------------------------
 
