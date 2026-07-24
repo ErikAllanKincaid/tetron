@@ -1024,16 +1024,19 @@ impl MeshManager {
         }
     }
 
-    /// Resolve `leave`'s network argument: the local display name if it
-    /// matches exactly (today's only path, unchanged), else fall back to a
-    /// network-key prefix match (same `>=10`-char rule and ambiguity
-    /// handling as [`Self::resolve_network_short_id`]). Unlike that
-    /// function, this one *does* try the local name first -- `leave` only
-    /// ever acts on the caller's own participation (no roster mutation of
-    /// anyone else), so the destructive-action argument for key-only
-    /// resolution doesn't apply here. Lets a user who only has an invite
-    /// key or room id handy (e.g. at uninstall time) still `leave` without
-    /// having to remember the local name `tetron status` assigned it.
+    /// Resolve a `network` argument for `leave`/`invite`/`admin` (CLI-VOCAB-002):
+    /// the local display name if it matches exactly (the original, still most
+    /// common path), else fall back to a network-key prefix match (same
+    /// `>=10`-char rule and ambiguity handling as
+    /// [`Self::resolve_network_short_id`]). Unlike that function, this one
+    /// *does* try the local name first -- none of these three commands mutate
+    /// anyone else's membership (leave only acts on the caller's own
+    /// participation; invite/admin grant capability rather than removing it),
+    /// so the destructive-action argument for key-only resolution (`nuke`/
+    /// `kick`) doesn't apply here. Lets a user who only has an invite key or
+    /// room id handy (e.g. at uninstall time, or scripting against a network
+    /// they never locally renamed) act without having to remember the local
+    /// name `tetron status` assigned it.
     pub(crate) fn resolve_network_name_or_key(&self, s: &str) -> Result<String, String> {
         if self.networks.contains_key(s) {
             return Ok(s.to_string());
@@ -2006,5 +2009,82 @@ mod headless_tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// INVITE-ADMIN-NETWORK-KEY-001: `admin`/`invite` accept a `network_key`
+    /// prefix fallback, same as `leave` already did (`LEAVE-NETWORK-KEY-001`),
+    /// via the shared `resolve_network_name_or_key`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn admin_list_and_invite_list_accept_network_key_prefix() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        const NET: &str = "test-net";
+        let net_secret = SecretKey::from_bytes(&[42u8; 32]);
+        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
+        daemon.networks.insert(
+            NET.to_string(),
+            NetworkHandle {
+                name: NET.to_string(),
+                network_key: net_secret.public(),
+                role: NetworkRole::Coordinator,
+                my_ip: daemon.identity.local_ip(),
+                state: Arc::new(RwLock::new(NetworkState {
+                    generation: 0,
+                    members: MemberList::new(),
+                    approved: ApprovedList::new(),
+                    snapshot: None,
+                    network_secret_key: Some(net_secret.clone()),
+                    network_public_key: net_secret.public(),
+                    network_name: Some(NET.to_string()),
+                    mode: GroupMode::Restricted,
+                    subnet: default_subnet(),
+                    reusable_keys: BTreeMap::new(),
+                    invites: BTreeMap::new(),
+                    nuke_proposals: BTreeMap::new(),
+                })),
+                dht_notify: None,
+                cancel: CancellationToken::new(),
+                tasks: Vec::new(),
+                disconnect_tx,
+                peers: PeerTable::new(),
+                tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                tun_tasks: std::sync::Mutex::new(None),
+                active: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        let key_str = net_secret.public().to_string();
+        let prefix = &key_str[..10];
+
+        // admin_list: resolves via the key prefix, not just the local name.
+        match daemon.admin_list(prefix) {
+            IpcMessage::AdminListResponse { admins } => {
+                assert!(admins.iter().any(|a| a.self_node));
+            }
+            other => panic!("expected AdminListResponse, got {other:?}"),
+        }
+
+        // invite_list: same fallback, different handler file (admin.rs vs
+        // invite_handler.rs) -- both route through the same resolver.
+        match daemon.invite_list(prefix) {
+            IpcMessage::InviteListResponse { invites } => {
+                assert!(invites.is_empty());
+            }
+            other => panic!("expected InviteListResponse, got {other:?}"),
+        }
+
+        // An unresolvable argument still fails cleanly for both, rather than
+        // silently treating it as a (nonexistent) local name.
+        assert!(matches!(daemon.admin_list("no-such-net"), IpcMessage::Error { .. }));
+        assert!(matches!(daemon.invite_list("no-such-net"), IpcMessage::Error { .. }));
     }
 }

@@ -170,7 +170,9 @@ pub(crate) enum Command {
     },
     /// Manage single-use invite keys (coordinator only)
     Invite {
-        /// Network name (as shown in `tetron status`)
+        /// Network name (as shown in `tetron status`), or its `network_key`
+        /// (or an unambiguous prefix of it) if you don't have the local
+        /// name handy
         network: String,
         #[command(subcommand)]
         action: InviteAction,
@@ -179,7 +181,9 @@ pub(crate) enum Command {
     /// a co-coordinator: it can publish the signed blob and admit fresh joiners.
     /// Trusted-network multi-admin.
     Admin {
-        /// Network name (as shown in `tetron status`)
+        /// Network name (as shown in `tetron status`), or its `network_key`
+        /// (or an unambiguous prefix of it) if you don't have the local
+        /// name handy
         network: String,
         #[command(subcommand)]
         action: AdminAction,

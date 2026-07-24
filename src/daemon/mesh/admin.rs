@@ -10,6 +10,11 @@ impl MeshManager {
     /// a transfer of publish capability, not an attributable delegation. The
     /// grant is recorded locally for `tetron admin list`.
     pub(crate) async fn admin_add(&self, network: &str, peer_str: &str) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         let identity = match self.resolve_peer_name(network, peer_str).await {
             Ok(id) => id,
             Err(message) => return IpcMessage::Error { message },
@@ -112,6 +117,11 @@ impl MeshManager {
     /// List this network's key-holders: the local node (if it holds the key) plus
     /// every identity it has granted the key to (`tetron admin add`).
     pub(crate) fn admin_list(&self, network: &str) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         let self_id = self.endpoint.id();
         let mut admins = Vec::new();
         let self_holds_key = match self.networks.get(network) {

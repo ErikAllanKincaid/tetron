@@ -4626,8 +4626,52 @@ class LeaveAcceptsNetworkKey(Requirement):
 
     `--help`, `AGENTS.md`, `README.md`, and `docs/HOWTO.md` updated to
     document the fallback.
+
+    Follow-up (`INVITE-ADMIN-NETWORK-KEY-001`, below): `invite`/`admin`
+    gained the identical fallback via this same resolver.
     """
     req_id = "LEAVE-NETWORK-KEY-001"
+
+
+class InviteAdminAcceptNetworkKey(Requirement):
+    """REQUIREMENT-ID: INVITE-ADMIN-NETWORK-KEY-001
+
+    `tetron invite <net> ...` (`create`/`list`/`revoke`) and `tetron admin
+    <net> ...` (`add`/`list`) previously resolved their network argument
+    only by exact match against the local display name (`self.networks.get`,
+    the same plain map lookup `leave` used before `LEAVE-NETWORK-KEY-001`) --
+    a user who only has the invite key or room id handy had no way to mint
+    an invite or grant admin at all, unlike `leave`, which already gained
+    the key-prefix fallback.
+
+    Fix: all five handlers (`invite_create`/`invite_list`/`invite_revoke` in
+    `src/daemon/mesh/invite_handler.rs`; `admin_add`/`admin_list` in
+    `src/daemon/mesh/admin.rs`) now call the existing
+    `MeshManager::resolve_network_name_or_key` at the very top, shadowing
+    the `network` parameter with the resolved local name before any
+    existing logic runs -- identical placement to `leave_network`
+    (`LEAVE-NETWORK-KEY-001`) and `grant_admin_key`'s other caller
+    (`leave_network`'s `STRANDED-COORDINATOR-WARN` auto-promotion, which
+    already passed an already-resolved name, so it is unaffected). No new
+    resolver was needed -- `resolve_network_name_or_key` already tries the
+    exact local name first (today's only path, unchanged) and falls back to
+    `resolve_network_short_id`'s `>=10`-char/ambiguous-prefix rules only on
+    a miss, same non-destructive trust posture as `leave` (invite/admin
+    grant capability, they never mutate anyone else's membership, so there
+    is no destructive-action case for a key-only rule the way `nuke`/`kick`
+    have).
+
+    This makes `CLI-VOCAB-002`'s docstring note ("the same lookup
+    `leave`/`invite`/`admin` still use") historical for `invite`/`admin` as
+    of this requirement -- accurate as of 2026-07-17, no longer accurate as
+    of this change. `nuke`/`kick` remain deliberately unchanged (key-only,
+    no name fallback at all -- the destructive-action argument in
+    `CLI-VOCAB-002` still applies to them specifically).
+
+    `--help` text for `Invite.network`/`Admin.network` (`src/main.rs`)
+    updated to match `Leave.network`'s wording, documenting the fallback.
+    """
+    req_id = "INVITE-ADMIN-NETWORK-KEY-001"
 
 
 class StatusOutputRedesign(Requirement):

@@ -16,6 +16,11 @@ impl MeshManager {
         network: &str,
         expires: Option<&str>,
     ) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         if let Err(e) = self.coordinator_handle(network) {
             return e;
         }
@@ -91,6 +96,11 @@ impl MeshManager {
 
     /// List outstanding invites for `network` (coordinator-only).
     pub(crate) fn invite_list(&self, network: &str) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         if let Err(e) = self.coordinator_handle(network) {
             return e;
         }
@@ -118,6 +128,11 @@ impl MeshManager {
 
     /// Coordinator-only: revoke (mark as revoked) an invite by its short id.
     pub(crate) async fn invite_revoke(&self, network: &str, invite_id: &str) -> IpcMessage {
+        let network = match self.resolve_network_name_or_key(network) {
+            Ok(name) => name,
+            Err(message) => return IpcMessage::Error { message },
+        };
+        let network = network.as_str();
         if let Err(e) = self.coordinator_handle(network) {
             return e;
         }
