@@ -216,6 +216,30 @@ class TestsPass(Constraint):
     enforcement_logic = "{{ test.pass }}"
 
 
+class CargoAuditClean(Constraint):
+    """CONSTRAINT-ID: CON-013
+
+    D-02 (security-audit follow-up, 2026-07-21): `cargo audit` scans the
+    full dependency tree (including feature-gated deps, e.g. `torut` behind
+    the optional `tor` feature) against the RustSec advisory database.
+    Accepted, already-reviewed advisories are ignored via a dated,
+    documented entry in `.cargo/audit.toml` -- currently `RUSTSEC-2024-0344`
+    and `RUSTSEC-2022-0093` (old `curve25519-dalek`/`ed25519-dalek` pulled
+    in transitively by `torut`/`iroh-tor-transport`; `torut` 0.2.1 is the
+    latest version on crates.io as of 2026-07-23 and hasn't modernized that
+    pin, so this isn't fixable from tetron's side -- revisit if it ever is).
+    This constraint fails only on a genuinely new, not-yet-reviewed
+    advisory, never on the tree being imperfect in general; it also fails
+    distinctly (not silently as "0 vulnerabilities") if `cargo-audit` itself
+    isn't installed, so a missing tool can't be mistaken for a clean scan.
+
+    ENFORCEMENT (reconcile.py): cargo_audit.installed is true and
+    cargo_audit.count equals 0.
+    """
+    constraint_id = "CON-013"
+    enforcement_logic = "{{ cargo_audit.installed and cargo_audit.count == 0 }}"
+
+
 # --------------------------------------------------------------------------
 # Follow-up round: node subnet at boot (SUBNET-009/010).
 # (UPGRADE-001 / CON-006 — the self-update requirement and its kill-switch

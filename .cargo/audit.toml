@@ -1,0 +1,14 @@
+# Config for `cargo audit` (D-02). Accepted, tracked advisories only -- a new,
+# unreviewed advisory is NOT covered here and correctly fails the gate.
+[advisories]
+ignore = [
+    # curve25519-dalek 3.2.0 timing variability in Scalar29/52::sub.
+    # ed25519-dalek 1.0.1 dual-public-key signing oracle attack.
+    # Both come from `torut` (iroh-tor-transport's Tor-controller dependency),
+    # reachable only behind the optional `tor` feature -- not built by
+    # default. torut 0.2.1 is the latest version on crates.io as of
+    # 2026-07-23 and has not modernized its ed25519-dalek/curve25519-dalek
+    # pin; not fixable from tetron's side. Revisit if torut ever bumps it.
+    "RUSTSEC-2024-0344",
+    "RUSTSEC-2022-0093",
+]

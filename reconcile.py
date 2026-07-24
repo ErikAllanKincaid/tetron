@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/tetron
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-012, CON-M01, CON-M03, CON-M04)
+# Checks the automatable constraints (CON-001..CON-013, CON-M01, CON-M03, CON-M04)
 # from spec/design_spec.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
@@ -290,6 +290,27 @@ def check_live_approval_absence() -> dict:
     return {"unexpected_count": unexpected}
 
 
+def check_cargo_audit() -> dict:
+    """D-02: known-CVE scanning of the dependency tree via `cargo audit`.
+    Accepted/tracked advisories live in `.cargo/audit.toml` (each with a
+    dated reason) -- this check fails only on a genuinely new,
+    not-yet-reviewed advisory, never on the whole tree being imperfect.
+    `cargo-audit` not being installed is reported distinctly from an actual
+    finding, so a missing tool doesn't silently read as "0 vulnerabilities"."""
+    try:
+        r = run(["cargo", "audit", "--json"])
+    except FileNotFoundError:
+        return {"installed": False, "count": -1}
+    try:
+        data = json.loads(r.stdout)
+        count = data["vulnerabilities"]["count"]
+    except (json.JSONDecodeError, KeyError):
+        # cargo-audit itself failed (e.g. couldn't fetch the advisory DB) --
+        # surface as a nonzero, non-fabricated count rather than claim clean.
+        count = -1
+    return {"installed": True, "count": count}
+
+
 def check_product_identity() -> dict:
     """CON-M04: binary name is tetron, ALPN prefix starts with tetron/net/,
     config dir references /etc/tetron."""
@@ -337,6 +358,7 @@ if __name__ == "__main__":
         "crate_identity": check_crate_identity(),
         "product_identity": check_product_identity(),
         "live_approval_absence": check_live_approval_absence(),
+        "cargo_audit": check_cargo_audit(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -357,5 +379,7 @@ if __name__ == "__main__":
         and ctx["product_identity"]["alpn_prefix"] == "tetron/net/"
         and ctx["product_identity"]["config_dir"] == "/etc/tetron"
         and ctx["live_approval_absence"]["unexpected_count"] == 0
+        and ctx["cargo_audit"]["installed"]
+        and ctx["cargo_audit"]["count"] == 0
     )
     sys.exit(0 if ok else 1)
