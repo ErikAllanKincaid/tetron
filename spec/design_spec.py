@@ -1637,6 +1637,15 @@ class RemoveApplyLayer(Requirement):
     firewall is still fully present after this commit; a broken intermediate is
     avoided). The GroupBlob `suggested_firewall` field and ray-proto
     policy.rs/firewall.rs wire types are untouched here (D1).
+
+    Follow-up (D-01, 2026-07-23): the removed `apply.rs` was the sole consumer
+    of the external `config` crate (Cargo.toml's `config = { version = "0.15",
+    ... }`, not this crate's own `src/config.rs` module) — confirmed via a full
+    workspace search (no `use config::...`, `config::Config::builder()`, or any
+    other symbol from the external crate anywhere in `src/`/`tetron-proto/src`,
+    and `Cargo.lock` shows it resolved only as a direct dependency of the root
+    package). Removed from `Cargo.toml`; added to `CON-M01`'s banned-dependency
+    list (`reconcile.py`) so it cannot silently creep back in.
     """
     req_id = "MINIMAL-011"
 

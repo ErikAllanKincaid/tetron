@@ -232,6 +232,7 @@ def check_dependency_absence() -> dict:
         "unicode-width",
         "humansize",
         "mime_guess",
+        "config",
     ]
     p = Path("Cargo.toml")
     text = p.read_text()
