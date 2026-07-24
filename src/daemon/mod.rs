@@ -335,6 +335,13 @@ pub struct NetworkHandle {
     /// DHT republish trigger; `Some` only on the coordinator (the sole publisher).
     /// Lets admission/kick re-publish the group blob.
     dht_notify: Option<Arc<Notify>>,
+    /// Manual DHT/group-poller trigger (SYNC-001, `tetron sync`). Unlike
+    /// `dht_notify` (coordinator-only, drives *publish*), the group poller
+    /// runs on every node regardless of role -- it *fetches* -- so this is
+    /// always `Some`-equivalent (a fresh `Arc<Notify>` at construction, never
+    /// `Option`). `IpcMessage::Sync` calls `.notify_one()` on it to wake the
+    /// poller's `tokio::select!` early instead of waiting for its interval.
+    poller_notify: Arc<Notify>,
     /// Child of the daemon `shutdown_token`. Cancelling it stops this network's
     /// background tasks (reconnect loop, group poller, publisher, peer readers)
     /// without affecting the rest of the daemon.
@@ -813,8 +820,11 @@ impl MeshManager {
         req: &IpcMessage,
         peer_cred: Option<(u32, u32)>,
     ) -> Option<IpcMessage> {
-        // Reads are available to everyone.
-        if matches!(req, IpcMessage::Status) {
+        // Reads are available to everyone. `Sync` joins this bucket even
+        // though it isn't a pure read: it causes no local mutation, just
+        // wakes a background poller to do a refresh it was already going to
+        // do, sooner (SYNC-001).
+        if matches!(req, IpcMessage::Status | IpcMessage::Sync { .. }) {
             return None;
         }
 
@@ -935,6 +945,7 @@ impl MeshManager {
                 self.activate(hostname, network.as_deref()).await
             }
             IpcMessage::Standby { network } => self.deactivate(network.as_deref()).await,
+            IpcMessage::Sync { network } => self.sync_now(network.as_deref()),
             IpcMessage::Shutdown => {
                 self.shutdown_token.cancel();
                 IpcMessage::Ok {
@@ -1575,6 +1586,7 @@ mod headless_tests {
                         nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
+                    poller_notify: Arc::new(Notify::new()),
                     cancel: CancellationToken::new(),
                     tasks: Vec::new(),
                     disconnect_tx,
@@ -1744,6 +1756,7 @@ mod headless_tests {
                         nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
+                    poller_notify: Arc::new(Notify::new()),
                     cancel: CancellationToken::new(),
                     tasks: Vec::new(),
                     disconnect_tx,
@@ -1906,6 +1919,7 @@ mod headless_tests {
                     nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
+                poller_notify: Arc::new(Notify::new()),
                 cancel: CancellationToken::new(),
                 tasks: Vec::new(),
                 disconnect_tx,
@@ -2068,6 +2082,7 @@ mod headless_tests {
                     nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
+                poller_notify: Arc::new(Notify::new()),
                 cancel: CancellationToken::new(),
                 tasks: Vec::new(),
                 disconnect_tx,
@@ -2097,6 +2112,85 @@ mod headless_tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// SYNC-001: `sync_now` wakes the targeted network's poller (observable
+    /// as a pending permit on its `poller_notify`) and errors cleanly on an
+    /// unknown network name rather than silently no-op-ing.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_now_wakes_the_targeted_networks_poller() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        const NET: &str = "test-net";
+        let net_secret = SecretKey::from_bytes(&[42u8; 32]);
+        let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
+        daemon.networks.insert(
+            NET.to_string(),
+            NetworkHandle {
+                name: NET.to_string(),
+                network_key: net_secret.public(),
+                role: NetworkRole::Coordinator,
+                my_ip: daemon.identity.local_ip(),
+                state: Arc::new(RwLock::new(NetworkState {
+                    generation: 0,
+                    members: MemberList::new(),
+                    approved: ApprovedList::new(),
+                    snapshot: None,
+                    network_secret_key: Some(net_secret.clone()),
+                    network_public_key: net_secret.public(),
+                    network_name: Some(NET.to_string()),
+                    mode: GroupMode::Restricted,
+                    subnet: default_subnet(),
+                    reusable_keys: BTreeMap::new(),
+                    invites: BTreeMap::new(),
+                    nuke_proposals: BTreeMap::new(),
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+                })),
+                dht_notify: None,
+                poller_notify: Arc::new(Notify::new()),
+                cancel: CancellationToken::new(),
+                tasks: Vec::new(),
+                disconnect_tx,
+                peers: PeerTable::new(),
+                tun_name: std::sync::Mutex::new("placeholder".to_string()),
+                tun_tx: Arc::new(arc_swap::ArcSwap::from_pointee(placeholder_tx)),
+                tun_tasks: std::sync::Mutex::new(None),
+                active: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        // Nothing has notified this network's poller yet.
+        let notify_before = daemon.networks.get(NET).unwrap().poller_notify.clone();
+        assert!(
+            futures::FutureExt::now_or_never(notify_before.notified()).is_none(),
+            "poller_notify should have no pending permit before sync_now"
+        );
+
+        let resp = daemon.sync_now(Some(NET));
+        assert!(matches!(resp, IpcMessage::Ok { .. }), "expected Ok, got {resp:?}");
+
+        // notify_one() left a permit that the next `.notified()` consumes
+        // immediately, without needing a real waiting poller task.
+        let notify_after = daemon.networks.get(NET).unwrap().poller_notify.clone();
+        assert!(
+            futures::FutureExt::now_or_never(notify_after.notified()).is_some(),
+            "sync_now should have left a pending permit on poller_notify"
+        );
+
+        // An unknown network name errors rather than silently no-op-ing.
+        assert!(matches!(daemon.sync_now(Some("no-such-net")), IpcMessage::Error { .. }));
+
+        // Unscoped (`None`) targets every joined network without erroring.
+        assert!(matches!(daemon.sync_now(None), IpcMessage::Ok { .. }));
     }
 
     /// INVITE-ADMIN-NETWORK-KEY-001: `admin`/`invite` accept a `network_key`
@@ -2141,6 +2235,7 @@ mod headless_tests {
                     nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
+                poller_notify: Arc::new(Notify::new()),
                 cancel: CancellationToken::new(),
                 tasks: Vec::new(),
                 disconnect_tx,
@@ -2176,5 +2271,50 @@ mod headless_tests {
         // silently treating it as a (nonexistent) local name.
         assert!(matches!(daemon.admin_list("no-such-net"), IpcMessage::Error { .. }));
         assert!(matches!(daemon.invite_list("no-such-net"), IpcMessage::Error { .. }));
+    }
+}
+
+#[cfg(test)]
+mod check_authorized_tests {
+    use super::*;
+
+    const UNPRIVILEGED_UID: u32 = 1000;
+
+    /// `Status` and `Sync` (SYNC-001) are both open to any local user -- a
+    /// manual sync causes no local mutation, just wakes a background poller
+    /// early, so it joins the same exemption bucket as the pure read.
+    #[test]
+    fn status_and_sync_are_open_to_any_user() {
+        assert!(
+            MeshManager::check_authorized(&IpcMessage::Status, Some((UNPRIVILEGED_UID, 0)))
+                .is_none()
+        );
+        assert!(
+            MeshManager::check_authorized(
+                &IpcMessage::Sync { network: None },
+                Some((UNPRIVILEGED_UID, 0))
+            )
+            .is_none()
+        );
+    }
+
+    /// A mutating command from an unprivileged, non-operator caller is
+    /// denied.
+    #[test]
+    fn mutating_command_denied_for_unprivileged_caller() {
+        let denied = MeshManager::check_authorized(
+            &IpcMessage::Standby { network: None },
+            Some((UNPRIVILEGED_UID, 0)),
+        );
+        assert!(matches!(denied, Some(IpcMessage::Error { .. })));
+    }
+
+    /// Root may do anything, including a mutating command.
+    #[test]
+    fn root_bypasses_authorization() {
+        assert!(
+            MeshManager::check_authorized(&IpcMessage::Standby { network: None }, Some((0, 0)))
+                .is_none()
+        );
     }
 }

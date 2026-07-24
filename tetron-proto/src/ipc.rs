@@ -105,6 +105,16 @@ pub enum IpcMessage {
         #[serde(default)]
         network: Option<String>,
     },
+    /// Manually wake the DHT/group poller (SYNC-001) instead of waiting for
+    /// its configured interval -- causes no local mutation, just asks the
+    /// daemon to do a refresh it was already going to do, sooner. Open to any
+    /// local user, same as `Status` (see `check_authorized`).
+    Sync {
+        /// Sync only this network (by local display name) instead of every
+        /// joined network. `None` triggers every joined network's poller.
+        #[serde(default)]
+        network: Option<String>,
+    },
     /// Authorize a local user (by UID) to control the daemon without root, the
     /// way `tailscale up --operator` does. Root-only.
     SetOperator {
@@ -646,6 +656,24 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
         assert!(matches!(decoded, IpcMessage::InviteRevoke { .. }));
+    }
+
+    #[test]
+    fn test_sync_roundtrip() {
+        let scoped = IpcMessage::Sync {
+            network: Some("my-net".to_string()),
+        };
+        let bytes = rmp_serde::to_vec_named(&scoped).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            IpcMessage::Sync { network } => assert_eq!(network.as_deref(), Some("my-net")),
+            _ => panic!("wrong variant"),
+        }
+
+        let unscoped = IpcMessage::Sync { network: None };
+        let bytes = rmp_serde::to_vec_named(&unscoped).unwrap();
+        let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(decoded, IpcMessage::Sync { network: None }));
     }
 
     #[test]

@@ -152,12 +152,16 @@ async fn build_daemon(
         .networks
         .iter()
         .any(|net| net.transport.as_ref().is_some_and(|t| t.is_tor()));
+    let listen_port = app_config
+        .listen_port
+        .unwrap_or(transport::TETRON_LISTEN_PORT);
     let ep = transport::create_endpoint_with_alpns(
         key.clone(),
         alpns,
         use_tor,
         &app_config.relay,
         &app_config.discovery_dns,
+        listen_port,
     )
     .await?;
 

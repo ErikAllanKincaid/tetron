@@ -121,12 +121,14 @@ impl MeshManager {
     /// `peers`/`tun_tx`, built by the caller before the `NetworkHandle` exists
     /// — see `register_coordinator_handler`'s doc comment for why this can't
     /// be looked up here instead).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_coordinator_background_tasks(
         &self,
         name: &str,
         net_secret_key: &SecretKey,
         state: &SharedNetworkState,
         dht_notify: &Arc<tokio::sync::Notify>,
+        poller_notify: &Arc<tokio::sync::Notify>,
         cancel: &CancellationToken,
         ctx: &MeshCtx,
     ) -> (
@@ -163,6 +165,7 @@ impl MeshManager {
                 name.to_string(),
                 cancel.clone(),
                 self.left_tx.clone(),
+                poller_notify.clone(),
             ));
         }
 
@@ -455,6 +458,7 @@ impl MeshManager {
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(std::sync::RwLock::new(net_state));
         let dht_notify = Arc::new(tokio::sync::Notify::new());
+        let poller_notify = Arc::new(tokio::sync::Notify::new());
         let (peers, tun_tx) = self.new_network_data_plane();
         let ctx = MeshCtx {
             identity: self.identity.clone(),
@@ -471,6 +475,7 @@ impl MeshManager {
             &net_secret_key,
             &state,
             &dht_notify,
+            &poller_notify,
             &cancel,
             &ctx,
         );
@@ -483,6 +488,7 @@ impl MeshManager {
             my_ip,
             state: state.clone(),
             dht_notify: Some(dht_notify.clone()),
+            poller_notify,
             cancel: cancel.clone(),
             tasks,
             disconnect_tx: disconnect_tx.clone(),
@@ -520,8 +526,15 @@ impl MeshManager {
             // Add invite to blob state, refresh snapshot, then drop lock.
             let snapshot_data = {
                 let mut s = state.write().unwrap();
+                // CONFIG-AUDIT-002: honor a configured invite-default-expiry
+                // for the initial invite too, matching `invite_create`'s own
+                // default resolution instead of a separate hardcoded literal.
+                let default_ttl = config::load()
+                    .ok()
+                    .and_then(|c| c.invite_default_expiry)
+                    .unwrap_or(7 * 24 * 3600);
                 let (key, _entry) =
-                    crate::membership::InviteEntry::from_secret(&secret, now_secs(), 7 * 24 * 3600);
+                    crate::membership::InviteEntry::from_secret(&secret, now_secs(), default_ttl);
                 s.invites.insert(key, _entry);
                 s.bump_generation_and_refresh();
                 s.snapshot
@@ -1261,6 +1274,7 @@ impl MeshManager {
         }
 
         // Membership poller
+        let poller_notify = Arc::new(tokio::sync::Notify::new());
         if let Ok(poller_client) = dht::create_pkarr_client(&self.endpoint) {
             tasks.push(spawn_group_poller(
                 poller_client,
@@ -1271,6 +1285,7 @@ impl MeshManager {
                 display_name.to_string(),
                 cancel.clone(),
                 self.left_tx.clone(),
+                poller_notify.clone(),
             ));
         }
 
@@ -1281,6 +1296,7 @@ impl MeshManager {
             my_ip,
             state,
             dht_notify: None,
+            poller_notify,
             cancel,
             tasks,
             disconnect_tx,
@@ -1561,6 +1577,12 @@ impl MeshManager {
                 my_ip,
                 state: live_state,
                 dht_notify: None,
+                // No group poller runs on this DHT-fallback join path (see
+                // its call site above -- only `spawn_reconnect_loop` is
+                // spawned here), so this Notify has no receiver yet; a
+                // `tetron sync` against this network is a harmless no-op
+                // until/unless that changes.
+                poller_notify: Arc::new(tokio::sync::Notify::new()),
                 cancel,
                 tasks,
                 disconnect_tx,

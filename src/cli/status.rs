@@ -396,3 +396,17 @@ pub(crate) async fn ipc_standby(network: Option<String>) -> Result<()> {
     }
     Ok(())
 }
+
+/// `tetron sync`: manually wake the DHT/group poller instead of waiting for
+/// its configured interval (SYNC-001).
+pub(crate) async fn ipc_sync(network: Option<String>) -> Result<()> {
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, ipc::IpcMessage::Sync { network }).await?;
+    let resp = ipc::recv(&mut stream).await?;
+    match resp {
+        ipc::IpcMessage::Ok { message } => println!("{}", message),
+        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        other => eprintln!("Unexpected response: {:?}", other),
+    }
+    Ok(())
+}

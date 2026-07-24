@@ -4,6 +4,7 @@
 //! reconvergence live here.
 
 use super::super::*;
+use std::time::Instant;
 
 /// Whether [`spawn_group_poller`] should fetch and adopt a freshly resolved
 /// DHT record, given its `(hash, generation)` against this node's current
@@ -255,6 +256,12 @@ fn member_removed(
     !members.iter().any(|m| m.identity == my_id) && !approved.iter().any(|a| a.identity == my_id)
 }
 
+/// Floor on how often a manual `tetron sync` trigger (SYNC-001) can actually
+/// force a fresh DHT resolve, so a spammed trigger can't reduce the
+/// *effective* poll interval below this — a timer-driven tick is unaffected
+/// (the configured interval itself already gates that path).
+const MIN_MANUAL_SYNC_INTERVAL: Duration = Duration::from_secs(2);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_group_poller(
     client: PkarrRelayClient,
@@ -265,17 +272,36 @@ pub(crate) fn spawn_group_poller(
     network_name: String,
     token: CancellationToken,
     left_tx: mpsc::Sender<String>,
+    notify: Arc<Notify>,
 ) -> JoinHandle<()> {
     let MeshCtx {
         peers, blob_store, ..
     } = ctx;
-    tracing::info!(network = %network_name, "group poller spawned");
+    // CONFIG-AUDIT-002: read once at spawn time, not per tick -- matches
+    // every other config-backed daemon setting (relay/discovery/ratelimit),
+    // none of which live-reload mid-run either; a changed value takes effect
+    // on the next `tetron restart`.
+    let interval_secs = config::load()
+        .ok()
+        .and_then(|c| c.poller_interval)
+        .unwrap_or(60);
+    tracing::info!(network = %network_name, interval_secs, "group poller spawned");
     tokio::spawn(async move {
+        // Backdated so a manual trigger fired immediately after spawn isn't
+        // held back by the cooldown.
+        let mut last_poll = Instant::now() - MIN_MANUAL_SYNC_INTERVAL;
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(60)) => {},
+                _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {},
+                _ = notify.notified() => {
+                    if last_poll.elapsed() < MIN_MANUAL_SYNC_INTERVAL {
+                        continue;
+                    }
+                    tracing::debug!(network = %network_name, "group poller manually triggered");
+                }
             }
+            last_poll = Instant::now();
             tracing::debug!(network = %network_name, "group poller tick");
 
             let (current_generation, current_hash) = {

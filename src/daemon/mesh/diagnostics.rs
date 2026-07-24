@@ -98,8 +98,13 @@ impl MeshManager {
             };
             let count = s.members.all().len();
             let now = now_secs();
-            let proposals = crate::membership::active_nuke_proposers(&s.nuke_proposals, now)
-                .into_iter()
+            let nuke_ttl = config::load()
+                .ok()
+                .and_then(|c| c.nuke_proposal_ttl)
+                .unwrap_or(crate::membership::NUKE_PROPOSAL_TTL_SECS);
+            let proposals =
+                crate::membership::active_nuke_proposers(&s.nuke_proposals, now, nuke_ttl)
+                    .into_iter()
                 .map(|id| ipc::NukeProposalInfo {
                     short_id: id.chars().take(10).collect(),
                     proposed_at: s.nuke_proposals[id],

@@ -9,8 +9,9 @@ impl MeshManager {
     /// Coordinator-only: mint a single-use invite key for `network`.
     ///
     /// `expires` is an optional human-readable duration ("24h", "7d", "30m").
-    /// If absent, defaults to a 7-day expiry; pass `"0"` or `"never"` for a
-    /// permanent invite.
+    /// If absent, defaults to a 7-day expiry (or `tetron config set
+    /// invite-default-expiry <duration>`'s configured value, CONFIG-AUDIT-002);
+    /// pass `"0"` or `"never"` for a permanent invite.
     pub(crate) async fn invite_create(
         &self,
         network: &str,
@@ -34,12 +35,16 @@ impl MeshManager {
             (handle.dht_notify.clone(), handle.network_key)
         };
 
-        // INVITE-009: default 7-day expiry. `--expires 0` or `--expires never`
-        // maps to 0 for permanent (never expires).
+        // INVITE-009: default 7-day expiry, overridable via `tetron config set
+        // invite-default-expiry <duration>` (CONFIG-AUDIT-002). `--expires 0`
+        // or `--expires never` maps to 0 for permanent (never expires).
         let ttl_secs: u64 = match expires {
-            None => 7 * 24 * 3600,
+            None => config::load()
+                .ok()
+                .and_then(|c| c.invite_default_expiry)
+                .unwrap_or(7 * 24 * 3600),
             Some(dur) if dur == "0" || dur == "never" => 0,
-            Some(dur) => match parse_duration(dur) {
+            Some(dur) => match config::parse_duration(dur) {
                 Ok(secs) => secs,
                 Err(e) => {
                     return IpcMessage::Error {
@@ -174,81 +179,5 @@ impl MeshManager {
         IpcMessage::Ok {
             message: format!("invite '{invite_id}' revoked"),
         }
-    }
-}
-
-/// Parse a human-readable duration string into seconds.
-///
-/// Supports suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days),
-/// `w` (weeks). Returns an error if the string is malformed or the value
-/// overflows `u64`.
-fn parse_duration(s: &str) -> std::result::Result<u64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("empty duration".to_string());
-    }
-    let (num_str, suffix) = if s.ends_with(|c: char| c.is_ascii_alphabetic()) {
-        let split = s.len() - 1;
-        (&s[..split], &s[split..])
-    } else {
-        (s, "s") // bare number = seconds
-    };
-    let value: u64 = num_str
-        .parse()
-        .map_err(|_| format!("invalid number '{num_str}'"))?;
-    let multiplier = match suffix {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86400,
-        "w" => 604800,
-        _ => return Err(format!("unknown suffix '{suffix}', use s/m/h/d/w")),
-    };
-    value
-        .checked_mul(multiplier)
-        .ok_or_else(|| "duration overflows u64".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_duration_seconds() {
-        assert_eq!(parse_duration("30s").unwrap(), 30);
-        assert_eq!(parse_duration("30").unwrap(), 30);
-    }
-
-    #[test]
-    fn test_parse_duration_minutes() {
-        assert_eq!(parse_duration("5m").unwrap(), 300);
-    }
-
-    #[test]
-    fn test_parse_duration_hours() {
-        assert_eq!(parse_duration("2h").unwrap(), 7200);
-    }
-
-    #[test]
-    fn test_parse_duration_days() {
-        assert_eq!(parse_duration("7d").unwrap(), 604800);
-    }
-
-    #[test]
-    fn test_parse_duration_weeks() {
-        assert_eq!(parse_duration("2w").unwrap(), 1209600);
-    }
-
-    #[test]
-    fn test_parse_duration_invalid() {
-        assert!(parse_duration("30x").is_err());
-        assert!(parse_duration("abc").is_err());
-        assert!(parse_duration("").is_err());
-    }
-
-    #[test]
-    fn test_parse_duration_overflow() {
-        let big = format!("{}w", u64::MAX);
-        assert!(parse_duration(&big).is_err());
     }
 }

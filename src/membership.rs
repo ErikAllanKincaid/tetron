@@ -710,6 +710,11 @@ pub struct GroupBlob {
 /// How long a nuke proposal remains valid (NUKE-CONSENSUS). A proposal older
 /// than this no longer counts toward consensus, so a stale entry from months
 /// ago can't silently combine with a fresh one to trigger an unintended nuke.
+/// Compiled default; overridable via `tetron config set nuke-proposal-ttl
+/// <duration>` (CONFIG-AUDIT-002) — callers read `config::AppConfig::
+/// nuke_proposal_ttl` and fall back to this constant, rather than the
+/// functions below reading it internally, so the TTL used is a live config
+/// snapshot rather than baked in at compile time.
 pub const NUKE_PROPOSAL_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// The historical, hardcoded NUKE-CONSENSUS threshold, kept as the default for
@@ -725,12 +730,15 @@ pub fn coordinator_count(members: &[Member]) -> usize {
     members.iter().filter(|m| m.is_coordinator).count()
 }
 
-/// The proposer identities in `proposals` whose entry has not expired
-/// (NUKE-CONSENSUS's 24h TTL), as of `now` (Unix seconds).
-pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64) -> Vec<&String> {
+/// The proposer identities in `proposals` whose entry has not expired, as of
+/// `now` (Unix seconds). `ttl_secs` is normally [`NUKE_PROPOSAL_TTL_SECS`] or
+/// the `nuke-proposal-ttl` config override (CONFIG-AUDIT-002) — callers
+/// resolve which before calling in, rather than this function reading config
+/// itself, to keep it a pure function of its arguments.
+pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64, ttl_secs: u64) -> Vec<&String> {
     proposals
         .iter()
-        .filter(|&(_, &proposed_at)| now.saturating_sub(proposed_at) < NUKE_PROPOSAL_TTL_SECS)
+        .filter(|&(_, &proposed_at)| now.saturating_sub(proposed_at) < ttl_secs)
         .map(|(id, _)| id)
         .collect()
 }
@@ -738,8 +746,13 @@ pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64) -> Vec
 /// Whether `proposals` currently has enough distinct, unexpired proposers to
 /// execute a nuke against `threshold` (NUKE-CONSENSUS-THRESHOLD-001;
 /// previously a hardcoded 2).
-pub fn nuke_consensus_reached(proposals: &BTreeMap<String, u64>, now: u64, threshold: u32) -> bool {
-    active_nuke_proposers(proposals, now).len() >= threshold as usize
+pub fn nuke_consensus_reached(
+    proposals: &BTreeMap<String, u64>,
+    now: u64,
+    threshold: u32,
+    ttl_secs: u64,
+) -> bool {
+    active_nuke_proposers(proposals, now, ttl_secs).len() >= threshold as usize
 }
 
 /// Resolve `tetron nuke --second <short-id>` against the currently active
@@ -751,9 +764,10 @@ pub fn nuke_consensus_reached(proposals: &BTreeMap<String, u64>, now: u64, thres
 pub fn resolve_nuke_proposer(
     proposals: &BTreeMap<String, u64>,
     now: u64,
+    ttl_secs: u64,
     short: &str,
 ) -> Result<String> {
-    let matches: Vec<&String> = active_nuke_proposers(proposals, now)
+    let matches: Vec<&String> = active_nuke_proposers(proposals, now, ttl_secs)
         .into_iter()
         .filter(|id| id.starts_with(short))
         .collect();
@@ -2704,7 +2718,7 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now - 10); // fresh
         proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1); // expired
-        let active = active_nuke_proposers(&proposals, now);
+        let active = active_nuke_proposers(&proposals, now, NUKE_PROPOSAL_TTL_SECS);
         assert_eq!(active, vec!["alice"]);
     }
 
@@ -2714,18 +2728,18 @@ mod tests {
         let now = 1_000_000u64;
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now - NUKE_PROPOSAL_TTL_SECS);
-        assert!(active_nuke_proposers(&proposals, now).is_empty());
+        assert!(active_nuke_proposers(&proposals, now, NUKE_PROPOSAL_TTL_SECS).is_empty());
     }
 
     #[test]
     fn nuke_consensus_requires_two_distinct_active_proposers() {
         let now = 1_000_000u64;
         let mut proposals = BTreeMap::new();
-        assert!(!nuke_consensus_reached(&proposals, now, 2));
+        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
         proposals.insert("alice".to_string(), now);
-        assert!(!nuke_consensus_reached(&proposals, now, 2));
+        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
         proposals.insert("bob".to_string(), now);
-        assert!(nuke_consensus_reached(&proposals, now, 2));
+        assert!(nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
     }
 
     #[test]
@@ -2734,7 +2748,7 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now);
         proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
-        assert!(!nuke_consensus_reached(&proposals, now, 2));
+        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
     }
 
     /// NUKE-CONSENSUS-THRESHOLD-001: a configured threshold other than the
@@ -2745,12 +2759,12 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now);
         // threshold=1: a single proposer is already enough.
-        assert!(nuke_consensus_reached(&proposals, now, 1));
+        assert!(nuke_consensus_reached(&proposals, now, 1, NUKE_PROPOSAL_TTL_SECS));
         // threshold=3: two proposers are not enough on a stricter network.
         proposals.insert("bob".to_string(), now);
-        assert!(!nuke_consensus_reached(&proposals, now, 3));
+        assert!(!nuke_consensus_reached(&proposals, now, 3, NUKE_PROPOSAL_TTL_SECS));
         proposals.insert("carol".to_string(), now);
-        assert!(nuke_consensus_reached(&proposals, now, 3));
+        assert!(nuke_consensus_reached(&proposals, now, 3, NUKE_PROPOSAL_TTL_SECS));
     }
 
     #[test]
@@ -2765,7 +2779,7 @@ mod tests {
         proposals.insert("aaaa1111".to_string(), now);
         proposals.insert("bbbb2222".to_string(), now);
         assert_eq!(
-            resolve_nuke_proposer(&proposals, now, "aaaa").unwrap(),
+            resolve_nuke_proposer(&proposals, now, NUKE_PROPOSAL_TTL_SECS, "aaaa").unwrap(),
             "aaaa1111"
         );
     }
@@ -2774,7 +2788,7 @@ mod tests {
     fn resolve_nuke_proposer_rejects_no_match() {
         let now = 1_000_000u64;
         let proposals = BTreeMap::new();
-        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+        assert!(resolve_nuke_proposer(&proposals, now, NUKE_PROPOSAL_TTL_SECS, "aaaa").is_err());
     }
 
     #[test]
@@ -2783,7 +2797,7 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("aaaa1111".to_string(), now);
         proposals.insert("aaaa2222".to_string(), now);
-        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+        assert!(resolve_nuke_proposer(&proposals, now, NUKE_PROPOSAL_TTL_SECS, "aaaa").is_err());
     }
 
     #[test]
@@ -2791,7 +2805,7 @@ mod tests {
         let now = 1_000_000u64;
         let mut proposals = BTreeMap::new();
         proposals.insert("aaaa1111".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
-        assert!(resolve_nuke_proposer(&proposals, now, "aaaa").is_err());
+        assert!(resolve_nuke_proposer(&proposals, now, NUKE_PROPOSAL_TTL_SECS, "aaaa").is_err());
     }
 
     #[test]

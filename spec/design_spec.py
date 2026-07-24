@@ -5550,3 +5550,168 @@ class MtuFragmentationDiagnostics(Requirement):
     """
     req_id = "MTU-DIAG-001"
 
+
+# --------------------------------------------------------------------------
+# CONFIG-AUDIT-002: five more hardcoded constants become `tetron config set`
+# keys, matching HARDEN-005's precedent
+# --------------------------------------------------------------------------
+
+class ConfigurabilityAuditBatchTwo(Requirement):
+    """REQUIREMENT-ID: CONFIG-AUDIT-002
+
+    A 2026-07-24 pass through the TODO's "Configurability audit" section
+    (opened after HARDEN-005 shipped `ratelimit.*` as "batch 1") turns five
+    more compiled-in constants into `tetron config set <key> <value>` keys,
+    the standing "configurable knobs over hardcoded values" preference. All
+    five are new flat `Option<T>` fields on `AppConfig`/`Settings`
+    (`src/config.rs`) -- unrelated to each other conceptually, so no nested
+    sub-struct the way `RateLimitConfig` groups six related fields -- each
+    `None` meaning "use the compiled default"; an empty value resets, same
+    convention as every existing key. Applies on `sudo tetron restart` like
+    every other `tetron config set` key -- none of these five live-reload
+    mid-run.
+
+    **`nuke-proposal-ttl`** overrides `membership::NUKE_PROPOSAL_TTL_SECS`
+    (compiled default 24h). `active_nuke_proposers`/`nuke_consensus_reached`/
+    `resolve_nuke_proposer` gained a `ttl_secs: u64` parameter (previously
+    read the module constant internally) so they stay pure functions of their
+    arguments; both real call sites (`diagnostics::status`,
+    `runtime::nuke_network`) resolve `config::load().ok().and_then(|c|
+    c.nuke_proposal_ttl).unwrap_or(NUKE_PROPOSAL_TTL_SECS)` once per call and
+    thread it through, rather than the membership functions reading config
+    themselves (keeps `membership.rs` free of a `config` dependency).
+    Deliberately a *global* daemon setting, not paired with the per-network
+    `nuke_consensus_threshold` the way the original TODO note mused it might
+    naturally belong (`GroupBlob`/`tetron create --nuke-consensus`) --
+    revisit as a per-network `tetron create` flag instead if that turns out
+    to matter in practice; going global for now keeps this batch free of any
+    wire-format/`GroupBlob` change.
+
+    **`listen-port`** overrides `transport::TETRON_LISTEN_PORT` (compiled
+    default 43737). Confirmed daemon-wide, not per-network: one shared iroh
+    `Endpoint`/UDP socket serves every joined network (their isolation is by
+    ALPN, not by port), so there is exactly one real call site
+    (`bootstrap::build_daemon`, which already has `app_config` loaded at that
+    point) resolving `app_config.listen_port.unwrap_or(transport::
+    TETRON_LISTEN_PORT)` and passing it into `transport::
+    create_endpoint_with_alpns`'s new `listen_port: u16` parameter.
+
+    **`poller-interval`** overrides the group poller's hardcoded
+    `Duration::from_secs(60)` tick (`reconverge::spawn_group_poller`). Read
+    once at spawn time (not per tick, matching every other config-backed
+    daemon setting -- none of them live-reload mid-run either); a changed
+    value takes effect on the next `tetron restart`, same as `listen-port`.
+    This same function also gained `SYNC-001`'s manual-trigger `Notify`
+    parameter in the same change (they touch the same `tokio::select!`), so
+    the two requirements share one commit rather than the usual
+    one-commit-per-requirement split -- see `SYNC-001`'s own docstring for
+    why forcing them apart would have meant literally writing and then
+    discarding an intermediate, half-wired version of the same function.
+
+    **`log-retention`** overrides the hardcoded `.max_log_files(7)` in
+    `main::init_tracing` (days). `init_tracing` runs before most other daemon
+    init, at the very top of `main()` -- but `config::load()` is a plain sync
+    filesystem read with no dependency on tracing being up yet, so calling it
+    this early is safe.
+
+    **`invite-default-expiry`** overrides the `None => 7 * 24 * 3600` default
+    in `invite_handler::invite_create` (used when `tetron invite create` is
+    called without `--expires`). `Option<u64>` semantics mirror `--expires`'s
+    own convention: `None` (unset) = compiled default (7 days), `Some(0)` =
+    the *configured* default is "never expires" (matching `--expires 0`/
+    `--expires never`), `Some(n)` = configured default of `n` seconds. The
+    auto-minted invite printed by `tetron create` (a second, separate
+    hardcoded `7 * 24 * 3600` literal in `create_join.rs`, found while
+    auditing every occurrence of that literal) now resolves the same
+    configured default too, rather than only the explicit `invite create`
+    path honoring it -- consistency the original TODO note didn't call out
+    but which follows directly from "one default, one place it's defined."
+
+    **Shared prep:** `parse_duration` (human-readable duration strings --
+    `"24h"`, `"7d"`, `"30m"` -- into seconds) moved from a private fn in
+    `invite_handler.rs` to `pub(crate) fn` in `config.rs`, since both
+    `invite-default-expiry` and `nuke-proposal-ttl`'s `config_set` parsing
+    need it and `config.rs` must not depend on `daemon::mesh`. Its existing
+    unit tests moved with it; `invite_handler.rs` now calls
+    `config::parse_duration`.
+    """
+    req_id = "CONFIG-AUDIT-002"
+
+
+# --------------------------------------------------------------------------
+# SYNC-001: manual DHT/group-poller trigger (`tetron sync`)
+# --------------------------------------------------------------------------
+
+class ManualGroupPollerTrigger(Requirement):
+    """REQUIREMENT-ID: SYNC-001
+
+    Discussed and requested the same session as `CONFIG-AUDIT-002`: today the
+    group poller (`reconverge::spawn_group_poller`, one per joined network,
+    coordinator or member) only ever wakes on its own timer or daemon
+    shutdown -- there is no way to ask "check right now" after an action a
+    user knows just changed the blob (minting an invite, granting admin) and
+    wants a peer to notice sooner than the configured interval.
+
+    **Mechanism:** `NetworkHandle` (`src/daemon/mod.rs`) gains
+    `poller_notify: Arc<tokio::sync::Notify>`. Unlike the existing
+    `dht_notify: Option<Arc<Notify>>` (coordinator-only, drives *publish*
+    after admission/kick), the group poller runs on every node regardless of
+    role -- it *fetches* -- so this is a separate, always-constructed field
+    (never `Option`), built fresh at every real `NetworkHandle` construction
+    site (`create_join.rs`'s create and member-join paths, `runtime.rs`'s
+    `restore_coordinator_network`) and cloned into `spawn_group_poller`'s new
+    `notify: Arc<Notify>` parameter. The one exception:
+    `create_join.rs::try_dht_fallback_join`'s degraded join path (spawns only
+    `spawn_reconnect_loop`, no poller at all, pre-existing behavior) still
+    constructs the field for struct-literal completeness, but a `tetron sync`
+    against a network stuck on that path is a harmless no-op until/unless
+    that path grows a poller of its own.
+
+    **Cooldown:** a spammed manual trigger must not reduce the *effective*
+    poll interval below a floor, since each tick does a real DHT resolve (and
+    potentially a blob fetch). `spawn_group_poller`'s `tokio::select!` gains a
+    third arm, `_ = notify.notified() => { ... }`, guarded by a `last_poll:
+    Instant` tracked across iterations: if less than
+    `MIN_MANUAL_SYNC_INTERVAL` (2s) has elapsed since the last tick (timer or
+    manual), the manual wake `continue`s straight back to `select!` without
+    doing the resolve. A timer-driven tick is never held back by this check
+    -- the configured interval itself already gates that path -- only the
+    manual-trigger arm consults the cooldown.
+
+    **IPC + CLI:** `IpcMessage::Sync { network: Option<String> }`
+    (`tetron-proto`), handled by `MeshManager::sync_now` (`daemon/mesh/
+    runtime.rs`) -- resolves the optional `--network` the same way
+    `resume`/`standby` do (exact local-name match against `self.networks`,
+    unscoped means every joined network), then calls `.notify_one()` on each
+    target's `poller_notify`. `tetron sync [--network <name>]` (`src/main.rs`
+    + `cli::status::ipc_sync`), aliased shape to `resume`/`standby`'s
+    optional `--network` (not `leave`/`invite`/`admin`'s required positional
+    argument) since this is an operational nudge optionally scoped to one
+    network, not an admin/destructive action needing per-network
+    disambiguation.
+
+    **Authorization:** investigated whether `check_authorized`
+    (`daemon/mod.rs`) actually exempts every read-only IPC op the way
+    `AGENTS.md`'s "Privilege & access" section describes ("reads... open to
+    any local user") before deciding `Sync`'s level. Found the code only ever
+    exempted the single literal `IpcMessage::Status` -- `AdminList`/
+    `InviteList` are *not* separately exempted despite reading like they
+    should be per that doc -- a small pre-existing doc/code gap, noted in
+    `DO-NOT-COMMIT/TODO.md` but intentionally not touched by this
+    requirement (out of scope; unrelated to `Sync`). `Sync` itself joins the
+    exemption bucket alongside `Status` (`matches!(req, IpcMessage::Status |
+    IpcMessage::Sync { .. })`): it causes no local mutation, only asks the
+    daemon to do a refresh it was already going to do, sooner.
+
+    **Shared commit with `CONFIG-AUDIT-002`:** both requirements' code
+    changes converge on the same lines of `spawn_group_poller` (the
+    `poller-interval` config read and this requirement's new `notify`
+    parameter/third `select!` arm are inseparable edits to the same
+    function signature and loop body), so splitting them into the usual
+    one-commit-per-requirement pattern would have meant writing and
+    discarding a half-wired intermediate version purely to satisfy commit
+    granularity -- not worth the churn for two co-designed, co-requested
+    features that shipped, built, and were tested together.
+    """
+    req_id = "SYNC-001"
+

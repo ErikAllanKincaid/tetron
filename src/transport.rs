@@ -18,13 +18,16 @@ use crate::config::ServerOverride;
 use std::sync::Arc;
 
 
-/// Fixed UDP port the endpoint binds so users can port-forward a stable, known
-/// port for guaranteed direct reachability (Tailscale-style). Unlike an ephemeral
-/// port, this stays the same across daemon restarts, so a manual router forward
-/// keeps working and the external NAT mapping doesn't churn. iroh still does
-/// automatic NAT traversal (UPnP/NAT-PMP/PCP), discovery, and relay fallback on
-/// top of this. If the port is already taken, the endpoint falls back to an
-/// ephemeral port (see `create_endpoint_with_alpns`).
+/// Compiled-default fixed UDP port the endpoint binds so users can
+/// port-forward a stable, known port for guaranteed direct reachability
+/// (Tailscale-style). Unlike an ephemeral port, this stays the same across
+/// daemon restarts, so a manual router forward keeps working and the external
+/// NAT mapping doesn't churn. iroh still does automatic NAT traversal
+/// (UPnP/NAT-PMP/PCP), discovery, and relay fallback on top of this. If the
+/// port is already taken, the endpoint falls back to an ephemeral port (see
+/// `create_endpoint_with_alpns`). Overridable via `tetron config set
+/// listen-port <port>` (CONFIG-AUDIT-002) — daemon-wide, not per-network, since
+/// one shared iroh `Endpoint`/UDP socket serves every joined network.
 pub const TETRON_LISTEN_PORT: u16 = 43737;
 
 /// Mesh wire-protocol version, embedded in the per-network ALPN. Bump this on any
@@ -43,24 +46,27 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
 /// When `tor` is true and the `tor` feature is enabled, adds the Tor custom transport
-/// alongside the default relay transport.
+/// alongside the default relay transport. `listen_port` overrides
+/// [`TETRON_LISTEN_PORT`] (CONFIG-AUDIT-002); pass the constant itself for the
+/// compiled-default behavior.
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
     alpns: Vec<Vec<u8>>,
     tor: bool,
     relay: &ServerOverride,
     discovery: &ServerOverride,
+    listen_port: u16,
 ) -> Result<Endpoint> {
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
-    let fixed = format!("0.0.0.0:{TETRON_LISTEN_PORT}");
+    let fixed = format!("0.0.0.0:{listen_port}");
     let ep = match bind_endpoint(&secret_key, &alpns, tor, &fixed, relay, discovery).await {
         Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(
-                port = TETRON_LISTEN_PORT,
+                port = listen_port,
                 error = %e,
                 "fixed UDP port unavailable; falling back to an ephemeral port"
             );

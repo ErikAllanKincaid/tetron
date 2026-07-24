@@ -260,6 +260,7 @@ impl MeshManager {
         let cancel = self.shutdown_token.child_token();
         let state = Arc::new(RwLock::new(net_state));
         let dht_notify = Arc::new(tokio::sync::Notify::new());
+        let poller_notify = Arc::new(tokio::sync::Notify::new());
         let (peers, tun_tx) = self.new_network_data_plane();
         let ctx = MeshCtx {
             identity: self.identity.clone(),
@@ -276,6 +277,7 @@ impl MeshManager {
             &net_secret_key,
             &state,
             &dht_notify,
+            &poller_notify,
             &cancel,
             &ctx,
         );
@@ -304,6 +306,7 @@ impl MeshManager {
             my_ip,
             state: state.clone(),
             dht_notify: Some(dht_notify),
+            poller_notify,
             cancel: cancel.clone(),
             tasks,
             disconnect_tx: disconnect_tx.clone(),
@@ -391,6 +394,12 @@ impl MeshManager {
         };
         let name = name.as_str();
         let my_id = self.endpoint.id();
+        // CONFIG-AUDIT-002: read once for this call rather than per proposer
+        // check, matching the group poller's "read config at the top" pattern.
+        let nuke_ttl = config::load()
+            .ok()
+            .and_then(|c| c.nuke_proposal_ttl)
+            .unwrap_or(crate::membership::NUKE_PROPOSAL_TTL_SECS);
         let (is_coordinator, has_other_members, coordinator_count) = {
             let handle = match self.networks.get(name) {
                 Some(h) => h,
@@ -483,9 +492,12 @@ impl MeshManager {
         if let Some(short) = second {
             let handle = self.networks.get(name).unwrap();
             let state = handle.state.read().unwrap();
-            if let Err(e) =
-                crate::membership::resolve_nuke_proposer(&state.nuke_proposals, now, short)
-            {
+            if let Err(e) = crate::membership::resolve_nuke_proposer(
+                &state.nuke_proposals,
+                now,
+                nuke_ttl,
+                short,
+            ) {
                 return IpcMessage::Error {
                     message: format!("{e:#}"),
                 };
@@ -497,7 +509,9 @@ impl MeshManager {
             let mut state = handle.state.write().unwrap();
             state.nuke_proposals.insert(my_id.to_string(), now);
             state.bump_generation_and_refresh();
-            let active = crate::membership::active_nuke_proposers(&state.nuke_proposals, now).len();
+            let active =
+                crate::membership::active_nuke_proposers(&state.nuke_proposals, now, nuke_ttl)
+                    .len();
             (
                 handle.dht_notify.clone(),
                 state.network_secret_key.clone(),
@@ -1016,6 +1030,40 @@ impl MeshManager {
         let message = match network {
             Some(name) => format!("'{name}' on standby (still connected to peers)"),
             None => "VPN on standby (still connected to peers)".to_string(),
+        };
+        IpcMessage::Ok { message }
+    }
+
+    /// Manually wake the DHT/group poller (SYNC-001, `tetron sync`) instead
+    /// of waiting for its configured interval. `network` scopes to one
+    /// joined network (by local display name) instead of every one, matching
+    /// `resume`/`standby`'s optional `--network` shape. An unknown `network`
+    /// name errors rather than silently no-op-ing; a woken poller itself
+    /// still applies its own cooldown (`MIN_MANUAL_SYNC_INTERVAL`) so a
+    /// spammed trigger can't force back-to-back DHT resolves.
+    pub(crate) fn sync_now(&self, network: Option<&str>) -> IpcMessage {
+        let targets: Vec<String> = match network {
+            Some(name) => {
+                if !self.networks.contains_key(name) {
+                    return IpcMessage::Error {
+                        message: format!("network '{name}' not active"),
+                    };
+                }
+                vec![name.to_string()]
+            }
+            None => self.networks.iter().map(|e| e.key().clone()).collect(),
+        };
+
+        for name in &targets {
+            if let Some(handle) = self.networks.get(name) {
+                handle.poller_notify.notify_one();
+            }
+        }
+
+        let message = match network {
+            Some(name) => format!("sync triggered for '{name}'"),
+            None if targets.is_empty() => "no active networks to sync".to_string(),
+            None => format!("sync triggered for {}", targets.join(", ")),
         };
         IpcMessage::Ok { message }
     }

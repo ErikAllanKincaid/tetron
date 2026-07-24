@@ -158,6 +158,15 @@ pub(crate) enum Command {
         #[arg(long)]
         network: Option<String>,
     },
+    /// Manually wake the DHT/group poller instead of waiting for its
+    /// configured interval (e.g. after minting an invite you want a peer to
+    /// see right away)
+    Sync {
+        /// Sync only this network (as shown in `tetron status`) instead of
+        /// every joined network
+        #[arg(long)]
+        network: Option<String>,
+    },
     /// Stop the system service (go fully offline). Requires root
     Stop,
     /// Start the installed system service. Requires root
@@ -307,12 +316,20 @@ fn init_tracing(to_file: bool) -> LogGuard {
     let (file_layer, appender_guard) = if to_file {
         match std::fs::create_dir_all(logdir::log_dir()) {
             Ok(()) => {
-                // Daily rotation; retain the 7 most recent files so logs older
-                // than ~a week are pruned automatically (bounds disk usage).
+                // Daily rotation; retain the N most recent files so logs older
+                // than ~a week (compiled default) are pruned automatically
+                // (bounds disk usage). Overridable via `tetron config set
+                // log-retention <days>` (CONFIG-AUDIT-002); `config::load()`
+                // is a plain sync fs read with no dependency on tracing being
+                // up yet, so it's safe to call this early in `main()`.
+                let max_log_files = config::load()
+                    .ok()
+                    .and_then(|c| c.log_retention)
+                    .unwrap_or(7) as usize;
                 match tracing_appender::rolling::Builder::new()
                     .rotation(tracing_appender::rolling::Rotation::DAILY)
                     .filename_prefix("tetron.log")
-                    .max_log_files(7)
+                    .max_log_files(max_log_files)
                     .build(logdir::log_dir())
                 {
                     Ok(appender) => {
@@ -484,6 +501,7 @@ async fn main() -> Result<()> {
         }
         Command::Resume { hostname, network } => cmd_resume(hostname, network).await,
         Command::Standby { network } => ipc_standby(network).await,
+        Command::Sync { network } => ipc_sync(network).await,
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),

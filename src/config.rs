@@ -313,8 +313,65 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         ratelimit_key if ratelimit_key.starts_with("ratelimit.") => {
             set_ratelimit_key(&mut cfg.ratelimit, ratelimit_key, &entries, reset)?;
         }
+        "nuke-proposal-ttl" => {
+            cfg.nuke_proposal_ttl = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "nuke-proposal-ttl takes a single duration, e.g. 24h"
+                );
+                Some(parse_duration(&entries[0]).map_err(anyhow::Error::msg)?)
+            };
+        }
+        "listen-port" => {
+            cfg.listen_port = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "listen-port takes a single port number"
+                );
+                Some(parse_ratelimit_value(&entries[0])?)
+            };
+        }
+        "poller-interval" => {
+            cfg.poller_interval = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "poller-interval takes a single value in seconds"
+                );
+                Some(parse_ratelimit_value(&entries[0])?)
+            };
+        }
+        "log-retention" => {
+            cfg.log_retention = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "log-retention takes a single value in days"
+                );
+                Some(parse_ratelimit_value(&entries[0])?)
+            };
+        }
+        "invite-default-expiry" => {
+            cfg.invite_default_expiry = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "invite-default-expiry takes a single duration, e.g. 24h"
+                );
+                Some(parse_duration(&entries[0]).map_err(anyhow::Error::msg)?)
+            };
+        }
         other => anyhow::bail!(
-            "unknown config key: {other} (expected relay, discovery-dns, subnet, or \
+            "unknown config key: {other} (expected relay, discovery-dns, subnet, \
+             nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
+             invite-default-expiry, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -365,6 +422,40 @@ fn parse_ratelimit_value<T: std::str::FromStr>(raw: &str) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("invalid ratelimit value: {raw} (expected a whole number)"))
 }
 
+/// Parse a human-readable duration string into seconds.
+///
+/// Supports suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days),
+/// `w` (weeks). A bare number is treated as seconds. Returns an error if the
+/// string is malformed or the value overflows `u64`. Shared by
+/// `invite-default-expiry`/`nuke-proposal-ttl` config parsing and
+/// `tetron invite create --expires`.
+pub(crate) fn parse_duration(s: &str) -> std::result::Result<u64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty duration".to_string());
+    }
+    let (num_str, suffix) = if s.ends_with(|c: char| c.is_ascii_alphabetic()) {
+        let split = s.len() - 1;
+        (&s[..split], &s[split..])
+    } else {
+        (s, "s") // bare number = seconds
+    };
+    let value: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid number '{num_str}'"))?;
+    let multiplier = match suffix {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        "w" => 604800,
+        _ => return Err(format!("unknown suffix '{suffix}', use s/m/h/d/w")),
+    };
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| "duration overflows u64".to_string())
+}
+
 fn render_override(o: &ServerOverride) -> String {
     if o.is_unset() {
         "<default>".to_string()
@@ -401,11 +492,28 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if k == "nuke-proposal-ttl" {
+            return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
+        }
+        if k == "listen-port" {
+            return Ok((k.to_string(), render_opt(cfg.listen_port)));
+        }
+        if k == "poller-interval" {
+            return Ok((k.to_string(), render_opt(cfg.poller_interval)));
+        }
+        if k == "log-retention" {
+            return Ok((k.to_string(), render_opt(cfg.log_retention)));
+        }
+        if k == "invite-default-expiry" {
+            return Ok((k.to_string(), render_opt(cfg.invite_default_expiry)));
+        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
             other => anyhow::bail!(
-                "unknown config key: {other} (expected relay, discovery-dns, subnet, or \
+                "unknown config key: {other} (expected relay, discovery-dns, subnet, \
+                 nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
+                 invite-default-expiry, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -424,6 +532,11 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("ratelimit.global-capacity")?,
             row("ratelimit.global-refill-per-sec")?,
             row("ratelimit.global-strike-limit")?,
+            row("nuke-proposal-ttl")?,
+            row("listen-port")?,
+            row("poller-interval")?,
+            row("log-retention")?,
+            row("invite-default-expiry")?,
         ]),
     }
 }
@@ -463,6 +576,35 @@ pub struct AppConfig {
     /// Rate-limit policy overrides (HARDEN-005). See [`RateLimitConfig`].
     #[serde(default)]
     pub ratelimit: RateLimitConfig,
+    /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
+    /// 24h). `None` uses the compiled default. Set via `tetron config set
+    /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nuke_proposal_ttl: Option<u64>,
+    /// Override for `transport::TETRON_LISTEN_PORT` (compiled default
+    /// 43737). `None` uses the compiled default. Daemon-wide, not
+    /// per-network — one shared iroh `Endpoint`/UDP socket serves every
+    /// joined network. Set via `tetron config set listen-port <port>`
+    /// (CONFIG-AUDIT-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen_port: Option<u16>,
+    /// Override for the DHT/group poller's tick interval (compiled default
+    /// 60s). `None` uses the compiled default. Set via `tetron config set
+    /// poller-interval <seconds>` (CONFIG-AUDIT-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poller_interval: Option<u64>,
+    /// Override for the daemon's rolling log retention, in days (compiled
+    /// default 7). `None` uses the compiled default. Set via `tetron config
+    /// set log-retention <days>` (CONFIG-AUDIT-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_retention: Option<u32>,
+    /// Override for a freshly minted invite's default expiry when
+    /// `--expires` is omitted (compiled default 7 days). `None` uses the
+    /// compiled default; `Some(0)` makes the configured default "never
+    /// expires", matching `--expires 0`/`--expires never`. Set via `tetron
+    /// config set invite-default-expiry <duration>` (CONFIG-AUDIT-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_default_expiry: Option<u64>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }
@@ -508,6 +650,16 @@ struct Settings {
     discovery_dns: ServerOverride,
     #[serde(default)]
     ratelimit: RateLimitConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nuke_proposal_ttl: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    listen_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    poller_interval: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    log_retention: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    invite_default_expiry: Option<u64>,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -749,6 +901,11 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
             ratelimit: RateLimitConfig::default(),
+            nuke_proposal_ttl: None,
+            listen_port: None,
+            poller_interval: None,
+            log_retention: None,
+            invite_default_expiry: None,
         }
     };
 
@@ -783,6 +940,11 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
         ratelimit: settings.ratelimit,
+        nuke_proposal_ttl: settings.nuke_proposal_ttl,
+        listen_port: settings.listen_port,
+        poller_interval: settings.poller_interval,
+        log_retention: settings.log_retention,
+        invite_default_expiry: settings.invite_default_expiry,
         networks,
     })
 }
@@ -822,6 +984,11 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
         ratelimit: config.ratelimit.clone(),
+        nuke_proposal_ttl: config.nuke_proposal_ttl,
+        listen_port: config.listen_port,
+        poller_interval: config.poller_interval,
+        log_retention: config.log_retention,
+        invite_default_expiry: config.invite_default_expiry,
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
@@ -1365,6 +1532,47 @@ name = "test"
         assert!(config_set(&mut cfg, "subnet", "10.0.0.0/33", false).is_err());
     }
 
+    #[test]
+    fn config_set_get_configurability_audit_keys() {
+        let mut cfg = AppConfig::default();
+        // All five default to <default> when unset.
+        for k in [
+            "nuke-proposal-ttl",
+            "listen-port",
+            "poller-interval",
+            "log-retention",
+            "invite-default-expiry",
+        ] {
+            assert_eq!(config_get(&cfg, Some(k)).unwrap()[0].1, "<default>");
+        }
+
+        config_set(&mut cfg, "nuke-proposal-ttl", "12h", false).unwrap();
+        assert_eq!(cfg.nuke_proposal_ttl, Some(12 * 3600));
+        assert_eq!(config_get(&cfg, Some("nuke-proposal-ttl")).unwrap()[0].1, "43200");
+
+        config_set(&mut cfg, "listen-port", "51820", false).unwrap();
+        assert_eq!(cfg.listen_port, Some(51820));
+
+        config_set(&mut cfg, "poller-interval", "30", false).unwrap();
+        assert_eq!(cfg.poller_interval, Some(30));
+
+        config_set(&mut cfg, "log-retention", "14", false).unwrap();
+        assert_eq!(cfg.log_retention, Some(14));
+
+        config_set(&mut cfg, "invite-default-expiry", "1d", false).unwrap();
+        assert_eq!(cfg.invite_default_expiry, Some(86400));
+
+        // Empty resets each back to None/<default>.
+        config_set(&mut cfg, "nuke-proposal-ttl", "", false).unwrap();
+        assert_eq!(cfg.nuke_proposal_ttl, None);
+        config_set(&mut cfg, "listen-port", "", false).unwrap();
+        assert_eq!(cfg.listen_port, None);
+
+        // Garbage is rejected.
+        assert!(config_set(&mut cfg, "listen-port", "not-a-port", false).is_err());
+        assert!(config_set(&mut cfg, "nuke-proposal-ttl", "abc", false).is_err());
+    }
+
     // Regression for the bug that prompted this change: concurrent saves of
     // distinct networks used to clobber one another through a single
     // non-atomic `networks.toml`. With one file per network they cannot.
@@ -1432,4 +1640,42 @@ name = "test"
         assert!(load_network_in(dir, "a/b").is_err());
     }
 
+    #[test]
+    fn test_parse_duration_seconds() {
+        assert_eq!(parse_duration("30s").unwrap(), 30);
+        assert_eq!(parse_duration("30").unwrap(), 30);
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(parse_duration("5m").unwrap(), 300);
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_duration("2h").unwrap(), 7200);
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        assert_eq!(parse_duration("7d").unwrap(), 604800);
+    }
+
+    #[test]
+    fn test_parse_duration_weeks() {
+        assert_eq!(parse_duration("2w").unwrap(), 1209600);
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration("30x").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        let big = format!("{}w", u64::MAX);
+        assert!(parse_duration(&big).is_err());
+    }
 }
