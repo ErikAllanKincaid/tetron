@@ -188,7 +188,7 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     let stored_csum = u16::from_be_bytes([hdr[10], hdr[11]]);
     hdr[10] = 0;
     hdr[11] = 0;
-    if !ip_checksum(&hdr) != stored_csum {
+    if ip_checksum(&hdr) != stored_csum {
         return None; // corrupt header — refuse to fragment
     }
 
@@ -241,7 +241,7 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
         // Clear header checksum and recompute
         frag[10] = 0;
         frag[11] = 0;
-        let csum = !ip_checksum(&frag[..HEADER_LEN]);
+        let csum = ip_checksum(&frag[..HEADER_LEN]);
         frag[10] = (csum >> 8) as u8;
         frag[11] = csum as u8;
 
@@ -532,7 +532,7 @@ mod tests {
         // Compute and store the header checksum
         p[10] = 0;
         p[11] = 0;
-        let csum = !ip_checksum(&p[..20]);
+        let csum = ip_checksum(&p[..20]);
         p[10] = (csum >> 8) as u8;
         p[11] = csum as u8;
         p
@@ -558,6 +558,40 @@ mod tests {
         let mut pkt = make_ipv4(1208, 0x1234, false);
         pkt[10] ^= 0xFF; // flip the stored checksum's high byte
         assert!(fragment_ipv4(&pkt, 1200).is_none());
+    }
+
+    #[test]
+    fn frag_accepts_a_genuinely_valid_header() {
+        // F-04 live-testing regression (2026-07-24): the only prior coverage
+        // of the checksum check exercised the "corrupt gets rejected"
+        // direction; nothing asserted a genuinely valid, untouched header is
+        // still accepted. A stray extra `!` made the check reject every
+        // header unconditionally -- confirmed live on a real 3-machine mesh,
+        // where every oversized IPv4 packet needing fragmentation was
+        // dropped with "cannot fragment ... (options or malformed)".
+        let pkt = make_ipv4(1208, 0x1234, false);
+        assert!(
+            fragment_ipv4(&pkt, 1200).is_some(),
+            "a valid, untouched header must fragment successfully, not be treated as corrupt"
+        );
+    }
+
+    #[test]
+    fn ip_checksum_matches_a_known_good_real_world_header() {
+        // Ground truth against an independently-known-valid textbook IPv4
+        // header (checksum bytes 10-11 = 0xb1e6), so `ip_checksum`'s sign
+        // convention can never silently invert again without a test failing
+        // -- the class of bug `frag_accepts_a_genuinely_valid_header` above
+        // catches at the `fragment_ipv4` level, this catches at the raw
+        // helper level.
+        let mut hdr: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0x1c, 0x46, 0x40, 0x00, 0x40, 0x06, 0xb1, 0xe6, 0xac, 0x10,
+            0x0a, 0x63, 0xac, 0x10, 0x0a, 0x0c,
+        ];
+        let stored = u16::from_be_bytes([hdr[10], hdr[11]]);
+        hdr[10] = 0;
+        hdr[11] = 0;
+        assert_eq!(ip_checksum(&hdr), stored);
     }
 
     #[test]
@@ -612,7 +646,7 @@ mod tests {
         let mut hdr1 = frags[0][..20].to_vec();
         hdr1[10] = 0;
         hdr1[11] = 0;
-        assert_eq!(csum1, !ip_checksum(&hdr1), "frag 1 checksum");
+        assert_eq!(csum1, ip_checksum(&hdr1), "frag 1 checksum");
         // Payload content (first 1176 bytes of original)
         assert_eq!(&frags[0][20..], &pkt[20..20 + 1176], "frag 1 payload");
 
@@ -629,7 +663,7 @@ mod tests {
         let mut hdr2 = frags[1][..20].to_vec();
         hdr2[10] = 0;
         hdr2[11] = 0;
-        assert_eq!(csum2, !ip_checksum(&hdr2), "frag 2 checksum");
+        assert_eq!(csum2, ip_checksum(&hdr2), "frag 2 checksum");
         // Remaining payload
         assert_eq!(&frags[1][20..], &pkt[20 + 1176..], "frag 2 payload");
     }
@@ -695,7 +729,7 @@ mod tests {
             let mut hdr = frag[..20].to_vec();
             hdr[10] = 0;
             hdr[11] = 0;
-            let computed = !ip_checksum(&hdr);
+            let computed = ip_checksum(&hdr);
             assert_eq!(stored, computed, "frag {i} checksum mismatch");
         }
     }

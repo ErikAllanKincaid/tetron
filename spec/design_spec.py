@@ -2598,6 +2598,41 @@ class Ipv4Fragmentation(Requirement):
     against a fresh computation before trusting any field or fragmenting at
     all, returning `None` (already the existing "cannot fragment, malformed"
     path in `forward.rs`, unchanged) on a mismatch.
+
+    Follow-up (live-testing regression, found 2026-07-24 on a real 3-machine
+    mesh -- coordinator + 2 members, non-default subnet, fresh HARDEN-002/
+    004/005 + FRAG-002 build): F-04's checksum-verify line read
+    `!ip_checksum(&hdr) != stored_csum` -- a stray extra bitwise NOT that
+    made the comparison *always* fail, since `ip_checksum` already applies
+    the final one's-complement internally (confirmed against a known-good
+    textbook header checksum: `ip_checksum(hdr)` alone matches, `!ip_checksum
+    (hdr)` never can, for any input -- X and ~X are never equal). Every real
+    oversized IPv4 packet was therefore treated as "corrupt" and dropped
+    outright -- a full regression of the original FRAG-001/F-04 bug, hit live
+    at the *exact* MTU numbers from the original 2026-07-15 report
+    (`max=1162`, `len=1228`), confirmed via `tetron`'s own log line
+    (`cannot fragment IPv4 packet (options or malformed)`). Masked in a
+    quick smoke test only because TCP's own retransmission/backoff still got
+    the data through (just much slower); a full 20MB scp over the affected
+    IPv4 mesh address completed with a correct end-to-end checksum despite
+    the drops, which is why this needed a real bulk transfer under log
+    inspection to surface, not just a ping/login check. The *same* stray `!`
+    was also present on the fragment-*write* side (present since FRAG-001's
+    original commit, unrelated to F-04) and in every test helper that
+    constructs a synthetic packet checksum -- so the entire existing test
+    suite was self-consistently checking its own (equally inverted)
+    convention rather than RFC 1071 truth, which is why no unit test ever
+    caught it; the only prior checksum test exercised "corrupt gets
+    rejected," never "valid gets accepted." Fixed by removing the extra `!`
+    at both the verify and write sites (and in the test helpers), and added
+    `frag_accepts_a_genuinely_valid_header` (closes the missing "valid gets
+    accepted" direction) plus `ip_checksum_matches_a_known_good_real_world_
+    header` (an independent ground-truth check against a textbook checksum,
+    immune to the whole class of "both sides agree with each other, neither
+    is right" bug). Re-verified live after the fix: the same 3-machine mesh,
+    same MTU condition, now logs `fragmenting oversized IP packet ...
+    nfrags=2` instead of the drop warning, and the 20MB transfer's checksum
+    still matches with zero warnings logged.
     """
     req_id = "FRAG-001"
 
