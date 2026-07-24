@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-24
+
 ### Added
 
 - **`tetron invite`/`tetron admin` now accept a network key, not just the local display name (INVITE-ADMIN-NETWORK-KEY-001)**: same fallback `tetron leave` already had (`LEAVE-NETWORK-KEY-001`) -- if you only had the invite key or room id handy, there was no way to mint an invite or grant admin at all. Both now try the local name first (unchanged), then fall back to a `network_key` prefix match (>=10 characters, or the full key).
