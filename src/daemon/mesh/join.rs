@@ -116,6 +116,7 @@ pub(crate) async fn join_mesh_shared(
         identity,
         peers,
         blob_store,
+        global_gate,
         ..
     } = ctx;
     let JoinParams {
@@ -263,6 +264,7 @@ pub(crate) async fn join_mesh_shared(
         promote_tx.clone(),
         reconverge_notify.clone(),
         pending_pongs.clone(),
+        global_gate.clone(),
     );
 
     Ok(JoinResult::Joined(live_state, reconverge_notify))
@@ -692,6 +694,7 @@ fn spawn_member_control_listener(
     promote_tx: mpsc::Sender<String>,
     reconverge_notify: Arc<tokio::sync::Notify>,
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
+    global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
 ) {
     tokio::spawn(async move {
         let mut gate = crate::ratelimit::ControlGate::new();
@@ -705,9 +708,11 @@ fn spawn_member_control_listener(
                                 Ok(m) => m,
                                 Err(_) => continue,
                             };
-                            // Throttle inbound control messages per connection:
-                            // drop over-budget ones, drop the peer on a flood.
-                            match gate.check() {
+                            // Throttle inbound control messages: this
+                            // connection's own gate plus the shared
+                            // daemon-wide gate (HARDEN-004) -- drop
+                            // over-budget ones, drop the peer on a flood.
+                            match gate.check_with_global(&global_gate) {
                                 crate::ratelimit::Verdict::Allow => {}
                                 crate::ratelimit::Verdict::Drop => continue,
                                 crate::ratelimit::Verdict::Close => {
@@ -850,6 +855,7 @@ pub(crate) fn spawn_reconnect_loop(
         tun_tx,
         stats,
         pruned_peers,
+        global_gate,
         ..
     } = ctx;
     use tracing::Instrument as _;
@@ -937,6 +943,7 @@ pub(crate) fn spawn_reconnect_loop(
             let reconverge_notify = reconverge_notify.clone();
             let pending_pongs = pending_pongs.clone();
             let live_state = live_state.clone();
+            let global_gate = global_gate.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -995,6 +1002,7 @@ pub(crate) fn spawn_reconnect_loop(
                                     promote_tx.clone(),
                                     reconverge_notify.clone(),
                                     pending_pongs.clone(),
+                                    global_gate.clone(),
                                 );
                             }
                             forward::spawn_peer_reader(

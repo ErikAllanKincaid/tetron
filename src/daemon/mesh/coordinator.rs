@@ -102,6 +102,7 @@ pub(crate) fn spawn_coordinator_control_reader(
     token: CancellationToken,
     // Fires the waiting `tetron ping` handler when a matching `Pong` arrives.
     pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
+    global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
 ) {
     tokio::spawn(async move {
         let mut gate = crate::ratelimit::ControlGate::new();
@@ -118,9 +119,11 @@ pub(crate) fn spawn_coordinator_control_reader(
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            // Throttle inbound control messages per connection: drop over-budget
-            // ones, and drop the peer entirely if it sustains a flood.
-            match gate.check() {
+            // Throttle inbound control messages: this connection's own gate
+            // plus the shared daemon-wide gate (HARDEN-004) -- drop
+            // over-budget ones, and drop the peer entirely if it sustains a
+            // flood.
+            match gate.check_with_global(&global_gate) {
                 crate::ratelimit::Verdict::Allow => {}
                 crate::ratelimit::Verdict::Drop => continue,
                 crate::ratelimit::Verdict::Close => {

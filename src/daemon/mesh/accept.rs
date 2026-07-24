@@ -54,6 +54,7 @@ impl CoordinatorAcceptState {
                 network.clone(),
                 token.clone(),
                 pending_pongs,
+                ctx.global_gate.clone(),
             );
             forward::spawn_peer_reader(
                 conn,
@@ -440,6 +441,7 @@ impl CoordinatorAcceptState {
             self.network_name.clone(),
             self.token.clone(),
             self.pending_pongs.clone(),
+            self.ctx.global_gate.clone(),
         );
         forward::spawn_peer_reader(
             conn,

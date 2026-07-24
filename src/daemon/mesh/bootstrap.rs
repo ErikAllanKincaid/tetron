@@ -161,6 +161,14 @@ async fn build_daemon(
     )
     .await?;
 
+    // --- Rate-limit hardening (HARDEN-002/004/005): the one daemon-wide
+    // shared gate, built from this config snapshot. Per-connection gates
+    // (`ratelimit::ControlGate::new`) read config fresh at each construction
+    // instead, since they're built lazily per connection, not here.
+    let global_gate = Arc::new(crate::ratelimit::GlobalRateLimiter::from_config(
+        &app_config.ratelimit,
+    ));
+
     // --- Content-addressed blob store (membership/file transfer) ---
     let blobs_dir = config::config_dir()?.join("blobs");
     std::fs::create_dir_all(&blobs_dir)?;
@@ -193,6 +201,7 @@ async fn build_daemon(
         protocol_router: protocol_router.clone(),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         pruned_peers: Arc::new(DashSet::new()),
+        global_gate,
         active: active.clone(),
 
         promote_tx,

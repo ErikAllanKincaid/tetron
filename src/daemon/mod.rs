@@ -132,6 +132,10 @@ pub(crate) struct MeshCtx {
     /// re-form the link. The reconnect loop consumes an entry here to skip that
     /// one reconnect. Populated in [`reconverge_and_apply`] and the kick handler.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
+    /// Daemon-wide shared rate-limit gate (HARDEN-004), consulted alongside
+    /// each connection's own `ControlGate`. Genuinely daemon-wide, like
+    /// `stats`/`blob_store`/`pruned_peers` above.
+    global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
 }
 
 impl MeshCtx {
@@ -403,6 +407,9 @@ pub struct MeshManager {
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
+    /// Daemon-wide shared rate-limit gate (HARDEN-004), built once at
+    /// bootstrap from config and cloned into every network's [`MeshCtx`].
+    global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
     /// Default data-plane activation state for a network at the moment it is
     /// first created/joined/restored (`create_and_attach_network_tun`
     /// consults this to decide whether to bring a brand-new `NetworkHandle`
@@ -500,6 +507,7 @@ impl MeshManager {
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
+            global_gate: self.global_gate.clone(),
         })
     }
 
@@ -1171,6 +1179,7 @@ mod accept_handler_tests {
             stats: Arc::new(ForwardMetrics::default()),
             blob_store,
             pruned_peers: Arc::new(DashSet::new()),
+            global_gate: Arc::new(crate::ratelimit::GlobalRateLimiter::with_params(10, 3, 50)),
         }
     }
 

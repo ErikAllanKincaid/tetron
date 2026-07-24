@@ -5370,3 +5370,81 @@ class AdminAddHostnameResolutionCaseInsensitive(Requirement):
     """
     req_id = "STATUS-004"
 
+
+# --------------------------------------------------------------------------
+# HARDEN-002/004/005: control-plane rate-limit hardening, bundled
+# --------------------------------------------------------------------------
+
+class RateLimitHardening(Requirement):
+    """REQUIREMENT-ID: HARDEN-002
+
+    A 2026-07-23 review of `HARDENING-SPEC.md` adopted three related
+    rate-limit changes to `src/ratelimit.rs`'s `ControlGate` (guarding
+    inbound control-plane messages -- `MemberSync`/`BlobUpdated` triggers,
+    `MeshHello`, invite gossip -- per connection). Bundled into one
+    requirement since they land together and share one review.
+
+    **HARDEN-002 (tighten the per-connection defaults):** the original
+    constants (`CAPACITY=20`, `REFILL_PER_SEC=2`, `STRIKE_LIMIT=100`) let an
+    already-admitted peer burst 20 control messages instantly, each
+    potentially triggering a pkarr resolve and, on a hash change, a blob
+    fetch -- real work on the receiving node for cheap-to-send input.
+    Tightened to `CAPACITY=5`, `REFILL_PER_SEC=1`, `STRIKE_LIMIT=20`. A
+    legitimate peer never needs to burst more than a handful of control
+    messages at once (one `MemberSync`/`BlobUpdated` per actual roster
+    change), so this has no effect on normal operation.
+
+    **HARDEN-004 (add a global token bucket alongside the per-connection
+    one):** the per-connection gate alone bounds one connection, not the
+    daemon's aggregate control-plane workload across every connection at
+    once. `ratelimit::GlobalRateLimiter` is one additional token bucket
+    shared daemon-wide (`GLOBAL_CAPACITY=10`, `GLOBAL_REFILL_PER_SEC=3`,
+    `GLOBAL_STRIKE_LIMIT=50`), consulted in addition to (never instead of)
+    each connection's own gate -- a message is only actually processed if
+    *both* gates say Allow (`ControlGate::check_with_global`, which
+    short-circuits: a per-connection Drop/Close never even consults the
+    global gate, since the message is already being dropped). Because
+    admission is invite-gated (`LIVE-001`), "N connections" means N
+    separately-admitted identities, not N sockets from one unauthenticated
+    attacker -- so the real severity this closes is narrower than the
+    original hardening doc framed it (a multi-identity insider or a
+    coordinator with many legitimately joined peers all misbehaving at
+    once, not an anonymous flood) -- still worth it as defense-in-depth.
+    `GlobalRateLimiter` builds on the `ratelimit` crate's own lock-free,
+    atomics-based `Ratelimiter` (`try_wait` takes `&self`, not `&mut self`),
+    so the shared bucket needs no `Mutex`: its own strike counter is a bare
+    `AtomicU32`. A `Close` verdict from the global gate closes only the one
+    connection whose message happened to tip the shared bucket over --
+    there is no single "the abusive connection" to target under a
+    multi-connection swarm, so this is a pragmatic choice, not a claim that
+    the closed connection was individually at fault.
+
+    **HARDEN-005 (make both sets of constants configurable):** a direct
+    instance of the standing "configurable knobs over hardcoded values"
+    preference, not just operator convenience -- this bundle ranks *above*
+    where the original hardening doc placed it ("deferred, low priority")
+    for exactly that reason. `config::RateLimitConfig` (a new
+    `AppConfig`/`Settings` field, `ratelimit`) holds six `Option` fields --
+    `capacity`/`refill_per_sec`/`strike_limit` for the per-connection gate,
+    `global_capacity`/`global_refill_per_sec`/`global_strike_limit` for the
+    shared one -- each `None` meaning "use the compiled default" above.
+    Set via `tetron config set ratelimit.<key> <value>` (keys:
+    `capacity`, `refill-per-sec`, `strike-limit`, `global-capacity`,
+    `global-refill-per-sec`, `global-strike-limit`); an empty value resets
+    that one key to its compiled default, matching `relay`/`discovery-dns`/
+    `subnet`'s existing reset convention. Like every other `tetron config
+    set`, applies on `sudo tetron restart` -- `ControlGate::new()` reads the
+    override fresh each time it constructs a gate (once per connection, not
+    a hot path), and the global gate is built once at daemon bootstrap
+    (`bootstrap::build_daemon`) from the config snapshot already loaded
+    there.
+
+    **Rejected in the same review -- `HARDEN-001`** (IPC socket `0666` ->
+    `0660` + `chown root:tetron`): contradicts this project's own explicit
+    "Privilege & access" design (`AGENTS.md`) -- the socket is deliberately
+    world-connectable, with authorization entirely per-request via
+    `SO_PEERCRED`, not socket permissions. Both the WebUI and Systray addons
+    architect around exactly that. Not adopted.
+    """
+    req_id = "HARDEN-002"
+

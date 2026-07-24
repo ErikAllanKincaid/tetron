@@ -464,6 +464,7 @@ impl MeshManager {
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
+            global_gate: self.global_gate.clone(),
         };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
@@ -702,6 +703,7 @@ impl MeshManager {
             stats: self.stats.clone(),
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
+            global_gate: self.global_gate.clone(),
         };
         let ctx = JoinContext {
             display_name,
@@ -1467,6 +1469,7 @@ impl MeshManager {
                 stats: self.stats.clone(),
                 blob_store: self.blob_store.clone(),
                 pruned_peers: self.pruned_peers.clone(),
+                global_gate: self.global_gate.clone(),
             };
             let my_ip = self.identity.local_ip();
             let my_hostname = net_config.my_hostname.clone();

@@ -176,6 +176,27 @@ impl ServerOverride {
     }
 }
 
+/// Rate-limit policy overrides for `src/ratelimit.rs`'s `ControlGate`
+/// (per-connection) and `GlobalRateLimiter` (daemon-wide) (HARDEN-005). Each
+/// field `None` means "use the compiled default" — see `ratelimit.rs` for the
+/// values. Set via `tetron config set ratelimit.<key> <value>`; an empty
+/// value resets that one key.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refill_per_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strike_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_capacity: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_refill_per_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_strike_limit: Option<u32>,
+}
+
 /// Preset URL for the rayfish-operated iroh transport relay.
 pub const RELAY_PRESET_RAYFISH: &str = "http://relay.iroh.rayfish.xyz:3340";
 /// Preset URL for the rayfish-operated discovery-DNS / pkarr server.
@@ -289,11 +310,59 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 cfg.subnet = Some(crate::membership::parse_cidr(&entries[0])?);
             }
         }
+        ratelimit_key if ratelimit_key.starts_with("ratelimit.") => {
+            set_ratelimit_key(&mut cfg.ratelimit, ratelimit_key, &entries, reset)?;
+        }
         other => anyhow::bail!(
-            "unknown config key: {other} (expected relay, discovery-dns, or subnet)"
+            "unknown config key: {other} (expected relay, discovery-dns, subnet, or \
+             ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
+             global-refill-per-sec|global-strike-limit>)"
         ),
     }
     Ok(())
+}
+
+/// Parse and apply one `ratelimit.<key>` entry (HARDEN-005). `reset` (empty
+/// value or "n0") clears the field back to `None` (compiled default).
+fn set_ratelimit_key(
+    rl: &mut RateLimitConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key.strip_prefix("ratelimit.").expect("checked by caller");
+    if reset {
+        match sub {
+            "capacity" => rl.capacity = None,
+            "refill-per-sec" => rl.refill_per_sec = None,
+            "strike-limit" => rl.strike_limit = None,
+            "global-capacity" => rl.global_capacity = None,
+            "global-refill-per-sec" => rl.global_refill_per_sec = None,
+            "global-strike-limit" => rl.global_strike_limit = None,
+            other => anyhow::bail!("unknown ratelimit config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "ratelimit.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "capacity" => rl.capacity = Some(parse_ratelimit_value(raw)?),
+        "refill-per-sec" => rl.refill_per_sec = Some(parse_ratelimit_value(raw)?),
+        "strike-limit" => rl.strike_limit = Some(parse_ratelimit_value(raw)?),
+        "global-capacity" => rl.global_capacity = Some(parse_ratelimit_value(raw)?),
+        "global-refill-per-sec" => rl.global_refill_per_sec = Some(parse_ratelimit_value(raw)?),
+        "global-strike-limit" => rl.global_strike_limit = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown ratelimit config key: {other}"),
+    }
+    Ok(())
+}
+
+fn parse_ratelimit_value<T: std::str::FromStr>(raw: &str) -> Result<T> {
+    raw.parse::<T>()
+        .map_err(|_| anyhow::anyhow!("invalid ratelimit value: {raw} (expected a whole number)"))
 }
 
 fn render_override(o: &ServerOverride) -> String {
@@ -308,6 +377,10 @@ fn render_override(o: &ServerOverride) -> String {
 /// Render config settings as `(key, value)` rows for `tetron config get`. With a
 /// key, returns just that one (error on unknown key); without, all three.
 pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, String)>> {
+    fn render_opt<T: std::fmt::Display>(v: Option<T>) -> String {
+        v.map(|n| n.to_string())
+            .unwrap_or_else(|| "<default>".to_string())
+    }
     let row = |k: &str| -> Result<(String, String)> {
         if k == "subnet" {
             let val = cfg
@@ -316,18 +389,42 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                 .unwrap_or_else(|| "<default>".to_string());
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("ratelimit.") {
+            let val = match sub {
+                "capacity" => render_opt(cfg.ratelimit.capacity),
+                "refill-per-sec" => render_opt(cfg.ratelimit.refill_per_sec),
+                "strike-limit" => render_opt(cfg.ratelimit.strike_limit),
+                "global-capacity" => render_opt(cfg.ratelimit.global_capacity),
+                "global-refill-per-sec" => render_opt(cfg.ratelimit.global_refill_per_sec),
+                "global-strike-limit" => render_opt(cfg.ratelimit.global_strike_limit),
+                other => anyhow::bail!("unknown ratelimit config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
             other => anyhow::bail!(
-                "unknown config key: {other} (expected relay, discovery-dns, or subnet)"
+                "unknown config key: {other} (expected relay, discovery-dns, subnet, or \
+                 ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
+                 global-refill-per-sec|global-strike-limit>)"
             ),
         };
         Ok((k.to_string(), render_override(o)))
     };
     match key {
         Some(k) => Ok(vec![row(k)?]),
-        None => Ok(vec![row("relay")?, row("discovery-dns")?, row("subnet")?]),
+        None => Ok(vec![
+            row("relay")?,
+            row("discovery-dns")?,
+            row("subnet")?,
+            row("ratelimit.capacity")?,
+            row("ratelimit.refill-per-sec")?,
+            row("ratelimit.strike-limit")?,
+            row("ratelimit.global-capacity")?,
+            row("ratelimit.global-refill-per-sec")?,
+            row("ratelimit.global-strike-limit")?,
+        ]),
     }
 }
 
@@ -363,6 +460,9 @@ pub struct AppConfig {
     /// publish). Also redirects the `dht.rs` pkarr client.
     #[serde(default)]
     pub discovery_dns: ServerOverride,
+    /// Rate-limit policy overrides (HARDEN-005). See [`RateLimitConfig`].
+    #[serde(default)]
+    pub ratelimit: RateLimitConfig,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }
@@ -406,6 +506,8 @@ struct Settings {
     relay: ServerOverride,
     #[serde(default)]
     discovery_dns: ServerOverride,
+    #[serde(default)]
+    ratelimit: RateLimitConfig,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -646,6 +748,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             subnet: None,
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
+            ratelimit: RateLimitConfig::default(),
         }
     };
 
@@ -679,6 +782,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         subnet: settings.subnet,
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
+        ratelimit: settings.ratelimit,
         networks,
     })
 }
@@ -717,6 +821,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         subnet: config.subnet,
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
+        ratelimit: config.ratelimit.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
