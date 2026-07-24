@@ -820,11 +820,21 @@ impl MeshManager {
         req: &IpcMessage,
         peer_cred: Option<(u32, u32)>,
     ) -> Option<IpcMessage> {
-        // Reads are available to everyone. `Sync` joins this bucket even
-        // though it isn't a pure read: it causes no local mutation, just
-        // wakes a background poller to do a refresh it was already going to
-        // do, sooner (SYNC-001).
-        if matches!(req, IpcMessage::Status | IpcMessage::Sync { .. }) {
+        // Reads are available to everyone (AUTHZ-001): `Status`, and
+        // `AdminList`/`InviteList` (listing key-holders/invites mutates
+        // nothing, same as `Status`, despite having historically been
+        // gated -- found and fixed as a follow-up to SYNC-001's own
+        // authorization review). `Sync` joins this bucket too even though
+        // it isn't a pure read: it causes no local mutation, just wakes a
+        // background poller to do a refresh it was already going to do,
+        // sooner (SYNC-001).
+        if matches!(
+            req,
+            IpcMessage::Status
+                | IpcMessage::Sync { .. }
+                | IpcMessage::AdminList { .. }
+                | IpcMessage::InviteList { .. }
+        ) {
             return None;
         }
 
@@ -2292,6 +2302,33 @@ mod check_authorized_tests {
         assert!(
             MeshManager::check_authorized(
                 &IpcMessage::Sync { network: None },
+                Some((UNPRIVILEGED_UID, 0))
+            )
+            .is_none()
+        );
+    }
+
+    /// AUTHZ-001: `AdminList`/`InviteList` are pure reads -- listing
+    /// key-holders/invites mutates nothing -- so they must be open to any
+    /// local user too, matching `AGENTS.md`'s documented model. Found gated
+    /// (denied for a non-operator caller) while scoping `Sync`'s own
+    /// authorization level; fixed as its own small follow-up.
+    #[test]
+    fn admin_list_and_invite_list_are_open_to_any_user() {
+        assert!(
+            MeshManager::check_authorized(
+                &IpcMessage::AdminList {
+                    network: "any-net".to_string()
+                },
+                Some((UNPRIVILEGED_UID, 0))
+            )
+            .is_none()
+        );
+        assert!(
+            MeshManager::check_authorized(
+                &IpcMessage::InviteList {
+                    network: "any-net".to_string()
+                },
                 Some((UNPRIVILEGED_UID, 0))
             )
             .is_none()

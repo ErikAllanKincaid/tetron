@@ -5715,3 +5715,42 @@ class ManualGroupPollerTrigger(Requirement):
     """
     req_id = "SYNC-001"
 
+
+# --------------------------------------------------------------------------
+# AUTHZ-001: AdminList/InviteList must be open to any local user, not
+# operator-gated
+# --------------------------------------------------------------------------
+
+class AdminInviteListOpenToAnyUser(Requirement):
+    """REQUIREMENT-ID: AUTHZ-001
+
+    Found while scoping `SYNC-001`'s own authorization level: `AGENTS.md`'s
+    "Privilege & access" section describes reads (`status`, `*... show`) as
+    open to any local user, mutating commands as needing root or the
+    configured `operator_uid`. In the actual code, `check_authorized`
+    (`daemon/mod.rs`) only ever exempted the single literal
+    `IpcMessage::Status` -- `AdminList` (`tetron admin <net> list`) and
+    `InviteList` (`tetron invite <net> list`) fell through to the
+    operator-gated branch and were denied for an unprivileged, non-operator
+    local user, even though both are pure reads that mutate nothing.
+    `AdminList`'s own doc comment in `tetron-proto/src/ipc.rs` already says
+    "Open read" -- the gate never matched the documented intent.
+
+    **Verified safe to open before fixing:** `admin_list`
+    (`daemon/mesh/admin.rs`) has no further internal restriction at all,
+    matching its "Open read" doc comment exactly. `invite_list`
+    (`daemon/mesh/invite_handler.rs`) does carry its own independent
+    per-network `coordinator_handle` check (its own doc comment says
+    "coordinator-only") -- but that gate is about which *network* the caller
+    holds the coordinator key for, entirely separate from `check_authorized`'s
+    OS-user privilege gate. Opening the outer (OS-user) gate does not bypass
+    the inner (per-network coordinator) one, so a non-coordinator local user
+    still gets nothing back from `invite_list` for a network they don't hold
+    the key to -- exactly the same result as before this fix, just reached
+    via the correct gate instead of the wrong one.
+
+    **Fix:** `check_authorized`'s exemption `matches!` gained `AdminList { .. }`
+    and `InviteList { .. }` alongside `Status`/`Sync` (SYNC-001).
+    """
+    req_id = "AUTHZ-001"
+
