@@ -233,6 +233,8 @@ def check_dependency_absence() -> dict:
         "humansize",
         "mime_guess",
         "config",
+        "chacha20poly1305",
+        "argon2",
     ]
     p = Path("Cargo.toml")
     text = p.read_text()

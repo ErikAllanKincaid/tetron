@@ -2331,6 +2331,17 @@ class DependencyAbsenceGate(Constraint):
     MINIMAL-008/TOR-M01.) Added to reconcile.py once phases 1-2 of PLAN.md
     create the condition it gates.
 
+    Also bans `config` (D-01, `apply.rs`'s sole consumer, removed by
+    MINIMAL-011) and `chacha20poly1305`/`argon2` (found 2026-07-23 while
+    reading the unscoped "coordinator key security" idea in
+    `DO-NOT-COMMIT/TODO.md`: both listed in `Cargo.toml` but never used
+    anywhere in `src/`/`tetron-proto/src/` -- confirmed via `cargo tree -i`,
+    each resolves only through tetron's own direct dependency, nothing
+    transitive needs them either. Almost certainly dead scaffolding for the
+    encryption-at-rest direction floated in that same TODO section, never
+    wired up. Removing them doesn't foreclose that idea -- re-add if it's
+    ever actually built).
+
     ENFORCEMENT (reconcile.py): dependency_absence.unexpected_count equals 0.
     """
     constraint_id = "CON-M01"
