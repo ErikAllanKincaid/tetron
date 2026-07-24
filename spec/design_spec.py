@@ -4851,6 +4851,62 @@ class StatusOutputRedesign(Requirement):
     req_id = "STATUS-002"
 
 
+class NetworkStatusNetworkField(Requirement):
+    """REQUIREMENT-ID: STATUS-NETWORK-FIELD-001
+
+    `NetworkStatus.name` reads as stale/ambiguous next to every other
+    per-network field (`subnet`, `network_key`, `nuke_consensus_threshold`)
+    and the CLI's own `--network` flag naming. Unlike `GroupBlob` (durably
+    published to the DHT, must decode data written months ago),
+    `NetworkStatus` is a purely ephemeral RPC type regenerated fresh on every
+    `tetron status` call -- so there is no "decode old data" concern here,
+    only a "which binaries are talking to each other right now" one.
+
+    **Why additive, not a hard rename, despite there being no third-party
+    consumer:** confirmed by reading both consumer repos directly --
+    `tetron-webui` and `tetron-systray` both depend on `tetron-proto` as a
+    git dependency floating on tetron's `main` (not a pinned tag, by their
+    own design) and both access `.name` as a **direct Rust field**, not just
+    a loosely-typed JSON key. Both are already deployed across a real fleet
+    (6 machines; 4 laptops additionally run `tetron-systray`), and the
+    policy is to upgrade all three components together fleet-wide -- but
+    two of the four systray laptops (`inspiron1`, `sneak`) need scheduling
+    coordination rather than being immediately reachable, so "always
+    upgraded together" is a policy, not a guarantee of atomicity. A hard
+    rename would turn any slip in that coordination into a compile break in
+    two repos the user owns, for a purely cosmetic naming improvement --
+    disproportionate. Adding `network` alongside `name` (identical value,
+    `#[serde(default)]`) makes the transition a non-event regardless of
+    actual rollout order or timing.
+
+    **Fix:** `NetworkStatus` gained `network: String` (`#[serde(default)]`)
+    alongside the existing `name: String` (left as-is, not `#[deprecated]`
+    -- that attribute would trip `clippy -D warnings` at every site still
+    populating it during the transition, for no benefit over a doc comment).
+    Both daemon-side construction sites (`src/daemon/mesh/diagnostics.rs`,
+    the lock-read-failure fallback and the normal path) populate both fields
+    with the identical value. Tetron's own CLI (`src/cli/status.rs`) already
+    switched its reads to `.network` -- no reason for tetron's own code to
+    lag the field it just introduced.
+
+    **Fleet cleanup, tracked not scheduled:** removing `name` for real is a
+    follow-up, gated on confirming every one of the 6 daemons and all 4
+    systray laptops (plus wherever `tetron-webui` ends up deployed) are
+    running a build that reads `.network`. See `DO-NOT-COMMIT/TODO.md`'s
+    dedicated checklist -- until every box is checked, `name` stays.
+
+    **Companion changes in sibling repos (same wave, not gated on this
+    commit):** `tetron-webui/src/api.rs` switches its own field read from
+    `n.name` to `n.network` (and its own re-exposed JSON key, `"name"` ->
+    `"network"`, plus the matching `static/app.js` references) and
+    `tetron-systray/src/main.rs` switches its ~7 `net.name` sites to
+    `net.network`. Both are gated on `cargo update -p tetron-proto` picking
+    up this field, which itself is gated on this commit reaching the public
+    GitHub remote (not this agent's action).
+    """
+    req_id = "STATUS-NETWORK-FIELD-001"
+
+
 class SubnetDriftOnRestart(Requirement):
     """REQUIREMENT-ID: SUBNET-DRIFT-001
 

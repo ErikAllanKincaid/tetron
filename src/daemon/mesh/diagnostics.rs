@@ -65,6 +65,7 @@ impl MeshManager {
                 Err(_) => {
                     return NetworkStatus {
                         name: h.name.clone(),
+                        network: h.name.clone(),
                         role,
                         my_ip: h.my_ip,
                         my_ipv6: Some(derive_ipv6(&my_id, &h.network_key)),
@@ -130,6 +131,7 @@ impl MeshManager {
             .and_then(|m| m.hostname.clone());
         NetworkStatus {
             name: h.name.clone(),
+            network: h.name.clone(),
             role,
             my_ip: h.my_ip,
             my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &h.network_key)),

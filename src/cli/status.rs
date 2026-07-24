@@ -203,7 +203,7 @@ pub(crate) async fn ipc_status() -> Result<()> {
 
             // Show inactive networks from config that the daemon didn't restore
             let active_names: std::collections::HashSet<&str> =
-                networks.iter().map(|n| n.name.as_str()).collect();
+                networks.iter().map(|n| n.network.as_str()).collect();
             if let Ok(app_config) = config::load() {
                 let inactive: Vec<_> = app_config
                     .networks
@@ -259,7 +259,7 @@ fn print_network(net: &ipc::NetworkStatus) {
     println!();
     print!(
         "  network {}   subnet {}   admins {admins_online}/{admins_total}   members {online}/{members_total}",
-        net.name, net.subnet,
+        net.network, net.subnet,
     );
     if !net.tun_name.is_empty() && net.tun_name != "pending" {
         print!("   interface {}", net.tun_name);

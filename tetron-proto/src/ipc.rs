@@ -234,7 +234,23 @@ pub struct AdminInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkStatus {
+    /// STATUS-NETWORK-FIELD-001: superseded by `network` below (identical
+    /// value) -- kept only for the in-flight fleet upgrade window, since
+    /// `tetron-webui`/`tetron-systray` both access this as a direct Rust
+    /// field, not just a JSON key, so removing it outright is a compile-time
+    /// break in those repos rather than a soft wire-format change. Not
+    /// `#[deprecated]`: that would trip `clippy -D warnings` at every
+    /// construction/read site still populating it during the transition,
+    /// for no benefit over a plain comment. See `DO-NOT-COMMIT/TODO.md`'s
+    /// fleet checklist for exactly when it's safe to delete this field.
     pub name: String,
+    /// This network's local display name (STATUS-NETWORK-FIELD-001). Same
+    /// value as `name` above -- the two are identical for the duration of
+    /// the fleet upgrade; use this one in new code. `#[serde(default)]` so a
+    /// pre-upgrade daemon's response (which won't send this key at all)
+    /// still decodes for an already-updated client.
+    #[serde(default)]
+    pub network: String,
     pub role: NetworkRole,
     pub my_ip: Ipv4Addr,
     pub my_ipv6: Option<Ipv6Addr>,
@@ -610,6 +626,7 @@ mod tests {
             daemon_version: "0.1.0".to_string(),
             networks: vec![NetworkStatus {
                 name: "gaming".to_string(),
+                network: "gaming".to_string(),
                 role: NetworkRole::Coordinator,
                 my_ip: Ipv4Addr::new(10, 88, 10, 5),
                 my_ipv6: None,
