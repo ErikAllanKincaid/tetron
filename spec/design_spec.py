@@ -2587,6 +2587,17 @@ class Ipv4Fragmentation(Requirement):
     Found: 2026-07-15, network "shallows" where Quinn's max_datagram_size
     was 1162-1192, below the 1228-byte TCP segments produced at TUN MTU 1280.
     SSH key exchange stalled silently at "expecting SSH2_MSG_KEX_ECDH_REPLY".
+
+    Follow-up (F-04, security-audit finding, 2026-07-23): `fragment_ipv4`
+    read the original packet's header fields (identification, DF flag, IHL)
+    and forwarded fragments built from them without ever checking that the
+    original header's own checksum was valid -- each fragment got a freshly
+    computed, valid checksum regardless, so a corrupted or malformed header
+    was silently "healed" rather than rejected the way normal IP processing
+    would. Fixed: `fragment_ipv4` now verifies the stored header checksum
+    against a fresh computation before trusting any field or fragmenting at
+    all, returning `None` (already the existing "cannot fragment, malformed"
+    path in `forward.rs`, unchanged) on a mismatch.
     """
     req_id = "FRAG-001"
 

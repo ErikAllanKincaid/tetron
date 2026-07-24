@@ -175,6 +175,21 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
         return None; // IP options not supported
     }
 
+    // F-04: verify the original header checksum before trusting any of its
+    // fields (identification, DF flag) or fragmenting at all. Without this,
+    // a corrupted or malformed header would be silently "healed" -- every
+    // fragment gets a freshly computed, valid checksum regardless of
+    // whether the source header was ever actually intact, forwarding data
+    // that should have been dropped instead.
+    let mut hdr = [0u8; HEADER_LEN];
+    hdr.copy_from_slice(&packet[..HEADER_LEN]);
+    let stored_csum = u16::from_be_bytes([hdr[10], hdr[11]]);
+    hdr[10] = 0;
+    hdr[11] = 0;
+    if !ip_checksum(&hdr) != stored_csum {
+        return None; // corrupt header — refuse to fragment
+    }
+
     let payload_len = packet.len() - HEADER_LEN;
     // Fragment payload must be a multiple of 8 bytes (RFC 791), except the last.
     let max_payload = (max_size - HEADER_LEN) & !7;
@@ -331,6 +346,16 @@ mod tests {
     #[test]
     fn frag_malformed_too_short() {
         assert!(fragment_ipv4(&[0x45, 0x00, 0x00, 0x14], 100).is_none());
+    }
+
+    #[test]
+    fn frag_rejects_corrupt_header_checksum() {
+        // F-04: a header whose stored checksum doesn't match its own content
+        // must be refused, not silently "healed" by computing a fresh valid
+        // checksum for each fragment.
+        let mut pkt = make_ipv4(1208, 0x1234, false);
+        pkt[10] ^= 0xFF; // flip the stored checksum's high byte
+        assert!(fragment_ipv4(&pkt, 1200).is_none());
     }
 
     #[test]
