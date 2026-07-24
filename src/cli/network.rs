@@ -7,12 +7,22 @@ pub(crate) async fn ipc_create(
     network_name: Option<String>,
     hostname: Option<String>,
     subnet: Option<String>,
+    nuke_consensus: Option<u32>,
     tor: bool,
 ) -> Result<()> {
     // Validate the CIDR locally so the user gets an immediate error, but send it
     // as the raw string; the daemon re-parses it authoritatively.
     if let Some(ref cidr) = subnet {
         membership::parse_cidr(cidr)?;
+    }
+    // Same early-error convenience as --subnet above; the daemon re-validates
+    // authoritatively (NUKE-CONSENSUS-THRESHOLD-001).
+    if let Some(n) = nuke_consensus {
+        anyhow::ensure!(
+            n >= 2,
+            "--nuke-consensus must be at least 2 (a value of 0 or 1 would let a single \
+             coordinator nuke unilaterally once a second coordinator exists)"
+        );
     }
     let transport = if tor {
         Some(config::TransportMode::Tor)
@@ -28,6 +38,7 @@ pub(crate) async fn ipc_create(
             hostname,
             transport,
             subnet,
+            nuke_consensus,
         },
     )
     .await?;

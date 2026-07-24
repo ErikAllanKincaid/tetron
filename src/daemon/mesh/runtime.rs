@@ -14,6 +14,11 @@ struct RestoredRoster {
     /// Pending nuke proposals (NUKE-CONSENSUS), restored so a coordinator
     /// restart doesn't silently drop an in-flight proposal.
     nuke_proposals: BTreeMap<String, u64>,
+    /// This network's NUKE-CONSENSUS proposer threshold
+    /// (NUKE-CONSENSUS-THRESHOLD-001), preferring the signed blob
+    /// (authoritative) and falling back to the persisted config only when the
+    /// DHT is unreachable -- same preference order as every other field here.
+    nuke_consensus_threshold: u32,
     /// The restored blob's own generation (CONVERGE-005), or 0 if restored from
     /// the config fallback (no signed blob was reachable).
     generation: u64,
@@ -39,12 +44,16 @@ impl MeshManager {
         let mut reusable_keys = BTreeMap::new();
         let mut invites = BTreeMap::new();
         let mut nuke_proposals = BTreeMap::new();
+        let mut nuke_consensus_threshold = net_config
+            .map(|nc| nc.nuke_consensus_threshold)
+            .unwrap_or_else(crate::membership::default_nuke_consensus_threshold);
         let mut generation = 0u64;
         match self.restore_roster_from_blob(net_public_key).await {
             Ok(data) => {
                 reusable_keys = data.reusable_keys.clone();
                 invites = data.invites.clone();
                 nuke_proposals = data.nuke_proposals.clone();
+                nuke_consensus_threshold = data.nuke_consensus_threshold;
                 generation = data.generation;
                 for m in &data.members {
                     let _ = member_list.add(m.clone());
@@ -111,6 +120,7 @@ impl MeshManager {
             reusable_keys,
             invites,
             nuke_proposals,
+            nuke_consensus_threshold,
             generation,
         }
     }
@@ -175,6 +185,7 @@ impl MeshManager {
             reusable_keys,
             invites,
             nuke_proposals,
+            nuke_consensus_threshold,
             generation,
         } = self
             .restore_member_roster(name, net_public_key, net_config, my_ip, &persisted_hostname)
@@ -214,6 +225,7 @@ impl MeshManager {
             reusable_keys,
             invites,
             nuke_proposals,
+            nuke_consensus_threshold,
         };
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
@@ -242,6 +254,7 @@ impl MeshManager {
             // self-heals a legacy `None` the first time it successfully
             // restores post-fix, instead of perpetuating the ambiguity.
             subnet: Some(subnet),
+            nuke_consensus_threshold: net_state.nuke_consensus_threshold,
         })?;
 
         let cancel = self.shutdown_token.child_token();
@@ -478,7 +491,7 @@ impl MeshManager {
             }
         }
 
-        let (dht_notify, net_secret_key, generation, active_count, snap_bytes, short_id) = {
+        let (dht_notify, net_secret_key, generation, active_count, threshold, snap_bytes, short_id) = {
             let handle = self.networks.get(name).unwrap();
             let mut state = handle.state.write().unwrap();
             state.nuke_proposals.insert(my_id.to_string(), now);
@@ -489,12 +502,13 @@ impl MeshManager {
                 state.network_secret_key.clone(),
                 state.generation,
                 active,
+                state.nuke_consensus_threshold,
                 state.snapshot.as_ref().map(|s| s.msgpack_bytes.clone()),
                 handle.network_key.fmt_short().to_string(),
             )
         };
 
-        if active_count < 2 {
+        if active_count < threshold as usize {
             // Not enough seconds yet: persist + publish the proposal itself,
             // same as any other blob mutation (invite create, admin grant, ...).
             if let Some(bytes) = snap_bytes
@@ -507,7 +521,7 @@ impl MeshManager {
             }
             return IpcMessage::Ok {
                 message: format!(
-                    "nuke proposed for '{name}' — {active_count}/2 coordinators required; have another coordinator run `tetron nuke {short_id}` to second"
+                    "nuke proposed for '{name}' — {active_count}/{threshold} coordinators required; have another coordinator run `tetron nuke {short_id}` to second"
                 ),
             };
         }
@@ -562,6 +576,10 @@ impl MeshManager {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            // Must match `try_decode_tombstone`'s own reconstruction exactly
+            // (byte-for-byte) -- both use the same fixed constant since a
+            // tombstone carries no real network's configured value.
+            crate::membership::default_nuke_consensus_threshold(),
         );
         if let Err(e) = self.blob_store.blobs().add_slice(&empty_bytes).await {
             tracing::error!(error = %e, "failed to persist empty tombstone blob");

@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`tetron invite`/`tetron admin` now accept a network key, not just the local display name (INVITE-ADMIN-NETWORK-KEY-001)**: same fallback `tetron leave` already had (`LEAVE-NETWORK-KEY-001`) -- if you only had the invite key or room id handy, there was no way to mint an invite or grant admin at all. Both now try the local name first (unchanged), then fall back to a `network_key` prefix match (>=10 characters, or the full key).
+- **NUKE-CONSENSUS's proposer threshold is now configurable at creation (NUKE-CONSENSUS-THRESHOLD-001)**: previously always exactly 2 distinct coordinators regardless of network size -- meaningless consensus on a large multi-coordinator network. `tetron create --nuke-consensus <n>` (default 2, must be >= 2) sets it once at creation; fixed thereafter, same treatment as `--subnet`. Visible via `tetron status`/`--json`.
 
 ### Fixed
 

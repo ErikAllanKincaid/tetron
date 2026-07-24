@@ -186,6 +186,7 @@ impl MeshManager {
     /// Part of the embedding API: create a new network and register this
     /// node as its coordinator.
     #[tracing::instrument(skip(self, hostname), fields(mode = ?mode))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_network(
         self: &Arc<Self>,
         mode: GroupMode,
@@ -193,9 +194,19 @@ impl MeshManager {
         hostname: Option<String>,
         transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
+        nuke_consensus: Option<u32>,
     ) -> IpcMessage {
         match self
-            .create_network_inner(mode, network_name, hostname, transport, subnet, false, None)
+            .create_network_inner(
+                mode,
+                network_name,
+                hostname,
+                transport,
+                subnet,
+                nuke_consensus,
+                false,
+                None,
+            )
             .await
         {
             Ok(resp) => resp,
@@ -225,6 +236,7 @@ impl MeshManager {
         mode: GroupMode,
         net_secret_key: &SecretKey,
         subnet: crate::membership::Subnet,
+        nuke_consensus_threshold: u32,
         pre_approve: Option<(EndpointId, Option<String>)>,
     ) -> Result<NetworkState> {
         let mut member_list = MemberList::new();
@@ -274,6 +286,7 @@ impl MeshManager {
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold,
         })
     }
 
@@ -285,9 +298,31 @@ impl MeshManager {
         hostname: Option<String>,
         transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
+        nuke_consensus: Option<u32>,
         direct: bool,
         pre_approve: Option<(EndpointId, Option<String>)>,
     ) -> Result<IpcMessage> {
+        // NUKE-CONSENSUS-THRESHOLD-001: a threshold of 0 or 1 would let a
+        // single coordinator (among 2+) execute a nuke unilaterally once
+        // consensus is required at all -- exactly the risk NUKE-CONSENSUS
+        // exists to close (see the requirement's "Found" note: a compromised
+        // or malicious single key holder should not be able to unilaterally
+        // destroy the network). A solo coordinator can already always nuke
+        // immediately regardless of this value (that path never consults
+        // it), so this floor only ever bites once a second coordinator
+        // exists -- exactly where it matters.
+        let nuke_consensus_threshold = match nuke_consensus {
+            Some(n) => {
+                anyhow::ensure!(
+                    n >= 2,
+                    "--nuke-consensus must be at least 2 (a value of 0 or 1 would let a single \
+                     coordinator nuke unilaterally once a second coordinator exists, defeating \
+                     the point of requiring consensus at all)"
+                );
+                n
+            }
+            None => crate::membership::default_nuke_consensus_threshold(),
+        };
         let name = match custom_name {
             Some(n) => {
                 anyhow::ensure!(
@@ -386,6 +421,7 @@ impl MeshManager {
             mode,
             &net_secret_key,
             subnet,
+            nuke_consensus_threshold,
             pre_approve,
         )?;
 
@@ -413,6 +449,7 @@ impl MeshManager {
             // restore, which silently mis-resolved this exact value. Persisting
             // it explicitly removes the ambiguity at the source.
             subnet: Some(subnet),
+            nuke_consensus_threshold,
         })?;
 
         let cancel = self.shutdown_token.child_token();
@@ -804,6 +841,7 @@ impl MeshManager {
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold: nc.nuke_consensus_threshold,
         })
     }
 
@@ -962,6 +1000,7 @@ impl MeshManager {
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
                 nuke_proposals: data.nuke_proposals.clone(),
+                nuke_consensus_threshold: data.nuke_consensus_threshold,
             };
             ns.refresh_snapshot();
             Arc::new(std::sync::RwLock::new(ns))
@@ -1121,6 +1160,7 @@ impl MeshManager {
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
                 nuke_proposals: data.nuke_proposals.clone(),
+                nuke_consensus_threshold: data.nuke_consensus_threshold,
                 generation: data.generation,
                 transport: ctx.transport.clone(),
                 initial,
@@ -1450,6 +1490,7 @@ impl MeshManager {
                 reusable_keys: Default::default(),
                 invites: Default::default(),
                 nuke_proposals: Default::default(),
+                nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
             }));
             let _ = live_state_tx.send(dummy_state);
             let _ = reconverge_notify_tx.send(Arc::new(tokio::sync::Notify::new()));
@@ -1505,6 +1546,7 @@ impl MeshManager {
                 reusable_keys: data.reusable_keys.clone(),
                 invites: data.invites.clone(),
                 nuke_proposals: data.nuke_proposals.clone(),
+                nuke_consensus_threshold: data.nuke_consensus_threshold,
             };
             ns.refresh_snapshot();
             let live_state = Arc::new(std::sync::RwLock::new(ns));

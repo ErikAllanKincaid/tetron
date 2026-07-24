@@ -142,6 +142,16 @@ pub struct NetworkConfig {
         with = "crate::membership::cidr_opt"
     )]
     pub subnet: Option<crate::membership::Subnet>,
+    /// This network's NUKE-CONSENSUS proposer threshold
+    /// (NUKE-CONSENSUS-THRESHOLD-001), fixed at `tetron create
+    /// --nuke-consensus <n>` and never mutated afterward -- same
+    /// immutable-after-create treatment as `subnet`. Always persisted
+    /// explicitly (not `Option`; there is no meaningful "use something else"
+    /// case the way `subnet`'s `None` means "use the node-wide default").
+    /// `#[serde(default = ...)]` exists only so a config predating this field
+    /// decodes as the historical hardcoded value of 2.
+    #[serde(default = "crate::membership::default_nuke_consensus_threshold")]
+    pub nuke_consensus_threshold: u32,
 }
 
 /// In-memory aggregate of the on-disk config. Reads assemble this from
@@ -826,6 +836,7 @@ mod tests {
                     admins: vec![],
                     direct: false,
                     subnet: None,
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 },
                 NetworkConfig {
                     name: "work".to_string(),
@@ -840,6 +851,7 @@ mod tests {
                     admins: vec![],
                     direct: false,
                     subnet: None,
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 },
             ],
             ..Default::default()
@@ -875,6 +887,7 @@ mod tests {
             admins: vec![],
             direct: false,
             subnet: None,
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
         };
         upsert_network(&mut config, net);
         assert_eq!(config.networks.len(), 1);
@@ -898,6 +911,7 @@ mod tests {
                 admins: vec![],
                 direct: false,
                 subnet: None,
+                nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
             }],
             ..Default::default()
         };
@@ -914,6 +928,7 @@ mod tests {
             admins: vec![],
             direct: false,
             subnet: None,
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
         };
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
@@ -941,6 +956,7 @@ mod tests {
                     admins: vec![],
                     direct: false,
                     subnet: None,
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 },
                 NetworkConfig {
                     name: "remove-me".to_string(),
@@ -955,6 +971,7 @@ mod tests {
                     admins: vec![],
                     direct: false,
                     subnet: None,
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 },
             ],
             ..Default::default()
@@ -997,6 +1014,7 @@ mod tests {
                 admins: vec![],
                 direct: false,
                 subnet: None,
+                nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
             }],
             ..Default::default()
         };
@@ -1024,6 +1042,7 @@ mod tests {
                 admins: vec![],
                 direct: false,
                 subnet: None,
+                nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
             }],
             ..Default::default()
         };
@@ -1074,6 +1093,7 @@ name = "test"
             admins: vec![],
             direct: false,
             subnet: None,
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
         }
     }
 

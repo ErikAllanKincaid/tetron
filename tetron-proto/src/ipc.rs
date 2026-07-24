@@ -25,6 +25,12 @@ pub enum IpcMessage {
         /// the daemon parses/validates it.
         #[serde(default)]
         subnet: Option<String>,
+        /// Minimum distinct, unexpired proposers required to execute a nuke
+        /// (NUKE-CONSENSUS-THRESHOLD-001) once this network has 2+
+        /// coordinators. `None` uses the default of 2. Fixed at creation
+        /// time, never mutated afterward.
+        #[serde(default)]
+        nuke_consensus: Option<u32>,
     },
     /// `network_key` is already resolved to the network's public key by the
     /// time it crosses IPC -- the CLI decodes the raw invite code client-side
@@ -259,6 +265,22 @@ pub struct NetworkStatus {
     /// wire). `#[serde(default)]` so an older daemon's response still decodes.
     #[serde(default)]
     pub subnet: String,
+    /// This network's NUKE-CONSENSUS proposer threshold
+    /// (NUKE-CONSENSUS-THRESHOLD-001), so an admin can see what's actually
+    /// configured (fixed at creation, invisible otherwise). `#[serde(default
+    /// = ...)]` so an older daemon's response (predating this field) still
+    /// decodes -- as the historical hardcoded value of 2, which is what it
+    /// actually was running.
+    #[serde(default = "default_nuke_consensus_threshold")]
+    pub nuke_consensus_threshold: u32,
+}
+
+/// Mirrors `membership::default_nuke_consensus_threshold` (2) -- duplicated
+/// rather than shared since this crate doesn't depend on the main crate's
+/// `membership` module; kept as one named function instead of a bare literal
+/// so the two are easy to grep and keep in sync if the default ever changes.
+fn default_nuke_consensus_threshold() -> u32 {
+    2
 }
 
 /// One pending nuke proposal, as surfaced by `tetron status` (NUKE-CONSENSUS).
@@ -434,6 +456,7 @@ mod tests {
             hostname: None,
             transport: None,
             subnet: None,
+            nuke_consensus: None,
         };
         let bytes = rmp_serde::to_vec_named(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -605,6 +628,7 @@ mod tests {
                 tun_name: "tun0".to_string(),
                 active: true,
                 subnet: "10.88.0.0/24".to_string(),
+                nuke_consensus_threshold: 2,
             }],
             packets_rx: 0,
             packets_tx: 0,

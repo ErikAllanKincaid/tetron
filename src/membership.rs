@@ -694,12 +694,30 @@ pub struct GroupBlob {
     /// actual nuke. `BTreeMap` keeps the encoding canonical.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nuke_proposals: BTreeMap<String, u64>,
+    /// Minimum distinct, unexpired proposers required to execute a nuke once
+    /// this network has 2+ coordinators (NUKE-CONSENSUS-THRESHOLD-001). Fixed
+    /// at `tetron create --nuke-consensus <n>` (default 2), never mutated
+    /// afterward -- no CLI path changes it post-creation, the same
+    /// immutable-after-create treatment as `subnet`. Always persisted
+    /// explicitly on every write from this code (SUBNET-DRIFT-001's lesson
+    /// applied up front rather than repeated): `#[serde(default = ...)]`
+    /// exists only so a blob predating this field decodes as the historical
+    /// hardcoded value of 2, not because a fresh write should ever omit it.
+    #[serde(default = "default_nuke_consensus_threshold")]
+    pub nuke_consensus_threshold: u32,
 }
 
 /// How long a nuke proposal remains valid (NUKE-CONSENSUS). A proposal older
 /// than this no longer counts toward consensus, so a stale entry from months
 /// ago can't silently combine with a fresh one to trigger an unintended nuke.
 pub const NUKE_PROPOSAL_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// The historical, hardcoded NUKE-CONSENSUS threshold, kept as the default for
+/// `tetron create` when `--nuke-consensus` is omitted, and for decoding a blob
+/// published before `nuke_consensus_threshold` existed.
+pub fn default_nuke_consensus_threshold() -> u32 {
+    2
+}
 
 /// Count coordinators in a roster (NUKE-CONSENSUS uses this to decide whether
 /// a nuke needs consensus at all — a solo coordinator has no one to second).
@@ -718,9 +736,10 @@ pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64) -> Vec
 }
 
 /// Whether `proposals` currently has enough distinct, unexpired proposers to
-/// execute a nuke (NUKE-CONSENSUS requires two or more).
-pub fn nuke_consensus_reached(proposals: &BTreeMap<String, u64>, now: u64) -> bool {
-    active_nuke_proposers(proposals, now).len() >= 2
+/// execute a nuke against `threshold` (NUKE-CONSENSUS-THRESHOLD-001;
+/// previously a hardcoded 2).
+pub fn nuke_consensus_reached(proposals: &BTreeMap<String, u64>, now: u64, threshold: u32) -> bool {
+    active_nuke_proposers(proposals, now).len() >= threshold as usize
 }
 
 /// Resolve `tetron nuke --second <short-id>` against the currently active
@@ -889,6 +908,7 @@ pub fn canonical_group_bytes(
     subnet: Option<Subnet>,
     invites: &BTreeMap<String, InviteEntry>,
     nuke_proposals: &BTreeMap<String, u64>,
+    nuke_consensus_threshold: u32,
 ) -> Vec<u8> {
     let mut sorted_members: Vec<Member> = members.all().into_iter().cloned().collect();
     sorted_members.sort_by_key(|m| m.identity.to_string());
@@ -905,6 +925,7 @@ pub fn canonical_group_bytes(
         reusable_keys: reusable_keys.clone(),
         invites: invites.clone(),
         nuke_proposals: nuke_proposals.clone(),
+        nuke_consensus_threshold,
     };
     rmp_serde::to_vec_named(&data).expect("msgpack serialize")
 }
@@ -919,6 +940,7 @@ pub fn group_blob_hash(
     subnet: Option<Subnet>,
     invites: &BTreeMap<String, InviteEntry>,
     nuke_proposals: &BTreeMap<String, u64>,
+    nuke_consensus_threshold: u32,
 ) -> blake3::Hash {
     let bytes = canonical_group_bytes(
         generation,
@@ -929,6 +951,7 @@ pub fn group_blob_hash(
         subnet,
         invites,
         nuke_proposals,
+        nuke_consensus_threshold,
     );
     blake3::hash(&bytes)
 }
@@ -964,6 +987,11 @@ pub fn try_decode_tombstone(signed: blake3::Hash, generation: u64) -> Option<Gro
         None,
         &BTreeMap::new(),
         &BTreeMap::new(),
+        // A tombstone carries no real network's configured value -- it's
+        // reconstructed purely from `generation`, so this must be the same
+        // fixed constant `MeshManager::publish_nuke_tombstone` used to
+        // publish it (both must agree byte-for-byte for the hash to match).
+        default_nuke_consensus_threshold(),
     );
     if blake3::hash(&bytes) != signed {
         return None;
@@ -1633,6 +1661,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let b = canonical_group_bytes(
             0,
@@ -1643,6 +1672,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert_eq!(a, b);
     }
@@ -1662,6 +1692,7 @@ mod tests {
                 None,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                2,
             ),
             canonical_group_bytes(
                 0,
@@ -1672,6 +1703,7 @@ mod tests {
                 None,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                2,
             ),
         );
     }
@@ -1689,6 +1721,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let members2 = make_member_list(&[1, 2, 3]);
         let h2 = group_blob_hash(
@@ -1700,6 +1733,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert_ne!(h1, h2);
     }
@@ -1732,6 +1766,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let data = decode_group_blob(&bytes).unwrap();
         assert_eq!(data.members.len(), 2);
@@ -1751,6 +1786,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let hash = group_blob_hash(
             0,
@@ -1761,6 +1797,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members.len(), 2);
@@ -1800,6 +1837,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let bad_hash = blake3::hash(b"wrong data");
         let result = verify_group_blob(&bytes, &bad_hash);
@@ -1833,6 +1871,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let hash = group_blob_hash(
             0,
@@ -1843,6 +1882,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, Some(12345));
@@ -1877,6 +1917,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert!(!String::from_utf8_lossy(&bytes).contains("last_seen"));
         let hash = group_blob_hash(
@@ -1888,6 +1929,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let data = verify_group_blob(&bytes, &hash).unwrap();
         assert_eq!(data.members[0].last_seen, None);
@@ -1950,6 +1992,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let blob = decode_group_blob(&bytes).unwrap();
         assert_eq!(blob.reusable_keys.len(), 1);
@@ -1971,6 +2014,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
 
         let secret = [3u8; 16];
@@ -1986,6 +2030,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert_ne!(h0, h1, "adding a reusable key must change the signed hash");
 
@@ -2000,6 +2045,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert_ne!(
             h1, h2,
@@ -2079,6 +2125,7 @@ mod tests {
                 reusable_keys: keys,
                 invites: BTreeMap::new(),
                 nuke_proposals: BTreeMap::new(),
+                nuke_consensus_threshold: default_nuke_consensus_threshold(),
             }
         };
         // Live key: present, not revoked, now < expires.
@@ -2266,6 +2313,7 @@ mod tests {
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold: default_nuke_consensus_threshold(),
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
         let err = decode_group_blob(&bytes).unwrap_err().to_string();
@@ -2297,6 +2345,7 @@ mod tests {
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold: default_nuke_consensus_threshold(),
         };
         let bytes = rmp_serde::to_vec_named(&blob).unwrap();
         assert!(decode_group_blob(&bytes).is_err());
@@ -2595,6 +2644,7 @@ mod tests {
             Some(CUSTOM),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let blob = decode_group_blob(&bytes).unwrap();
         assert_eq!(resolve_subnet(blob.subnet), CUSTOM);
@@ -2671,11 +2721,11 @@ mod tests {
     fn nuke_consensus_requires_two_distinct_active_proposers() {
         let now = 1_000_000u64;
         let mut proposals = BTreeMap::new();
-        assert!(!nuke_consensus_reached(&proposals, now));
+        assert!(!nuke_consensus_reached(&proposals, now, 2));
         proposals.insert("alice".to_string(), now);
-        assert!(!nuke_consensus_reached(&proposals, now));
+        assert!(!nuke_consensus_reached(&proposals, now, 2));
         proposals.insert("bob".to_string(), now);
-        assert!(nuke_consensus_reached(&proposals, now));
+        assert!(nuke_consensus_reached(&proposals, now, 2));
     }
 
     #[test]
@@ -2684,7 +2734,28 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now);
         proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
-        assert!(!nuke_consensus_reached(&proposals, now));
+        assert!(!nuke_consensus_reached(&proposals, now, 2));
+    }
+
+    /// NUKE-CONSENSUS-THRESHOLD-001: a configured threshold other than the
+    /// historical hardcoded 2 must actually be honored, not silently ignored.
+    #[test]
+    fn nuke_consensus_honors_configured_threshold() {
+        let now = 1_000_000u64;
+        let mut proposals = BTreeMap::new();
+        proposals.insert("alice".to_string(), now);
+        // threshold=1: a single proposer is already enough.
+        assert!(nuke_consensus_reached(&proposals, now, 1));
+        // threshold=3: two proposers are not enough on a stricter network.
+        proposals.insert("bob".to_string(), now);
+        assert!(!nuke_consensus_reached(&proposals, now, 3));
+        proposals.insert("carol".to_string(), now);
+        assert!(nuke_consensus_reached(&proposals, now, 3));
+    }
+
+    #[test]
+    fn default_nuke_consensus_threshold_is_two() {
+        assert_eq!(default_nuke_consensus_threshold(), 2);
     }
 
     #[test]
@@ -2740,6 +2811,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert!(!String::from_utf8_lossy(&empty_bytes).contains("nuke_proposals"));
 
@@ -2754,6 +2826,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &proposals,
+            2,
         );
         let decoded: GroupBlob = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(decoded.nuke_proposals, proposals);
@@ -2772,6 +2845,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         let decoded = try_decode_tombstone(hash, 7).expect("must decode as a tombstone");
         assert_eq!(decoded.generation, 7);
@@ -2793,6 +2867,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert!(try_decode_tombstone(hash, 8).is_none());
     }
@@ -2810,6 +2885,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            2,
         );
         assert!(try_decode_tombstone(hash, 7).is_none());
     }

@@ -3166,6 +3166,80 @@ class NukeRequiresConsensus(Requirement):
     req_id = "NUKE-CONSENSUS"
 
 
+class NukeConsensusThresholdConfigurable(Requirement):
+    """REQUIREMENT-ID: NUKE-CONSENSUS-THRESHOLD-001
+
+    NUKE-CONSENSUS's proposer threshold ("2 or more distinct, unexpired
+    proposers") was hardcoded regardless of how many coordinators a network
+    actually has -- with 100 coordinators, 2 agreeing is not meaningful
+    consensus. Made configurable at creation, `tetron create
+    --nuke-consensus <n>` (default 2, must be >= 2 -- a value of 0 or 1 would
+    let a single coordinator nuke unilaterally once a second coordinator
+    exists, defeating the reason NUKE-CONSENSUS exists at all), following the
+    exact same treatment `--subnet` already established: fixed once at
+    creation, carried in the signed `GroupBlob` (`nuke_consensus_threshold:
+    u32`, `#[serde(default = "default_nuke_consensus_threshold")]` so a blob
+    predating this field decodes as the historical hardcoded value of 2) and
+    the persisted `NetworkConfig` (same shape, same default), never mutated
+    by any later command -- no `tetron config`/`admin` path touches it.
+
+    **Why the blob, not just local config:** `nuke_network`'s consensus
+    check runs locally on whichever coordinator executes it (deliberately --
+    see NUKE-CONSENSUS's own "no reconverge-triggered automatic execution"
+    invariant, unchanged here). If the threshold were only a local,
+    unsynced config value, coordinators on the same network could silently
+    disagree about what "consensus" even means, and `tetron status` could
+    never show one authoritative answer. Putting it in the signed blob
+    doesn't add a new integrity guarantee beyond what the existing
+    trust model already provides (a key holder is already fully trusted --
+    it can already do plenty else with the key), but it does make the
+    configured value visible and consistent across every coordinator and
+    member, and immune to the SUBNET-DRIFT-001 class of restart-induced
+    drift -- exactly the same justification `subnet` itself already
+    established.
+
+    **Threading, following `subnet`'s own call-site pattern exactly (added
+    as the new trailing positional argument everywhere, so no existing
+    argument had to move):** `canonical_group_bytes`/`group_blob_hash`
+    (`membership.rs`) gained a `nuke_consensus_threshold: u32` parameter;
+    `NetworkState`/`NetworkConfig`/`JoinParams`/`RestoredRoster` each gained
+    the matching field; every construction site (`create_network_inner`,
+    `build_initial_roster`, `build_member_state`, `restore_member_roster`/
+    `restore_coordinator_network`, the DHT-fallback `dummy_state`, the
+    member reconnect `state_from_blob` closure) threads it through --
+    preferring the freshly fetched blob's value when one is available, the
+    persisted config only as a fallback (mirroring the `subnet` precedent).
+    `nuke_network`'s own check (`runtime.rs`) now reads
+    `state.nuke_consensus_threshold` instead of a bare `2`, and the
+    proposal-pending message reports `{active_count}/{threshold}` instead of
+    the old hardcoded `/2`.
+
+    **Tombstones are the one place that deliberately does NOT read this
+    field:** `publish_nuke_tombstone` and its matching local reconstruction,
+    `try_decode_tombstone`, both pass the fixed
+    `default_nuke_consensus_threshold()` (2) regardless of the real
+    network's configured value. A tombstone's content must be fully
+    deterministic given just its `generation` (pre-existing invariant, see
+    NUKE-CONSENSUS's own tombstone-reconstruction note) -- it carries no
+    other network state, so there is nothing for a per-network threshold to
+    mean there. Both call sites must agree on the exact same fixed constant
+    for the hash to verify; using the named default function (rather than a
+    bare literal in each place) keeps that agreement obvious rather than
+    coincidental.
+
+    `NetworkStatus.nuke_consensus_threshold` (`tetron-proto`) surfaces the
+    configured value via `tetron status`/`--json`, `#[serde(default = ...)]`
+    so an older daemon's response still decodes.
+
+    CLI: `Command::Create` gained `--nuke-consensus <n>`; `ipc_create`
+    validates `>= 2` client-side for an immediate error (daemon re-validates
+    authoritatively, same division of labor as `--subnet`'s CIDR parsing).
+    `--help` text for `Nuke`/README/AGENTS.md updated to say "the network's
+    configured threshold (default 2)" rather than a hardcoded "two".
+    """
+    req_id = "NUKE-CONSENSUS-THRESHOLD-001"
+
+
 # --------------------------------------------------------------------------
 # DIAL-001: background, concurrent, timeout-bounded roster dials
 # --------------------------------------------------------------------------

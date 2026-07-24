@@ -229,6 +229,12 @@ pub(crate) struct NetworkState {
     /// the only code path that ever acts on this is the synchronous
     /// `MeshManager::nuke_network` command handler, not reconverge.
     pub(crate) nuke_proposals: BTreeMap<String, u64>,
+    /// Minimum distinct, unexpired proposers required to execute a nuke once
+    /// this network has 2+ coordinators (NUKE-CONSENSUS-THRESHOLD-001), fixed
+    /// at creation and carried through the signed `GroupBlob` like any other
+    /// network-wide, must-agree value (see the field's own doc comment on
+    /// [`crate::membership::GroupBlob`]).
+    pub(crate) nuke_consensus_threshold: u32,
     /// The network's resolved overlay subnet (from the signed `GroupBlob`, or the
     /// default). Used to derive/validate member IPs and to publish the subnet
     /// field back into the blob.
@@ -272,6 +278,7 @@ impl NetworkState {
             self.blob_subnet(),
             &self.invites,
             &self.nuke_proposals,
+            self.nuke_consensus_threshold,
         );
         let hash = blake3::hash(&bytes);
         self.snapshot = Some(GroupSnapshot {
@@ -871,6 +878,7 @@ impl MeshManager {
                 hostname,
                 transport,
                 subnet,
+                nuke_consensus,
             } => {
                 let parsed = match subnet
                     .as_deref()
@@ -884,7 +892,7 @@ impl MeshManager {
                         };
                     }
                 };
-                self.create_network(mode, network_name, hostname, transport, parsed)
+                self.create_network(mode, network_name, hostname, transport, parsed, nuke_consensus)
                     .await
             }
             IpcMessage::Join {
@@ -1147,6 +1155,7 @@ mod accept_handler_tests {
             reusable_keys: BTreeMap::new(),
             invites: BTreeMap::new(),
             nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
         }))
     }
 
@@ -1554,6 +1563,7 @@ mod headless_tests {
                         reusable_keys: BTreeMap::new(),
                         invites: BTreeMap::new(),
                         nuke_proposals: BTreeMap::new(),
+                        nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
                     cancel: CancellationToken::new(),
@@ -1722,6 +1732,7 @@ mod headless_tests {
                         reusable_keys: BTreeMap::new(),
                         invites: BTreeMap::new(),
                         nuke_proposals: BTreeMap::new(),
+                        nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
                     cancel: CancellationToken::new(),
@@ -1883,6 +1894,7 @@ mod headless_tests {
                     reusable_keys: BTreeMap::new(),
                     invites: BTreeMap::new(),
                     nuke_proposals: BTreeMap::new(),
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
                 cancel: CancellationToken::new(),
@@ -1978,6 +1990,7 @@ mod headless_tests {
                     reusable_keys: BTreeMap::new(),
                     invites: BTreeMap::new(),
                     nuke_proposals: BTreeMap::new(),
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
                 cancel: CancellationToken::new(),
@@ -2049,6 +2062,7 @@ mod headless_tests {
                     reusable_keys: BTreeMap::new(),
                     invites: BTreeMap::new(),
                     nuke_proposals: BTreeMap::new(),
+                    nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                 })),
                 dht_notify: None,
                 cancel: CancellationToken::new(),

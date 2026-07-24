@@ -59,7 +59,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, nuke_proposals, subnet_str) = {
+        let (members, member_count, nuke_proposals, subnet_str, nuke_consensus_threshold) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -79,6 +79,7 @@ impl MeshManager {
                             let (base, prefix) = crate::membership::default_subnet();
                             format!("{base}/{prefix}")
                         },
+                        nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
                     };
                 }
             };
@@ -92,7 +93,13 @@ impl MeshManager {
                 })
                 .collect();
             let (base, prefix) = s.subnet;
-            (s.roster(), count, proposals, format!("{base}/{prefix}"))
+            (
+                s.roster(),
+                count,
+                proposals,
+                format!("{base}/{prefix}"),
+                s.nuke_consensus_threshold,
+            )
         };
         // Index live connections by endpoint id for a fast lookup.
         let connected: HashMap<EndpointId, Connection> = h
@@ -134,6 +141,7 @@ impl MeshManager {
             tun_name: h.tun_name.lock().unwrap().clone(),
             active: h.active.load(Ordering::SeqCst),
             subnet: subnet_str,
+            nuke_consensus_threshold,
         }
     }
 

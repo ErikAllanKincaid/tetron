@@ -52,6 +52,11 @@ pub(crate) struct JoinParams {
     /// From the fetched blob: pending nuke proposals (NUKE-CONSENSUS), carried
     /// into the joiner's state purely for `tetron status` visibility.
     pub(crate) nuke_proposals: BTreeMap<String, u64>,
+    /// From the fetched blob: this network's NUKE-CONSENSUS proposer
+    /// threshold (NUKE-CONSENSUS-THRESHOLD-001), adopted into the joiner's
+    /// state and persisted config -- authoritative from the blob, same as
+    /// every other network-wide field here.
+    pub(crate) nuke_consensus_threshold: u32,
     /// From the fetched blob: its generation (CONVERGE-005), adopted directly
     /// into the joiner's initial `NetworkState` (never bumped — this node hasn't
     /// mutated anything yet). Only load-bearing if this node later publishes
@@ -120,6 +125,7 @@ pub(crate) async fn join_mesh_shared(
         reusable_keys,
         invites,
         nuke_proposals,
+        nuke_consensus_threshold,
         generation,
         transport,
         initial,
@@ -157,6 +163,7 @@ pub(crate) async fn join_mesh_shared(
         &my_hostname,
         transport,
         network_subnet,
+        nuke_consensus_threshold,
     )?;
 
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
@@ -219,6 +226,7 @@ pub(crate) async fn join_mesh_shared(
         reusable_keys,
         invites,
         nuke_proposals,
+        nuke_consensus_threshold,
         generation,
         network_subnet,
         &blob_store,
@@ -284,6 +292,7 @@ fn persist_join_config(
     my_hostname: &Option<String>,
     transport: Option<TransportMode>,
     network_subnet: crate::membership::Subnet,
+    nuke_consensus_threshold: u32,
 ) -> Result<()> {
     let persisted_hostname = members
         .iter()
@@ -309,6 +318,7 @@ fn persist_join_config(
         // meaning a member's own config never recorded which subnet it
         // actually joined under. Persist the real, resolved value instead.
         subnet: Some(network_subnet),
+        nuke_consensus_threshold,
     })
 }
 
@@ -346,6 +356,7 @@ async fn build_member_state(
     reusable_keys: BTreeMap<String, crate::membership::ReusableKey>,
     invites: BTreeMap<String, crate::membership::InviteEntry>,
     nuke_proposals: BTreeMap<String, u64>,
+    nuke_consensus_threshold: u32,
     generation: u64,
     subnet: crate::membership::Subnet,
     blob_store: &FsStore,
@@ -369,6 +380,7 @@ async fn build_member_state(
         reusable_keys,
         invites,
         nuke_proposals,
+        nuke_consensus_threshold,
     };
     ns.refresh_snapshot();
     if let Some(snap) = &ns.snapshot {

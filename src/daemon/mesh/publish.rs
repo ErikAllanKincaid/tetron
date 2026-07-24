@@ -105,6 +105,7 @@ pub(crate) fn spawn_network_publisher(
                             s.blob_subnet(),
                             &s.invites,
                             &s.nuke_proposals,
+                            s.nuke_consensus_threshold,
                         )
                     });
                 (s.generation, hash)
@@ -182,6 +183,7 @@ pub(crate) fn spawn_lazy_publisher(
                             s.blob_subnet(),
                             &s.invites,
                             &s.nuke_proposals,
+                            s.nuke_consensus_threshold,
                         )
                     });
                 (s.generation, hash)

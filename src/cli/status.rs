@@ -338,14 +338,16 @@ fn print_network(net: &ipc::NetworkStatus) {
             .collect();
         match short_id.as_deref() {
             Some(id_hint) => println!(
-                "    ! nuke proposed by {} ({}/2) — run `tetron nuke {id_hint}` to second, or `tetron nuke {id_hint} --cancel` to withdraw yours",
+                "    ! nuke proposed by {} ({}/{}) — run `tetron nuke {id_hint}` to second, or `tetron nuke {id_hint} --cancel` to withdraw yours",
                 ids.join(", "),
                 net.nuke_proposals.len(),
+                net.nuke_consensus_threshold,
             ),
             None => println!(
-                "    ! nuke proposed by {} ({}/2)",
+                "    ! nuke proposed by {} ({}/{})",
                 ids.join(", "),
                 net.nuke_proposals.len(),
+                net.nuke_consensus_threshold,
             ),
         }
     }

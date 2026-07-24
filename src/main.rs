@@ -61,6 +61,12 @@ pub(crate) enum Command {
         /// to 10.88.0.0/24, chosen to coexist with Tailscale's 100.64.0.0/10.
         #[arg(long)]
         subnet: Option<String>,
+        /// Minimum distinct coordinators required to agree before `tetron nuke`
+        /// executes once this network has 2+ coordinators (a solo coordinator
+        /// always nukes immediately regardless). Must be >= 2. Fixed at
+        /// creation, never changeable afterward. Defaults to 2
+        #[arg(long)]
+        nuke_consensus: Option<u32>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long)]
         tor: bool,
@@ -97,10 +103,11 @@ pub(crate) enum Command {
     /// Destroy a network (coordinator only)
     ///
     /// With a single coordinator, nukes immediately. With two or more
-    /// coordinators, requires a second: running this on a coordinator
-    /// proposes (or seconds, if a proposal already exists); once two
-    /// distinct coordinators have proposed within the last 24h, the
-    /// network is destroyed.
+    /// coordinators, requires consensus: running this on a coordinator
+    /// proposes (or seconds, if a proposal already exists); once the
+    /// network's configured threshold (`--nuke-consensus` at creation,
+    /// default 2) of distinct coordinators have proposed within the last
+    /// 24h, the network is destroyed.
     Nuke {
         /// Network's key, or an unambiguous prefix of it (the `network_key`
         /// line in `tetron status`) -- not its local name
@@ -437,8 +444,19 @@ async fn main() -> Result<()> {
             network_name,
             hostname,
             subnet,
+            nuke_consensus,
             tor,
-        } => ipc_create(GroupMode::Restricted, network_name, hostname, subnet, tor).await,
+        } => {
+            ipc_create(
+                GroupMode::Restricted,
+                network_name,
+                hostname,
+                subnet,
+                nuke_consensus,
+                tor,
+            )
+            .await
+        }
         Command::Join {
             invite_code,
             alias,
