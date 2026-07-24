@@ -1937,6 +1937,7 @@ mod headless_tests {
     /// remove it (the live-only resolver couldn't find it by name or key
     /// prefix). `leave_network` must still succeed via a persisted-config
     /// fallback and actually delete the stuck config entry.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leave_removes_a_network_that_never_restored() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1981,6 +1982,7 @@ mod headless_tests {
 
     /// A name that resolves neither live nor in persisted config still
     /// fails cleanly, with the original (not a fabricated) error message.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leave_unknown_network_still_errors() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2091,6 +2093,7 @@ mod headless_tests {
     /// INVITE-ADMIN-NETWORK-KEY-001: `admin`/`invite` accept a `network_key`
     /// prefix fallback, same as `leave` already did (`LEAVE-NETWORK-KEY-001`),
     /// via the shared `resolve_network_name_or_key`.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn admin_list_and_invite_list_accept_network_key_prefix() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
