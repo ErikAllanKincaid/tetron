@@ -9,6 +9,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **Backup instructions in README.md**: documents backing up `config_dir()` (`secret_key`, `settings.toml`, `networks/*.toml`) with `tar`, plus a recommendation to encrypt the archive with `age` (or `gpg --symmetric`) before it leaves the machine, since `secret_key` is the node's actual identity.
+- **`docs/HOWTO.md` brought up to date**: the full `CONFIG-AUDIT-002` config key set (`ratelimit.*`, `nuke-proposal-ttl`, `listen-port`, `poller-interval`, `log-retention`, `invite-default-expiry`) with worked examples, a Backup section matching the README, an expanded Upgrading section (release binary + source, plus the safe-idempotent-reinstall note), `tetron sync`, IPv6 status fields, shell completions, and a pointer to the optional `tetron-webui`/`tetron-systray` add-ons.
+
+### Fixed
+
+- **`tetron config get/set/unset --help` text**: only ever listed `relay`, `discovery-dns`, and `subnet`, never the six `CONFIG-AUDIT-002` keys that have existed in `config.rs` since 0.8.0. Also fixed `docs/HOWTO.md`'s troubleshooting section, which claimed the daemon's listen port wasn't runtime-configurable (it is, via `tetron config set listen-port`).
 
 ## [0.8.0] - 2026-07-24
 
