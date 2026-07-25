@@ -712,16 +712,13 @@ impl MeshManager {
                 message: "cannot kick yourself — use `tetron leave` or `tetron nuke`".to_string(),
             };
         }
-        if is_coord {
-            return IpcMessage::Error {
-                message: format!(
-                    "'{display}' is a coordinator (holds the network key); kicking can't remove \
-                     its access. Revoke the key instead."
-                ),
-            };
-        }
 
-        // Prune the roster, then publish + broadcast + sever the link.
+        // Prune the roster, then publish + broadcast + sever the link. A
+        // coordinator target is allowed through same as any other member
+        // (KICK-COORDINATOR-001) -- removing them from `s.members` below
+        // drops their `is_coordinator` flag along with everything else in
+        // their `Member` entry, which is what actually matters for every
+        // other honest node's roster/counting logic from here on.
         let Some(ctx) = self.mesh_ctx_for(network) else {
             return IpcMessage::Error {
                 message: format!("network '{network}' not active"),
@@ -730,9 +727,22 @@ impl MeshManager {
         remove_member_roster_only(&state, member_id);
         finalize_removal(&ctx, network, &state, &dht_notify, &[member_id]).await;
 
-        tracing::info!(peer = %member_id.fmt_short(), network = %network, "kicked member");
+        tracing::info!(peer = %member_id.fmt_short(), network = %network, was_coordinator = is_coord, "kicked member");
+        // KICK-COORDINATOR-001: kicking a coordinator only ever updates the
+        // roster every *other* honest node enforces -- it can't revoke the
+        // shared network_secret_key itself, so a genuinely still-live (not
+        // actually gone) former coordinator could still use their own copy
+        // to self-mint an invite and rejoin. Say so plainly rather than
+        // implying this is real revocation.
+        let coord_note = if is_coord {
+            " (was a coordinator -- this removes their roster access but does not revoke \
+              their copy of the network key; if their machine is not actually gone, they \
+              could still use it to mint themselves a new invite and rejoin)"
+        } else {
+            ""
+        };
         IpcMessage::Ok {
-            message: format!("kicked '{display}' from '{network}'"),
+            message: format!("kicked '{display}' from '{network}'{coord_note}"),
         }
     }
 

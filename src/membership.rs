@@ -2712,6 +2712,37 @@ mod tests {
         assert_eq!(coordinator_count(&[]), 0);
     }
 
+    /// KICK-COORDINATOR-001: removing a coordinator's `Member` entry from
+    /// the roster (what `kick_member` now does for a coordinator target,
+    /// same as it always did for an ordinary one) must actually drop them
+    /// out of `coordinator_count()` -- this is the load-bearing mechanism
+    /// the whole fix relies on to also repair `leave_network`'s stranding
+    /// check and `nuke_network`'s consensus gate, both of which read this
+    /// same count. Mirrors `MemberList::remove`'s real call site
+    /// (`remove_member_roster_only`, `daemon/mesh/coordinator.rs`) and
+    /// `roster()`'s real snapshot pattern (`self.members.all().into_iter()
+    /// .cloned().collect()`, `daemon/mod.rs:252`) rather than reaching into
+    /// `coordinator_count` with a hand-built `Vec` that a real roster
+    /// mutation could never actually produce.
+    #[test]
+    fn kicking_a_coordinator_drops_them_from_coordinator_count() {
+        let mut list = MemberList::new();
+        let zombie = make_member(1, true);
+        let zombie_id = zombie.identity;
+        list.add(zombie).unwrap();
+        list.add(make_member(2, true)).unwrap();
+        list.add(make_member(3, false)).unwrap();
+
+        let roster_before: Vec<Member> = list.all().into_iter().cloned().collect();
+        assert_eq!(coordinator_count(&roster_before), 2);
+
+        // What kick_member's post-refusal-removal path actually does.
+        list.remove(&zombie_id);
+
+        let roster_after: Vec<Member> = list.all().into_iter().cloned().collect();
+        assert_eq!(coordinator_count(&roster_after), 1);
+    }
+
     #[test]
     fn active_nuke_proposers_excludes_expired() {
         let now = 1_000_000u64;

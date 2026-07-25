@@ -299,6 +299,8 @@ tetron kick <network-key-from-status> a1b2c3d4e5  # both args are short ids from
 
 The kicked member is removed from the roster and disconnected. They cannot re-join without a new invite key.
 
+**The target can be a coordinator too** -- any coordinator may kick any *other* coordinator, unilaterally, no second opinion needed (self-kick is still refused; use `leave` or `nuke` for that). This is meant for the common real case: a coordinator's machine died or was reinstalled and is never coming back, and its stale roster entry was otherwise permanently stuck (a dead coordinator used to be un-kickable at all, which could even silently break `leave`'s own stranding-safety check for whoever was left). **It is roster removal, not key revocation** -- kicking a coordinator does not invalidate their copy of the network's secret key. If their machine genuinely is gone, this is the end of the story. If it is not actually gone (someone still has access to it), they could use that key to mint themselves a fresh invite and rejoin on their own -- there is no way to stop that short of destroying and recreating the network (`tetron nuke`). Kick a coordinator only when you're confident they're actually gone, not merely offline right now.
+
 ### Leave or destroy a network
 
 ```bash

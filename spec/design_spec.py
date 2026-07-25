@@ -5840,3 +5840,102 @@ class AddonSuiteInstallScript(Requirement):
     """
     req_id = "ADDONS-SUITE-001"
 
+
+# --------------------------------------------------------------------------
+# KICK-COORDINATOR-001: any coordinator can kick any other coordinator
+# --------------------------------------------------------------------------
+
+class KickAllowsCoordinatorTarget(Requirement):
+    """REQUIREMENT-ID: KICK-COORDINATOR-001
+
+    `tetron kick <net> <endpoint-id>` used to refuse unconditionally when
+    the target held the network key (`kick_member`'s `if is_coord { refuse
+    }` block, `runtime.rs`) -- not just against the sole coordinator, against
+    *any* coordinator, always, with no override. Found 2026-07-25 to be a
+    real operational gap, not a theoretical one: `coordinator_count()`
+    (`membership.rs`) counts roster-flagged coordinators with no liveness
+    concept at all, so a coordinator whose machine permanently dies or is
+    reinstalled stays `is_coordinator: true` in the roster forever, with no
+    way to remove that stale entry via any interface.
+
+    Two concrete consequences of the old refusal, both from the same stale
+    count: (1) `leave_network`'s stranding-safety check
+    (`is_sole_coordinator = ... && coordinator_count(&roster) <= 1`) is
+    silently defeated for a genuinely-solo surviving coordinator once a
+    zombie coordinator inflates the count to 2 -- they can `leave` with no
+    warning and no `--force`, stranding the network anyway, exactly the
+    outcome that check exists to prevent. (2) `nuke_network`'s consensus
+    gate reads the same stale count and can permanently deadlock: "2
+    coordinators" on paper, one of whom can never propose or second again.
+    Separately, in a network where most members are coordinators
+    (COORD-001's laptop-fleet model), `kick` was close to useless -- almost
+    nobody was a legal target.
+
+    DECISION (superseding an initial "add a demote step, gate it behind
+    nuke-shaped consensus" direction that was considered and rejected):
+    **no demote primitive, no consensus.** Any coordinator may kick any
+    other coordinator directly and unilaterally, the same way any
+    coordinator can already unilaterally kick any ordinary member today.
+    Reasoning, worked through with USER:
+
+    - Kicking a coordinator was never going to be real key revocation
+      either way. `AdminGrant` hands every coordinator a copy of the
+      *same* shared `network_secret_key` (not a distinct key/certificate
+      per coordinator), and `invite_create`'s only gate
+      (`coordinator_handle()` -> `handle.role.is_coordinator()`) is
+      derived purely from a node's own **local** possession of that key,
+      never from the roster. So neither a consensus-gated demote nor a
+      unilateral one can stop a still-genuinely-live former coordinator
+      from self-minting an invite and rejoining with their own copy of
+      the key -- a `--force`-shaped safety rail here would have protected
+      against a risk (irreversible harm) that plain kick, unlike `nuke`,
+      does not actually carry.
+    - Because kicking a coordinator can't do anything a still-live target
+      can't immediately undo themselves (self-invite) or that any other
+      coordinator can't immediately redo the other way (`admin add`
+      re-grants), it is fully reversible by construction -- the opposite
+      risk shape from `nuke` (irreversible destruction), which is why
+      `nuke` earns consensus (NUKE-CONSENSUS) and this does not.
+    - It is not a new capability class: `kick_member`'s top-level gate
+      already lets any single coordinator unilaterally kick any ordinary
+      member with no consensus. Coordinators were an arbitrary carve-out
+      from a tool that was already unilateral for everyone else; removing
+      the carve-out is closing an inconsistency, not opening a new one.
+    - A separate demote-without-removal primitive (clear `is_coordinator`,
+      keep the target as an ordinary member) was considered and explicitly
+      rejected as a prerequisite: it only serves downgrading a *live,
+      cooperative* coordinator's trust while keeping them around, which is
+      a different feature from "remove a zombie admin" and isn't needed to
+      solve it.
+
+    Implementation: delete the `if is_coord { refuse }` block from
+    `kick_member` entirely. No other change to the function is needed --
+    `remove_member_roster_only` already does `s.members.remove(&member_id)`,
+    which drops the target's whole `Member` entry including
+    `is_coordinator`, so this single deletion also fixes both
+    `coordinator_count()`-driven bugs above as a side effect (the zombie's
+    entry is gone, not left behind with a merely-cleared flag). The
+    pre-existing self-kick refusal (`"cannot kick yourself"`) is unrelated
+    and unchanged. The success message now names whether the target was a
+    coordinator and, if so, states plainly what this does and does not do
+    (removes roster/enforcement access; does not revoke the key) --
+    replacing the old refusal's own overclaim ("kicking can't remove its
+    access. Revoke the key instead" pointed at a remedy that doesn't
+    actually exist).
+
+    EXPLICITLY OUT OF SCOPE: evicting a still-*live*, actually-malicious
+    coordinator who won't cooperate. That needs real key rotation --
+    generating a new `network_secret_key` and redistributing it to every
+    still-trusted coordinator, which also relocates the network's own DHT
+    discovery identity (the room id is the key's own derived pubkey) --
+    a much bigger, separate, not-currently-scoped project. This
+    requirement solves "remove a zombie admin," the stated priority, and
+    is deliberately honest about not solving the other case.
+
+    Doc updates: CLI help text for `tetron kick` (drop any coordinator
+    caveat), AGENTS.md's kick bullet (the "Refused against
+    coordinators/self" line becomes "Refused against self only"),
+    CHANGELOG.md.
+    """
+    req_id = "KICK-COORDINATOR-001"
+
