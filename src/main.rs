@@ -26,7 +26,8 @@ const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GI
 #[command(
     name = "tetron",
     about = "P2P mesh VPN powered by iroh",
-    version = FULL_VERSION
+    version = FULL_VERSION,
+    after_help = "Optional webui and other addons available, see the tetron project page for details."
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of styled text (disables color and
@@ -254,25 +255,42 @@ pub(crate) enum ConfigAction {
     /// Show settings (all, or one key)
     #[command(visible_alias = "ls")]
     Get {
-        /// relay, discovery-dns, or subnet (omit for all)
+        /// relay, discovery-dns, subnet,
+        /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
+        /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
+        /// or invite-default-expiry (omit for all)
         key: Option<String>,
     },
     /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs;
-    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16). Applies on restart.
+    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16); `ratelimit.*` takes a
+    /// whole number; durations (`nuke-proposal-ttl`/`invite-default-expiry`) take
+    /// a string like "24h"/"7d"; `listen-port`/`poller-interval`/`log-retention`
+    /// take a single whole number. Applies on restart.
     Set {
-        /// relay, discovery-dns, or subnet
+        /// relay, discovery-dns, subnet,
+        /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
+        /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
+        /// or invite-default-expiry
         key: String,
         /// Server keys: comma list of presets/URLs/IPv4s. subnet: a CIDR.
+        /// ratelimit.*/listen-port/poller-interval/log-retention: a whole number.
+        /// nuke-proposal-ttl/invite-default-expiry: a duration ("24h"/"7d"/"30m").
         /// Empty resets to the default.
         value: String,
         /// Replace the defaults instead of augmenting them (server keys only)
         #[arg(long)]
         replace: bool,
     },
-    /// Reset a key to its default (server keys -> iroh n0; subnet -> 10.88.0.0/24)
+    /// Reset a key to its compiled default (server keys -> iroh n0; subnet ->
+    /// 10.88.0.0/24; ratelimit.* -> compiled defaults; nuke-proposal-ttl -> 24h;
+    /// listen-port -> 43737; poller-interval -> 60s; log-retention -> 7 days;
+    /// invite-default-expiry -> 7d)
     #[command(visible_alias = "rm")]
     Unset {
-        /// relay, discovery-dns, or subnet
+        /// relay, discovery-dns, subnet,
+        /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
+        /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
+        /// or invite-default-expiry
         key: String,
     },
 }

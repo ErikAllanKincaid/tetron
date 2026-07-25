@@ -12,6 +12,14 @@ tetron runs a root daemon that owns a TUN device and the iroh endpoint. Clients 
 sudo tetron install   # install the system service + start + activate data plane
 ```
 
+**Optional GUI add-ons.** Everything in this guide is CLI-only, by design (tetron core stays "do one thing well"). If you'd rather not live in the terminal, [`tetron-webui`](https://github.com/ErikAllanKincaid/tetron-webui) is a browser dashboard (create/join/leave, invites, admin actions, and an Add-ons panel that can install the others) and [`tetron-systray`](https://github.com/ErikAllanKincaid/tetron-systray) is a menu-bar/tray status client. Both are separate, opt-in binaries that talk to the same daemon over the same IPC socket -- nothing here changes if you never install them.
+
+**Shell completions:**
+
+```bash
+tetron completions bash > /etc/bash_completion.d/tetron   # or: zsh, fish, elvish, powershell
+```
+
 ---
 
 ## 1. Install from GitHub release
@@ -134,6 +142,17 @@ tetron invite mynetwork revoke a1b2c3d4e5f6
 
 An invite is automatically revoked (marked used) when redeemed by a joiner. Revoked or expired invites cannot be redeemed.
 
+**Default expiry is configurable node-wide** (rather than passing `--expires` every time), via `tetron config set invite-default-expiry <duration>` -- see [Custom configuration](#10-custom-configuration) below.
+
+**Don't want to wait for the next automatic poll?** After minting an invite (or any other change you want a peer to see immediately), wake the DHT/group poller manually instead of waiting for its configured interval (60s by default):
+
+```bash
+tetron sync                  # every joined network
+tetron sync --network mynetwork   # just this one
+```
+
+A built-in 2-second cooldown prevents spamming this into back-to-back resolves.
+
 ---
 
 ## 4. Join a network
@@ -211,6 +230,15 @@ Hostnames ride the signed roster but there is no Magic DNS. Reach peers by their
 
 ```bash
 tetron status --json | jq -r '.networks[].peers[] | "\(.ip) \(.hostname)"' | sudo tee -a /etc/hosts
+```
+
+**Dual-stack: every peer also has a stable IPv6 address** in `200::/7`, scoped per network (a node gets an unrelated IPv6 in each network it joins, never rotates). The default text output only shows IPv4; get IPv6 addresses via `--json`:
+
+```bash
+tetron status --json | jq -r '.networks[].peers[] | "\(.hostname) \(.ip) \(.ipv6 // "n/a")"'
+
+# Your own IPv6 per network:
+tetron status --json | jq -r '.networks[] | "\(.network) \(.my_ipv6 // "n/a")"'
 ```
 
 ---
@@ -399,6 +427,51 @@ This only points tetron at a relay/discovery server; it does not stand one up. T
 - **Relay** (NAT-traversal fallback, matches what `tetron config set relay` accepts): iroh's own relay server, `iroh-relay` (crate docs at [docs.rs/iroh-relay](https://docs.rs/iroh-relay/), source and self-hosting instructions at [github.com/n0-computer/iroh/tree/main/iroh-relay](https://github.com/n0-computer/iroh/tree/main/iroh-relay)). Build with `cargo build` from the iroh workspace; supports allow-everyone (default), an endpoint-id allowlist/denylist, a shared auth token, or an HTTP callout to an external auth service.
 - **Discovery** (pkarr server, matches what `tetron config set discovery-dns` accepts): the `pkarr-relay` crate (`cargo install pkarr-relay`), source at [github.com/pubky/pkarr/tree/main/relay](https://github.com/pubky/pkarr/tree/main/relay), with an example config at [relay/src/config.example.toml](https://github.com/pubky/pkarr/blob/main/relay/src/config.example.toml) and the underlying design at [design/relays.md](https://github.com/pubky/pkarr/blob/main/design/relays.md). Runs on `http://localhost:6881` by default.
 
+### Every other configurable knob (CONFIG-AUDIT-002)
+
+All global settings live in `settings.toml` under `config::config_dir()`, written by `tetron config set`, and take effect on `sudo tetron restart`. Every key resets to its compiled default when set to an empty value (or via `tetron config unset <key>`):
+
+```bash
+# Rate limiting -- per-connection token bucket + strike counter (ControlGate)
+# and the shared daemon-wide bucket (GlobalRateLimiter). Defaults: capacity 5,
+# refill-per-sec 1, strike-limit 20 (per-connection); global-capacity 10,
+# global-refill-per-sec 3, global-strike-limit 50 (daemon-wide).
+tetron config set ratelimit.capacity 10
+tetron config set ratelimit.refill-per-sec 2
+tetron config set ratelimit.strike-limit 30
+tetron config set ratelimit.global-capacity 20
+tetron config set ratelimit.global-refill-per-sec 5
+tetron config set ratelimit.global-strike-limit 100
+
+# How long a nuke proposal stays valid before it expires (NUKE-CONSENSUS).
+# Default: 24h.
+tetron config set nuke-proposal-ttl 12h
+
+# The daemon's fixed UDP listen port for the iroh endpoint (falls back to an
+# ephemeral port if taken -- see Troubleshooting below). Default: 43737.
+tetron config set listen-port 51820
+
+# How often the DHT/group poller checks for blob updates on its own, without
+# a manual `tetron sync`. Default: 60 (seconds).
+tetron config set poller-interval 30
+
+# How many days of rotated daemon logs to keep. Default: 7.
+tetron config set log-retention 14
+
+# Default expiry for a freshly minted invite when `--expires` isn't passed
+# (both the auto-minted invite on `tetron create` and `tetron invite create`).
+# Default: 7d.
+tetron config set invite-default-expiry 3d
+
+# Inspect current values (all, or one key):
+tetron config get
+tetron config get ratelimit.capacity
+tetron config get --json
+
+# Reset any of the above to its compiled default:
+tetron config unset poller-interval
+```
+
 ### Tor transport
 
 Requires a running Tor daemon with `ControlPort 9051` enabled in `torrc`:
@@ -417,11 +490,58 @@ Mixing Tor and non-Tor nodes on the same network is supported — each peer uses
 
 ## 11. Upgrading
 
+There is no self-update in tetron (removed from upstream, MINIMAL-002). Replace the binary and restart:
+
 ```bash
-# Replace the binary (no self-update in tetron)
-sudo install /path/to/new/tetron /usr/local/bin/tetron
+# From a fresh release binary:
+curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
+chmod +x tetron
+sudo install tetron /usr/local/bin/tetron   # overwrite the old binary at the same path
+
+# Or from source:
+git pull && cargo build --release
+sudo install target/release/tetron /usr/local/bin/tetron
+
 sudo tetron restart
-tetron version   # confirm new build
+tetron version                 # confirm the new build (version + git sha)
+```
+
+**`sudo tetron install` re-run works too, and is genuinely safe and idempotent** -- it only rewrites the service unit/plist and restarts the daemon, never touching `secret_key`, `networks/*.toml`, or anything else under the config directory. The only difference from `tetron restart` is that it also refreshes the unit file (picks up a moved binary path) and re-grants operator access to the invoking user; either command restarts the daemon and briefly disconnects from peers while it comes back up.
+
+**No forced upgrade ordering across peers.** The mesh peer protocol's ALPN carries a version gate (`transport::MESH_PROTOCOL_VERSION`) that only changes on an actual breaking wire-format change to peer-to-peer traffic -- rare, and always called out explicitly in the changelog when it happens. An ordinary version bump (new features, bug fixes) does not require synchronized upgrades across your mesh.
+
+If you're also running `tetron-webui`/`tetron-systray`, they upgrade independently too -- see their own READMEs' "Upgrading" sections; the IPC wire format between them and the daemon tolerates version skew in both directions.
+
+---
+
+## 12. Backup
+
+Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/.config/tetron` on macOS: `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically.
+
+```bash
+# Linux (root-owned tree, 0600 secret_key) -- sudo preserves ownership/perms.
+# Lands in the current directory, not under /etc -- `-C /etc` only tells tar
+# where to find the "tetron" path being archived, not where the output goes.
+sudo tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C /etc tetron
+
+# macOS (user-owned, no sudo needed)
+tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C ~/.config tetron
+```
+
+**Encrypt it before it leaves this machine.** `secret_key` is your identity -- anyone with a copy can impersonate this node on every network it's a member of. [`age`](https://github.com/FiloSottile/age) is the simplest option, no keyring to manage:
+
+```bash
+age -p -o tetron-backup-$(date +%Y%m%d).tar.gz.age tetron-backup-$(date +%Y%m%d).tar.gz
+shred -u tetron-backup-$(date +%Y%m%d).tar.gz   # remove the unencrypted copy
+```
+
+**Restore** onto a fresh machine (same identity, so it resumes as the exact same node on every network it was a member of -- do not do this on two machines at once, that's key duplication, not a backup):
+
+```bash
+age -d -o tetron-backup.tar.gz tetron-backup.tar.gz.age
+sudo tar xzf tetron-backup.tar.gz -C /etc      # Linux
+tar xzf tetron-backup.tar.gz -C ~/.config      # macOS
+sudo tetron restart
 ```
 
 ---
@@ -481,7 +601,7 @@ If you want a different name, leave and re-join with `--hostname`.
 
 ### Direct connection not establishing
 
-tetron binds UDP port 43737 for the iroh endpoint. If this port is blocked by a firewall, forward it for reliable direct connections:
+tetron binds UDP port 43737 for the iroh endpoint by default (`tetron config set listen-port <port>` to change it). If this port is blocked by a firewall, forward it for reliable direct connections:
 
 ```bash
 # Port-forward 43737/UDP on your router to this machine
@@ -495,7 +615,8 @@ Without port forwarding, iroh still connects through its relay fallback (at the 
 
 ```bash
 # Daemon logs are at /var/log/tetron/ on Linux (/Library/Logs/tetron on
-# macOS), rotated daily, 7 most recent kept:
+# macOS), rotated daily, 7 most recent kept by default
+# (`tetron config set log-retention <days>` to change it):
 sudo tail -f /var/log/tetron/*.log
 
 # Or filter by our crate:
@@ -521,7 +642,12 @@ There is no command to query who the current operator is; `tetron install` auto-
 
 ### "Address already in use" at daemon start
 
-Port 43737 is taken. The daemon logs a warning and falls back to an ephemeral port. This prevents port forwarding from working reliably. Find the conflicting process and stop it, or change the listen port in the source and rebuild (not configurable at runtime).
+Port 43737 is taken. The daemon logs a warning and falls back to an ephemeral port. This prevents port forwarding from working reliably. Either find the conflicting process and stop it, or move tetron to a different fixed port instead:
+
+```bash
+tetron config set listen-port 51820
+sudo tetron restart
+```
 
 ---
 
