@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-25
+
 ### Added
 
 - **Backup instructions in README.md**: documents backing up `config_dir()` (`secret_key`, `settings.toml`, `networks/*.toml`) with `tar`, plus a recommendation to encrypt the archive with `age` (or `gpg --symmetric`) before it leaves the machine, since `secret_key` is the node's actual identity.
