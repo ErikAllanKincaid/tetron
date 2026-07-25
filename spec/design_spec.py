@@ -5754,3 +5754,89 @@ class AdminInviteListOpenToAnyUser(Requirement):
     """
     req_id = "AUTHZ-001"
 
+
+# --------------------------------------------------------------------------
+# ADDONS-SUITE-001: a name-free --help pointer only, no install script and
+# no fetch-and-run subcommand in tetron itself
+# --------------------------------------------------------------------------
+
+class AddonSuiteInstallScript(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-001
+
+    Discussed at length 2026-07-24: should tetron itself gain a command (or
+    ship a companion script) to discover/install its optional add-ons
+    (`tetron-webui`, `tetron-systray`)? Landed on the least-invasive of
+    several designs considered, after explicitly rejecting three more
+    coupled alternatives -- including an initially-built standalone install
+    script, superseded before being committed (see "Course-corrected" below).
+
+    **What shipped:** nothing executable in `tetron` core. Just a minimal
+    `tetron --help` epilog: `"Optional webui and other addons available,
+    see the tetron project page for details."` -- deliberately names
+    neither addon's repo, asset convention, or URL, so it can never go
+    stale regardless of how the addons or their release process change.
+
+    **Why not a `tetron addons` subcommand (rejected designs):** a real
+    installed `tetron` binary (a downloaded release asset, not a repo
+    checkout) has no filesystem access to a companion script at all, so any
+    subcommand that "just runs" one needs to fetch it from somewhere over
+    the network at invocation time. Three shapes were considered:
+
+    1. **Embed a script at compile time** (`include_str!`, like
+       `tetron-webui`'s static assets) -- rejected outright: editing it
+       would then require rebuilding and re-releasing `tetron` itself,
+       which defeats the entire point of keeping addons separate.
+    2. **A `tetron addons` command that fetches-and-runs a script fresh
+       from tetron's own repo each invocation** -- mechanically sound (the
+       only fact baked into `tetron` would be "my own repo has a file at
+       this path," not third-party knowledge), and was worked through in
+       detail: show the fetched content (paged, not just a bare warning
+       string) and require two separate confirmations before ever
+       executing it, since a built-in command that fetches-and-runs a
+       remote script is a real, ongoing code-execution trust surface
+       (every future invocation trusts this GitHub repo's integrity, not
+       just the one-time binary download) -- mitigated by forced review,
+       but not eliminated.
+    3. **A narrower `tetron addons` that installs only `tetron-webui`**,
+       leaving `tetron-webui` itself responsible for installing further
+       add-ons (`tetron-systray`, future ones) from inside its own UI --
+       rejected for the same core reason as option 2, just a smaller dose
+       of it: `tetron` core's own source would still permanently know
+       `tetron-webui`'s specific repo and release-asset convention, coupling
+       that runs backwards (the addon depends on tetron, never the other
+       way around) and needs a `tetron` code change if that one addon is
+       ever renamed or replaced.
+
+    **Course-corrected 2026-07-24:** a standalone `contrib/install-tetron-
+    suite.sh` script was built and live-tested as a middle ground (not a
+    `tetron` subcommand, so no coupling in `tetron`'s own source -- but
+    still a maintained artifact promising to fetch/verify/install all
+    three components). USER decided against keeping even that: the
+    `--help` epilog alone is the whole deliverable. The script was deleted
+    before ever being committed. **This also means the earlier plan for
+    `tetron-webui`'s own addon-install framework** (`src/addons.rs`, built
+    and live-tested separately, on both Linux and macOS) **is unaffected
+    and unrelated to this decision** -- that lives entirely in the
+    `tetron-webui` repo, mirrors the same download/verify convention
+    independently in Rust, and never depended on this script existing.
+
+    **Decided:** `tetron` core gains nothing executable and no companion
+    script. `tetron-webui` is the hub for installing further add-ons from
+    inside its own dashboard -- already built (`tetron-webui`'s own
+    `src/addons.rs`), not just planned. Getting to `tetron-webui` the
+    first time is a manual, one-time bootstrap step (read its own README),
+    a completely ordinary shape for software with an optional GUI layer on
+    top of a CLI-first tool, not a UX gap.
+
+    **`--help` epilog wording, deliberately name- and path-free:** an
+    earlier draft named a script's exact path -- rejected as too
+    committal, since it would need a matching edit the moment that path
+    changed or stopped existing (exactly what happened here). The shipped
+    wording makes no claim that could go stale: it relies only on the fact
+    that anyone running `tetron --help` already has `tetron` installed
+    from *somewhere* (a README, a release page) that already has the
+    real, current links -- the epilog's only job is reminding them add-ons
+    exist, not being the source of truth for where to find them.
+    """
+    req_id = "ADDONS-SUITE-001"
+
