@@ -190,6 +190,8 @@ sudo tetron restart
 tetron version                 # confirm the new build (version + git sha)
 ```
 
+`sudo tetron install` re-run on an already-installed system works too, and is genuinely safe and idempotent -- it only rewrites the service unit/plist and restarts the daemon, never touching `secret_key`, `networks/*.toml`, or anything else under the config directory. The only difference from `tetron restart` is that it also refreshes the unit file (picks up a moved binary path) and re-grants operator access to the invoking user; either command restarts the daemon and briefly disconnects from peers while it comes back up.
+
 ## Backup
 
 Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/.config/tetron` on macOS: `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically -- back it up yourself before anything risky (a big upgrade, a disk swap, decommissioning old hardware).
