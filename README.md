@@ -46,20 +46,27 @@ ping 10.88.x.y                                    # reach the other node by its 
 tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that owns the TUN device and the iroh endpoint. Everything else is an unprivileged `tetron` command talking to it over a local socket.
 
 ```bash
-# 1. Install the binary and bring the node online (needs root once).
-#    Linux (x86_64/aarch64) and macOS (aarch64/x86_64) binaries are both
-#    published on releases -- swap tetron-linux-x86_64 below for
-#    tetron-macos-aarch64/tetron-macos-x86_64 on a Mac:
+# Install the binary and bring the node online (needs root once).
+#  Linux (x86_64/aarch64) and macOS (aarch64/x86_64) binaries are both
+#  published on releases -- swap tetron-linux-x86_64 below for
+#  tetron-macos-aarch64/tetron-macos-x86_64 on a Mac:
 curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 sudo tetron install
 
-# 2. Create a network. Output includes your mesh IP and invite key.
-#    --network-name/--hostname are optional; --subnet overrides the default
-#    10.88.0.0/24 for *this* network only; --tor routes it over Tor.
+# Install the Web UI. Other addons can be installed using the UI.
+curl -Lo tetron-webui https://github.com/ErikAllanKincaid/tetron-webui/releases/latest/download/tetron-webui-linux-x86_64
+chmod +x tetron-webui
+sudo install tetron-webui /usr/local/bin/tetron-webui
+# sets up + starts a per-user service, no sudo needed for this step
+tetron-webui install
+
+# Create a network. Output includes your mesh IP and invite key.
+#  --network-name/--hostname are optional; --subnet overrides the default
+#  10.88.0.0/24 for *this* network only; --tor routes it over Tor.
 tetron create --network-name mynet --hostname alice
-tetron create --network-name mynet --hostname alice --subnet 10.77.0.0/16
+tetron create --network-name mynet --hostname alice --subnet 10.77.0.0/24
 tetron create --network-name mynet --hostname alice --tor
 
 #    Sample output:
@@ -69,7 +76,7 @@ tetron create --network-name mynet --hostname alice --tor
 #            tetron invite <net> create  mint another invite
 #            tetron resume               activate the VPN
 
-# 3. On a second machine, join using the invite key from step 2 (--alias
+#    On a second machine, join using the invite key from step 2 (--alias
 #    sets a local-only display name; --tor mirrors the coordinator's transport
 #    if it used one):
 sudo tetron install
@@ -182,6 +189,29 @@ sudo install target/release/tetron /usr/local/bin/tetron
 sudo tetron restart
 tetron version                 # confirm the new build (version + git sha)
 ```
+
+## Backup
+
+Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/.config/tetron` on macOS: `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically -- back it up yourself before anything risky (a big upgrade, a disk swap, decommissioning old hardware).
+
+```bash
+# Linux (root-owned tree, 0600 secret_key) -- sudo preserves ownership/perms
+sudo tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C /etc tetron
+
+# macOS (user-owned, no sudo needed)
+tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C ~/.config tetron
+```
+
+**Encrypt it before it leaves this machine.** `secret_key` is your identity -- anyone with a copy can impersonate this node on every network it's a member of, so an unencrypted archive sitting in a Downloads folder or an unencrypted cloud bucket is a real leak, not just a theoretical one. [`age`](https://github.com/FiloSottile/age) is the simplest option -- one small binary, no keyring to manage:
+
+```bash
+age -p -o tetron-backup-$(date +%Y%m%d).tar.gz.age tetron-backup-$(date +%Y%m%d).tar.gz
+rm tetron-backup-$(date +%Y%m%d).tar.gz   # delete the plaintext copy once encrypted
+```
+
+`gpg --symmetric` works too if you already have GnuPG set up and don't want to install `age`.
+
+**Restore:** stop the daemon, decrypt (if encrypted), extract back into the same path with `sudo tar xzf ... -C /etc` (preserving ownership/perms matters here -- extracting as a non-root user, or with a plain unzip that drops permission bits, can leave `secret_key` world-readable), then `sudo tetron restart`.
 
 ## Build & install
 
