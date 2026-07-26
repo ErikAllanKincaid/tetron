@@ -411,6 +411,25 @@ impl MeshManager {
                 crate::membership::next_available_subnet(candidate, existing_subnets.into_iter())
             }
         };
+        // SUBNET-COLLISION-002: unconditional, even when --subnet was omitted --
+        // next_available_subnet only avoids other tetron networks, never the
+        // host's own physical LAN. Same --force gate as the tetron-vs-tetron
+        // check above.
+        if let Some((iface, addr, plen)) = crate::tun::find_physical_interface_collision(subnet) {
+            anyhow::ensure!(
+                force,
+                "network subnet {}/{} overlaps local interface {iface} ({addr}/{plen}) -- pick a \
+                 distinct range with --subnet, or pass --force to create it anyway",
+                subnet.0,
+                subnet.1,
+            );
+            tracing::warn!(
+                subnet = %format!("{}/{}", subnet.0, subnet.1),
+                interface = %iface,
+                interface_addr = %format!("{addr}/{plen}"),
+                "creating network with --force despite physical LAN overlap"
+            );
+        }
         // The creator's own IP must land in the chosen subnet. When it matches the
         // provider's (node) subnet the cached local_ip is correct; otherwise it is
         // re-derived at collision index 0 (matching the self-member the roster adds).
@@ -704,6 +723,17 @@ impl MeshManager {
                     network_subnet.1,
                     overlapping.0,
                     overlapping.1,
+                );
+            }
+            // SUBNET-COLLISION-002: same guard against the host's own physical LAN.
+            if let Some((iface, addr, plen)) =
+                crate::tun::find_physical_interface_collision(network_subnet)
+            {
+                anyhow::bail!(
+                    "this network's subnet {}/{} overlaps local interface {iface} ({addr}/{plen}) \
+                     -- pass --force to join anyway",
+                    network_subnet.0,
+                    network_subnet.1,
                 );
             }
         }

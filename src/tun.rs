@@ -78,20 +78,35 @@ pub struct TunWriter {
 #[cfg(not(target_os = "android"))]
 pub fn check_subnet_overlap(subnet: crate::membership::Subnet) -> Result<()> {
     let (base, prefix) = subnet;
-    for (iface, addr, plen) in local_ipv4_interfaces() {
-        if crate::membership::subnets_overlap((addr, plen), subnet) {
-            bail!(
-                "overlay subnet {base}/{prefix} overlaps interface {iface} ({addr}/{plen}); \
-                 pick a different range with `tetron config set subnet <cidr>` and restart"
-            );
-        }
+    if let Some((iface, addr, plen)) = find_physical_interface_collision(subnet) {
+        bail!(
+            "overlay subnet {base}/{prefix} overlaps interface {iface} ({addr}/{plen}); \
+             pick a different range with `tetron config set subnet <cidr>` and restart"
+        );
     }
     Ok(())
 }
 
-/// Enumerate local IPv4 `(interface, address, prefix)` via `ip -o -4 addr show`,
-/// skipping loopback. Returns empty (fail-open) if `ip` is unavailable or fails.
+/// Returns the first local physical interface (name, address, prefix) whose
+/// address falls in `subnet`, or `None` if there is no collision
+/// (SUBNET-COLLISION-002). Pure detection, shared by `check_subnet_overlap`
+/// (the daemon-boot-time check against the node-wide default, SUBNET-012) and
+/// the create/join-time check against a specific network's resolved subnet
+/// -- each builds its own context-specific message and `--force` handling
+/// around this.
 #[cfg(not(target_os = "android"))]
+pub(crate) fn find_physical_interface_collision(
+    subnet: crate::membership::Subnet,
+) -> Option<(String, Ipv4Addr, u8)> {
+    local_ipv4_interfaces()
+        .into_iter()
+        .find(|&(_, addr, plen)| crate::membership::subnets_overlap((addr, plen), subnet))
+}
+
+/// Enumerate local IPv4 `(interface, address, prefix)`, skipping loopback.
+/// Returns empty (fail-open) if the platform's enumeration tool is
+/// unavailable or fails -- callers must never block startup on a missing tool.
+#[cfg(target_os = "linux")]
 fn local_ipv4_interfaces() -> Vec<(String, Ipv4Addr, u8)> {
     let out = match Command::new("ip").args(["-o", "-4", "addr", "show"]).output() {
         Ok(o) if o.status.success() => o.stdout,
@@ -120,6 +135,56 @@ fn local_ipv4_interfaces() -> Vec<(String, Ipv4Addr, u8)> {
                 result.push((iface.clone(), addr, plen));
                 break;
             }
+        }
+    }
+    result
+}
+
+/// macOS has no `ip` binary -- enumerate via `ifconfig`'s own output shape
+/// instead (SUBNET-COLLISION-002; previously missing entirely, so this check
+/// silently did nothing on macOS despite SUBNET-012 claiming to apply
+/// platform-wide). Interface names are unindented lines ending in `:`;
+/// address lines are indented `inet <addr> netmask 0x<hex>` underneath.
+#[cfg(target_os = "macos")]
+fn local_ipv4_interfaces() -> Vec<(String, Ipv4Addr, u8)> {
+    let out = match Command::new("ifconfig").output() {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&out);
+    let mut result = Vec::new();
+    let mut current_iface: Option<String> = None;
+    for line in text.lines() {
+        if let Some(name) = line.split(':').next()
+            && !line.starts_with([' ', '\t'])
+        {
+            current_iface = Some(name.to_string());
+            continue;
+        }
+        let Some(iface) = current_iface.as_deref() else {
+            continue;
+        };
+        if iface == "lo0" {
+            continue;
+        }
+        let mut toks = line.split_whitespace();
+        let mut addr = None;
+        let mut plen = None;
+        while let Some(t) = toks.next() {
+            match t {
+                "inet" => addr = toks.next().and_then(|a| a.parse::<Ipv4Addr>().ok()),
+                "netmask" => {
+                    plen = toks.next().and_then(|m| {
+                        u32::from_str_radix(m.trim_start_matches("0x"), 16)
+                            .ok()
+                            .map(|bits| bits.count_ones() as u8)
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let (Some(a), Some(p)) = (addr, plen) {
+            result.push((iface.to_string(), a, p));
         }
     }
     result

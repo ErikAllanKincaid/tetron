@@ -93,7 +93,7 @@ sudo tetron restart
 tetron create --network-name mynet --hostname alice   # now defaults to 10.77.0.0/16
 ```
 
-Two of *this node's own* networks sharing an overlapping subnet is refused by default — an explicit `--subnet` on `create`, or a network you `join` whose own subnet overlaps one you already have, both fail with an error naming the conflicting network. Pass `--force` if you understand the implications and want it anyway. An unspecified `--subnet` on `create` never hits this — it silently picks the next free range instead, always printed back in the command's own output.
+Two of *this node's own* networks sharing an overlapping subnet is refused by default — an explicit `--subnet` on `create`, or a network you `join` whose own subnet overlaps one you already have, both fail with an error naming the conflicting network. The same guard also checks the resolved subnet (even an auto-picked one) against your machine's own real network interfaces, so tetron's overlay can't accidentally collide with your actual LAN either. Pass `--force` if you understand the implications and want it anyway. An unspecified `--subnet` on `create` never hits the other-network check — it silently picks the next free range instead, always printed back in the command's own output — but the physical-LAN check still applies regardless.
 
 **Tor transport.** Route this network's traffic over Tor from the start:
 
