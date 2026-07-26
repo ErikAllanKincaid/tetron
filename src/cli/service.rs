@@ -403,6 +403,11 @@ pub(crate) fn run_cmd_quiet(program: &str, args: &[&str]) {
 }
 
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
+    // SELFCAPTURE-ROUTE-001: torn down only here, not on ordinary `tetron
+    // stop`/restart -- mirrors TUN devices, which are likewise only removed
+    // on actual network leave/nuke, never on ordinary stop/start.
+    tetron::selfcapture::teardown();
+
     #[cfg(target_os = "linux")]
     {
         let path = Path::new("/etc/systemd/system/tetron.service");

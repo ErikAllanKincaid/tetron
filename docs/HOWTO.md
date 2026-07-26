@@ -467,6 +467,13 @@ tetron config set log-retention 14
 # Default: 7d.
 tetron config set invite-default-expiry 3d
 
+# Whether the self-capture routing mitigation (SELFCAPTURE-ROUTE-001) is
+# applied at daemon startup -- routes iroh's own traffic around the overlay
+# subnet route your own TUN device installs, so it can't mistake a peer's
+# overlay IP for a real dial target. Default: on. Turn off only if you run
+# your own conflicting policy routing.
+tetron config set selfcapture-mitigation off
+
 # Inspect current values (all, or one key):
 tetron config get
 tetron config get ratelimit.capacity

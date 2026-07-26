@@ -63,6 +63,7 @@ pub mod packet;
 pub mod peercache;
 pub mod peers;
 pub mod ratelimit;
+pub mod selfcapture;
 pub mod shutdown;
 pub mod stats;
 pub mod transport;

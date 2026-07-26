@@ -165,6 +165,19 @@ async fn build_daemon(
     )
     .await?;
 
+    // SELFCAPTURE-ROUTE-001: route iroh's own outbound traffic around every
+    // overlay subnet route, daemon-wide, once, before any network's TUN
+    // device (and its own subnet route) exists. Use the endpoint's actual
+    // bound port, not just the configured one -- `create_endpoint_with_alpns`
+    // falls back to an ephemeral port if the fixed one is already taken, and
+    // the mitigation must key off whatever port iroh is really using.
+    let actual_listen_port = ep
+        .bound_sockets()
+        .first()
+        .map(|a| a.port())
+        .unwrap_or(listen_port);
+    crate::selfcapture::apply(actual_listen_port, config::selfcapture_mitigation_enabled());
+
     // --- Rate-limit hardening (HARDEN-002/004/005): the one daemon-wide
     // shared gate, built from this config snapshot. Per-connection gates
     // (`ratelimit::ControlGate::new`) read config fresh at each construction

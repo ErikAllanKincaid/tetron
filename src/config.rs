@@ -368,10 +368,21 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 Some(parse_duration(&entries[0]).map_err(anyhow::Error::msg)?)
             };
         }
+        "selfcapture-mitigation" => {
+            cfg.selfcapture_mitigation = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "selfcapture-mitigation takes a single value: on/off"
+                );
+                Some(parse_bool_value(&entries[0])?)
+            };
+        }
         other => anyhow::bail!(
             "unknown config key: {other} (expected relay, discovery-dns, subnet, \
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-             invite-default-expiry, or \
+             invite-default-expiry, selfcapture-mitigation, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -420,6 +431,14 @@ fn set_ratelimit_key(
 fn parse_ratelimit_value<T: std::str::FromStr>(raw: &str) -> Result<T> {
     raw.parse::<T>()
         .map_err(|_| anyhow::anyhow!("invalid ratelimit value: {raw} (expected a whole number)"))
+}
+
+fn parse_bool_value(raw: &str) -> Result<bool> {
+    match raw.to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" => Ok(true),
+        "off" | "false" | "0" => Ok(false),
+        _ => anyhow::bail!("invalid value: {raw} (expected on/off)"),
+    }
 }
 
 /// Parse a human-readable duration string into seconds.
@@ -507,13 +526,21 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
         if k == "invite-default-expiry" {
             return Ok((k.to_string(), render_opt(cfg.invite_default_expiry)));
         }
+        if k == "selfcapture-mitigation" {
+            let val = match cfg.selfcapture_mitigation {
+                Some(true) => "on".to_string(),
+                Some(false) => "off".to_string(),
+                None => "<default: on>".to_string(),
+            };
+            return Ok((k.to_string(), val));
+        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
             other => anyhow::bail!(
                 "unknown config key: {other} (expected relay, discovery-dns, subnet, \
                  nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-                 invite-default-expiry, or \
+                 invite-default-expiry, selfcapture-mitigation, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -537,6 +564,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("poller-interval")?,
             row("log-retention")?,
             row("invite-default-expiry")?,
+            row("selfcapture-mitigation")?,
         ]),
     }
 }
@@ -605,6 +633,13 @@ pub struct AppConfig {
     /// config set invite-default-expiry <duration>` (CONFIG-AUDIT-002).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite_default_expiry: Option<u64>,
+    /// Whether the self-capture routing mitigation (`SELFCAPTURE-ROUTE-001`)
+    /// is applied at daemon startup. `None`/compiled default is `true`
+    /// (enabled) -- an advanced user running their own conflicting policy
+    /// routing needs an escape hatch. Set via `tetron config set
+    /// selfcapture-mitigation off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selfcapture_mitigation: Option<bool>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }
@@ -660,6 +695,8 @@ struct Settings {
     log_retention: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     invite_default_expiry: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selfcapture_mitigation: Option<bool>,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -906,6 +943,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             poller_interval: None,
             log_retention: None,
             invite_default_expiry: None,
+            selfcapture_mitigation: None,
         }
     };
 
@@ -945,6 +983,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         poller_interval: settings.poller_interval,
         log_retention: settings.log_retention,
         invite_default_expiry: settings.invite_default_expiry,
+        selfcapture_mitigation: settings.selfcapture_mitigation,
         networks,
     })
 }
@@ -962,6 +1001,15 @@ pub fn node_subnet() -> crate::membership::Subnet {
         .ok()
         .and_then(|c| c.subnet)
         .unwrap_or_else(crate::membership::default_subnet)
+}
+
+/// Resolved `selfcapture-mitigation` value (SELFCAPTURE-ROUTE-001). Compiled
+/// default is `true` (enabled).
+pub fn selfcapture_mitigation_enabled() -> bool {
+    load()
+        .ok()
+        .and_then(|c| c.selfcapture_mitigation)
+        .unwrap_or(true)
 }
 
 /// Persist the node's operative overlay subnet (a local cache of the network's
@@ -989,6 +1037,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         poller_interval: config.poller_interval,
         log_retention: config.log_retention,
         invite_default_expiry: config.invite_default_expiry,
+        selfcapture_mitigation: config.selfcapture_mitigation,
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;

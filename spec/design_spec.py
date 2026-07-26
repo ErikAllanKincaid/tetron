@@ -6010,3 +6010,83 @@ class SubnetCollisionForcePhysicalLan(Requirement):
     """
     req_id = "SUBNET-COLLISION-002"
 
+
+# --------------------------------------------------------------------------
+# Self-capture routing mitigation (SELFCAPTURE-ROUTE-*)
+# --------------------------------------------------------------------------
+
+class SelfCaptureRoutingMitigation(Requirement):
+    """REQUIREMENT-ID: SELFCAPTURE-ROUTE-001
+
+    Fixes the original overlay self-capture bug (renamed `TUN-CAPTURE-001`,
+    formerly "Bug 1"/`OVERLAY-SELFCAPTURE-001` during investigation): every
+    tetron node's TUN device installs an OS subnet route (e.g. `10.88.0.0/24
+    -> tun0`) that iroh does not know is virtual, so it can offer a peer's own
+    overlay IP as a direct-dial candidate; any peer sharing that same subnet
+    route locally swallows the resulting packet into its own kernel/tetron
+    forwarder instead of ever reaching the real remote host -- causing
+    relay-fallback flapping and higher latency than necessary on every peer
+    pair, guaranteed by construction, not just occasionally.
+
+    **Mechanism (decided and live-verified on both platforms 2026-07-24,
+    never coded until now):** route iroh's own outbound control/data traffic
+    around every overlay subnet route, identified by its one fixed source
+    port (daemon-wide, not per-network -- one shared `Endpoint` serves every
+    joined network, and iroh has no per-network identity to key on at the
+    point it sends). A candidate address bled onto the wrong network never
+    gets a chance to be a problem if iroh's own packets never take the
+    overlay-shadowed route to begin with.
+
+    - **Linux:** `ip rule add ipproto udp sport <port> table <T>` (a plain
+      FIB rule match, no `nftables`/fwmark needed -- confirmed live on this
+      dev machine that `ipproto`/`sport` selectors work directly), where
+      table `<T>` (a fixed, arbitrary, tetron-owned id, distinct from the
+      main/default/local tables and from whatever else a given system's own
+      policy routing already occupies) holds nothing but a mirror of the
+      real default route. Since table `<T>` never contains any overlay
+      subnet route, this works uniformly for however many networks are
+      joined without needing a per-network update.
+    - **macOS:** a `pf` sub-anchor (`route-to`) loaded under the stock
+      `nat-anchor "com.apple/*"` every macOS install already ships --
+      matching rayfish's own already-proven `pfctl` integration in its exit-
+      node feature. Loading a ruleset into a named anchor replaces its prior
+      contents, so this is naturally idempotent without a separate
+      check-first step the way the Linux `ip rule` path needs.
+
+    **Applied daemon-wide, once, at `bootstrap::run_daemon` startup** (right
+    alongside the existing `SUBNET-012` preflight) -- not at `tetron
+    install`, since `ip rule`/`pf` state is runtime kernel state that does
+    not survive a reboot; a fix living in `install` would silently stop
+    working after the very first reboot with nothing pointing back at
+    install as the cause. **Idempotent:** safe on every daemon start/restart
+    -- the Linux path checks the existing rule's port (if any) before
+    deciding whether to leave it, replace it (a reconfigured `listen-port`
+    since last run), or add it fresh, and always `route replace`s (not
+    `add`s) the shadow default route, tolerating a changed real gateway
+    across restarts. **Fail-open:** a missing tool or failed command logs a
+    warning and the daemon starts normally regardless -- this is a
+    best-effort mitigation, not a correctness requirement, so it must never
+    block startup.
+
+    **Configurable, on by default** (`tetron config set selfcapture-
+    mitigation off`, matching the existing `CONFIG-AUDIT-002` key style,
+    documented in `tetron config --help`) -- an advanced user running their
+    own conflicting policy-routing setup needs an escape hatch. Disabling it
+    actively tears down any rule/anchor already applied from an earlier run
+    (found live-testing: a naive "just skip re-applying" implementation left
+    a stale rule in place with no way to see it reflected in config at all)
+    -- symmetric with enabling it, not just a one-way switch.
+
+    **Torn down only at `tetron uninstall`, not on ordinary `tetron
+    stop`/restart** -- mirrors existing precedent: TUN devices themselves are
+    not torn down on ordinary stop/start either, only on actual network
+    `leave`/`nuke` (`teardown_network_runtime`), and since this mitigation
+    isn't tied to any specific network there is no equivalent event to hook
+    an earlier teardown to. An unclean daemon exit (crash, the fail-fast
+    panic-abort) just leaves the existing rule/anchor in place, which the
+    next start's idempotent apply recognizes as already-correct rather than
+    duplicating -- so imperfect teardown on a crash is harmless, not a
+    correctness gap.
+    """
+    req_id = "SELFCAPTURE-ROUTE-001"
+
