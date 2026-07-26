@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-26
+
 ### Fixed
 
 - **`tetron status` could show a peer's *other*-network overlay address as this network's own `Direct` connection (PATHBLEED-STATUS-001, hardened further by PATHBLEED-STATUS-002)**: iroh shares path-selection state across every tetron network a peer is a member of, so a path legitimately belonging to a different one of that peer's networks could get marked "selected" here too. Confirmed via source analysis and a live VM test (tagged traffic during an active bleed, zero misdelivery across 900 packets) that this never affects real data -- it's a display bug only. `tetron status` now ignores any path candidate whose address doesn't belong to the network it's being reported for, falling back to the next trustworthy path (or `?` if none remain) instead of confidently showing the wrong one, and additionally prefers a candidate with real corroborating traffic over a merely-labeled-selected one with none -- covering the residual case of two of a node's own networks sharing an identical subnet from before the new collision guard existed.
