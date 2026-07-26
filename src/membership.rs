@@ -570,6 +570,16 @@ pub fn ipv6_network_prefix(network: &EndpointId) -> Ipv6Addr {
     Ipv6Addr::from(octets)
 }
 
+/// Whether `addr` falls within `network`'s own `/56` (PATHBLEED-STATUS-001):
+/// the v6 sibling of [`ip_in_subnet`], checking against
+/// [`ipv6_network_prefix`] instead of a configurable v4 [`Subnet`] since a
+/// network's v6 prefix is derived, not chosen. `IPV6_NETWORK_PREFIX_LEN` (56)
+/// is a whole number of bytes, so comparing the first 7 octets is exact.
+pub fn ipv6_in_network(addr: Ipv6Addr, network: &EndpointId) -> bool {
+    let prefix_bytes = (IPV6_NETWORK_PREFIX_LEN / 8) as usize;
+    addr.octets()[..prefix_bytes] == ipv6_network_prefix(network).octets()[..prefix_bytes]
+}
+
 /// [`IdentityProvider`] backed by an iroh [`EndpointId`].
 #[derive(Clone)]
 pub struct IrohIdentityProvider {
@@ -1280,6 +1290,20 @@ mod tests {
             &[0u8; 9],
             "peer-part bits must be zeroed in the prefix address"
         );
+    }
+
+    #[test]
+    fn ipv6_in_network_matches_own_prefix_only() {
+        let net_a = test_id(100);
+        let net_b = test_id(101);
+        let prefix_a = ipv6_network_prefix(&net_a);
+        // The network's own prefix address always matches itself.
+        assert!(ipv6_in_network(prefix_a, &net_a));
+        // A derived peer address (same /56, distinct low bits) still matches.
+        let peer_addr = derive_ipv6(&test_id(200), &net_a);
+        assert!(ipv6_in_network(peer_addr, &net_a));
+        // The identical address does not match a different network's prefix.
+        assert!(!ipv6_in_network(peer_addr, &net_b));
     }
 
     #[test]

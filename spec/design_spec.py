@@ -6090,3 +6090,76 @@ class SelfCaptureRoutingMitigation(Requirement):
     """
     req_id = "SELFCAPTURE-ROUTE-001"
 
+
+# --------------------------------------------------------------------------
+# PATH-BLEED-001 status-layer fix (PATHBLEED-STATUS-*)
+# --------------------------------------------------------------------------
+
+class PathBleedSubnetScopeFilter(Requirement):
+    """REQUIREMENT-ID: PATHBLEED-STATUS-001
+
+    Fixes `PATH-BLEED-001` (the cross-network path-sharing status bug found
+    2026-07-26, see `DO-NOT-COMMIT/FINDINGS_PathBleed_DataLossAnalysis.md`
+    and `DO-NOT-COMMIT/RESULTS_PathBleed_DataLossTest.md`): iroh's
+    `RemoteStateActor` tracks path state per **peer identity**, not per
+    tetron network, so a path selected on one of a node's networks gets
+    broadcast onto that same peer's connection on every other network they
+    share -- `tetron status` can display a peer's *other*-network overlay
+    address as this network's own `Direct` remote address. Both the source
+    dive and a live VM test (tagged-UDP traffic during an active bleed, zero
+    misdelivery across 900 packets) already confirmed this causes no
+    misdelivery and no bleed-attributable data loss -- it is a status/
+    observability bug only, so the fix lives entirely in `tetron status`'s
+    own path-selection-for-display logic, not iroh's data plane.
+
+    `src/daemon/mesh/select.rs`'s `choose_path_index` decides what
+    `gather_conn_info` (`src/daemon/mesh/diagnostics.rs`) reports: today it
+    unconditionally trusts iroh's own `is_selected()` flag, which is exactly
+    the value PATH-BLEED-001 can poison. `choose_path_index`'s signature
+    gains a third field per candidate -- `in_subnet: bool` -- computed by
+    `gather_conn_info` from each path's address against *this specific
+    network's own* subnet: `membership::ip_in_subnet` for a `TransportAddr::Ip`
+    v4 address (already existed, used by `SUBNET-012`/`SUBNET-COLLISION-002`),
+    a new `membership::ipv6_in_network` sibling for a v6 address (checking the
+    address's own /56 against `membership::ipv6_network_prefix(network_key)`,
+    IPV6-001's per-network scoping), and unconditionally `true` for
+    `Relay`/`Custom` paths -- a relay URL is not network-scoped in the first
+    place (tetron's `relay`/`discovery-dns` config is daemon-wide), so there
+    is nothing bleed-shaped to check there.
+
+    A disqualified (`in_subnet == false`) candidate is excluded from **both**
+    the `is_selected()`-preference check and the Direct>Relay>Tor fallback
+    scan -- not just stripped of its selected flag, since the existing
+    fallback loop matches by classification alone and would otherwise
+    re-surface the same wrong address a moment later. If literally nothing
+    trustworthy remains, `choose_path_index` returns `None` (renders as `?`)
+    rather than confidently reporting a definitely-wrong address.
+
+    `SUBNET-COLLISION-001` (landed first, on purpose) makes this filter's
+    core assumption -- "a peer's address outside this network's own subnet
+    can't legitimately belong to this network" -- structurally guaranteed
+    for any node that joins after it shipped, not just a good heuristic;
+    this filter remains the runtime safety net for pre-existing installs
+    that already have overlapping-subnet networks from before that guard
+    existed.
+    """
+    req_id = "PATHBLEED-STATUS-001"
+
+
+class PathBleedActivityCorroboration(Requirement):
+    """REQUIREMENT-ID: PATHBLEED-STATUS-002
+
+    Hardening layer on top of `PATHBLEED-STATUS-001`, same status-only scope
+    (no data-plane change). iroh's public `Path::stats()` exposes real
+    per-path counters (`udp_tx`/`udp_rx` bytes and datagrams, plus
+    `black_holes_detected`/`lost_bytes`) -- a freshly-opened, never-actually-
+    used candidate reads as zero real traffic on its own stats even while
+    `is_selected()` claims it. `choose_path_index`'s selected-preference
+    check additionally requires the selected, in-subnet candidate to show
+    non-zero `udp_tx.bytes` (or be the *only* remaining candidate, so a
+    genuinely new but legitimate direct path that simply has not sent
+    anything yet is never wrongly demoted) before trusting it over an
+    unselected but active alternative in the same trustworthy set.
+    """
+    req_id = "PATHBLEED-STATUS-002"
+

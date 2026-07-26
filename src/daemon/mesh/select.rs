@@ -82,9 +82,26 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
 /// Pick which connection path to report in `tetron status`. Prefers the path iroh
 /// has selected; otherwise falls back to the best concrete path so a live
 /// connection never renders as `Unknown` (`?`). Priority Direct > Relay > Tor.
-/// Returns the index into `classes`, or `None` only when there are no paths.
-pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool)]) -> Option<usize> {
-    if let Some(i) = classes.iter().position(|(_, selected)| *selected) {
+/// Returns the index into `classes`, or `None` when there are no paths, or
+/// (PATHBLEED-STATUS-001) when every path is untrustworthy.
+///
+/// Each candidate is `(conn_type, is_selected, in_subnet)`. `in_subnet` is
+/// `gather_conn_info`'s PATHBLEED-STATUS-001 check: whether this path's own
+/// address belongs to *this connection's own network* (always `true` for
+/// Relay/Tor, which are not network-scoped). A candidate with
+/// `in_subnet == false` is excluded from both the `is_selected()`-preference
+/// check and the fallback scan below -- not just stripped of its selected
+/// flag, since the fallback loop matches by classification alone and would
+/// otherwise re-surface the same wrong address a moment later. This is
+/// exactly the shape iroh's `RemoteStateActor` broadcasting one peer-wide
+/// `selected_path` across every one of a shared peer's connections can
+/// produce: a bled candidate from a different tetron network, marked
+/// `is_selected()` on this network's connection too.
+pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool)]) -> Option<usize> {
+    if let Some(i) = classes
+        .iter()
+        .position(|(_, selected, in_subnet)| *selected && *in_subnet)
+    {
         return Some(i);
     }
     for want in [
@@ -92,13 +109,18 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool)]) -> Option<usi
         ipc::ConnType::Relay,
         ipc::ConnType::Tor,
     ] {
-        if let Some(i) = classes.iter().position(|(ct, _)| *ct == want) {
+        if let Some(i) = classes
+            .iter()
+            .position(|(ct, _, in_subnet)| *ct == want && *in_subnet)
+        {
             return Some(i);
         }
     }
-    // A path with no IP/relay/custom classification (none today) or, really,
-    // only reached when `classes` is empty.
-    (!classes.is_empty()).then_some(0)
+    // A path with no IP/relay/custom classification (none today), or the
+    // only remaining trustworthy one isn't among the three known classes
+    // (shouldn't happen), or -- deliberately -- every candidate is
+    // untrustworthy: report unknown rather than a definitely-wrong address.
+    classes.iter().position(|(_, _, in_subnet)| *in_subnet)
 }
 
 /// SUBNET-COLLISION-001: returns the first subnet in `existing` that overlaps

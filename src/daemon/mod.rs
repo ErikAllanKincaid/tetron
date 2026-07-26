@@ -1275,7 +1275,7 @@ mod accept_handler_tests {
     fn choose_path_prefers_selected() {
         use ipc::ConnType::*;
         // The selected path wins even when it isn't the "best" type.
-        let classes = [(Relay, false), (Direct, true)];
+        let classes = [(Relay, false, true), (Direct, true, true)];
         assert_eq!(super::choose_path_index(&classes), Some(1));
     }
 
@@ -1284,16 +1284,45 @@ mod accept_handler_tests {
         use ipc::ConnType::*;
         // No path selected: report a concrete path (Direct > Relay > Tor)
         // instead of Unknown, so a live connection never shows `?`.
-        let classes = [(Relay, false), (Direct, false), (Tor, false)];
+        let classes = [(Relay, false, true), (Direct, false, true), (Tor, false, true)];
         assert_eq!(super::choose_path_index(&classes), Some(1));
 
-        let only_relay = [(Relay, false)];
+        let only_relay = [(Relay, false, true)];
         assert_eq!(super::choose_path_index(&only_relay), Some(0));
     }
 
     #[test]
     fn choose_path_empty_is_none() {
         assert_eq!(super::choose_path_index(&[]), None);
+    }
+
+    #[test]
+    fn choose_path_ignores_selected_out_of_subnet_candidate() {
+        use ipc::ConnType::*;
+        // PATHBLEED-STATUS-001: a selected-but-bled Direct candidate must not
+        // win just because iroh marked it selected -- an unselected, in-subnet
+        // Relay path is trustworthy and this one isn't.
+        let classes = [(Relay, false, true), (Direct, true, false)];
+        assert_eq!(super::choose_path_index(&classes), Some(0));
+    }
+
+    #[test]
+    fn choose_path_out_of_subnet_candidate_excluded_from_fallback_too() {
+        use ipc::ConnType::*;
+        // Not just stripped of its selected flag -- excluded entirely, or the
+        // plain classification fallback would re-surface the same wrong
+        // address a moment later.
+        let classes = [(Direct, false, false), (Tor, false, true)];
+        assert_eq!(super::choose_path_index(&classes), Some(1));
+    }
+
+    #[test]
+    fn choose_path_all_untrustworthy_is_none() {
+        use ipc::ConnType::*;
+        // Nothing trustworthy at all: report unknown rather than confidently
+        // showing a definitely-wrong address.
+        let classes = [(Direct, true, false)];
+        assert_eq!(super::choose_path_index(&classes), None);
     }
 
     #[test]
