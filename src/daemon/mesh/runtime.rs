@@ -802,6 +802,7 @@ impl MeshManager {
                             net_transport,
                             None,
                             false,
+                            false,
                         )
                         .await
                     {

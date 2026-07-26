@@ -71,6 +71,11 @@ pub(crate) enum Command {
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long)]
         tor: bool,
+        /// Bypass the subnet-collision guard: allow an explicit --subnet that
+        /// overlaps a network this node already has, or the host's own
+        /// physical LAN (SUBNET-COLLISION-001/002)
+        #[arg(long)]
+        force: bool,
     },
     /// Join an existing network using an invite code (bare room id is denied — tetron is invite-only)
     Join {
@@ -86,6 +91,11 @@ pub(crate) enum Command {
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long)]
         tor: bool,
+        /// Bypass the subnet-collision guard: allow joining a network whose
+        /// subnet overlaps one this node already has, or the host's own
+        /// physical LAN (SUBNET-COLLISION-001/002)
+        #[arg(long)]
+        force: bool,
     },
     /// Leave a network (remove from saved config)
     #[command(visible_alias = "rm")]
@@ -481,6 +491,7 @@ async fn main() -> Result<()> {
             subnet,
             nuke_consensus,
             tor,
+            force,
         } => {
             ipc_create(
                 GroupMode::Restricted,
@@ -489,6 +500,7 @@ async fn main() -> Result<()> {
                 subnet,
                 nuke_consensus,
                 tor,
+                force,
             )
             .await
         }
@@ -497,7 +509,8 @@ async fn main() -> Result<()> {
             alias,
             hostname,
             tor,
-        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor).await,
+            force,
+        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor, force).await,
         Command::Nuke {
             network_key,
             force,

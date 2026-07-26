@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tetron join` could silently land a node on a network whose subnet overlaps one it already has (SUBNET-COLLISION-001)**: `tetron create` already refused an explicit `--subnet` that collided with an existing network, but `join` had no equivalent check at all -- and `create`'s own check had no override, making it the one unconditional hard failure in the fork. Both commands now reject a subnet collision by default (naming the overlapping network) and accept `--force` to proceed anyway, matching the existing `leave --force`/`nuke --force` pattern.
+
 ## [0.8.1] - 2026-07-25
 
 ### Added

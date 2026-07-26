@@ -5939,3 +5939,74 @@ class KickAllowsCoordinatorTarget(Requirement):
     """
     req_id = "KICK-COORDINATOR-001"
 
+
+# --------------------------------------------------------------------------
+# Subnet collision prevention (SUBNET-COLLISION-*)
+# --------------------------------------------------------------------------
+
+class JoinSubnetCollisionCheck(Requirement):
+    """REQUIREMENT-ID: SUBNET-COLLISION-001
+
+    `tetron join` gains the same subnet-overlap check `tetron create`'s
+    explicit `--subnet` path already has (`membership::subnets_overlap`
+    against every subnet this node's other saved networks already use) --
+    applied to the network's own blob-carried subnet, resolved in
+    `join_network_inner` right after `network_subnet` is computed, for a
+    fresh join only (`initial == true`; a boot-time restore of an
+    already-joined network must never start failing this check
+    retroactively -- there is no way to "fix" a years-old install's
+    subnet choice from a restore path, and refusing to restore an existing
+    membership would be far worse than the collision itself).
+
+    Both this new join-side check and `create`'s existing explicit-`--subnet`
+    check gain a `--force` flag to override -- today `create`'s check is an
+    unconditional hard failure with no escape hatch at all, which is
+    inconsistent with every other destructive/risky-state guard in this
+    fork (`leave --force`, `nuke --force`) already following the
+    reject-by-default-with-override pattern.
+
+    Why this matters beyond the immediate footgun `DO-NOT-COMMIT/
+    SUBNET_COLLISION.md` originally documented (two of a node's own
+    networks silently sharing one subnet, written before this fork's
+    spec-first workflow existed): it is also the one honest limitation
+    flagged in PATH-BLEED-001's status-layer fix (PATHBLEED-STATUS-001) --
+    a node joined to two networks with an overlapping subnet is exactly
+    the case a pure subnet-boundary heuristic cannot distinguish from a
+    genuine cross-network path bleed. Preventing the shared-subnet state
+    at the source (this requirement) is more robust than working around
+    it downstream (PATHBLEED-STATUS-001), and should land first.
+    """
+    req_id = "SUBNET-COLLISION-001"
+
+
+class SubnetCollisionForcePhysicalLan(Requirement):
+    """REQUIREMENT-ID: SUBNET-COLLISION-002
+
+    Completes SUBNET-012 rather than duplicating it. `tun::check_subnet_overlap`
+    / `local_ipv4_interfaces` (added for SUBNET-012) already shell out to `ip
+    -o -4 addr show` to catch the overlay subnet colliding with a real local
+    interface -- but only once, at daemon bootstrap, against the node-wide
+    default subnet (`config::node_subnet()`). Two gaps closed here:
+
+    1. **Wrong trigger point.** A specific network's subnet, resolved at
+       `create`/`join` time (an explicit `--subnet`, or a joined network's
+       own blob-carried subnet), is not necessarily the current node
+       default -- so a colliding choice can go undetected until the next
+       daemon restart happens to check whatever the default is by then.
+       `local_ipv4_interfaces` is exposed for reuse and the same overlap
+       check now also runs at `create`/`join` time against the specific
+       resolved subnet, gated by the same `--force` flag SUBNET-COLLISION-001
+       introduces (one flag, two checks: another tetron network, or the
+       physical LAN).
+    2. **macOS gap, pre-existing, not introduced here.** `local_ipv4_interfaces`
+       has no `#[cfg(target_os = "macos")]` branch -- it unconditionally
+       shells out to the Linux-only `ip` binary, which does not exist on
+       macOS, so the function's own "fail-open if `ip` is unavailable"
+       design means SUBNET-012 silently does nothing on macOS today. Fixed
+       by adding a macOS branch (parsing `ifconfig` output), matching the
+       per-OS-branch pattern every other multi-platform function in
+       `src/tun.rs` already follows for the equivalent BSD-tool
+       alternative.
+    """
+    req_id = "SUBNET-COLLISION-002"
+

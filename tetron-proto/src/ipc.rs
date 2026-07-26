@@ -31,6 +31,12 @@ pub enum IpcMessage {
         /// time, never mutated afterward.
         #[serde(default)]
         nuke_consensus: Option<u32>,
+        /// Bypass the subnet-collision guard (SUBNET-COLLISION-001/002): an
+        /// explicit `--subnet` that overlaps another network this node
+        /// already has, or the host's own physical LAN. Defaults to `false`
+        /// on old wire data, preserving the safer reject-by-default behavior.
+        #[serde(default)]
+        force: bool,
     },
     /// `network_key` is already resolved to the network's public key by the
     /// time it crosses IPC -- the CLI decodes the raw invite code client-side
@@ -44,6 +50,12 @@ pub enum IpcMessage {
         /// One-time invite secret to present for invite-gated admission.
         #[serde(default)]
         invite: Option<Vec<u8>>,
+        /// Bypass the subnet-collision guard (SUBNET-COLLISION-001/002): the
+        /// network's own subnet overlapping another network this node
+        /// already has, or the host's own physical LAN. Defaults to `false`
+        /// on old wire data, preserving the safer reject-by-default behavior.
+        #[serde(default)]
+        force: bool,
     },
     Leave {
         network: String,
@@ -515,6 +527,7 @@ mod tests {
             transport: None,
             subnet: None,
             nuke_consensus: None,
+            force: false,
         };
         let bytes = rmp_serde::to_vec_named(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -565,6 +578,7 @@ mod tests {
             hostname: None,
             transport: None,
             invite: Some(vec![1, 2, 3]),
+            force: false,
         };
         let bytes = rmp_serde::to_vec(&req).unwrap();
         let decoded: IpcMessage = rmp_serde::from_slice(&bytes).unwrap();

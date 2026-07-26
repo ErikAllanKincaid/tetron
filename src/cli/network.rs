@@ -2,6 +2,7 @@
 
 use crate::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ipc_create(
     mode: GroupMode,
     network_name: Option<String>,
@@ -9,6 +10,7 @@ pub(crate) async fn ipc_create(
     subnet: Option<String>,
     nuke_consensus: Option<u32>,
     tor: bool,
+    force: bool,
 ) -> Result<()> {
     // Validate the CIDR locally so the user gets an immediate error, but send it
     // as the raw string; the daemon re-parses it authoritatively.
@@ -39,6 +41,7 @@ pub(crate) async fn ipc_create(
             transport,
             subnet,
             nuke_consensus,
+            force,
         },
     )
     .await?;
@@ -104,6 +107,7 @@ pub(crate) async fn ipc_join(
     alias: Option<&str>,
     hostname: Option<String>,
     tor: bool,
+    force: bool,
 ) -> Result<()> {
     let transport = if tor {
         Some(config::TransportMode::Tor)
@@ -130,6 +134,7 @@ pub(crate) async fn ipc_join(
             hostname,
             transport,
             invite,
+            force,
         },
     )
     .await?;

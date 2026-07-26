@@ -190,6 +190,7 @@ impl MeshManager {
     /// node as its coordinator.
     #[tracing::instrument(skip(self, hostname), fields(mode = ?mode))]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_network(
         self: &Arc<Self>,
         mode: GroupMode,
@@ -198,6 +199,7 @@ impl MeshManager {
         transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
         nuke_consensus: Option<u32>,
+        force: bool,
     ) -> IpcMessage {
         match self
             .create_network_inner(
@@ -207,6 +209,7 @@ impl MeshManager {
                 transport,
                 subnet,
                 nuke_consensus,
+                force,
                 false,
                 None,
             )
@@ -302,6 +305,8 @@ impl MeshManager {
         transport: Option<TransportMode>,
         subnet: Option<crate::membership::Subnet>,
         nuke_consensus: Option<u32>,
+        // SUBNET-COLLISION-001: bypasses the explicit-subnet overlap check below.
+        force: bool,
         direct: bool,
         pre_approve: Option<(EndpointId, Option<String>)>,
     ) -> Result<IpcMessage> {
@@ -374,15 +379,28 @@ impl MeshManager {
             .unwrap_or_default();
         let subnet = match subnet {
             Some(requested) => {
-                anyhow::ensure!(
-                    !existing_subnets
-                        .iter()
-                        .any(|&e| crate::membership::subnets_overlap(e, requested)),
-                    "--subnet {}/{} overlaps a network this node already has -- pick a distinct \
-                     range (see `tetron status`'s `subnet` line for what's already in use)",
-                    requested.0,
-                    requested.1,
-                );
+                // SUBNET-COLLISION-001: reject by default, --force to override --
+                // matches the existing leave/nuke --force pattern rather than
+                // leaving this the one unconditional hard failure in the fork.
+                if let Some(overlapping) =
+                    find_subnet_collision(requested, &existing_subnets)
+                {
+                    anyhow::ensure!(
+                        force,
+                        "--subnet {}/{} overlaps a network this node already has ({}/{}) -- pick \
+                         a distinct range (see `tetron status`'s `subnet` line for what's already \
+                         in use), or pass --force to create it anyway",
+                        requested.0,
+                        requested.1,
+                        overlapping.0,
+                        overlapping.1,
+                    );
+                    tracing::warn!(
+                        requested = %format!("{}/{}", requested.0, requested.1),
+                        overlapping = %format!("{}/{}", overlapping.0, overlapping.1),
+                        "creating network with --force despite subnet overlap"
+                    );
+                }
                 if let Err(e) = config::set_node_subnet(requested) {
                     tracing::warn!(error = %e, "failed to persist node subnet");
                 }
@@ -577,6 +595,7 @@ impl MeshManager {
     /// (optionally with an invite secret).
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, hostname), fields(net = alias.unwrap_or(network_key)))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn join_network(
         self: &Arc<Self>,
         network_key: &str,
@@ -584,6 +603,7 @@ impl MeshManager {
         hostname: Option<String>,
         transport: Option<TransportMode>,
         invite: Option<Vec<u8>>,
+        force: bool,
     ) -> IpcMessage {
         match self
             .join_network_inner(
@@ -593,6 +613,7 @@ impl MeshManager {
                 transport,
                 invite.clone(),
                 true,
+                force,
             )
             .await
         {
@@ -625,6 +646,9 @@ impl MeshManager {
         // restoring a network we're already a member of (legacy handshake where
         // the coordinator speaks first).
         initial: bool,
+        // SUBNET-COLLISION-001: bypasses the subnet-overlap check below. Only
+        // meaningful when `initial` is true -- a restore never runs the check.
+        force: bool,
     ) -> Result<TryJoin> {
         let net_pubkey: EndpointId = network_key.parse().context("invalid network key")?;
 
@@ -663,6 +687,26 @@ impl MeshManager {
         // network's own blob-carried subnet, matching `create_network_inner`'s
         // existing derive-if-different pattern.
         let network_subnet = crate::membership::resolve_subnet(data.subnet);
+        // SUBNET-COLLISION-001: a fresh join whose network overlaps a subnet
+        // this node already has is exactly as ambiguous as two `create`d
+        // networks colliding -- reject by default, --force to override.
+        // Only for a fresh join (`initial`): a restore of an already-joined
+        // network must never start failing this retroactively.
+        if initial && !force {
+            let existing_subnets: Vec<crate::membership::Subnet> = config::load()
+                .map(|c| c.networks.iter().filter_map(|n| n.subnet).collect())
+                .unwrap_or_default();
+            if let Some(overlapping) = find_subnet_collision(network_subnet, &existing_subnets) {
+                anyhow::bail!(
+                    "this network's subnet {}/{} overlaps a network this node already has \
+                     ({}/{}) -- pass --force to join anyway",
+                    network_subnet.0,
+                    network_subnet.1,
+                    overlapping.0,
+                    overlapping.1,
+                );
+            }
+        }
         let my_ip = if network_subnet == self.identity.subnet() {
             self.identity.local_ip()
         } else {

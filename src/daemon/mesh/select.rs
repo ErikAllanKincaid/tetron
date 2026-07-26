@@ -1,7 +1,7 @@
 //! Pure decision helpers for the join/gossip paths: coordinator dial order,
 //! gossip targets, dial-fallback outcome selection, persisted-roster fallback,
-//! and connection-path classification. No I/O, so these are unit-tested directly
-//! (see the tests in `daemon/mod.rs`).
+//! connection-path classification, and subnet-collision detection. No I/O, so
+//! these are unit-tested directly (see the tests in `daemon/mod.rs`).
 
 use super::super::*;
 
@@ -99,4 +99,20 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool)]) -> Option<usi
     // A path with no IP/relay/custom classification (none today) or, really,
     // only reached when `classes` is empty.
     (!classes.is_empty()).then_some(0)
+}
+
+/// SUBNET-COLLISION-001: returns the first subnet in `existing` that overlaps
+/// `candidate`, or `None` if there is no collision. Shared by `create`'s
+/// explicit-`--subnet` check and `join`'s network-subnet check -- both build
+/// their own context-specific error message and `--force` handling around
+/// this, since the wording differs (creating vs. joining) but the underlying
+/// question does not.
+pub(crate) fn find_subnet_collision(
+    candidate: crate::membership::Subnet,
+    existing: &[crate::membership::Subnet],
+) -> Option<crate::membership::Subnet> {
+    existing
+        .iter()
+        .copied()
+        .find(|&e| crate::membership::subnets_overlap(e, candidate))
 }

@@ -907,6 +907,7 @@ impl MeshManager {
                 transport,
                 subnet,
                 nuke_consensus,
+                force,
             } => {
                 let parsed = match subnet
                     .as_deref()
@@ -920,8 +921,16 @@ impl MeshManager {
                         };
                     }
                 };
-                self.create_network(mode, network_name, hostname, transport, parsed, nuke_consensus)
-                    .await
+                self.create_network(
+                    mode,
+                    network_name,
+                    hostname,
+                    transport,
+                    parsed,
+                    nuke_consensus,
+                    force,
+                )
+                .await
             }
             IpcMessage::Join {
                 network_key,
@@ -929,10 +938,18 @@ impl MeshManager {
                 hostname,
                 transport,
                 invite,
+                force,
                 ..
             } => {
-                self.join_network(&network_key, alias.as_deref(), hostname, transport, invite)
-                    .await
+                self.join_network(
+                    &network_key,
+                    alias.as_deref(),
+                    hostname,
+                    transport,
+                    invite,
+                    force,
+                )
+                .await
             }
             IpcMessage::Leave { network, force } => {
                 self.leave_network(&network, force).await
@@ -1277,6 +1294,33 @@ mod accept_handler_tests {
     #[test]
     fn choose_path_empty_is_none() {
         assert_eq!(super::choose_path_index(&[]), None);
+    }
+
+    #[test]
+    fn subnet_collision_detects_overlap() {
+        use std::net::Ipv4Addr;
+        let existing = [(Ipv4Addr::new(10, 88, 0, 0), 24)];
+        // Identical subnet.
+        assert_eq!(
+            super::find_subnet_collision((Ipv4Addr::new(10, 88, 0, 0), 24), &existing),
+            Some((Ipv4Addr::new(10, 88, 0, 0), 24))
+        );
+        // A superset/subset overlap, not just an identical prefix.
+        assert_eq!(
+            super::find_subnet_collision((Ipv4Addr::new(10, 88, 0, 0), 16), &existing),
+            Some((Ipv4Addr::new(10, 88, 0, 0), 24))
+        );
+    }
+
+    #[test]
+    fn subnet_collision_ignores_disjoint_ranges() {
+        use std::net::Ipv4Addr;
+        let existing = [(Ipv4Addr::new(10, 88, 0, 0), 24)];
+        assert_eq!(
+            super::find_subnet_collision((Ipv4Addr::new(10, 88, 1, 0), 24), &existing),
+            None
+        );
+        assert_eq!(super::find_subnet_collision((Ipv4Addr::new(10, 88, 0, 0), 24), &[]), None);
     }
 
     #[test]
