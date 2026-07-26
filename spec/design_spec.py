@@ -6151,15 +6151,33 @@ class PathBleedActivityCorroboration(Requirement):
 
     Hardening layer on top of `PATHBLEED-STATUS-001`, same status-only scope
     (no data-plane change). iroh's public `Path::stats()` exposes real
-    per-path counters (`udp_tx`/`udp_rx` bytes and datagrams, plus
-    `black_holes_detected`/`lost_bytes`) -- a freshly-opened, never-actually-
-    used candidate reads as zero real traffic on its own stats even while
-    `is_selected()` claims it. `choose_path_index`'s selected-preference
-    check additionally requires the selected, in-subnet candidate to show
-    non-zero `udp_tx.bytes` (or be the *only* remaining candidate, so a
-    genuinely new but legitimate direct path that simply has not sent
-    anything yet is never wrongly demoted) before trusting it over an
-    unselected but active alternative in the same trustworthy set.
+    per-path counters (`udp_tx`/`udp_rx` bytes and datagrams) -- a
+    freshly-opened, never-actually-used candidate reads as zero real traffic
+    on its own stats even while `is_selected()` claims it and even while it's
+    in-subnet. This targets the residual case `PATHBLEED-STATUS-001`'s
+    subnet check alone can't catch: two of a node's own networks that happen
+    to share an identical subnet from before `SUBNET-COLLISION-001` existed,
+    where a bled candidate looks legitimately in-subnet by coincidence but
+    has never actually carried *this* connection's traffic.
+
+    `choose_path_index` becomes three tiers, each restricted to `in_subnet`
+    candidates only: (1) selected *and* (active or the sole trustworthy
+    candidate) -- trusted outright; (2) no tier-1 winner: any candidate with
+    real activity, by class (Direct > Relay > Tor), regardless of
+    `is_selected()`; (3) nothing has proven itself yet: plain classification
+    among all trustworthy candidates, so a genuinely new, still-validating
+    path is still reported rather than hidden as `?` just for being new.
+
+    **Found live while writing this requirement's own tests, not just
+    designed up front:** an earlier version only gated the *selected*-
+    preference check on activity and left the classification fallback
+    unchanged -- which meant a selected-but-inactive, in-subnet Direct
+    candidate that failed the activity gate still won anyway via the
+    fallback's own Direct-first classification preference, silently
+    defeating the entire hardening layer for exactly the case it was built
+    for. The three-tier restructure (activity as its own tier, ahead of
+    plain classification) is what actually achieves "an unselected but
+    active alternative outranks a selected-but-inactive one."
     """
     req_id = "PATHBLEED-STATUS-002"
 

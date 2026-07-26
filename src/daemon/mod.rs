@@ -1275,7 +1275,7 @@ mod accept_handler_tests {
     fn choose_path_prefers_selected() {
         use ipc::ConnType::*;
         // The selected path wins even when it isn't the "best" type.
-        let classes = [(Relay, false, true), (Direct, true, true)];
+        let classes = [(Relay, false, true, false), (Direct, true, true, true)];
         assert_eq!(super::choose_path_index(&classes), Some(1));
     }
 
@@ -1284,10 +1284,14 @@ mod accept_handler_tests {
         use ipc::ConnType::*;
         // No path selected: report a concrete path (Direct > Relay > Tor)
         // instead of Unknown, so a live connection never shows `?`.
-        let classes = [(Relay, false, true), (Direct, false, true), (Tor, false, true)];
+        let classes = [
+            (Relay, false, true, false),
+            (Direct, false, true, false),
+            (Tor, false, true, false),
+        ];
         assert_eq!(super::choose_path_index(&classes), Some(1));
 
-        let only_relay = [(Relay, false, true)];
+        let only_relay = [(Relay, false, true, false)];
         assert_eq!(super::choose_path_index(&only_relay), Some(0));
     }
 
@@ -1302,7 +1306,7 @@ mod accept_handler_tests {
         // PATHBLEED-STATUS-001: a selected-but-bled Direct candidate must not
         // win just because iroh marked it selected -- an unselected, in-subnet
         // Relay path is trustworthy and this one isn't.
-        let classes = [(Relay, false, true), (Direct, true, false)];
+        let classes = [(Relay, false, true, false), (Direct, true, false, false)];
         assert_eq!(super::choose_path_index(&classes), Some(0));
     }
 
@@ -1312,7 +1316,7 @@ mod accept_handler_tests {
         // Not just stripped of its selected flag -- excluded entirely, or the
         // plain classification fallback would re-surface the same wrong
         // address a moment later.
-        let classes = [(Direct, false, false), (Tor, false, true)];
+        let classes = [(Direct, false, false, false), (Tor, false, true, false)];
         assert_eq!(super::choose_path_index(&classes), Some(1));
     }
 
@@ -1321,8 +1325,29 @@ mod accept_handler_tests {
         use ipc::ConnType::*;
         // Nothing trustworthy at all: report unknown rather than confidently
         // showing a definitely-wrong address.
-        let classes = [(Direct, true, false)];
+        let classes = [(Direct, true, false, false)];
         assert_eq!(super::choose_path_index(&classes), None);
+    }
+
+    #[test]
+    fn choose_path_selected_without_activity_falls_back_when_alternative_exists() {
+        use ipc::ConnType::*;
+        // PATHBLEED-STATUS-002: a selected, in-subnet Direct candidate with
+        // zero real traffic looks exactly like a bled-but-never-validated
+        // candidate -- not trusted outright when an unselected, in-subnet,
+        // active Relay alternative exists.
+        let classes = [(Relay, false, true, true), (Direct, true, true, false)];
+        assert_eq!(super::choose_path_index(&classes), Some(0));
+    }
+
+    #[test]
+    fn choose_path_selected_without_activity_still_trusted_if_sole_candidate() {
+        use ipc::ConnType::*;
+        // A genuinely new, legitimate direct path that simply hasn't sent
+        // anything yet must not be wrongly demoted just for being new -- when
+        // it's the only trustworthy candidate at all, it still wins.
+        let classes = [(Direct, true, true, false)];
+        assert_eq!(super::choose_path_index(&classes), Some(0));
     }
 
     #[test]

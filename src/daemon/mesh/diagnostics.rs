@@ -189,7 +189,11 @@ impl MeshManager {
         // networks (PATH-BLEED-001). Relay/Tor addresses are not network-scoped
         // (tetron's relay/discovery config is daemon-wide), so there is nothing
         // bleed-shaped to check there -- always `true`.
-        let classes: Vec<(ipc::ConnType, bool, bool)> = paths
+        //
+        // PATHBLEED-STATUS-002: `has_activity` corroborates a selected path with
+        // its own real traffic (`stats().udp_tx.bytes`) before trusting it --
+        // a freshly-opened, never-actually-used bled candidate reads as zero.
+        let classes: Vec<(ipc::ConnType, bool, bool, bool)> = paths
             .iter()
             .map(|p| {
                 let addr = p.remote_addr();
@@ -211,7 +215,8 @@ impl MeshManager {
                     };
                     (ipc::ConnType::Direct, in_subnet)
                 };
-                (ct, p.is_selected(), in_subnet)
+                let has_activity = p.stats().udp_tx.bytes > 0;
+                (ct, p.is_selected(), in_subnet, has_activity)
             })
             .collect();
 
