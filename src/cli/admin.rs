@@ -35,7 +35,10 @@ pub(crate) async fn ipc_admin(network: &str, action: AdminAction) -> Result<()> 
                 println!();
             }
         }
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())

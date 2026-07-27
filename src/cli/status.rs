@@ -259,7 +259,10 @@ pub(crate) async fn ipc_status() -> Result<()> {
             }
             println!();
         }
-        ipc::IpcMessage::Error { message } => print_error("status failed", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("status failed", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -391,7 +394,10 @@ pub(crate) async fn ipc_standby(network: Option<String>) -> Result<()> {
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -405,7 +411,10 @@ pub(crate) async fn ipc_sync(network: Option<String>) -> Result<()> {
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())

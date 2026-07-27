@@ -6183,3 +6183,48 @@ class PathBleedActivityCorroboration(Requirement):
     """
     req_id = "PATHBLEED-STATUS-002"
 
+
+class CliExitCodeReflectsDaemonError(Requirement):
+    """REQUIREMENT-ID: CLI-VOCAB-006
+
+    Found live 2026-07-27 on the very first real run of the new
+    `tetron-testsuite` addon's `regression` test: `tetron create --subnet
+    10.88.0.0/24` on a node that already has that subnet correctly printed
+    the documented refusal ("! create failed ... overlaps a network this
+    node already has") to stderr, but the process exited **0** -- the test
+    script's own `[[ $? -ne 0 ]]` check failed even though the daemon had
+    genuinely refused the request. Not a test-script bug: every one of the
+    12 call sites across `src/cli/{network,admin,status,invite,service}.rs`
+    that match on `ipc::IpcMessage::Error { message }` call `print_error`
+    (stderr only) and then fall through to the enclosing function's
+    unconditional trailing `Ok(())` -- so the whole CLI has been
+    unscriptable via exit code on any daemon-side refusal, across every
+    affected command (`create`, `join`, `nuke`, `kick`, `leave`, `status`,
+    `standby`, `sync`, `resume`, `install`, `invite`, `admin`), since
+    whenever each was written.
+
+    **The fix already had a correct precedent in the same codebase**,
+    untouched by this bug: `cmd_set_operator` (`src/main.rs`) already does
+    `print_error(...); std::process::exit(1);` on its own `Error` arm. All
+    12 sites are brought in line with that exact shape -- `print_error`
+    keeps producing the same human-readable stderr message (no output
+    format change), immediately followed by `std::process::exit(1)`
+    instead of falling through to `Ok(())`. Deliberately not a bigger
+    refactor (e.g. threading a `Result` all the way through `main`'s
+    dispatch to centralize exit-code handling in one place) -- that would
+    touch far more surface for the same observable behavior, when a
+    minimal, already-precedented fix at each existing match arm is
+    sufficient and lower-risk.
+
+    Verified by the existing `build`/`clippy`/`test` gates in
+    `reconcile.py` (a `Requirement`, not a `Constraint` -- no new
+    curated-token gate needed, this is structural/behavioral, not a
+    string-literal regression) plus live re-confirmation via the same
+    `tetron-testsuite regression` test that found it: its
+    `SUBNET-COLLISION-001` check (`tests/regression.sh` in that repo)
+    asserts a non-zero exit on the overlap refusal and a zero exit when
+    `--force` succeeds, exercising exactly this fix end to end against a
+    real daemon in a real VM, not just a compiled-and-linted binary.
+    """
+    req_id = "CLI-VOCAB-006"
+

@@ -75,7 +75,10 @@ pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()
             }
         }
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())

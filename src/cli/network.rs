@@ -96,7 +96,10 @@ pub(crate) async fn ipc_create(
             }
             println!();
         }
-        ipc::IpcMessage::Error { message } => print_error("create failed", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("create failed", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -165,7 +168,10 @@ pub(crate) async fn ipc_join(
             }
             println!();
         }
-        ipc::IpcMessage::Error { message } => print_error("join failed", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("join failed", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -191,7 +197,10 @@ pub(crate) async fn ipc_nuke(
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -210,7 +219,10 @@ pub(crate) async fn ipc_kick(network_key: &str, endpoint_id: &str) -> Result<()>
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
@@ -229,7 +241,10 @@ pub(crate) async fn ipc_leave(network: &str, force: bool) -> Result<()> {
     let resp = ipc::recv(&mut stream).await?;
     match resp {
         ipc::IpcMessage::Ok { message } => println!("{}", message),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())

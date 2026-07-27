@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The CLI reported success (exit code 0) even when the daemon refused a command (CLI-VOCAB-006)**: every command that receives an `IpcMessage::Error` response from the daemon (`create`, `join`, `nuke`, `kick`, `leave`, `status`, `standby`, `sync`, `resume`, `install`, `invite`, `admin`) printed the refusal to stderr but still exited 0, since the handler function's match statement fell through to an unconditional trailing `Ok(())`. Found live on the first real run of the new `tetron-testsuite` addon, which needs exit codes to actually reflect outcome to assert anything. All 12 call sites now `std::process::exit(1)` after printing the error, matching the correct precedent already used by `tetron set-operator`.
+
 ### Changed
 
 - Retired `docs/PLAN.md`, `docs/PROPOSAL.md`, and `docs/SUBNET_COLLISION.md` from the public repo. `PLAN.md`/`PROPOSAL.md` described the now long-complete minimal-variant migration and had drifted from current behavior; `AGENTS.md` covers the same ground and stays current. `SUBNET_COLLISION.md` documented a design that has since shipped (`SUBNET-COLLISION-001`/`002`). All three are kept locally under gitignored `DO-NOT-COMMIT/` for historical reference.

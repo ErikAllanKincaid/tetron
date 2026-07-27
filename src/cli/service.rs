@@ -101,7 +101,10 @@ pub(crate) async fn cmd_resume(hostname: Option<String>, network: Option<String>
     ipc::send(&mut stream, ipc::IpcMessage::Resume { hostname, network }).await?;
     match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { message } => println!("{message}"),
-        ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+        ipc::IpcMessage::Error { message } => {
+            print_error("error", &message, None);
+            std::process::exit(1);
+        }
         other => eprintln!("Unexpected response: {other:?}"),
     }
     Ok(())
@@ -154,7 +157,10 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
             .await?;
             match ipc::recv(&mut stream).await? {
                 ipc::IpcMessage::Ok { message } => println!("tetron service started. {message}"),
-                ipc::IpcMessage::Error { message } => print_error("error", &message, None),
+                ipc::IpcMessage::Error { message } => {
+                    print_error("error", &message, None);
+                    std::process::exit(1);
+                }
                 other => eprintln!("Unexpected response: {other:?}"),
             }
             // We're root here (installing the service). Grant the invoking user
