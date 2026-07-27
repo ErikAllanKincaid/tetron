@@ -19,24 +19,56 @@ a description (ideally a proof of concept). Reports will be acknowledged, kept
 updated on remediation, and credited in the release notes unless you prefer to
 remain anonymous.
 
+## Security posture
+
+The properties tetron actually provides, for anyone evaluating whether it fits
+their threat model:
+
+- **Encrypted communication, always.** Every peer connection — data plane and
+  control plane alike — rides iroh's QUIC transport, which is end-to-end
+  encrypted between the two peers' cryptographic identities. This isn't a
+  toggle: there is no unencrypted mode. A relay, when one is needed for NAT
+  traversal, forwards opaque encrypted QUIC datagrams — it cannot read the
+  traffic it relays.
+- **Identity-based, not location-based.** Every peer is a persistent Ed25519
+  keypair (`EndpointId`), not an IP address. Mesh IPv4/IPv6 addresses are
+  deterministically derived from that identity plus the network; the QUIC
+  handshake authenticates the connection to the identity, so a peer can't
+  impersonate another peer's identity without its private key.
+- **Key-based, invite-only entry.** There is no open-network mode and no
+  password-style shared secret. A network's room id (its public key) is a
+  *discovery* pointer only, published to the DHT — knowing it, even publicly,
+  grants no access. The only way onto a network is a single-use invite key
+  minted by a coordinator (`tetron invite create`, or the one auto-minted on
+  `tetron create`), redeemed against the signed roster. Any coordinator can
+  mint invites, so admission has no single point of failure.
+- **Peer-to-peer, no data-plane server dependency.** Once a network exists,
+  traffic between members flows directly (hole-punched) or via relay for NAT
+  traversal — no tetron-operated server sits in the data path or brokers
+  traffic. The only shared infrastructure is the DHT (pkarr) used purely for
+  discovery: it stores a signed pointer to where to find a network's current
+  roster, nothing about who's actually talking to whom or what's in the
+  traffic.
+- **Signed, tamper-evident group state.** The per-network pkarr record is
+  signed by the network's own secret key, and its address *is* that key's
+  derived public key — so the `GroupBlob` (membership roster, admin list,
+  invites) can't be forged or substituted by anyone without the key,
+  including whoever operates the DHT/relay infrastructure. This is integrity,
+  not confidentiality: the roster is verifiable, not secret, from anyone who
+  has the room id.
+- **Small attack surface by design.** tetron deliberately strips the feature
+  classes most likely to carry their own vulnerabilities in this space — no
+  userspace firewall to misconfigure, no OS DNS mutation, no embedded SSH
+  server, no self-update mechanism, no file-transfer protocol. What the
+  always-root daemon actually owns is: one TUN device per joined network, a
+  handful of routes, one shared QUIC endpoint, and a Unix socket. See
+  `AGENTS.md` for the full list of what was removed and why.
+
 ## Security model (context for reviewers)
 
-A few load-bearing properties, so reports can be scoped accurately:
+A few more nuanced, load-bearing properties and their actual limits, so
+reports can be scoped accurately:
 
-- **Identity, not IP.** Peers are addressed by cryptographic identity
-  (EndpointId); virtual addresses are derived from the identity and transport is
-  end-to-end encrypted by iroh.
-- **Discovery vs. admission.** A network's room id (public key) is a *discovery*
-  key published to the DHT — it is **never** sufficient to join on its own.
-  tetron is invite-only: a bare room-id join is always denied. Admission
-  requires a single-use invite key minted by a coordinator (`tetron invite
-  create`, or the one auto-minted on `tetron create`), validated against the
-  signed `GroupBlob` by whichever coordinator the joiner dials. Any coordinator
-  can mint invites — there is no single point of failure for admission.
-- **Signed group state.** The per-network pkarr record is signed by the network
-  secret key, and the pkarr address *is* the network's public key, so the
-  `GroupBlob` (membership roster, admin list, invites) can't be spoofed —
-  a node verifies the signature before trusting anything in it.
 - **No packet-level filtering — the network split is the boundary.** tetron
   has no built-in firewall: within a shared network, every member reaches
   every port any other member's host binds. Access control is entirely
