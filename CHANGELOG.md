@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`contrib/install-tetron-suite.sh`**: installs or upgrades tetron core, `tetron-webui`, and `tetron-systray` to their latest GitHub releases in one pass, skipping anything already up to date. Fetch it directly (no need to clone this repo) and run it; `--check` reports versions without changing anything, and upgrading core (the one step that needs sudo and briefly disconnects every peer on the host) prompts for confirmation unless `--yes-core` is passed. This is the actual file several existing doc comments (`tetron-webui/src/addons.rs`) already referenced as "the existing convention" -- it did not exist until now.
+- **Clear error instead of a raw crash on non-systemd Linux (PORTABILITY-002)**: `install`/`restart`/`start`/`stop`/`uninstall` now detect whether systemd is actually present (`/run/systemd/system`) before shelling out to `systemctl`, and fail with a message pointing at the documented `sudo tetron daemon` fallback plus a new `contrib/tetron.openrc` reference unit, instead of a bare "command not found." The daemon itself has no systemd dependency and is unaffected.
+- **Configurable install directories (PORTABILITY-003)**: `TETRON_CONFIG_DIR` (existing, now honored on every build instead of only Android/test), `TETRON_LOG_DIR`, and `TETRON_SOCKET_PATH` relocate their respective paths on any platform. An install that never sets one of these is unaffected -- same default paths as before.
 
 ### Fixed
 

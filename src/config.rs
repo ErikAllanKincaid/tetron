@@ -748,12 +748,14 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 pub fn config_dir() -> Result<PathBuf> {
     // An explicit `TETRON_CONFIG_DIR` override (renamed from the torpedo-prefixed
     // name, RENAME-M02, so it cannot collide with a genuine torpedo/rayfish
-    // process's own override on the same host) is honored only on Android (a
-    // mobile embedder would point it at its app's `Context.getFilesDir()`)
-    // and in `cfg(test)` (headless/test harnesses run against an isolated config
-    // tree). Desktop/service production builds never check this var, so their
-    // resolved path is byte-for-byte unchanged from before the override existed.
-    #[cfg(any(target_os = "android", test))]
+    // process's own override on the same host). Originally honored only on
+    // Android (a mobile embedder would point it at its app's
+    // `Context.getFilesDir()`) and in `cfg(test)` (headless/test harnesses run
+    // against an isolated config tree); widened (PORTABILITY-003) to every
+    // build, since a real production install can have a genuine reason to
+    // relocate this too (NixOS's non-FHS store layout is the motivating case --
+    // see PLAN_CrossDistroPortability.md). An install that never sets the var
+    // resolves the exact same path as before this existed -- purely additive.
     if let Some(dir) = std::env::var_os("TETRON_CONFIG_DIR") {
         let dir = PathBuf::from(dir);
         ensure_dir(&dir)?;

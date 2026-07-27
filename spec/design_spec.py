@@ -6319,3 +6319,49 @@ class NonSystemdDetection(Requirement):
     """
     req_id = "PORTABILITY-002"
 
+
+class ConfigurableInstallDirectories(Requirement):
+    """REQUIREMENT-ID: PORTABILITY-003
+
+    Checked the actual code before touching anything: `config::config_dir()`
+    already had a `TETRON_CONFIG_DIR` override, but it was deliberately
+    gated to `cfg(any(target_os = "android", test))` only -- the doc
+    comment said so explicitly, production Linux/macOS installs never
+    checked it. `logdir::log_dir()` and `tetron-proto::ipc::socket_path()`
+    had no override mechanism at all, not even the restricted one
+    `config_dir` had.
+
+    **Fix:** all three now accept an env var override on every platform,
+    same override-then-fixed-defaults shape:
+    - `config::config_dir()`: `TETRON_CONFIG_DIR`'s gate widened to every
+      build. An install that never sets it resolves the exact same path as
+      before this existed -- purely additive, not a behavior change for
+      anyone not using the override.
+    - `logdir::log_dir()`: new `TETRON_LOG_DIR`.
+    - `tetron_proto::ipc::socket_path()`: new `TETRON_SOCKET_PATH`. Both
+      the daemon's own listener (`daemon/mesh/bootstrap.rs::serve_ipc`)
+      and every client call `socket_path()` directly rather than
+      duplicating the path -- confirmed by grep, not assumed -- so one
+      override point covers the daemon and every client, including
+      `tetron-webui`/`tetron-systray` in their own separate repos, with no
+      changes needed on their side.
+
+    **Motivating case, not just a general preference:** a direct
+    prerequisite for the Nix/NixOS compatibility question logged the same
+    day (see `PLAN_CrossDistroPortability.md`) -- Nix's store-based layout
+    doesn't follow the FHS paths tetron's install assumed unconditionally
+    before this. Also matches the standing project preference
+    (`feedback_configurable_with_sensible_defaults` in auto-memory): a real
+    trade-off, configurable with a sensible default, not a single hardcoded
+    value.
+
+    Verified by the existing `build`/`clippy`/`test` gates (a `Requirement`,
+    not a `Constraint` -- structural/behavioral, no curated-token gate
+    needed, same reasoning `CLI-VOCAB-006`/`STATUS-005` already used), plus
+    new unit tests for `log_dir`/`socket_path`'s override behavior
+    specifically, since neither had any prior test coverage for this at
+    all (`config_dir`'s override was already exercised under every test
+    build regardless of this change, so no new test was needed there).
+    """
+    req_id = "PORTABILITY-003"
+

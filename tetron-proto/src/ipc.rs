@@ -484,7 +484,18 @@ impl<T: DeserializeOwned> Decoder for MsgpackCodec<T> {
 
 pub type IpcFramed = Framed<UnixStream, MsgpackCodec<IpcMessage>>;
 
+/// `TETRON_SOCKET_PATH` overrides the resolved path on every platform
+/// (PORTABILITY-003, same override-then-fixed-defaults shape as
+/// `config::config_dir`'s `TETRON_CONFIG_DIR`) -- every caller (the
+/// daemon's own listener, `connect()` below, and every client crate --
+/// `tetron-webui`, `tetron-systray` -- since none of them duplicate this
+/// path themselves) picks up an override with no changes needed on their
+/// side. An install that never sets it gets the exact same path as
+/// before this existed.
 pub fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("TETRON_SOCKET_PATH") {
+        return PathBuf::from(path);
+    }
     if cfg!(target_os = "macos") {
         PathBuf::from("/var/run/tetron.sock")
     } else {
@@ -517,6 +528,24 @@ pub async fn recv(framed: &mut IpcFramed) -> Result<IpcMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that mutate `TETRON_SOCKET_PATH`, since lib tests
+    /// share one process and run on parallel threads (same reasoning as
+    /// `tetron` core's own `CONFIG_ENV_LOCK`, which this crate can't reach
+    /// into directly since it's a separate crate).
+    static SOCKET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn socket_path_override() {
+        let _lock = SOCKET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("TETRON_SOCKET_PATH", "/tmp/custom-tetron.sock");
+        }
+        assert_eq!(socket_path(), PathBuf::from("/tmp/custom-tetron.sock"));
+        unsafe {
+            std::env::remove_var("TETRON_SOCKET_PATH");
+        }
+    }
 
     #[test]
     fn test_request_roundtrip() {

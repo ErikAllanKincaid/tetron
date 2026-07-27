@@ -12,7 +12,16 @@ use std::path::PathBuf;
 ///
 /// The appender retains the 7 most recent daily files (see `main::init_tracing`),
 /// so logs older than ~a week are pruned automatically.
+///
+/// `TETRON_LOG_DIR` overrides the resolved path on every platform
+/// (PORTABILITY-003, same override-then-fixed-defaults shape as
+/// `config::config_dir`'s `TETRON_CONFIG_DIR`) -- an install that never
+/// sets it gets the exact same path as before this existed.
 pub fn log_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TETRON_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
+
     #[cfg(target_os = "linux")]
     {
         PathBuf::from("/var/log/tetron")
@@ -27,5 +36,26 @@ pub fn log_dir() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("tetron")
             .join("logs")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CONFIG_ENV_LOCK;
+
+    #[test]
+    fn log_dir_override() {
+        // Reuses config.rs's env lock -- its own doc comment covers "any
+        // other env var read by" a config-resolution function, not just
+        // TETRON_CONFIG_DIR specifically.
+        let _lock = CONFIG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("TETRON_LOG_DIR", "/tmp/custom-tetron-logs");
+        }
+        assert_eq!(log_dir(), PathBuf::from("/tmp/custom-tetron-logs"));
+        unsafe {
+            std::env::remove_var("TETRON_LOG_DIR");
+        }
     }
 }
