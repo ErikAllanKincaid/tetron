@@ -96,7 +96,11 @@ impl MeshManager {
                     };
                 }
             };
-            let count = s.members.all().len();
+            // STATUS-005: excludes self, matching `peers` below (built from
+            // the same roster with the identical filter) and the documented
+            // "member count excludes self" behavior -- this used to count
+            // every roster entry including self, one too many.
+            let count = s.members.all().iter().filter(|m| m.identity != my_id).count();
             let now = now_secs();
             let nuke_ttl = config::load()
                 .ok()

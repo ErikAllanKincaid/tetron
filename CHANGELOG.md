@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **The CLI reported success (exit code 0) even when the daemon refused a command (CLI-VOCAB-006)**: every command that receives an `IpcMessage::Error` response from the daemon (`create`, `join`, `nuke`, `kick`, `leave`, `status`, `standby`, `sync`, `resume`, `install`, `invite`, `admin`) printed the refusal to stderr but still exited 0, since the handler function's match statement fell through to an unconditional trailing `Ok(())`. Found live on the first real run of the new `tetron-testsuite` addon, which needs exit codes to actually reflect outcome to assert anything. All 12 call sites now `std::process::exit(1)` after printing the error, matching the correct precedent already used by `tetron set-operator`.
+- **`tetron status --json`'s `member_count` field counted self, one too many (STATUS-005)**: `network_status` computed it from the full roster instead of excluding self the way the adjacent `peers` list (and the documented "member count excludes self" behavior) already did. Text-mode `tetron status` was unaffected, since it derives its own "members X/Y" line from `peers` directly and never reads `member_count`. `tetron-webui`'s dashboard reads this field directly, so this has been showing one member too many there since it was added -- no `tetron-webui` code change needed once this daemon fix ships.
 
 ### Changed
 

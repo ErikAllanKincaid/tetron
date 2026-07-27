@@ -6228,3 +6228,46 @@ class CliExitCodeReflectsDaemonError(Requirement):
     """
     req_id = "CLI-VOCAB-006"
 
+
+class JsonMemberCountExcludesSelf(Requirement):
+    """REQUIREMENT-ID: STATUS-005
+
+    Found live 2026-07-27 on `tetron-testsuite`'s `core-smoke` test, its
+    first real run: right after node2 joined node1's network, node1's
+    `tetron status --json` showed `"member_count": 2` for a network with
+    exactly one other member (`peers` correctly held a single entry for
+    node2) -- a script asserting `member_count == 1` after one join fails
+    even though the join itself worked perfectly.
+
+    **Same root shape as `STATUS-003`, different call site.** `STATUS-003`
+    fixed the *text-mode* "members X/Y" aggregate in `src/cli/status.rs`
+    (which was counting admin peers twice) and stated at the time "`--json`
+    output was never affected -- only the derived text-mode aggregate was
+    wrong." That was true for the admin-double-counting bug `STATUS-003`
+    fixed, but not true in general: `network_status`
+    (`src/daemon/mesh/diagnostics.rs`) computes the `member_count` field
+    from `s.members.all().len()` -- the full roster, self included -- while
+    `peers` (built two lines later from the same roster) explicitly filters
+    `|m| m.identity != my_id`. `member_count` and `peers.len()` had never
+    agreed on a 2-member (self + one other) network, and `AGENTS.md`'s own
+    documented CLI behavior ("member count excludes self") was violated by
+    the JSON field specifically -- the text-mode output was fine, since
+    `src/cli/status.rs`'s own `members_total`/`online` are derived from
+    `peers` directly (already excluding self) and never read
+    `member_count` at all.
+
+    **Not a hypothetical -- already live in a shipped product.**
+    `tetron-webui/static/app.js` displays `net.member_count` directly as
+    its "members" stat, so this bug has been showing every network's admin
+    dashboard one member high since whenever that field was added. No code
+    change needed in `tetron-webui` itself once this is fixed -- it already
+    just reads the field as-is.
+
+    **Fix:** `count` in `network_status` now filters by `m.identity !=
+    my_id` before counting, matching `peers`'s own filter exactly (`s.roster()`
+    is `s.members.all().into_iter().cloned().collect()`, so the two
+    computations now walk the identical underlying set with the identical
+    predicate).
+    """
+    req_id = "STATUS-005"
+
