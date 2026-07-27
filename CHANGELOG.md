@@ -9,13 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Retired `docs/PLAN.md`, `docs/PROPOSAL.md`, and `docs/SUBNET_COLLISION.md` from the public repo. `PLAN.md`/`PROPOSAL.md` described the now long-complete minimal-variant migration and had drifted from current behavior; `AGENTS.md` covers the same ground and stays current. `SUBNET_COLLISION.md` documented a design that has since shipped (`SUBNET-COLLISION-001`/`002`). All three are kept locally under gitignored `DO-NOT-COMMIT/` for historical reference.
-- Rewrote `docs/SECURITY.md` to correct several claims that had gone stale: it previously said no versioned releases existed (tagged releases go back to `v0.1.0`) and that identity backups are encrypted at rest (never actually implemented — both the node identity key and each network's secret key are stored as plaintext hex, `0600`), and still described the invite ledger file removed by `BLOB-001`. The rewrite also documents two properties reviewers need but weren't previously stated: tetron has no packet-level filtering (network membership is the access boundary; use the host firewall for anything finer), and `kick` removes roster/enforcement standing but does not revoke a coordinator's copy of the network secret key.
-- Fixed `CHANGELOG.md`'s own header, which still said "All notable changes to Torpedo" — a stale pre-rename product name.
+- Rewrote `docs/SECURITY.md` to correct several claims that had gone stale: it previously said no versioned releases existed (tagged releases go back to `v0.1.0`) and that identity backups are encrypted at rest (never actually implemented; both the node identity key and each network's secret key are stored as plaintext hex, `0600`), and still described the invite ledger file removed by `BLOB-001`. The rewrite also documents two properties reviewers need but weren't previously stated: tetron has no packet-level filtering (network membership is the access boundary; use the host firewall for anything finer), and `kick` removes roster/enforcement standing but does not revoke a coordinator's copy of the network secret key.
+- Fixed `CHANGELOG.md`'s own header, which still said "All notable changes to Torpedo," a stale pre-rename product name.
 - Added a "Security posture" section to `docs/SECURITY.md` stating tetron's actual positive security properties (always-on end-to-end encrypted transport, identity-based addressing, key-based invite-only admission, no data-plane server dependency, signed tamper-evident group state, small attack surface by design) alongside the existing reviewer-facing caveats.
 
 ### Removed
 
-- Deleted `src/daemon/mesh/invite_store.rs` (the old file-backed `InviteStore`), dead code orphaned since `LIVE-001` moved invites into the signed `GroupBlob` — it was never declared as a module and had no references anywhere in the tree.
+- Deleted `src/daemon/mesh/invite_store.rs` (the old file-backed `InviteStore`), dead code orphaned since `LIVE-001` moved invites into the signed `GroupBlob`. It was never declared as a module and had no references anywhere in the tree.
 
 ## [0.8.2] - 2026-07-26
 
