@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Reference OpenRC init script for systems without systemd (Alpine, Gentoo
+# with OpenRC, etc.). `tetron install`/`restart`/`start`/`stop`/`uninstall`
+# are systemd-only -- on a system without it, install this manually instead
+# and manage the daemon with the usual `rc-service`/`rc-update` commands.
+#
+# Install:
+#   sudo install -m 755 contrib/tetron.openrc /etc/init.d/tetron
+#   sudo rc-update add tetron default
+#   sudo rc-service tetron start
+#
+# This runs the exact same `tetron daemon` foreground command the systemd
+# unit does -- the daemon itself has no systemd dependency of its own, only
+# tetron's own convenience service-management commands do.
+
+name="tetron"
+description="tetron P2P mesh VPN daemon"
+command="/usr/local/bin/tetron"
+command_args="daemon"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/tetron/tetron.log"
+error_log="/var/log/tetron/tetron.log"
+
+depend() {
+	need net
+	after firewall
+}

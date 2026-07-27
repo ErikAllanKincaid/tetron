@@ -6271,3 +6271,51 @@ class JsonMemberCountExcludesSelf(Requirement):
     """
     req_id = "STATUS-005"
 
+
+# --------------------------------------------------------------------------
+# Requirements: cross-distro portability (PORTABILITY-*)
+#
+# Three ideas logged 2026-07-27, consolidated and dependency-ordered in
+# DO-NOT-COMMIT/PLAN_CrossDistroPortability.md (human-language plan, not
+# yet a Constraint gate for any of these -- each is structural/behavioral,
+# verified by the existing build/clippy/test gates in reconcile.py, same
+# reasoning CLI-VOCAB-006/STATUS-005 already used).
+# --------------------------------------------------------------------------
+
+class NonSystemdDetection(Requirement):
+    """REQUIREMENT-ID: PORTABILITY-002
+
+    `install`/`restart`/`start`/`stop`/`uninstall` (`src/cli/service.rs`)
+    all shell out to `systemctl` on Linux unconditionally -- no detection
+    of whether it is even present. On a non-systemd Linux system (Alpine/
+    OpenRC, Void/runit, Devuan/Artix/sysvinit, Gentoo with OpenRC, ...)
+    every one of those commands failed with a raw "systemctl: command not
+    found" instead of a clear explanation of what to do instead.
+
+    **The daemon itself has no systemd dependency at all** -- `tetron
+    daemon` (the hidden foreground-run subcommand) already runs under any
+    supervisor with zero code change needed. Only the convenience
+    service-management commands are systemd-only, so the fix is detection
+    plus a clear message, not new service-management code.
+
+    **Fix:** `systemd_available()` checks `/run/systemd/system` -- the
+    canonical "is systemd actually running as PID 1" test, not just
+    whether a `systemctl` binary happens to exist on `PATH` (some minimal/
+    container environments stub or partially install one without systemd
+    genuinely running). `require_systemd()` calls this and exits with a
+    clear message pointing at the documented fallback (`sudo tetron
+    daemon`, plus a new `contrib/tetron.openrc` reference unit) if it's
+    false. Wired into all five service-management entry points
+    (`cmd_install`, `cmd_restart`, `cmd_stop`, `cmd_start`,
+    `cmd_uninstall_service`) rather than a single shared call site, since
+    each is independently reachable and none of them funnel through one
+    common function on Linux.
+
+    Documented in `README.md`'s new "Non-systemd Linux" section. First-
+    class OpenRC/runit/s6 service management (parallel install/start/
+    stop/restart/uninstall code paths, the same shape macOS's launchd
+    branch already has) is explicitly out of scope here -- this is the
+    detect-and-message fix, not that bigger version.
+    """
+    req_id = "PORTABILITY-002"
+

@@ -183,6 +183,22 @@ sudo tetron set-operator <user>              # authorize a user to run tetron wi
 
 `tetron resume` / `tetron standby` toggle only the data plane (near-instant standby); the daemon stays connected to peers across `standby`.
 
+## Non-systemd Linux
+
+`install`/`restart`/`start`/`stop`/`uninstall` manage the service through systemd and need it present -- on a system without it (Alpine, Void, Devuan, Artix, Gentoo with OpenRC, etc.) they now fail with a clear message instead of a raw `systemctl: command not found`. **The daemon itself has no systemd dependency at all** -- only these convenience commands do. Run it directly under whatever init system you already have:
+
+```bash
+sudo tetron daemon   # runs in the foreground; needs root, same as the service does
+```
+
+For a real supervised service, write your own init script that runs the same command in the background. [`contrib/tetron.openrc`](contrib/tetron.openrc) is a reference OpenRC unit (Alpine, Gentoo with OpenRC):
+
+```bash
+sudo install -m 755 contrib/tetron.openrc /etc/init.d/tetron
+sudo rc-update add tetron default
+sudo rc-service tetron start
+```
+
 ## Upgrading
 
 There is no self-update; upgrade by replacing the binary:

@@ -25,6 +25,41 @@ pub(crate) fn ensure_tetron_group() {
     }
 }
 
+/// Whether systemd is actually running as PID 1's init system, not just
+/// whether a `systemctl` binary happens to exist on `PATH` (some minimal/
+/// container environments stub or partially install one without systemd
+/// genuinely running). `/run/systemd/system` is the canonical, widely-used
+/// check for this (systemd itself creates it only when it is actually
+/// init) -- checking for the directory's existence rather than shelling
+/// out to `systemctl` avoids a confusing raw "command not found" on a
+/// system (Alpine/OpenRC, Void/runit, Devuan/Artix/sysvinit, Gentoo with
+/// OpenRC, ...) that has neither.
+#[cfg(target_os = "linux")]
+pub(crate) fn systemd_available() -> bool {
+    Path::new("/run/systemd/system").exists()
+}
+
+/// Print a clear, actionable error and exit non-zero when systemd is
+/// required but not present, instead of letting a bare `systemctl` call
+/// fail with a raw "command not found." The daemon itself has no systemd
+/// dependency (`tetron daemon` runs standalone under any supervisor) --
+/// only these convenience commands do, so the message points at that
+/// documented fallback rather than implying tetron cannot run at all.
+#[cfg(target_os = "linux")]
+pub(crate) fn require_systemd() {
+    if !systemd_available() {
+        eprintln!(
+            "this command manages the system service via systemd, which this system\n\
+             does not have (checked for /run/systemd/system). Run the daemon directly\n\
+             under your own init system instead: `tetron daemon` runs standalone with\n\
+             no systemd dependency of its own -- see contrib/ for a reference unit for\n\
+             at least one alternative init system, and the README's \"Non-systemd Linux\"\n\
+             section for the full explanation."
+        );
+        std::process::exit(1);
+    }
+}
+
 /// Strip the `" (deleted)"` marker Linux appends to `/proc/self/exe` once the
 /// running binary's inode has been unlinked — e.g. after a manual upgrade that
 /// replaces the installed binary while the old one is still running. Without
@@ -220,6 +255,8 @@ pub(crate) fn require_root() -> Result<()> {
 /// install), then start it and verify the daemon comes up. Requires root.
 pub(crate) async fn cmd_install() -> Result<()> {
     require_root()?;
+    #[cfg(target_os = "linux")]
+    require_systemd();
     install_and_start_service(None).await
 }
 
@@ -269,6 +306,8 @@ pub(crate) async fn restart_service_and_wait() -> Result<()> {
 /// comes back up active.
 pub(crate) async fn cmd_restart() -> Result<()> {
     require_root()?;
+    #[cfg(target_os = "linux")]
+    require_systemd();
     if !service_unit_exists() {
         eprintln!("tetron service is not installed. Run: sudo tetron install");
         std::process::exit(1);
@@ -282,6 +321,8 @@ pub(crate) async fn cmd_restart() -> Result<()> {
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_stop() -> Result<()> {
     require_root()?;
+    #[cfg(target_os = "linux")]
+    require_systemd();
     if !service_unit_exists() {
         eprintln!("tetron service is not installed. Nothing to stop.");
         std::process::exit(1);
@@ -309,6 +350,8 @@ pub(crate) async fn cmd_stop() -> Result<()> {
 #[allow(unreachable_code)]
 pub(crate) async fn cmd_start() -> Result<()> {
     require_root()?;
+    #[cfg(target_os = "linux")]
+    require_systemd();
     if !service_unit_exists() {
         eprintln!("tetron service is not installed. Run: sudo tetron install");
         std::process::exit(1);
@@ -418,6 +461,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
     {
         let path = Path::new("/etc/systemd/system/tetron.service");
         if path.exists() {
+            require_systemd();
             run_cmd("systemctl", &["disable", "--now", "tetron"]);
             std::fs::remove_file(path)?;
             run_cmd("systemctl", &["daemon-reload"]);
