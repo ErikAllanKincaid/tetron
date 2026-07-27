@@ -61,7 +61,11 @@ chmod +x tetron-webui
 sudo install tetron-webui /usr/local/bin/tetron-webui
 # sets up + starts a per-user service, no sudo needed for this step
 tetron-webui install
+```
 
+To install or upgrade tetron, `tetron-webui`, and `tetron-systray` together instead of running the steps above by hand, fetch and run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) -- it checks each against its own latest release and only touches the ones that are missing or behind (`--check` reports without changing anything).
+
+```bash
 # Create a network. Output includes your mesh IP and invite key.
 #  --network-name/--hostname are optional; --subnet overrides the default
 #  10.88.0.0/24 for *this* network only; --tor routes it over Tor.

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`contrib/install-tetron-suite.sh`**: installs or upgrades tetron core, `tetron-webui`, and `tetron-systray` to their latest GitHub releases in one pass, skipping anything already up to date. Fetch it directly (no need to clone this repo) and run it; `--check` reports versions without changing anything, and upgrading core (the one step that needs sudo and briefly disconnects every peer on the host) prompts for confirmation unless `--yes-core` is passed. This is the actual file several existing doc comments (`tetron-webui/src/addons.rs`) already referenced as "the existing convention" -- it did not exist until now.
+
 ### Fixed
 
 - **The CLI reported success (exit code 0) even when the daemon refused a command (CLI-VOCAB-006)**: every command that receives an `IpcMessage::Error` response from the daemon (`create`, `join`, `nuke`, `kick`, `leave`, `status`, `standby`, `sync`, `resume`, `install`, `invite`, `admin`) printed the refusal to stderr but still exited 0, since the handler function's match statement fell through to an unconditional trailing `Ok(())`. Found live on the first real run of the new `tetron-testsuite` addon, which needs exit codes to actually reflect outcome to assert anything. All 12 call sites now `std::process::exit(1)` after printing the error, matching the correct precedent already used by `tetron set-operator`.
