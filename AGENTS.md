@@ -2,7 +2,7 @@
 
 > **This file is the canonical guidance for any AI coding agent working in this repository.** `AGENTS.md` is the source of truth; `CLAUDE.md` is a symlink to it (so Claude Code auto-loads it while the portable `AGENTS.md` name serves every other agent tool). Edit `AGENTS.md`, never the symlink.
 
-> **THIS REPOSITORY IS `tetron`**, a standalone P2P mesh VPN. Read `docs/PROPOSAL.md` (what and why) and `docs/PLAN.md` (commit-by-commit execution order) before doing anything. The requirements in `spec/design_spec.py` govern the work. Full tetron (the feature-rich fork of rayfish) lives in its own repository; `origin` points at it for cherry-picks. tetron is not wire-compatible with full tetron (D1 was severed by RENAME-M02 — the ALPN prefix is `tetron/net/...`, not `tetron/net/...`).
+> **THIS REPOSITORY IS `tetron`**, a standalone P2P mesh VPN. This file is the canonical reference for what tetron is and how it works — read it before doing anything. The requirements in `spec/design_spec.py` govern the work (the original `docs/PROPOSAL.md`/`docs/PLAN.md` design-rationale and commit-by-commit execution-order docs were retired 2026-07-27 once the migration they described was long complete and this file had grown to cover the same ground; still available locally, gitignored, under `DO-NOT-COMMIT/` for historical reference). Full tetron (the feature-rich fork of rayfish) lives in its own repository; `origin` points at it for cherry-picks. tetron is not wire-compatible with full tetron (D1 was severed by RENAME-M02 — the ALPN prefix is `tetron/net/...`, not `tetron/net/...`).
 
 ## What tetron is (and is not)
 

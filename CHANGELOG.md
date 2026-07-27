@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Retired `docs/PLAN.md`, `docs/PROPOSAL.md`, `docs/SECURITY.md`, and `docs/SUBNET_COLLISION.md` from the public repo. `PLAN.md`/`PROPOSAL.md` described the now long-complete minimal-variant migration and had drifted from current behavior; `AGENTS.md` covers the same ground and stays current. `SUBNET_COLLISION.md` documented a design that has since shipped (`SUBNET-COLLISION-001`/`002`). `SECURITY.md` had accumulated stale claims (an unpublished-releases note despite tagged releases back to 0.1.6; an "identity backups are encrypted" claim that was never actually implemented; a description of the invite ledger file removed by `BLOB-001`) — retired rather than patched in place. All four are kept locally under gitignored `DO-NOT-COMMIT/` for historical reference. **Note: removing `docs/SECURITY.md` means GitHub's Security tab no longer detects a security policy for this repo** — re-add a corrected version (root, `docs/`, or `.github/`) if that reporting surface is wanted back.
+
 ## [0.8.2] - 2026-07-26
 
 ### Fixed

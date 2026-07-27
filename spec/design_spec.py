@@ -1434,9 +1434,11 @@ class MemberRestoreConfigFallback(Requirement):
 # ==========================================================================
 # tetron: the minimal variant (MINIMAL-*, CON-M*)
 #
-# This repository is tetron, a stripped-down P2P mesh VPN. See docs/PROPOSAL.md
-# for the rationale and design decisions, docs/PLAN.md for the commit-by-commit
-# execution order. Inherited SUBNET-*/RENAME-*/CON-* specs above remain
+# This repository is tetron, a stripped-down P2P mesh VPN. The original
+# docs/PROPOSAL.md (rationale/design decisions) and docs/PLAN.md
+# (commit-by-commit execution order) were retired 2026-07-27, migration long
+# complete; see AGENTS.md for the current canonical description. Inherited
+# SUBNET-*/RENAME-*/CON-* specs above remain
 # valid until a MINIMAL removal commit retires them explicitly. New
 # constraints use the CON-M* namespace so future full-torpedo CON-0xx
 # numbers never collide on cherry-pick.
