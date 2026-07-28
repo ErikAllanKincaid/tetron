@@ -767,6 +767,18 @@ class InstallOutputNamesConcreteAction(Requirement):
     req_id = "INSTALL-OUTPUT-001"
 
 
+class InstallPrintsVersion(Requirement):
+    """REQUIREMENT-ID: INSTALL-VERSION-001
+
+    `sudo tetron install` installs and activates the system service. To ensure
+    operators and automated provisioning tools can easily identify the exact
+    version of tetron being installed, `cmd_install` must announce the tetron
+    version (including version number and git SHA, e.g. `installing tetron 0.1.0 (abc12345)`)
+    prior to executing service registration and activation.
+    """
+    req_id = "INSTALL-VERSION-001"
+
+
 class StatusOutputRedesign(Requirement):
     """REQUIREMENT-ID: STATUS-002
 

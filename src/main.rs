@@ -17,11 +17,6 @@ use membership::GroupMode;
 mod cli;
 use cli::*;
 
-/// Full version string: the crate version plus the git short SHA stamped in by
-/// `build.rs` (e.g. `0.1.0 (abc12345)`). The SHA distinguishes nightly builds
-/// that share a crate version, and is what a tester quotes in a bug report.
-const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GIT_SHA"), ")");
-
 #[derive(Parser)]
 #[command(
     name = "tetron",

@@ -251,12 +251,18 @@ pub(crate) fn require_root() -> Result<()> {
     Ok(())
 }
 
+/// Full version string: the crate version plus the git short SHA stamped in by
+/// `build.rs` (e.g. `0.1.0 (abc12345)`).
+pub(crate) const FULL_VERSION: &str =
+    concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GIT_SHA"), ")");
+
 /// `tetron install`: install the system service if needed (or refresh an existing
-/// install), then start it and verify the daemon comes up. Requires root.
+/// install), then start it and verify the daemon comes up (INSTALL-VERSION-001). Requires root.
 pub(crate) async fn cmd_install() -> Result<()> {
     require_root()?;
     #[cfg(target_os = "linux")]
     require_systemd();
+    println!("installing tetron {FULL_VERSION}");
     install_and_start_service(None).await
 }
 
@@ -488,5 +494,16 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
     #[allow(unreachable_code)]
     {
         anyhow::bail!("service uninstallation not supported on this platform");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_full_version_non_empty() {
+        assert!(!FULL_VERSION.is_empty());
+        assert!(FULL_VERSION.contains(env!("CARGO_PKG_VERSION")));
     }
 }
