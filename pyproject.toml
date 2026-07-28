@@ -1,0 +1,12 @@
+[project]
+name = "tetron"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "libspec",
+]
+
+[tool.uv.sources]
+libspec = { git = "https://github.com/drhodes/libspec", tag = "v10.3.1" }
