@@ -17,6 +17,20 @@ categories = ["network-programming", "command-line-utilities"]
 [workspace]
 members = ["tetron-proto"]
 
+# PORTABILITY-001: local patch for a real musl-target crash (`assertion
+# failed: align_of::<T>() <= align_of::<C>()` in noq-udp's cmsg handling,
+# hit live running the musl-built daemon -- musl's `cmsghdr` has a smaller
+# alignment than glibc's on the same arch, a real ABI difference, not a bug
+# in this crate's overall design). Fixed by switching noq-udp's cmsg
+# encode/decode from ptr::read/write to the _unaligned equivalents, which
+# removes the need for the alignment guarantee that doesn't hold under
+# musl. See vendor/noq-udp-1.1.0/PATCH.md for the exact diff and status.
+# Verified live: the musl binary now installs and runs correctly on a real
+# Rocky Linux 9 VM (create/status/networking all worked) where it
+# previously coredumped on daemon startup.
+[patch.crates-io]
+noq-udp = { path = "vendor/noq-udp-1.1.0" }
+
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add
 # `panic = "abort"` here: UniFFI's generated bindings need `panic = "unwind"`

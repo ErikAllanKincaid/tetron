@@ -6365,3 +6365,106 @@ class ConfigurableInstallDirectories(Requirement):
     """
     req_id = "PORTABILITY-003"
 
+
+class MuslReleaseTargets(Requirement):
+    """REQUIREMENT-ID: PORTABILITY-001
+
+    Checked the actual release pipeline before touching anything: every
+    published Linux binary was `*-unknown-linux-gnu` only
+    (`.github/workflows/release.yml`/`nightly.yml`'s build matrix). No
+    musl target existed anywhere.
+
+    **Why it matters, not just "more targets":** a fully static musl
+    binary has no dynamic libc dependency at all, so it runs unchanged
+    across host glibc versions -- the exact class of bug
+    `tetron-testsuite` already hit once (`lib/topology.sh`'s own comment:
+    `GLIBC_2.39 not found` against an older-glibc VM box, which forced
+    switching the default box to `bento/ubuntu-24.04`). It is also the
+    real fix for genuine Alpine support, which ships musl only, not
+    glibc.
+
+    **First verification pass only checked `--version`/`--help` -- that
+    was not enough, and saying so plainly rather than letting the earlier
+    claim stand.** `cross build --release --target
+    x86_64-unknown-linux-musl` compiled cleanly (every dependency in the
+    tree builds under musl with no source changes) and the result was
+    confirmed genuinely static (`ldd`: "statically linked"). But
+    `--version`/`--help` never exercise the daemon's real networking
+    code path, and a second pass -- installing and actually running the
+    binary on a real Rocky Linux 9 VM as part of verifying `D1` (see
+    `tetron-testsuite`'s own TODO) -- found the daemon panicked and
+    coredumped within seconds of starting:
+
+    ```
+    thread 'tokio-rt-worker' panicked at .../noq-udp-1.1.0/src/cmsg/mod.rs:81:5:
+    assertion failed: align_of::<T>() <= align_of::<C>()
+    ```
+
+    **Root cause, confirmed not guessed:** `noq-udp` (a transitive
+    dependency via `iroh` -> `netwatch`/`noq`, handling QUIC's UDP
+    control-message/ECN plumbing) asserted `align_of::<T>() <=
+    align_of::<C>()` (`C` = `libc::cmsghdr`) before using `ptr::read`/
+    `ptr::write`. glibc's `cmsghdr` uses an 8-byte `size_t cmsg_len` on
+    x86_64; musl's uses a 4-byte `socklen_t cmsg_len` -- a real,
+    documented ABI difference (the same class of issue as a known
+    `quinn-udp` musl report), not a bug in `noq-udp`'s overall design. A
+    perfectly valid payload like `libc::timespec` (8-byte aligned) fails
+    that assertion under musl even though nothing is actually unsound
+    about reading it.
+
+    **Fixed with a local patch, vendored in-tree:**
+    `vendor/noq-udp-1.1.0/` (a copy of the crate with `decode`/`push`
+    switched from `ptr::read`/`ptr::write` to `ptr::read_unaligned`/
+    `ptr::write_unaligned`, dropping the now-unnecessary alignment
+    assertion), wired in via `[patch.crates-io]` in the workspace root
+    `Cargo.toml`. See `vendor/noq-udp-1.1.0/PATCH.md` for the exact
+    diff and rationale. Not yet reported upstream to
+    `github.com/n0-computer/noq`.
+
+    **Re-verified end to end after the patch, on a fresh Rocky Linux 9
+    VM:** `tetron install` (systemd unit installs, daemon starts),
+    `tetron create` (TUN device created, network published), `tetron
+    status --json` (healthy, `active: true`) -- no crash, no coredump.
+    Previously coredumped (`code=dumped, status=6/ABRT`) at the same
+    point with the unpatched crate. This is the actual bar this
+    requirement is held to now: a musl binary that runs the real daemon,
+    not one that only answers `--version`.
+
+    **Also found live in the same verification pass, worth recording
+    even though it's not this requirement's fix to make:** the
+    glibc-linked binary this project already ships could not run on
+    Rocky Linux 9 at all (`GLIBC_2.39 not found`) -- direct, live proof
+    of the exact problem this requirement exists to solve, using a
+    locally-built binary (this dev machine's own glibc 2.39 toolchain,
+    not the actual CI-published release binary, which targets an older
+    `ubuntu-22.04`/glibc-2.35 baseline -- whether *that* specific
+    combination also fails against Rocky 9's glibc 2.34 remains a
+    separate, still-open question, not conflated with this finding).
+
+    **aarch64-unknown-linux-musl was attempted the same way and is not
+    equivalently confirmed.** It failed in this local environment with a
+    glibc-version mismatch inside `cross`'s own Docker image, affecting
+    host-side build-script binaries (`serde`/`libc`/`parking_lot_core`'s
+    build scripts, not tetron's own code) -- a tooling issue in the local
+    Docker-based cross-compilation path, not a musl-compatibility problem
+    in tetron's dependency tree. The real CI pipeline builds aarch64 on a
+    **native** ARM runner already (the existing `aarch64-unknown-linux-
+    gnu` entry uses `runner: ubuntu-22.04-arm`, not `cross`/Docker at
+    all), which this specific local hiccup would not obviously reproduce
+    on -- but that combination (native-runner aarch64-musl) remains
+    unconfirmed, stated plainly rather than assumed fine by extension
+    from the x86_64 result.
+
+    **Added to both `release.yml` and `nightly.yml`'s matrix**
+    (`x86_64-unknown-linux-musl`/`aarch64-unknown-linux-musl`, same
+    runners as the matching gnu entries), with a new conditional
+    `musl-tools` install step (`if: contains(matrix.target, 'musl')`) --
+    the standard `musl-gcc` linker Rust's musl target needs, not present
+    on GitHub's default Ubuntu runner images. `ci.yml` (the PR-gating
+    workflow) was deliberately left untouched -- it has no existing
+    per-target build matrix to extend the same way, unlike
+    release.yml/nightly.yml, and adding one is a separate, bigger change
+    than this requirement's scope.
+    """
+    req_id = "PORTABILITY-001"
+
