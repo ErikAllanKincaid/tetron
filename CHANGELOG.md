@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-28
+
 ### Added
 
 - **`contrib/install-tetron-suite.sh`**: installs or upgrades tetron core, `tetron-webui`, and `tetron-systray` to their latest GitHub releases in one pass, skipping anything already up to date. Fetch it directly (no need to clone this repo) and run it; `--check` reports versions without changing anything, and upgrading core (the one step that needs sudo and briefly disconnects every peer on the host) prompts for confirmation unless `--yes-core` is passed. This is the actual file several existing doc comments (`tetron-webui/src/addons.rs`) already referenced as "the existing convention" -- it did not exist until now.
