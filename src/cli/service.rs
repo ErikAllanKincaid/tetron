@@ -254,7 +254,7 @@ pub(crate) fn require_root() -> Result<()> {
 /// Full version string: the crate version plus the git short SHA stamped in by
 /// `build.rs` (e.g. `0.1.0 (abc12345)`).
 pub(crate) const FULL_VERSION: &str =
-    concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAY_GIT_SHA"), ")");
+    concat!(env!("CARGO_PKG_VERSION"), " (", env!("TETRON_GIT_SHA"), ")");
 
 /// `tetron install`: install the system service if needed (or refresh an existing
 /// install), then start it and verify the daemon comes up (INSTALL-VERSION-001). Requires root.

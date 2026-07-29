@@ -17,7 +17,7 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("cargo:rustc-env=RAY_GIT_SHA={sha}");
+    println!("cargo:rustc-env=TETRON_GIT_SHA={sha}");
 
     // Rebuild when HEAD moves so the stamp stays current. `.git/HEAD` covers
     // commits/checkouts; the packed-refs/refs paths cover branch updates.

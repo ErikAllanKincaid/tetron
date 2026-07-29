@@ -635,6 +635,26 @@ class TestHarnessIdentitySwept(Requirement):
     req_id = "RENAME-017"
 
 
+class GitShaEnvVarRenamed(Requirement):
+    """REQUIREMENT-ID: RENAME-018
+
+    The env-var name that carries the git short SHA from `build.rs` into the
+    Rust binary is renamed from `RAY_GIT_SHA` (a pre-fork upstream identifier)
+    to `TETRON_GIT_SHA`. Two sites:
+
+    1. `build.rs:20` -- `cargo:rustc-env=RAY_GIT_SHA={sha}` becomes
+       `cargo:rustc-env=TETRON_GIT_SHA={sha}`.
+    2. `src/cli/service.rs:257` -- `env!("RAY_GIT_SHA")` becomes
+       `env!("TETRON_GIT_SHA")`.
+
+    No wire format, on-disk storage, or external contract depends on the env
+    var's name -- only its value (the SHA string). Not covered by CON-007's
+    curated-token scan (which only catches lower-case `rayfish`/`ray ` host
+    artifacts, not ALL_CAPS env-var names) -- pure manual cleanup.
+    """
+    req_id = "RENAME-018"
+
+
 class ProductIdentityRenamed(Requirement):
     """REQUIREMENT-ID: RENAME-M02
 
