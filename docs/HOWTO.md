@@ -557,6 +557,49 @@ sudo tetron restart
 
 ---
 
+## 13. Portability: overriding config, log, and socket paths
+
+tetron normally uses compiled-in default paths:
+
+| Path | Linux | macOS |
+|---|---|---|
+| Config directory | `/etc/tetron` | `~/.config/tetron` |
+| Log directory | `/var/log/tetron` | `~/Library/Logs/tetron` |
+| IPC socket | `/var/run/tetron/tetron.sock` | `~/Library/Logs/tetron/tetron.sock` |
+
+On a non-FHS distribution (NixOS, Guix) or any layout where these do not fit, each path can be overridden with an environment variable:
+
+```bash
+export TETRON_CONFIG_DIR=/custom/tetron/etc
+export TETRON_LOG_DIR=/custom/tetron/log
+export TETRON_SOCKET_PATH=/custom/tetron/tetron.sock
+```
+
+**Rules:**
+- All three are read at daemon startup and by every CLI command (the CLI needs `TETRON_SOCKET_PATH` to find the daemon).
+- Setting any one does not affect the others -- each falls back to its compiled default independently.
+- Config and log dirs are created by `tetron install` at the overridden location; they are not auto-created on a plain `tetron daemon` run.
+- `sudo tetron install` uses whichever variables are set in the invoking shell at the time. The installed systemd unit file does **not** capture the current override values -- to make overrides permanent, add them to the unit's `Environment=` line or to an override drop-in:
+
+```bash
+sudo systemctl edit tetron
+```
+
+Then add:
+
+```
+[Service]
+Environment=TETRON_CONFIG_DIR=/custom/tetron/etc
+Environment=TETRON_LOG_DIR=/custom/tetron/log
+Environment=TETRON_SOCKET_PATH=/custom/tetron/tetron.sock
+```
+
+On macOS (launchd), add the variables to the plist's `EnvironmentVariables` dictionary (the installer already creates the plist at `/Library/LaunchDaemons/tetron.plist`).
+
+**The backup command in section 12 is unaffected** -- it operates on whatever path `config::config_dir()` resolves to at the time.
+
+---
+
 ## Troubleshooting
 
 ### "Connection refused" / daemon not running
@@ -610,17 +653,29 @@ If you want a different name, leave and re-join with `--hostname`.
 - If the peer is behind a restrictive NAT, traffic routes through the relay (still encrypted, higher latency).
 - Check for firewall rules blocking UDP on the relay port (43737).
 
-### Direct connection not establishing
+### Direct connection not establishing / peers stuck on relay
 
-tetron binds UDP port 43737 for the iroh endpoint by default (`tetron config set listen-port <port>` to change it). If this port is blocked by a firewall, forward it for reliable direct connections:
+See `docs/CONNECTIVITY.md` for the full reference on how iroh selects paths,
+common causes of unnecessary relay usage on LAN, and diagnostic steps.
+
+Quick checklist:
 
 ```bash
-# Port-forward 43737/UDP on your router to this machine
-# Or allow it through the local firewall:
-sudo ufw allow 43737/udp
+# 1. Is the UDP port open on both peers?
+nc -u -z -w 2 192.168.1.x 43737
+nc -u -z -w 2 192.168.1.y 43737
+
+# 2. Did the daemon fall back to an ephemeral port?
+journalctl -u tetron --since "5 minutes ago" | grep ephemeral
+
+# 3. Wait 30 seconds and re-check status -- may be transient probation timing
+tetron status
 ```
 
-Without port forwarding, iroh still connects through its relay fallback (at the cost of higher latency).
+Tetron binds UDP port 43737 for the iroh endpoint by default
+(`tetron config set listen-port <port>` to change it). A relay connection is
+the starting state for every peer; direct is an upgrade that happens
+asynchronously.
 
 ### Viewing logs
 
