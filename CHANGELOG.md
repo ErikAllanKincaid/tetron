@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`NetworkStatus.name` field removed (BREAKING)**: the legacy `name` field on `tetron status --json`'s per-network object is finally removed. The `network` field (identical value) has been present since the fleet upgrade window opened in 0.9.0. All consumers (tetron-webui, tetron-systray) were already migrated; fleet rollout complete 2026-07-29. (STATUS-NETWORK-FIELD-001)
+
+### Internal
+
+- **`RAY_GIT_SHA` build env var renamed to `TETRON_GIT_SHA`**: the pre-fork upstream identifier in `build.rs` and `src/cli/service.rs` is now tetron-specific. No wire or storage impact. (RENAME-018)
+
 ## [0.9.0] - 2026-07-28
 
 ### Added
