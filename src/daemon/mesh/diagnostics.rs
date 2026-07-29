@@ -76,7 +76,6 @@ impl MeshManager {
                 Ok(s) => s,
                 Err(_) => {
                     return NetworkStatus {
-                        name: h.name.clone(),
                         network: h.name.clone(),
                         role,
                         my_ip: h.my_ip,
@@ -154,7 +153,6 @@ impl MeshManager {
             .find(|m| m.identity == my_id)
             .and_then(|m| m.hostname.clone());
         NetworkStatus {
-            name: h.name.clone(),
             network: h.name.clone(),
             role,
             my_ip: h.my_ip,
