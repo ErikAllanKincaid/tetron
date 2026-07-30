@@ -12,6 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal
 
+- **`install-tetron-suite.sh` prints version after each component**: after installing/upgrading core, webui, or systray, the script now queries the freshly installed binary's `--version` and reports it, matching the information density of core's own `sudo tetron install`.
+
 - **`RAY_GIT_SHA` build env var renamed to `TETRON_GIT_SHA`**: the pre-fork upstream identifier in `build.rs` and `src/cli/service.rs` is now tetron-specific. No wire or storage impact. (RENAME-018)
 
 ## [0.9.0] - 2026-07-28
