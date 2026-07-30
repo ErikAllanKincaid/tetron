@@ -171,6 +171,8 @@ install_component() {
 		|| fatal "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"
 
 	log_pass "$comp: installed/upgraded successfully"
+	ver="$(installed_version "$dest")"
+	[ -n "$ver" ] && log_pass "$comp: version $ver"
 }
 
 any_failed=0
