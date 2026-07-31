@@ -70,12 +70,24 @@ pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
     path.strip_suffix(" (deleted)").unwrap_or(path)
 }
 
+/// Path overrides a user can pass to `tetron install` to relocate config,
+/// logs, and/or the IPC socket. Each corresponds to an `Environment=` entry
+/// in the service unit (PORTABILITY-004, matching the tetron-webui `--port`
+/// pattern). `None` means "use the compiled default" — the unit gets no
+/// `Environment=` line for that var.
+pub(crate) struct PathOverrides {
+    pub config_dir: Option<String>,
+    pub log_dir: Option<String>,
+    pub socket_path: Option<String>,
+}
+
 /// Write the system service unit/plist, substituting the path of the binary
 /// currently running so the service execs the same binary the user invoked
-/// (rather than a hardcoded /usr/local/bin/tetron). Idempotent — safe to call on
+/// (rather than a hardcoded /usr/local/bin/tetron), and injecting any
+/// path-override env vars the user requested. Idempotent — safe to call on
 /// every `tetron install`, keeping the exec path fresh if the binary moves.
 #[allow(unused_variables)]
-pub(crate) fn ensure_service_installed() -> Result<()> {
+pub(crate) fn ensure_service_installed(overrides: &PathOverrides) -> Result<()> {
     let exe = std::env::current_exe()
         .context("failed to determine current executable path")?
         .to_string_lossy()
@@ -90,8 +102,23 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
         // absent (see config::set_owner).
         ensure_tetron_group();
         let path = Path::new("/etc/systemd/system/tetron.service");
-        let service =
+        let mut service =
             include_str!("../../contrib/tetron.service").replace("/usr/local/bin/tetron", &exe);
+        // Inject path-override env vars or remove the line if unset so a
+        // user who passes no flags gets the exact same unit as before.
+        fn inject_env(service: &mut String, env_var: &str, value: &Option<String>) {
+            let placeholder = format!("__TETRON_{env_var}__");
+            match value {
+                Some(v) => *service = service.replace(&placeholder, v),
+                None => {
+                    let line = format!("Environment=TETRON_{env_var}={placeholder}\n");
+                    *service = service.replace(&line, "");
+                }
+            }
+        }
+        inject_env(&mut service, "CONFIG_DIR", &overrides.config_dir);
+        inject_env(&mut service, "LOG_DIR", &overrides.log_dir);
+        inject_env(&mut service, "SOCKET_PATH", &overrides.socket_path);
         println!("installing systemd service 'tetron' -> {}", path.display());
         std::fs::write(path, service)
             .with_context(|| format!("failed to write {}", path.display()))?;
@@ -105,8 +132,24 @@ pub(crate) fn ensure_service_installed() -> Result<()> {
         // RENAME-008: match the plist's /usr/local/bin/tetron placeholder (was
         // the stale pre-fork /usr/local/bin/ray, which the plist no longer
         // contains — leaving the real exe path unsubstituted). Mirrors Linux.
-        let plist = include_str!("../../contrib/com.tetron.vpn.plist")
+        let mut plist = include_str!("../../contrib/com.tetron.vpn.plist")
             .replace("/usr/local/bin/tetron", &exe);
+        // Inject path-override env vars or remove the XML block if unset.
+        fn inject_plist_env(plist: &mut String, env_var: &str, value: &Option<String>) {
+            let placeholder = format!("__TETRON_{env_var}__");
+            match value {
+                Some(v) => *plist = plist.replace(&placeholder, v),
+                None => {
+                    let block = format!(
+                        "        <key>TETRON_{env_var}</key>\n        <string>{placeholder}</string>\n"
+                    );
+                    *plist = plist.replace(&block, "");
+                }
+            }
+        }
+        inject_plist_env(&mut plist, "CONFIG_DIR", &overrides.config_dir);
+        inject_plist_env(&mut plist, "LOG_DIR", &overrides.log_dir);
+        inject_plist_env(&mut plist, "SOCKET_PATH", &overrides.socket_path);
         println!("installing launchd job 'com.tetron.vpn' -> {}", path.display());
         std::fs::write(path, plist)
             .with_context(|| format!("failed to write {}", path.display()))?;
@@ -152,8 +195,11 @@ pub(crate) async fn cmd_resume(hostname: Option<String>, network: Option<String>
 /// it never comes up (e.g. it crashed on a port/route conflict with another
 /// VPN), we surface the tail of its log so the user knows what went wrong
 /// instead of seeing a cheerful "started" followed by a dead `tetron status`.
-pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Result<()> {
-    ensure_service_installed()?;
+pub(crate) async fn install_and_start_service(
+    hostname: Option<String>,
+    overrides: &PathOverrides,
+) -> Result<()> {
+    ensure_service_installed(overrides)?;
 
     #[cfg(target_os = "linux")]
     {
@@ -175,6 +221,15 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         anyhow::bail!("system service not supported on this platform");
+    }
+
+    // Propagate path overrides into this process's environment so the IPC
+    // client (`wait_for_daemon` -> `ipc::connect()` -> `socket_path()`) can
+    // find the daemon on the custom socket. Without this, the daemon listens
+    // on the custom path (picked up from its own `Environment=` in the unit)
+    // but the installer probes the default path and times out.
+    if let Some(ref p) = overrides.socket_path {
+        unsafe { std::env::set_var("TETRON_SOCKET_PATH", p) };
     }
 
     // Wait for the freshly started daemon to accept IPC, then activate the VPN.
@@ -258,12 +313,21 @@ pub(crate) const FULL_VERSION: &str =
 
 /// `tetron install`: install the system service if needed (or refresh an existing
 /// install), then start it and verify the daemon comes up (INSTALL-VERSION-001). Requires root.
-pub(crate) async fn cmd_install() -> Result<()> {
+///
+/// Optional `--config-dir`, `--log-dir`, `--socket-path` flags inject the
+/// corresponding `Environment=` lines into the service unit so the daemon
+/// uses nonstandard paths (PORTABILITY-004).
+pub(crate) async fn cmd_install(
+    config_dir: Option<String>,
+    log_dir: Option<String>,
+    socket_path: Option<String>,
+) -> Result<()> {
     require_root()?;
     #[cfg(target_os = "linux")]
     require_systemd();
     println!("installing tetron {FULL_VERSION}");
-    install_and_start_service(None).await
+    let overrides = PathOverrides { config_dir, log_dir, socket_path };
+    install_and_start_service(None, &overrides).await
 }
 
 /// Whether the system service unit/plist is installed on this host.

@@ -182,7 +182,23 @@ pub(crate) enum Command {
     /// (Re)install and restart the system service — the bootstrap command
     /// for a first-time setup; use `tetron resume` for routine activation
     /// once the service is already installed
-    Install,
+    Install {
+        /// Override the config directory. Sets `TETRON_CONFIG_DIR` in the
+        /// service unit so the daemon uses this path for its config tree
+        /// (secret_key, settings.toml, networks/).
+        #[arg(long)]
+        config_dir: Option<String>,
+
+        /// Override the log directory. Sets `TETRON_LOG_DIR` in the
+        /// service unit so the daemon writes rolling logs here.
+        #[arg(long)]
+        log_dir: Option<String>,
+
+        /// Override the IPC socket path. Sets `TETRON_SOCKET_PATH` in the
+        /// service unit so daemon and clients communicate over this socket.
+        #[arg(long)]
+        socket_path: Option<String>,
+    },
     /// Restart the system service (requires root)
     Restart,
     /// Generate shell completions
@@ -532,7 +548,7 @@ async fn main() -> Result<()> {
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),
-        Command::Install => cmd_install().await,
+        Command::Install { config_dir, log_dir, socket_path } => cmd_install(config_dir, log_dir, socket_path).await,
         Command::Restart => cmd_restart().await,
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "tetron", &mut std::io::stdout());

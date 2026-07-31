@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=TETRON_CONFIG_DIR=__TETRON_CONFIG_DIR__
+Environment=TETRON_LOG_DIR=__TETRON_LOG_DIR__
+Environment=TETRON_SOCKET_PATH=__TETRON_SOCKET_PATH__
 ExecStart=/usr/local/bin/tetron daemon
 Restart=on-failure
 RestartSec=5
