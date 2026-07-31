@@ -4,7 +4,14 @@
 //! counters via `Family<DropLabels, Counter>`. The counters feed `tetron status
 //! --json`'s live traffic/drops/fragmentation display (STATUS-002/MTU-DIAG-001).
 //! No periodic logging — only a session-summary line on shutdown (LOG-001).
+//!
+//! An optional proactive drop-rate monitor (`DropMonitor`, LOG-002) can be
+//! initialised at daemon start via [`init_drop_monitor`]. When active, every
+//! `ForwardMetrics::record_drop` call also increments a per-reason atomic
+//! bucket; a background task warns when a bucket's count exceeds the configured
+//! threshold within a window.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,6 +45,148 @@ pub enum DropReason {
 }
 
 impl DropReason {}
+
+/// Compiled defaults for [`DropMonitor`] (LOG-002).
+pub const DROP_MONITOR_WINDOW_SECS: u64 = 60;
+pub const DROP_MONITOR_THRESHOLD: u64 = 0; // 0 = disabled
+pub const DROP_MONITOR_COOLDOWN_SECS: u64 = 300;
+
+/// Per-reason index into the monitor's fixed-size arrays. Must match
+/// `DropReason` variant order.
+fn reason_index(r: DropReason) -> usize {
+    match r {
+        DropReason::SendFailure => 0,
+        DropReason::NoPeer => 1,
+        DropReason::Malformed => 2,
+        DropReason::Backpressure => 3,
+        DropReason::Spoof => 4,
+        DropReason::FragmentationFailed => 5,
+    }
+}
+
+const fn reason_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "SendFailure",
+        1 => "NoPeer",
+        2 => "Malformed",
+        3 => "Backpressure",
+        4 => "Spoof",
+        5 => "FragmentationFailed",
+        _ => "Unknown",
+    }
+}
+
+const DROP_REASON_COUNT: usize = 6;
+
+/// Proactive drop-rate monitor (LOG-002). A background task reads and resets
+/// per-reason atomic buckets every `window_secs`; if any bucket's count meets
+/// or exceeds `threshold` and the per-reason cooldown has elapsed, a single
+/// `warn!` is emitted.
+///
+/// Dropped into a global [`OnceLock`] at daemon start so
+/// [`ForwardMetrics::record_drop`] can increment both the metrics counter and
+/// the monitor bucket with zero call-site changes.
+pub struct DropMonitor {
+    buckets: [AtomicU64; DROP_REASON_COUNT],
+    last_warned: [AtomicU64; DROP_REASON_COUNT],
+    window_secs: u64,
+    threshold: u64,
+    cooldown_secs: u64,
+}
+
+impl DropMonitor {
+    pub fn new(window_secs: u64, threshold: u64, cooldown_secs: u64) -> Self {
+        Self {
+            buckets: Default::default(),
+            last_warned: Default::default(),
+            window_secs,
+            threshold,
+            cooldown_secs,
+        }
+    }
+
+    /// Increment the per-reason bucket for a drop event. Called from
+    /// [`ForwardMetrics::record_drop`] when the global monitor is set.
+    #[inline]
+    pub fn record_drop(&self, reason: DropReason) {
+        self.buckets[reason_index(reason)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Spawn the background monitoring task. Runs every `window_secs`,
+    /// checking each bucket against the threshold and emitting a `warn!` if
+    /// exceeded and the cooldown has elapsed. Exits when `token` is cancelled.
+    pub fn spawn_monitor(self: &Arc<Self>, token: CancellationToken) {
+        let monitor = self.clone();
+        let interval = std::time::Duration::from_secs(self.window_secs);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {
+                        monitor.check_and_warn();
+                    }
+                    _ = token.cancelled() => return,
+                }
+            }
+        });
+    }
+
+    fn check_and_warn(&self) {
+        if self.threshold == 0 {
+            return; // disabled
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        for i in 0..DROP_REASON_COUNT {
+            let count = self.buckets[i].swap(0, Ordering::Relaxed);
+            if count < self.threshold {
+                continue;
+            }
+            let last = self.last_warned[i].load(Ordering::Relaxed);
+            if now.saturating_sub(last) < self.cooldown_secs {
+                continue;
+            }
+            self.last_warned[i].store(now, Ordering::Relaxed);
+            let rate = count as f64 / self.window_secs as f64;
+            tracing::warn!(
+                reason = reason_name(i),
+                count,
+                window_secs = self.window_secs,
+                rate,
+                "drop rate exceeded threshold"
+            );
+        }
+    }
+}
+
+/// Global drop monitor, installed once at daemon start. Read by
+/// [`ForwardMetrics::record_drop`] with zero call-site overhead for the
+/// disabled (default) case — a single atomic load of a null pointer.
+static DROP_MONITOR: std::sync::OnceLock<Arc<DropMonitor>> = std::sync::OnceLock::new();
+
+/// Initialise the global drop monitor from config overrides. Must be called
+/// before any packet flow starts (typically from [`run_daemon`]) and only once.
+/// Uses compiled defaults for any `None` field.
+pub fn init_drop_monitor(
+    config: &crate::config::DropMonitorConfig,
+    token: CancellationToken,
+) {
+    let window = config.window_secs.unwrap_or(DROP_MONITOR_WINDOW_SECS);
+    let threshold = config.threshold.unwrap_or(DROP_MONITOR_THRESHOLD);
+    let cooldown = config.cooldown_secs.unwrap_or(DROP_MONITOR_COOLDOWN_SECS);
+    let monitor = Arc::new(DropMonitor::new(window, threshold, cooldown));
+    if threshold > 0 {
+        monitor.spawn_monitor(token);
+        tracing::info!(
+            window_secs = window,
+            threshold,
+            cooldown_secs = cooldown,
+            "drop monitor active"
+        );
+    }
+    let _ = DROP_MONITOR.set(monitor);
+}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelSet)]
 pub struct DropLabels {
@@ -81,6 +230,9 @@ impl ForwardMetrics {
 
     pub fn record_drop(&self, reason: DropReason) {
         self.drops.get_or_create(&DropLabels { reason }).inc();
+        if let Some(monitor) = DROP_MONITOR.get() {
+            monitor.record_drop(reason);
+        }
     }
 
     pub fn record_fragmented_ipv4(&self) {

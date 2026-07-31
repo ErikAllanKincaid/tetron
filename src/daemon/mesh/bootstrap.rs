@@ -186,6 +186,9 @@ async fn build_daemon(
         &app_config.ratelimit,
     ));
 
+    // --- Proactive drop-rate monitor (LOG-002) ---
+    crate::stats::init_drop_monitor(&app_config.drop_monitor, token.clone());
+
     // --- Content-addressed blob store (membership/file transfer) ---
     let blobs_dir = config::config_dir()?.join("blobs");
     std::fs::create_dir_all(&blobs_dir)?;

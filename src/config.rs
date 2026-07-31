@@ -197,6 +197,22 @@ pub struct RateLimitConfig {
     pub global_strike_limit: Option<u32>,
 }
 
+/// Proactive drop-rate monitor policy overrides (LOG-002). Each field `None`
+/// means "use the compiled default" (threshold=0 = disabled). Set via `tetron
+/// config set drop-monitor.<key> <value>`; an empty value resets that one key.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DropMonitorConfig {
+    /// Seconds per monitoring window. Default 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
+    /// Drops in one window to trigger a warn. 0 = disabled (default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u64>,
+    /// Minimum seconds between warns for the same reason. Default 300 (5m).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_secs: Option<u64>,
+}
+
 /// Preset URL for the rayfish-operated iroh transport relay.
 pub const RELAY_PRESET_RAYFISH: &str = "http://relay.iroh.rayfish.xyz:3340";
 /// Preset URL for the rayfish-operated discovery-DNS / pkarr server.
@@ -313,6 +329,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         ratelimit_key if ratelimit_key.starts_with("ratelimit.") => {
             set_ratelimit_key(&mut cfg.ratelimit, ratelimit_key, &entries, reset)?;
         }
+        drop_key if drop_key.starts_with("drop-monitor.") => {
+            set_drop_monitor_key(&mut cfg.drop_monitor, drop_key, &entries, reset)?;
+        }
         "nuke-proposal-ttl" => {
             cfg.nuke_proposal_ttl = if reset {
                 None
@@ -382,10 +401,43 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         other => anyhow::bail!(
             "unknown config key: {other} (expected relay, discovery-dns, subnet, \
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-             invite-default-expiry, selfcapture-mitigation, or \
+             invite-default-expiry, selfcapture-mitigation, \
+             drop-monitor.<window|threshold|cooldown>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `drop-monitor.<key>` entry (LOG-002). `reset` (empty
+/// value or "n0") clears the field back to `None` (compiled default = disabled).
+fn set_drop_monitor_key(
+    dm: &mut DropMonitorConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key.strip_prefix("drop-monitor.").expect("checked by caller");
+    if reset {
+        match sub {
+            "window" => dm.window_secs = None,
+            "threshold" => dm.threshold = None,
+            "cooldown" => dm.cooldown_secs = None,
+            other => anyhow::bail!("unknown drop-monitor config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "drop-monitor.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "window" => dm.window_secs = Some(parse_ratelimit_value(raw)?),
+        "threshold" => dm.threshold = Some(parse_ratelimit_value(raw)?),
+        "cooldown" => dm.cooldown_secs = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown drop-monitor config key: {other}"),
     }
     Ok(())
 }
@@ -511,6 +563,15 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("drop-monitor.") {
+            let val = match sub {
+                "window" => render_opt(cfg.drop_monitor.window_secs),
+                "threshold" => render_opt(cfg.drop_monitor.threshold),
+                "cooldown" => render_opt(cfg.drop_monitor.cooldown_secs),
+                other => anyhow::bail!("unknown drop-monitor config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if k == "nuke-proposal-ttl" {
             return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
         }
@@ -540,7 +601,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             other => anyhow::bail!(
                 "unknown config key: {other} (expected relay, discovery-dns, subnet, \
                  nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-                 invite-default-expiry, selfcapture-mitigation, or \
+                 invite-default-expiry, selfcapture-mitigation, \
+                 drop-monitor.<window|threshold|cooldown>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -559,6 +621,9 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("ratelimit.global-capacity")?,
             row("ratelimit.global-refill-per-sec")?,
             row("ratelimit.global-strike-limit")?,
+            row("drop-monitor.window")?,
+            row("drop-monitor.threshold")?,
+            row("drop-monitor.cooldown")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -604,6 +669,9 @@ pub struct AppConfig {
     /// Rate-limit policy overrides (HARDEN-005). See [`RateLimitConfig`].
     #[serde(default)]
     pub ratelimit: RateLimitConfig,
+    /// Proactive drop-rate monitor overrides (LOG-002). See [`DropMonitorConfig`].
+    #[serde(default)]
+    pub drop_monitor: DropMonitorConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
@@ -685,6 +753,8 @@ struct Settings {
     discovery_dns: ServerOverride,
     #[serde(default)]
     ratelimit: RateLimitConfig,
+    #[serde(default)]
+    drop_monitor: DropMonitorConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -940,6 +1010,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             relay: ServerOverride::default(),
             discovery_dns: ServerOverride::default(),
             ratelimit: RateLimitConfig::default(),
+            drop_monitor: DropMonitorConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -980,6 +1051,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         relay: settings.relay,
         discovery_dns: settings.discovery_dns,
         ratelimit: settings.ratelimit,
+        drop_monitor: settings.drop_monitor,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -1034,6 +1106,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         relay: config.relay.clone(),
         discovery_dns: config.discovery_dns.clone(),
         ratelimit: config.ratelimit.clone(),
+        drop_monitor: config.drop_monitor.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,

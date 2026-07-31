@@ -180,6 +180,39 @@ class RemoveObservabilityExport(Requirement):
     req_id = "MINIMAL-009"
 
 
+class ProactiveDropMonitor(Requirement):
+    """REQUIREMENT-ID: LOG-002
+
+    Add a proactive drop-rate monitor that warns when the number of drops
+    per `DropReason` exceeds a configurable threshold within a rolling
+    window, replacing the informational void left by the removed 30s
+    ticker (LOG-001) with a genuinely event-driven alert that fires only
+    when something is wrong.
+
+    Design (Approach A, chosen 2026-07-30):
+
+    A background task runs every `window_secs` seconds, reading and
+    resetting a per-reason atomic counter. If the count for any reason
+    meets or exceeds `threshold`, and the `cooldown_secs` has elapsed
+    since the last warn for that reason, a single `tracing::warn!` is
+    emitted with the reason name, count, window, and computed rate.
+
+    This keeps the hot path free (one atomic increment per drop, already
+    paid by the existing ForwardMetrics counter) and bounds log volume to
+    at most one warn per reason per cooldown period during a sustained
+    storm.
+
+    Config surface (defaults = disabled):
+      - `drop-monitor.window` — window in seconds (default 60)
+      - `drop-monitor.threshold` — drops in window to trigger warn (default 0 = disabled)
+      - `drop-monitor.cooldown` — seconds between warns for same reason (default 300)
+
+    The monitor is off by default (threshold=0); a user who sets no
+    `drop-monitor.*` keys gets zero new log lines.
+    """
+    req_id = "LOG-002"
+
+
 class RemovePeriodicStatsLogger(Requirement):
     """REQUIREMENT-ID: LOG-001
 
