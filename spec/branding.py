@@ -1078,3 +1078,77 @@ class InstallPathOverrides(Requirement):
     Verified by existing build/test gates and the new e2e test.
     """
     req_id = "PORTABILITY-004"
+
+
+class AndroidActivateDeactivateDataPlaneGate(Requirement):
+    """REQUIREMENT-ID: PORTABILITY-005
+
+    Found scoping `tetron-mobile`'s VpnService/TUN milestone (the fd-backed
+    `TunRead`/`TunWrite` impl that plugs an Android `VpnService` fd into
+    the already-generic `MeshManager::attach_tun`, MULTISEG-003): a real
+    bug, not yet observed live because nothing has called `activate`/
+    `deactivate` on Android before now (`tetron-mobile`'s MOBILE-001
+    through MOBILE-007 never touched the data plane, only join).
+
+    `MeshManager::activate`/`deactivate` (`src/daemon/mesh/runtime.rs`)
+    each flip `handle.active` (an `AtomicBool`, `Ordering::SeqCst`) and
+    track `brought_up_any`/`brought_down_any` **entirely inside their own
+    `#[cfg(not(target_os = "android"))]` block**, alongside the genuinely
+    desktop-only `tun::set_link_up`/`route_peer_range`/`route_self_loopback`
+    calls that block exists to skip on Android. On Android that whole
+    block never runs, so `handle.active` never becomes `true` and
+    `brought_up_any` never becomes `true` — `activate` would always report
+    `'<network>' already active` (the "nothing to do" branch) without ever
+    actually activating anything.
+
+    This is a real functional bug, not just a wrong message:
+    `forward::spawn_tun_writer` (`src/forward.rs:459`) gates every inbound
+    (peer → TUN) packet write on `handle.active` — "while it is false
+    (standby...) inbound datagrams are dropped instead of written, so a
+    node that stays connected to peers still carries no traffic" (that
+    function's own doc comment). An Android embedder that calls
+    `attach_tun` and then `activate` would see a live control plane and a
+    "successfully" attached TUN, but the data plane would silently stay
+    dark forever — indistinguishable from a working connection until real
+    traffic is tested, exactly the kind of gap MOBILE-006/007's "live-
+    verify, don't assume" pattern exists to catch before it does.
+
+    **Fix:** split each loop body. The active-flag flip and
+    `brought_up_any`/`brought_down_any` tracking (platform-independent —
+    `handle.active` is read by `spawn_tun_writer` on every platform) move
+    outside the `cfg` gate and run unconditionally, once per targeted
+    network, same as before. Only the genuinely desktop-only calls inside
+    that loop (`tun::set_link_up`/`set_link_down`,
+    `tun::route_peer_range`, `tun::route_self_loopback`, and the
+    `warnings` they can push) stay behind a narrower
+    `#[cfg(not(target_os = "android"))]` block nested inside the loop body
+    — on Android those three calls remain skipped exactly as before, only
+    the flag/counter bookkeeping around them changes scope. No change to
+    desktop behavior: the flag flip already ran unconditionally as the
+    first statement inside the old cfg block, so desktop's control flow
+    and messages are unaffected.
+
+    No new host-target test is added: the existing
+    `activate_deactivate_scope_to_one_network_when_given`
+    (`src/daemon/mod.rs`) already asserts `handle.active` flips correctly
+    per-network and keeps passing unchanged (desktop semantics untouched
+    by this fix) — but since it compiles for the host's own `target_os`,
+    it exercises the same `cfg(not(target_os = "android"))` branch either
+    way, before or after this fix, and so cannot by itself prove the
+    Android-only bug this requirement describes (the bug and the fix both
+    only diverge under `target_os = "android"`, a target `cargo test`
+    never builds for on this dev machine). A test that claimed to catch
+    this on the host would be lying about what it covers.
+
+    ENFORCEMENT: structural (a `Requirement`, not a `Constraint` — no
+    curated-token gate needed, same reasoning as PORTABILITY-002/003/004).
+    Verified by `cargo test`/`clippy` (desktop behavior provably
+    unchanged) plus code review of the diff itself (the active-flag flip
+    now visibly sits outside the `cfg` block for both `activate` and
+    `deactivate`). The Android-specific half is verified live in the
+    separate `tetron-mobile` repo, same bar PORTABILITY-001 already used
+    ("verified live on-device, not by a host-target unit test alone"),
+    once its own VpnService/TUN milestone reaches the point of actually
+    toggling the data plane on-device.
+    """
+    req_id = "PORTABILITY-005"
