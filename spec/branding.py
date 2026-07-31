@@ -959,6 +959,50 @@ class MuslReleaseTargets(Requirement):
     per-target build matrix to extend the same way, unlike
     release.yml/nightly.yml, and adding one is a separate, bigger change
     than this requirement's scope.
+
+    **Addendum, 2026-07-30: second, independent local patch to the same
+    vendored crate, unrelated to musl.** A live Android embedder run (in
+    the separate `tetron-mobile` repo, not this one) crashed at daemon
+    startup, before any network activity: `failed to bind iroh endpoint`
+    -> `Failed to bind sockets` -> `Operation not permitted (os error
+    1)`. Root cause, confirmed by reading `vendor/noq-udp-1.1.0/src/
+    unix.rs` directly: `UdpSocketState::new`'s `#[cfg(any(target_os =
+    "linux", target_os = "android"))]` block sets `IP_MTU_DISCOVER` to
+    `IP_PMTUDISC_PROBE` (and the `IPV6_` equivalent) to forbid IPv4
+    fragmentation. Per `man 7 ip`, `IP_PMTUDISC_PROBE` requires
+    `CAP_NET_ADMIN` -- a sandboxed Android app process never holds that
+    capability, so the kernel returns `EPERM` (errno 1, not `EACCES`/13,
+    which ruled out a missing Android manifest permission as the cause).
+    The helper these calls go through, `set_socket_option_supported`,
+    only tolerated `ENOPROTOOPT`/`EOPNOTSUPP` as "not supported, degrade
+    gracefully" (`may_fragment = true`); every other errno, `EPERM`
+    included, propagated as a hard error, aborting the whole endpoint
+    bind.
+
+    **Fixed the same way as the musl patch above: broaden the vendored
+    fork, not the call site.** `set_socket_option_supported` gained a
+    third tolerated errno, `EPERM` (warns, then returns `Ok(false)` like
+    the other two). Broadening the shared helper rather than
+    special-casing only the two Android call sites is deliberate and
+    checked, not assumed: all four of the helper's call sites
+    (`IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER`, `IP_DONTFRAG`,
+    `IPV6_DONTFRAG`) use the identical `may_fragment |=
+    !set_socket_option_supported(..)` shape, so `Ok(false)` uniformly
+    means "could not disable fragmentation, assume datagrams may
+    fragment" -- no call site exists where the option being unset
+    carries a different consequence an `EPERM` could mask. The
+    degradation is bounded and already designed for: `may_fragment`
+    reaches `quinn` only as `let allow_mtud = !socket.may_fragment()`
+    (disabling path-MTU discovery, not correctness), and tetron already
+    handles a small `max_datagram_size` by fragmenting oversized TUN
+    packets itself (`FRAG-001`/`FRAG-002`, `src/forward.rs`). The
+    `EPERM` arm warns rather than staying silent, matching how
+    `src/windows.rs` already handles its own equivalent
+    `IP_DONTFRAGMENT`/`IPV6_DONTFRAG` fallback. See
+    `vendor/noq-udp-1.1.0/PATCH.md`'s "Patch 2" section for the full
+    account. `cargo -q check` clean with the patch in place; the actual
+    on-device endpoint bind is verified in the separate `tetron-mobile`
+    repo, not here.
     """
     req_id = "PORTABILITY-001"
 

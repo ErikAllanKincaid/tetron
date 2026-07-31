@@ -858,7 +858,19 @@ pub(crate) type IpTosTy = libc::c_int;
 /// Returns whether the given socket option is supported on the current platform
 ///
 /// Yields `Ok(true)` if the option was set successfully, `Ok(false)` if setting
-/// the option raised an `ENOPROTOOPT` or `EOPNOTSUPP` error, and `Err` for any other error.
+/// the option raised an `ENOPROTOOPT`, `EOPNOTSUPP` or `EPERM` error, and `Err`
+/// for any other error.
+///
+/// Every caller of this helper uses it in the same shape --
+/// `may_fragment |= !set_socket_option_supported(..)` -- so `Ok(false)` always
+/// means "could not disable fragmentation on this socket, so assume datagrams
+/// may be fragmented". `EPERM` belongs in that bucket alongside the two
+/// unsupported-option errnos: `IP_PMTUDISC_PROBE`/`IPV6_PMTUDISC_PROBE` require
+/// `CAP_NET_ADMIN` (see `man 7 ip`), which a sandboxed Android app process never
+/// has, so the kernel rejects the option with `EPERM` rather than reporting it
+/// unsupported. Treating that as fatal made socket setup fail outright on
+/// Android; the fragmentation fallback is the correct, already-implemented
+/// answer instead.
 fn set_socket_option_supported(
     socket: &impl AsRawFd,
     level: libc::c_int,
@@ -869,6 +881,13 @@ fn set_socket_option_supported(
         Ok(()) => Ok(true),
         Err(err) if err.raw_os_error() == Some(libc::ENOPROTOOPT) => Ok(false),
         Err(err) if err.raw_os_error() == Some(libc::EOPNOTSUPP) => Ok(false),
+        Err(err) if err.raw_os_error() == Some(libc::EPERM) => {
+            crate::log::warn!(
+                "Not permitted to set socket option (level {level}, name {name}); \
+                 fragmentation may occur"
+            );
+            Ok(false)
+        }
         Err(err) => Err(err),
     }
 }
