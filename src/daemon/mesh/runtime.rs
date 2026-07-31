@@ -891,10 +891,6 @@ impl MeshManager {
         let mut warnings: Vec<String> = Vec::new();
         let mut brought_up_any = false;
 
-        // The TUN device/routes are managed by the OS on desktop. On Android the
-        // packet interface is a `VpnService` fd whose routes are configured on the
-        // Kotlin side, so these desktop route calls don't apply.
-        //
         // MULTISEG-003: this now runs once per network (each has its own TUN),
         // not once for a single daemon-wide device.
         //
@@ -903,19 +899,28 @@ impl MeshManager {
         // IPV6-001), so every network gets its own disjoint `/56` block
         // (`membership::ipv6_network_prefix`) and its own route into its own
         // TUN device — no more picking one network to "win" the route.
-        #[cfg(not(target_os = "android"))]
-        {
-            for name in &targets {
-                let Some(handle) = self.networks.get(name) else {
-                    continue;
-                };
-                // Per-network idempotency (STANDBY-PER-NETWORK): skip a
-                // network that's already up rather than redundantly
-                // re-running set_link_up/route_peer_range on it.
-                if handle.active.swap(true, Ordering::SeqCst) {
-                    continue;
-                }
-                brought_up_any = true;
+        //
+        // PORTABILITY-005: the active-flag flip and `brought_up_any` tracking
+        // run on every platform, not just desktop — `handle.active` is read by
+        // `forward::spawn_tun_writer` regardless of OS to decide whether to
+        // write inbound packets. Only the actual route-configuration calls
+        // below are desktop-only (the TUN device/routes are managed by the OS
+        // on desktop; on Android the packet interface is a `VpnService` fd
+        // whose routes are configured on the Kotlin side).
+        for name in &targets {
+            let Some(handle) = self.networks.get(name) else {
+                continue;
+            };
+            // Per-network idempotency (STANDBY-PER-NETWORK): skip a
+            // network that's already up rather than redundantly
+            // re-running set_link_up/route_peer_range on it.
+            if handle.active.swap(true, Ordering::SeqCst) {
+                continue;
+            }
+            brought_up_any = true;
+
+            #[cfg(not(target_os = "android"))]
+            {
                 let tun_name = handle.tun_name.lock().unwrap().clone();
                 if let Err(e) = tun::set_link_up(&tun_name) {
                     tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface up");
@@ -1014,7 +1019,10 @@ impl MeshManager {
 
         // MULTISEG-003: bring every targeted network's own TUN link down, not
         // one daemon-wide device.
-        #[cfg(not(target_os = "android"))]
+        //
+        // PORTABILITY-005: the active-flag flip and `brought_down_any`
+        // tracking run on every platform — see the matching comment in
+        // `activate` for why this can't live inside the cfg-gated block below.
         for name in &targets {
             let Some(handle) = self.networks.get(name) else {
                 continue;
@@ -1023,9 +1031,13 @@ impl MeshManager {
                 continue;
             }
             brought_down_any = true;
-            let tun_name = handle.tun_name.lock().unwrap().clone();
-            if let Err(e) = tun::set_link_down(&tun_name) {
-                tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface down");
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let tun_name = handle.tun_name.lock().unwrap().clone();
+                if let Err(e) = tun::set_link_down(&tun_name) {
+                    tracing::warn!(network = %handle.name, error = %e, "failed to bring TUN interface down");
+                }
             }
         }
 
