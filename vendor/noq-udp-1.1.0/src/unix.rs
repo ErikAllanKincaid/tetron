@@ -136,11 +136,12 @@ impl UdpSocketState {
                 gro_segments = NonZeroUsize::new(64).expect("known");
             }
 
-            if let Err(_err) =
-                set_socket_option(&*io, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS, OPTION_ON)
-            {
-                crate::log::debug!("Ignoring error setting SO_TIMESTAMPNS on socket: {_err:?}");
-            }
+            // Disable SO_TIMESTAMPNS for now: https://github.com/n0-computer/noq/issues/774
+            // if let Err(_err) =
+            //     set_socket_option(&*io, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS, OPTION_ON)
+            // {
+            //     crate::log::debug!("Ignoring error setting SO_TIMESTAMPNS on socket: {_err:?}");
+            // }
         }
         #[cfg(any(target_os = "freebsd", apple))]
         {
@@ -865,12 +866,17 @@ pub(crate) type IpTosTy = libc::c_int;
 /// `may_fragment |= !set_socket_option_supported(..)` -- so `Ok(false)` always
 /// means "could not disable fragmentation on this socket, so assume datagrams
 /// may be fragmented". `EPERM` belongs in that bucket alongside the two
-/// unsupported-option errnos: `IP_PMTUDISC_PROBE`/`IPV6_PMTUDISC_PROBE` require
-/// `CAP_NET_ADMIN` (see `man 7 ip`), which a sandboxed Android app process never
-/// has, so the kernel rejects the option with `EPERM` rather than reporting it
-/// unsupported. Treating that as fatal made socket setup fail outright on
-/// Android; the fragmentation fallback is the correct, already-implemented
-/// answer instead.
+/// unsupported-option errnos on the same reasoning: an option this crate sets
+/// only to suppress fragmentation should never be fatal to socket setup,
+/// whatever errno a hardened platform picks to refuse it, because the
+/// fragmentation fallback is the correct and already-implemented answer.
+///
+/// This arm was added while chasing an Android endpoint-bind failure, on the
+/// belief that `IP_PMTUDISC_PROBE` requires `CAP_NET_ADMIN`. That belief was
+/// wrong (the kernel range-checks the value and performs no capability check),
+/// and the arm did not fix that crash. It is kept as defensive hardening only.
+/// See `PATCH.md`'s 2026-07-30 addendum before reusing it as evidence of
+/// anything.
 fn set_socket_option_supported(
     socket: &impl AsRawFd,
     level: libc::c_int,

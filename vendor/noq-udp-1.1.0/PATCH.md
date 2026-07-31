@@ -6,7 +6,37 @@ transitively via `iroh` -> `netwatch`/`noq`). Neither patch reported upstream ye
 Two independent patches are carried here:
 
 1. [musl `cmsghdr` alignment fix](#patch-1-musl-cmsghdr-alignment-fix)
-2. [Android `EPERM` on `IP_PMTUDISC_PROBE`](#patch-2-android-eperm-on-ip_pmtudisc_probe)
+2. [Android `EPERM` on `IP_PMTUDISC_PROBE`](#patch-2-android-eperm-on-ip_pmtudisc_probe) (defensive only; it did not fix the crash it was written for, and its original rationale turned out to be wrong -- see the 2026-07-30 addendum in that section, which also records the real root cause and resolution)
+
+## Rebase onto real upstream 1.1.1, 2026-07-30
+
+This vendor copy's `Cargo.toml` declared `version = "1.1.0"` while genuine
+upstream had since released `1.1.1`. Cargo's resolver prefers the newest
+semver-compatible version it can find and only consults `[patch]` for
+whichever version it actually wants -- since our declared version (1.1.0)
+no longer matched, the patch was **silently never applied** the moment
+anything resolved fresh against it (confirmed live: a separate consuming
+crate, `tetron-mobile`, resolved plain unpatched `noq-udp 1.1.1` from
+crates.io with no warning that either patch was missing). Note this is a
+real, general Cargo footgun for any vendored patch, independent of
+anything specific to this crate: **a vendored patch's declared version
+must track real upstream's latest release, or it silently stops being
+selected the next time anything re-resolves the dependency graph fresh.**
+
+Before just relabeling the version, diffed this vendor copy against the
+real `noq-udp 1.1.1` tarball from crates.io to check for any actual
+content drift beyond our own two patches. Found one: real 1.1.1
+re-disables `SO_TIMESTAMPNS` (`src/unix.rs`, `tests/tests.rs`), reverting
+it behind `https://github.com/n0-computer/noq/issues/774` -- a genuine
+upstream bug fix this vendor copy (based on a pre-1.1.1 state where it was
+enabled) did not have. Relabeling the version without adopting this would
+have shipped a copy claiming to be 1.1.1 while still carrying a known
+upstream-tracked bug. Adopted the real 1.1.1 change (re-disabled
+`SO_TIMESTAMPNS`, matching test updated to match) and bumped
+`Cargo.toml`'s `version` to `1.1.1` to match. Re-diffed after: the only
+remaining differences from real upstream `1.1.1` are this file's own two
+documented patches, confirmed via `diff -rq` against the genuine crates.io
+`noq-udp-1.1.1` source.
 
 ---
 
@@ -116,6 +146,45 @@ Windows backend (`src/windows.rs`) already handles its own equivalent
 **Still to verify:** an actual `tetron-mobile` run on a device/emulator,
 confirming the endpoint now binds. That lives in the separate proprietary
 `tetron-mobile` repo, not here.
+
+## Addendum 2026-07-30: this patch did not fix the crash, and its stated rationale is wrong
+
+A rebuild and redeploy with the patch confirmed present in the shipped `.so` produced the identical error, and the `EPERM` arm's own warning never appeared in logcat. Re-checking the premise from scratch shows why: `IP_PMTUDISC_PROBE` does **not** require `CAP_NET_ADMIN`. `man 7 ip` names `CAP_NET_ADMIN` only for `IP_TRANSPARENT` and for high `IP_TOS` priority levels, never for `IP_MTU_DISCOVER`, and the kernel's `ip_setsockopt`/`do_ipv6_setsockopt` handlers for `IP_MTU_DISCOVER`/`IPV6_MTU_DISCOVER` do a range check on the value and nothing else. Setting it as an unprivileged user succeeds; that was confirmed empirically by running the same `setsockopt` call as a normal user on an ordinary Linux host. The paragraph above claiming otherwise was wrong, so this call was almost certainly never the source of the `EPERM`.
+
+Nothing else in `UdpSocketState::new` is a better suspect either. For an IPv4 socket the only remaining hard-`?` `setsockopt` is `IP_PKTINFO`, which likewise has no capability check anywhere in the kernel. More decisively, Android's own network eBPF (`packages/modules/Connectivity/bpf/progs/netd.c`) attaches a `setsockopt/prog` cgroup program that **permits every socket-option write**, so the Android sandbox is not what would be denying a `setsockopt` in the first place. The same file does attach programs that return `EPERM` for two other steps of socket setup: `cgroupsock/inet_create`, which denies `socket()` outright for an app UID lacking the `INTERNET` permission in the kernel's UID permission map, and `bind4/inet4_bind` / `bind6/inet6_bind`, which deny `bind()` to any port present in a blocked-ports bitmap. Both of those calls live in `netwatch::udp::SocketState::bind`, one layer above this crate, and both propagate straight into iroh's `BindError::Sockets`.
+
+The port-specific one is already ruled out by the reported error text: it contains `failed to bind iroh endpoint` twice, which in `tetron`'s `transport::create_endpoint_with_alpns` only happens on the ephemeral-port retry path, so the `0.0.0.0:0` bind failed too. Android's `block_port` returns allow immediately when the requested port is 0. That leaves `socket()` as the leading candidate and, in any case, moves the investigation out of this crate.
+
+**`IP_PKTINFO` was deliberately not given the same treatment.** It is not a candidate for the `set_socket_option_supported` bucket even if it were the failing call. That helper's whole contract is "could not disable fragmentation, so assume datagrams may fragment", and its `Ok(false)` feeds only `may_fragment`. `IP_PKTINFO` is what makes the `pktinfo` cmsg arrive on receive, which is where `RecvMeta.dst_ip` comes from, which is in turn what lets the sender pin the source address of a reply to the local address the peer actually reached. Silently dropping it on a wildcard-bound socket is a correctness change on any multi-homed host, not a bounded degradation, and it would be invisible: a `Ok(false)` there has nowhere to be recorded. If a future diagnosis really does land on `IP_PKTINFO`, the answer is a deliberate, separately-designed fallback, not widening the fragmentation helper.
+
+**Disposition of the `EPERM` arm:** kept. It is harmless and defensive (an option this crate only uses to suppress fragmentation should never be fatal, whatever errno the platform picks), but it is no longer believed to fix anything, and it must not be read as evidence that the Android `EPERM` was ever understood.
+
+**Root cause found, resolved, outside this crate entirely.** A temporary
+diagnostic (`transport::probe_socket_setup` in the `tetron` crate itself,
+since removed -- it folded a report of the exact `socket()`/`bind()`/
+`setsockopt()` sequence into the bind error itself rather than relying on
+logging, since an embedder this early in startup may have no tracing
+sink wired up) pinpointed the failure precisely: `socket()` itself, for
+both IPv4 and IPv6, failed with `EPERM` -- before any `bind()` or
+`setsockopt()` was even reached. This matches Android's `cgroupsock/
+inet_create` eBPF hook (`packages/modules/Connectivity/bpf/progs/
+netd.c`), which denies `socket()` outright for an app UID lacking the
+`INTERNET` permission in the kernel's own UID permission map -- a
+separate, later-synced thing from the app simply *declaring* the
+permission in its manifest.
+
+The actual cause: the test app's UID had been reinstalled (`adb install
+-r`) many times across this same debugging session, starting from an
+early build that declared no `INTERNET` permission at all. Android's
+netd permission bitmap is keyed by UID, and a plain `-r` reinstall
+keeps the same UID -- the kernel-level map was never resynced after
+`INTERNET` was added in a later build. A full `adb uninstall` (assigning
+a fresh UID) followed by a clean install resolved it immediately, with
+zero code changes: the endpoint bound and the daemon started
+successfully. This was never a bug in `tetron`, `iroh`, `netwatch`, or
+this crate -- it was stale local-device state produced by the test
+methodology itself, and would not recur on a real first-time install of
+a properly-signed release build.
 
 ---
 

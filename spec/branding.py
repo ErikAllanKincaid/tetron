@@ -960,49 +960,83 @@ class MuslReleaseTargets(Requirement):
     release.yml/nightly.yml, and adding one is a separate, bigger change
     than this requirement's scope.
 
-    **Addendum, 2026-07-30: second, independent local patch to the same
-    vendored crate, unrelated to musl.** A live Android embedder run (in
-    the separate `tetron-mobile` repo, not this one) crashed at daemon
+    **Addendum, 2026-07-30: a second local patch was added to the same
+    vendored crate on an initial (wrong) diagnosis, then correctly
+    demoted once the real cause was found -- recorded in full so the
+    mistake isn't silently lost.** A live Android embedder run (in the
+    separate `tetron-mobile` repo, not this one) crashed at daemon
     startup, before any network activity: `failed to bind iroh endpoint`
     -> `Failed to bind sockets` -> `Operation not permitted (os error
-    1)`. Root cause, confirmed by reading `vendor/noq-udp-1.1.0/src/
-    unix.rs` directly: `UdpSocketState::new`'s `#[cfg(any(target_os =
-    "linux", target_os = "android"))]` block sets `IP_MTU_DISCOVER` to
-    `IP_PMTUDISC_PROBE` (and the `IPV6_` equivalent) to forbid IPv4
-    fragmentation. Per `man 7 ip`, `IP_PMTUDISC_PROBE` requires
-    `CAP_NET_ADMIN` -- a sandboxed Android app process never holds that
-    capability, so the kernel returns `EPERM` (errno 1, not `EACCES`/13,
-    which ruled out a missing Android manifest permission as the cause).
-    The helper these calls go through, `set_socket_option_supported`,
-    only tolerated `ENOPROTOOPT`/`EOPNOTSUPP` as "not supported, degrade
-    gracefully" (`may_fragment = true`); every other errno, `EPERM`
-    included, propagated as a hard error, aborting the whole endpoint
-    bind.
+    1)`. First hypothesis: `UdpSocketState::new`'s Linux/Android block
+    sets `IP_MTU_DISCOVER`/`IPV6_MTU_DISCOVER` to `IP_PMTUDISC_PROBE`,
+    and `man 7 ip` was misread as requiring `CAP_NET_ADMIN` for it,
+    which a sandboxed Android app never holds. `set_socket_option_supported`
+    (the helper these calls go through) was patched to tolerate `EPERM`
+    the same way it already tolerated `ENOPROTOOPT`/`EOPNOTSUPP`.
 
-    **Fixed the same way as the musl patch above: broaden the vendored
-    fork, not the call site.** `set_socket_option_supported` gained a
-    third tolerated errno, `EPERM` (warns, then returns `Ok(false)` like
-    the other two). Broadening the shared helper rather than
-    special-casing only the two Android call sites is deliberate and
-    checked, not assumed: all four of the helper's call sites
-    (`IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER`, `IP_DONTFRAG`,
-    `IPV6_DONTFRAG`) use the identical `may_fragment |=
-    !set_socket_option_supported(..)` shape, so `Ok(false)` uniformly
-    means "could not disable fragmentation, assume datagrams may
-    fragment" -- no call site exists where the option being unset
-    carries a different consequence an `EPERM` could mask. The
-    degradation is bounded and already designed for: `may_fragment`
-    reaches `quinn` only as `let allow_mtud = !socket.may_fragment()`
-    (disabling path-MTU discovery, not correctness), and tetron already
-    handles a small `max_datagram_size` by fragmenting oversized TUN
-    packets itself (`FRAG-001`/`FRAG-002`, `src/forward.rs`). The
-    `EPERM` arm warns rather than staying silent, matching how
-    `src/windows.rs` already handles its own equivalent
-    `IP_DONTFRAGMENT`/`IPV6_DONTFRAG` fallback. See
-    `vendor/noq-udp-1.1.0/PATCH.md`'s "Patch 2" section for the full
-    account. `cargo -q check` clean with the patch in place; the actual
-    on-device endpoint bind is verified in the separate `tetron-mobile`
-    repo, not here.
+    **That patch did not fix the crash, and the diagnosis was wrong.**
+    Rebuilding and redeploying with the patch confirmed present in the
+    shipped `.so` reproduced the identical error. Re-checking `man 7 ip`
+    properly: `CAP_NET_ADMIN` is required for `IP_TRANSPARENT` and high
+    `IP_TOS` priorities, never for `IP_MTU_DISCOVER` -- confirmed
+    empirically too, the same `setsockopt` call succeeds unprivileged on
+    an ordinary Linux host. The `EPERM` arm was kept anyway as harmless
+    defensive hardening (an option only used to suppress fragmentation
+    should never be fatal on any errno), but is explicitly not credited
+    with fixing anything.
+
+    **Real root cause, found with a precise diagnostic instead of more
+    guessing:** a temporary probe (since removed) walked the exact
+    `socket()`/`bind()`/`setsockopt()` sequence `netwatch::udp::
+    SocketState::bind` performs and folded a full report into the bind
+    error itself (an embedder this early in startup may have no tracing
+    sink wired up, so logging the report was unreliable -- folding it
+    into the already-working on-screen error display was not). One
+    redeploy showed `socket()` itself failing with `EPERM`, for both
+    IPv4 and IPv6, before any `bind()` or `setsockopt()` was even
+    reached -- matching Android's `cgroupsock/inet_create` eBPF hook,
+    which denies `socket()` outright for an app UID lacking the
+    `INTERNET` permission in the kernel's own UID permission map (a
+    separate, later-synced thing from the manifest simply declaring the
+    permission).
+
+    **Resolution: not a code bug at all.** The test app's UID had been
+    reinstalled (`adb install -r`) many times across the debugging
+    session, starting from an early build with no `INTERNET` permission
+    declared. Android's netd permission bitmap is keyed by UID and a
+    plain `-r` reinstall keeps the same UID, so the kernel-level map was
+    never resynced after the permission was added in a later build. A
+    full `adb uninstall` (fresh UID) plus clean install fixed it
+    immediately, with zero code changes -- the endpoint bound and the
+    daemon started successfully (`tetron node started`, entitlement
+    check ran). This was stale local test-device state produced by the
+    test methodology itself, not a bug in `tetron`, `iroh`, `netwatch`,
+    or this vendored crate, and would not recur on a real first-time
+    install of a properly-signed release build.
+
+    **Separately, a real, unrelated correction landed on the same
+    vendored copy in the same pass:** its declared version (`1.1.0`) had
+    drifted behind genuine upstream's actual latest release (`1.1.1`),
+    which silently stops Cargo's `[patch]` from ever being selected once
+    anything re-resolves the dependency graph fresh (Cargo prefers the
+    newest semver-compatible version and only consults `[patch]` for
+    whichever version it actually wants) -- confirmed live, a fresh
+    resolve from a separate consuming crate silently used plain
+    unpatched `1.1.1` from crates.io with no warning either patch was
+    missing. Diffed this vendor copy against the real `1.1.1` tarball
+    before relabeling (rather than just bumping the version string) and
+    found one genuine content difference beyond this file's own two
+    patches: real `1.1.1` re-disables `SO_TIMESTAMPNS`
+    (`https://github.com/n0-computer/noq/issues/774`), a bug fix this
+    vendor copy predates and did not have. Adopted that fix and bumped
+    the version to match, re-verified via `diff -rq` against the genuine
+    crates.io `1.1.1` source that only this file's own two documented
+    patches remain as differences.
+
+    See `vendor/noq-udp-1.1.0/PATCH.md` for the full account of both the
+    wrong turn and the eventual resolution. `cargo -q check`/`clippy`
+    clean throughout; the real on-device fix was verified live in the
+    separate `tetron-mobile` repo, not here.
     """
     req_id = "PORTABILITY-001"
 
