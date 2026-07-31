@@ -1,11 +1,12 @@
 //! Packet and byte counters for the forwarding data path (iroh-metrics counters).
 //!
 //! Replaces hand-rolled atomics with `iroh_metrics::Counter` and labeled drop
-//! counters via `Family<DropLabels, Counter>`. A background logger prints
-//! 30-second interval deltas and a session summary on shutdown.
+//! counters via `Family<DropLabels, Counter>`. The counters feed `tetron status
+//! --json`'s live traffic/drops/fragmentation display (STATUS-002/MTU-DIAG-001).
+//! No periodic logging — only a session-summary line on shutdown (LOG-001).
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use iroh_metrics::{Counter, EncodeLabelSet, EncodeLabelValue, Family, MetricsGroup};
 use tokio_util::sync::CancellationToken;
@@ -36,16 +37,7 @@ pub enum DropReason {
     FragmentationFailed,
 }
 
-impl DropReason {
-    const ALL: [DropReason; 6] = [
-        DropReason::SendFailure,
-        DropReason::NoPeer,
-        DropReason::Malformed,
-        DropReason::Backpressure,
-        DropReason::Spoof,
-        DropReason::FragmentationFailed,
-    ];
-}
+impl DropReason {}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelSet)]
 pub struct DropLabels {
@@ -106,62 +98,23 @@ impl ForwardMetrics {
             .unwrap_or(0)
     }
 
-    fn total_drops(&self) -> u64 {
-        DropReason::ALL.iter().map(|r| self.drop_count(*r)).sum()
-    }
-
-
     pub fn spawn_logger(self: &Arc<Self>, token: CancellationToken) {
         let stats = self.clone();
         tokio::spawn(async move {
             let start = Instant::now();
-            let mut prev_rx = 0u64;
-            let mut prev_tx = 0u64;
-            let mut prev_bytes_rx = 0u64;
-            let mut prev_bytes_tx = 0u64;
-            let mut prev_drops = 0u64;
+            token.cancelled().await;
+            let duration = start.elapsed();
+            let mins = duration.as_secs() / 60;
+            let secs = duration.as_secs() % 60;
+            let total_bytes = stats.bytes_rx.get() + stats.bytes_tx.get();
 
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                        let rx = stats.packets_rx.get();
-                        let tx = stats.packets_tx.get();
-                        let brx = stats.bytes_rx.get();
-                        let btx = stats.bytes_tx.get();
-                        let drops = stats.total_drops();
-
-                        tracing::info!(
-                            rx = rx - prev_rx,
-                            tx = tx - prev_tx,
-                            bytes_rx = brx - prev_bytes_rx,
-                            bytes_tx = btx - prev_bytes_tx,
-                            drops = drops - prev_drops,
-                            "(30s)"
-                        );
-
-                        prev_rx = rx;
-                        prev_tx = tx;
-                        prev_bytes_rx = brx;
-                        prev_bytes_tx = btx;
-                        prev_drops = drops;
-                    }
-                    _ = token.cancelled() => {
-                        let duration = start.elapsed();
-                        let mins = duration.as_secs() / 60;
-                        let secs = duration.as_secs() % 60;
-                        let total_bytes = stats.bytes_rx.get() + stats.bytes_tx.get();
-
-                        tracing::info!(
-                            duration = format!("{}m{}s", mins, secs),
-                            total_rx = stats.packets_rx.get(),
-                            total_tx = stats.packets_tx.get(),
-                            total_bytes,
-                            "session complete"
-                        );
-                        return;
-                    }
-                }
-            }
+            tracing::info!(
+                duration = format!("{}m{}s", mins, secs),
+                total_rx = stats.packets_rx.get(),
+                total_tx = stats.packets_tx.get(),
+                total_bytes,
+                "session complete"
+            );
         });
     }
 }
@@ -213,7 +166,11 @@ mod tests {
                 .get(),
             1
         );
-        assert_eq!(stats.total_drops(), 3);
+        assert_eq!(
+            stats.drop_count(DropReason::Malformed)
+                + stats.drop_count(DropReason::NoPeer),
+            3
+        );
     }
 
     #[test]
@@ -223,7 +180,11 @@ mod tests {
         stats.record_drop(DropReason::SendFailure);
         assert_eq!(stats.drop_count(DropReason::FragmentationFailed), 1);
         assert_eq!(stats.drop_count(DropReason::SendFailure), 1);
-        assert_eq!(stats.total_drops(), 2);
+        assert_eq!(
+            stats.drop_count(DropReason::FragmentationFailed)
+                + stats.drop_count(DropReason::SendFailure),
+            2
+        );
     }
 
     #[test]
