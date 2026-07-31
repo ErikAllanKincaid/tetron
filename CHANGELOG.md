@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-30
+
 ### Added
 
 - **`tetron install --config-dir/--log-dir/--socket-path`**: three optional flags that inject `Environment=` lines into the service unit, relocating config, logs, or the IPC socket without forking the unit file by hand. (PORTABILITY-004)
@@ -668,7 +670,9 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.8.2...v0.9.0
 [0.1.6]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...v0.1.6
 [0.1.4]: https://github.com/rayfish/rayfish/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rayfish/rayfish/compare/v0.1.2...v0.1.3
