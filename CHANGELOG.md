@@ -6,13 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-30
+
+### Added
+
+- **`tetron install --config-dir/--log-dir/--socket-path`**: three optional flags that inject `Environment=` lines into the service unit, relocating config, logs, or the IPC socket without forking the unit file by hand. (PORTABILITY-004)
+
+- **Proactive drop-rate monitor**: when enabled via `tetron config set drop-monitor.threshold <n>`, tracks per-reason drop counts in atomic buckets and warns when the rate exceeds `threshold` within `window` seconds, with a `cooldown` between repeated alarms. Default-off (threshold=0). (LOG-002)
+
 ### Changed
 
 - **`NetworkStatus.name` field removed (BREAKING)**: the legacy `name` field on `tetron status --json`'s per-network object is finally removed. The `network` field (identical value) has been present since the fleet upgrade window opened in 0.9.0. All consumers (tetron-webui, tetron-systray) were already migrated; fleet rollout complete 2026-07-29. (STATUS-NETWORK-FIELD-001)
 
 ### Internal
 
+- **`install-tetron-suite.sh` prints version after each component**: after installing/upgrading core, webui, or systray, the script now queries the freshly installed binary's `--version` and reports it, matching the information density of core's own `sudo tetron install`.
+
 - **`RAY_GIT_SHA` build env var renamed to `TETRON_GIT_SHA`**: the pre-fork upstream identifier in `build.rs` and `src/cli/service.rs` is now tetron-specific. No wire or storage impact. (RENAME-018)
+
+- **Periodic stats logger removed**: the 30-second periodic counter-summary log line (`ForwardMetrics` every 30s) is gone. Per-request `tetron status` still exposes counters; the only automatic output is a session-summary line on shutdown. (LOG-001)
 
 ## [0.9.0] - 2026-07-28
 
@@ -658,7 +670,9 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.8.2...v0.9.0
 [0.1.6]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...v0.1.6
 [0.1.4]: https://github.com/rayfish/rayfish/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rayfish/rayfish/compare/v0.1.2...v0.1.3

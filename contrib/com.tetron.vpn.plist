@@ -13,6 +13,15 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TETRON_CONFIG_DIR</key>
+        <string>__TETRON_CONFIG_DIR__</string>
+        <key>TETRON_LOG_DIR</key>
+        <string>__TETRON_LOG_DIR__</string>
+        <key>TETRON_SOCKET_PATH</key>
+        <string>__TETRON_SOCKET_PATH__</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/var/log/tetron.log</string>
     <key>StandardErrorPath</key>

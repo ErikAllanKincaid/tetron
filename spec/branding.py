@@ -961,3 +961,42 @@ class MuslReleaseTargets(Requirement):
     than this requirement's scope.
     """
     req_id = "PORTABILITY-001"
+
+
+class InstallPathOverrides(Requirement):
+    """REQUIREMENT-ID: PORTABILITY-004
+
+    The three existing environment-variable path overrides
+    (`TETRON_CONFIG_DIR`, `TETRON_LOG_DIR`, `TETRON_SOCKET_PATH`,
+    PORTABILITY-003) are read at daemon startup by
+    `config::config_dir()`/`logdir::log_dir()`/`socket_path()`, but the
+    systemd unit and launchd plist have no `Environment=` / `EnvironmentVariables`
+    lines for them — so a user who wants nonstandard paths must either set
+    them globally (systemd manager environment, `/etc/environment`, etc.) or
+    fork the unit file by hand.
+
+    **Fix:** `tetron install` gains three optional flags:
+    `--config-dir`, `--log-dir`, `--socket-path`. When provided, the
+    service unit/plist gets the corresponding `Environment=` /
+    `EnvironmentVariables` entry injected (same pattern as
+    tetron-webui's `TETRON_WEBUI_PORT` / `install --port`). The user who
+    passes none of them gets the exact same unit as before — no default
+    changes, purely additive.
+
+    The env vars themselves remain the single source of truth at runtime:
+    this just wires the service unit to pass them through. A user who
+    sets the env vars globally (or runs `tetron daemon` directly under a
+    non-systemd supervisor) is unaffected and never needs the flags.
+
+    Motivating case: a systemd/Linux or launchd/macOS user who wants to
+    relocate tetron's config/log/socket paths without writing a custom
+    service unit. Previously the only option was to set the env var in
+    the systemd manager environment (`systemctl set-environment
+    TETRON_CONFIG_DIR=...`) or edit the unit file — both more friction
+    than `sudo tetron install --config-dir /custom/path`.
+
+    ENFORCEMENT: structural (a `Requirement`, not a `Constraint` — no
+    curated-token gate needed, same reasoning as PORTABILITY-003).
+    Verified by existing build/test gates and the new e2e test.
+    """
+    req_id = "PORTABILITY-004"

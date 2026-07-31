@@ -994,7 +994,7 @@ impl MeshManager {
     /// name) instead of every one (STANDBY-PER-NETWORK) — omit it for the
     /// original daemon-wide behavior, unchanged. An unknown `network` name
     /// errors rather than silently no-op-ing.
-    pub(crate) async fn deactivate(&self, network: Option<&str>) -> IpcMessage {
+    pub async fn deactivate(&self, network: Option<&str>) -> IpcMessage {
         let targets: Vec<String> = match network {
             Some(name) => {
                 if !self.networks.contains_key(name) {
