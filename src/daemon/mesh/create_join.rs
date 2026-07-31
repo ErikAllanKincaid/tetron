@@ -414,7 +414,12 @@ impl MeshManager {
         // SUBNET-COLLISION-002: unconditional, even when --subnet was omitted --
         // next_available_subnet only avoids other tetron networks, never the
         // host's own physical LAN. Same --force gate as the tetron-vs-tetron
-        // check above.
+        // check above. Android has no `ip addr`/`ifconfig` to shell out to --
+        // find_physical_interface_collision doesn't exist on that target, so
+        // this check is skipped there, matching its own documented fail-open
+        // behavior for a platform without the tool. See this requirement's
+        // addendum below.
+        #[cfg(not(target_os = "android"))]
         if let Some((iface, addr, plen)) = crate::tun::find_physical_interface_collision(subnet) {
             anyhow::ensure!(
                 force,
@@ -725,7 +730,9 @@ impl MeshManager {
                     overlapping.1,
                 );
             }
-            // SUBNET-COLLISION-002: same guard against the host's own physical LAN.
+            // SUBNET-COLLISION-002: same guard against the host's own physical
+            // LAN. Skipped on Android -- see the create-path guard above.
+            #[cfg(not(target_os = "android"))]
             if let Some((iface, addr, plen)) =
                 crate::tun::find_physical_interface_collision(network_subnet)
             {

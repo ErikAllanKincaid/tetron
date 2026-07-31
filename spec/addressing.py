@@ -1538,5 +1538,23 @@ class SubnetCollisionForcePhysicalLan(Requirement):
        per-OS-branch pattern every other multi-platform function in
        `src/tun.rs` already follows for the equivalent BSD-tool
        alternative.
+
+    **Addendum, 2026-07-30: Android gap.** `find_physical_interface_collision`
+    is `#[cfg(not(target_os = "android"))]` in `src/tun.rs` (Android has no
+    `ip addr`/`ifconfig` to shell out to, and no embedder-supplied
+    equivalent exists), but both call sites in
+    `src/daemon/mesh/create_join.rs` (`create_network_inner`'s and the join
+    path's physical-LAN checks) were unconditional -- a real build break on
+    that target invisible to host `cargo check`, which never compiles under
+    `target_os = "android"`. Found live cross-compiling a first Android
+    embedder with `cargo ndk` (`E0425: cannot find function
+    find_physical_interface_collision`). Fixed by gating both call sites
+    `#[cfg(not(target_os = "android"))]` too, so the check is skipped
+    entirely on Android -- consistent with the function's own documented
+    fail-open behavior for a platform whose enumeration tool is
+    unavailable, and with the existing `#[cfg(target_os = "android")]`
+    guards already present elsewhere in `create_join.rs`/`runtime.rs`/
+    `bootstrap.rs`/`tun.rs`/`config.rs`/`daemon/mod.rs` for the same class
+    of desktop-only, embedder-inapplicable logic.
     """
     req_id = "SUBNET-COLLISION-002"
