@@ -1,0 +1,47 @@
+# tetron CLI & command reference
+
+> Referenced from `AGENTS.md`. Load-bearing constraints (protected identifiers, spec workflow) live there, not here — read this file for command surface and removed-feature history only.
+
+## Run
+
+The daemon (`tetron daemon`) owns the TUN device and iroh endpoint and runs as a system service. CLI commands talk to it over Unix-socket IPC.
+
+```bash
+sudo tetron install           # install+start the service, then activate the VPN
+tetron create [--network-name n] [--hostname h] [--subnet CIDR] [--tor] [--force]   # always closed (invite-gated, LIVE-001); MINIMAL-013 removed --open. --subnet overrides the default 10.88.0.0/24 for this network. Prints room id (public key)
+tetron join <invite-code> [--alias a] [--hostname h] [--tor] [--force]  # join by invite key (bare room id is denied — tetron is invite-only). --alias sets a local-only display name for this network, never transmitted
+tetron leave <net> [--force]  # <net> is the local display name (as shown in `tetron status`), or its `network_key` (or an unambiguous prefix) if you don't have the local name handy. If you are the network's only coordinator with other members, auto-promotes every currently-connected member to co-coordinator first (STRANDED-COORDINATOR-WARN); refuses only if someone remains unreachable and names them — `--force` skips this entirely
+tetron nuke <network-key> [--force] [--cancel] [--second <short-id>]   # <network-key> is the network's own key (`tetron status`'s `network_key` line) — NOT the local name; a >=10-char prefix is enough; nuke = publish empty record then leave; on 2+ coordinators requires a second (NUKE-CONSENSUS) — see below
+tetron kick <network-key> <endpoint-id>   # coordinator-only: remove a member. Both args resolve by cryptographic short id, never a local name or hostname. Prunes roster + approved list, republishes, disconnects mesh-wide. Refused only against self — any coordinator may kick any other, unilaterally, no consensus (KICK-COORDINATOR-001; mainly for a coordinator whose machine is permanently gone). Roster removal, not key revocation — a kicked coordinator who isn't actually gone still holds the network key and could self-mint an invite and rejoin
+tetron status                 # all networks (works without daemon); per-host traffic, member count excludes self
+tetron <cmd> --json           # global flag: machine-readable JSON for status/admin list (color + spinners off)
+tetron resume [--hostname h] [--network n] | standby [--network n]   # activate / standby. standby takes the data plane (TUN) offline but stays connected to peers; --network scopes to one joined network (STANDBY-PER-NETWORK) instead of every one. resume errors cleanly if the service isn't installed/running — it never silently installs
+tetron sync [--network n]     # manually wake the DHT/group poller instead of waiting for its configured interval (SYNC-001). Open to any local user; a built-in 2s cooldown prevents back-to-back DHT resolves
+
+tetron admin <net> add <id> | list            # coordinator-only: grant the network key (co-coordinator) / list key-holders. <id> is the target's hostname or short id — unlike destructive commands, this additive grant resolves by hostname for convenience
+tetron config [get [key] | set <key> <value> [--replace] | unset <key>]   # global daemon settings; keys: relay, discovery-dns, subnet, ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>, nuke-proposal-ttl, listen-port, poller-interval, log-retention, invite-default-expiry (CONFIG-AUDIT-002), selfcapture-mitigation (SELFCAPTURE-ROUTE-001). relay/discovery values are comma lists of presets (rayfish/n0), URLs, or IPv4s (default augments n0; --replace swaps them out; n0/empty resets). `subnet` takes a single CIDR (empty resets to default). `ratelimit.*`/`listen-port`/`poller-interval`/`log-retention` take a whole number; `nuke-proposal-ttl`/`invite-default-expiry` take a duration string (`24h`/`7d`/`30m`); `selfcapture-mitigation` takes `on`/`off`. Each empty value resets that key to its compiled default (24h; 43737; 60s; 7 days; 7d; on respectively). Written client-side to settings.toml; all apply on `sudo tetron restart`
+tetron completions <shell>
+tetron version | tetron --version | tetron -V        # print the compiled version + git sha
+```
+
+> **Self-update is REMOVED (MINIMAL-002).** No `tetron update`/`auto-update`, no `src/update.rs`. Upgrade by replacing the binary and running `sudo tetron restart`.
+
+> **File sharing and device pairing are REMOVED (MINIMAL-004).** No `tetron send`/`files`/`pair`/`unpair`, no `onepassword.rs`/`revocation.rs`/`DeviceUserMap`. One device = one user. Copy files with `scp`/`rsync` over the mesh IPs; back up `<config_dir>/secret_key` yourself (see `README.md`'s Backup section). **D1 wire compat:** `control.rs` keeps the `DeviceCert`/`PairMsg`/`CertRefresh`/`Unpaired` types so a full-tetron peer is decoded-and-ignored, never errored.
+
+> **The declarative apply layer and node-local aliases are REMOVED (MINIMAL-011).** No `tetron apply`/`alias`/`identityof`. Reconcile a fleet with a script over `tetron status --json`.
+
+> **Admission is invite-only (LIVE-001, overriding MINIMAL-013's live-approval queue).** A bare room-id join is always denied — the only way on is an **invite key** minted by a coordinator (auto-minted on `tetron create`, or via `tetron invite <net> create`), validated against the signed `GroupBlob` via `redeem_invite_and_admit`. No `PendingJoin` queue, no `tetron requests`/`accept`/`deny`. Co-coordinator grant (`tetron admin add`) is the availability story — any key holder can mint invites. **D1 wire compat:** `GroupMode::Open` auto-admit and reusable keys from a full-tetron coordinator are still honored; `InviteShare`/`InviteUsed` from a full co-coordinator are decoded and ignored.
+
+> **Hostname is fixed at join; rename propagation and ephemeral auto-kick are REMOVED (MINIMAL-014).** No `tetron hostname`/`ephemeral`. A member's hostname is set once at join; the coordinator resolves collisions at admission (`admit_peer` → `resolve_collision`, suffix `-1`, `-2`, …), and a member adopts the authoritative name from the signed roster on reconverge (`reconcile_local_hostname`). Manual `kick` remains the remediation tool for stale members.
+
+> **Magic DNS and all OS DNS mutation are REMOVED (MINIMAL-012).** No `src/dns*.rs`, `dns_manager.rs`, port-53 intercept, or `magic-dns`/`dns-upstreams` config. Reach peers by mesh IP from `tetron status` (`--json` for scripts); host naming is `/etc/hosts`' job. Hostnames still ride the signed roster; `kick <hostname>` resolves against the roster, not DNS.
+
+> **The userspace firewall is REMOVED (MINIMAL-010).** No `tetron firewall`, `src/firewall.rs`, `firewall.toml`. Packet filtering is now the host firewall's job — every mesh peer reaches every port a local service binds (mesh membership gates *who* connects; a network is the reachability boundary). Restrict ports with nftables/ufw on the TUN interface (find the device name via `tetron status`'s `interface` line — `tun::create()` never names it `"tetron"`, the OS auto-assigns `tun0`/`tun1`/...). `forward.rs` keeps only the upstream ingress anti-spoof check; `src/packet.rs` holds the IP-header parser the forwarder still needs.
+
+**Privilege & access (Tailscale operator model):** the always-root daemon does privileged work; clients are unprivileged. The IPC socket is mode `0666`; authority comes from a per-request `SO_PEERCRED` UID check in `MeshManager::check_authorized()`, not socket permissions. Reads (`status`, `admin list`, `invite list`, `sync`) are open to any local user (AUTHZ-001, SYNC-001); `invite list` additionally gates per-network on `coordinator_handle` (a non-coordinator gets nothing for a network they don't hold the key to). Mutating commands need root or the configured `operator_uid`; `set-operator` is root-only. Only `install`/`restart`/`uninstall`/`start`/`stop`/`set-operator`/`daemon` need `sudo` — everything else (incl. `resume`/`standby`/`sync`) is IPC. `tetron install` auto-grants operator to `$SUDO_USER`.
+
+```bash
+sudo tetron install | restart | uninstall   # manage the service unit/plist
+sudo tetron start | stop                    # start / stop the service. stop = fully offline (closes peer connections); start = back online
+sudo tetron set-operator <user>             # authorize a user to run tetron without sudo
+```
