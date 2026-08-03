@@ -71,7 +71,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, nuke_proposals, subnet, subnet_str, nuke_consensus_threshold) = {
+        let (members, member_count, nuke_proposals, subnet_str, nuke_consensus_threshold) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -118,7 +118,6 @@ impl MeshManager {
                 s.roster(),
                 count,
                 proposals,
-                s.subnet,
                 format!("{base}/{prefix}"),
                 s.nuke_consensus_threshold,
             )
@@ -134,9 +133,7 @@ impl MeshManager {
             .iter()
             .filter(|m| m.identity != my_id)
             .map(|m| {
-                let connection = connected
-                    .get(&m.identity)
-                    .map(|conn| Self::gather_conn_info(conn, subnet, &h.network_key));
+                let connection = connected.get(&m.identity).map(Self::gather_conn_info);
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
@@ -169,11 +166,7 @@ impl MeshManager {
         }
     }
 
-    pub(crate) fn gather_conn_info(
-        conn: &iroh::endpoint::Connection,
-        network_subnet: crate::membership::Subnet,
-        network_key: &EndpointId,
-    ) -> ipc::ConnectionInfo {
+    pub(crate) fn gather_conn_info(conn: &iroh::endpoint::Connection) -> ipc::ConnectionInfo {
         let paths = conn.paths();
         // Classify every path, then pick which one to report. iroh only marks a
         // path `is_selected()` once its path-selector has promoted a winner;
@@ -183,14 +176,13 @@ impl MeshManager {
         // falls back to the best available (Direct > Relay > Tor) so a live
         // connection always reports a concrete path.
         //
-        // PATHBLEED-STATUS-001: `in_subnet` additionally checks each path's own
-        // address against *this specific network's own* subnet -- iroh's
-        // `RemoteStateActor` shares path-selection state across every network a
-        // peer is a member of, so `is_selected()` alone can be poisoned by a
-        // path that legitimately belongs to a *different* one of that peer's
-        // networks (PATH-BLEED-001). Relay/Tor addresses are not network-scoped
-        // (tetron's relay/discovery config is daemon-wide), so there is nothing
-        // bleed-shaped to check there -- always `true`.
+        // PATHBLEED-STATUS-003: classify_candidate_addr's `in_subnet` is
+        // unconditionally true for every type now -- a peer's real transport
+        // address is never scoped to one logical tetron network to begin with
+        // (see that requirement's own docstring; this superseded
+        // PATHBLEED-STATUS-001's original address-range check, which failed
+        // for genuine Direct candidates almost universally, not just bled
+        // ones).
         //
         // PATHBLEED-STATUS-002: `has_activity` corroborates a selected path with
         // its own real traffic (`stats().udp_tx.bytes`) before trusting it --
@@ -203,24 +195,7 @@ impl MeshManager {
             .iter()
             .map(|p| {
                 let addr = p.remote_addr();
-                let (ct, in_subnet) = if addr.is_relay() {
-                    (ipc::ConnType::Relay, true)
-                } else if addr.is_custom() {
-                    (ipc::ConnType::Tor, true)
-                } else {
-                    let in_subnet = match addr {
-                        iroh::TransportAddr::Ip(socket_addr) => match socket_addr.ip() {
-                            std::net::IpAddr::V4(v4) => {
-                                crate::membership::ip_in_subnet(v4, network_subnet)
-                            }
-                            std::net::IpAddr::V6(v6) => {
-                                crate::membership::ipv6_in_network(v6, network_key)
-                            }
-                        },
-                        _ => true,
-                    };
-                    (ipc::ConnType::Direct, in_subnet)
-                };
+                let (ct, in_subnet) = classify_candidate_addr(addr);
                 let has_activity = p.stats().udp_tx.bytes > 0;
                 ipc::PathCandidateInfo {
                     conn_type: ct,

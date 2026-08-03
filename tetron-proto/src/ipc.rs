@@ -408,6 +408,14 @@ pub enum ViaDetail {
     DirectUnvalidated,
     /// A `Direct`-shaped candidate exists but was excluded as out-of-subnet
     /// (`PATHBLEED-STATUS-001`'s cross-network-bleed exclusion).
+    ///
+    /// **Currently unreachable in normal operation** (`PATHBLEED-STATUS-003`):
+    /// `in_subnet` is unconditionally `true` for every candidate now, so this
+    /// variant's own condition can never be met. Kept, not removed -- the
+    /// classification logic that would produce it stays as defensive
+    /// coverage of its documented contract; this is not a dead field on the
+    /// wire in the sense of never having existed, just not currently
+    /// producible.
     DirectBled,
 }
 

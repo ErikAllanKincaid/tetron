@@ -1418,6 +1418,40 @@ mod accept_handler_tests {
         );
     }
 
+    // PATHBLEED-STATUS-003: `classify_candidate_addr` reports `in_subnet:
+    // true` for every candidate type, `Direct` included -- a peer's real
+    // transport address is never scoped to a network, so there is nothing
+    // meaningful to check about it.
+
+    #[test]
+    fn classify_candidate_addr_direct_is_always_in_subnet() {
+        use std::net::{Ipv4Addr, SocketAddr};
+        // A real LAN address, deliberately nowhere near any tetron overlay
+        // subnet (10.88.0.0/24-style) -- exactly the case that used to
+        // (incorrectly) classify as in_subnet: false.
+        let addr = iroh::TransportAddr::Ip(SocketAddr::new(
+            Ipv4Addr::new(192, 168, 121, 244).into(),
+            43737,
+        ));
+        assert_eq!(
+            super::classify_candidate_addr(&addr),
+            (ipc::ConnType::Direct, true)
+        );
+    }
+
+    #[test]
+    fn classify_candidate_addr_relay_is_in_subnet() {
+        // Regression check, not a behavior change: Relay was already
+        // unconditionally trusted before this fix.
+        let addr = iroh::TransportAddr::Relay(
+            "https://relay.example.com".parse().unwrap(),
+        );
+        assert_eq!(
+            super::classify_candidate_addr(&addr),
+            (ipc::ConnType::Relay, true)
+        );
+    }
+
     #[test]
     fn subnet_collision_detects_overlap() {
         use std::net::Ipv4Addr;

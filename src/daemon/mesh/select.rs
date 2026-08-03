@@ -82,21 +82,38 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
 /// Pick which connection path to report in `tetron status`. Prefers the path iroh
 /// has selected; otherwise falls back to the best concrete path so a live
 /// connection never renders as `Unknown` (`?`). Priority Direct > Relay > Tor.
+/// Classifies one candidate path's address into its `ConnType`
+/// (PATHBLEED-STATUS-003). `in_subnet` (the second element) is
+/// unconditionally `true` for every type, `Direct` included -- a peer's
+/// real transport address (a LAN or public IP, for a genuine Direct
+/// candidate) is never scoped to any one logical tetron network to begin
+/// with, so there was never anything meaningful to check about it
+/// (`PATHBLEED-STATUS-001`'s own docstring has the full corrected
+/// reasoning; superseded by this requirement, kept there for history).
+pub(crate) fn classify_candidate_addr(addr: &iroh::TransportAddr) -> (ipc::ConnType, bool) {
+    if addr.is_relay() {
+        (ipc::ConnType::Relay, true)
+    } else if addr.is_custom() {
+        (ipc::ConnType::Tor, true)
+    } else {
+        (ipc::ConnType::Direct, true)
+    }
+}
+
 /// Returns the index into `classes`, or `None` when there are no paths, or
-/// (PATHBLEED-STATUS-001) when every path is untrustworthy.
+/// (PATHBLEED-STATUS-001/`-003`) when every path is untrustworthy.
 ///
 /// Each candidate is `(conn_type, is_selected, in_subnet, has_activity)`.
-/// `in_subnet` is `gather_conn_info`'s PATHBLEED-STATUS-001 check: whether
-/// this path's own address belongs to *this connection's own network*
-/// (always `true` for Relay/Tor, which are not network-scoped). A candidate
-/// with `in_subnet == false` is excluded from both the `is_selected()`-
-/// preference check and the fallback scan below -- not just stripped of its
-/// selected flag, since the fallback loop matches by classification alone
-/// and would otherwise re-surface the same wrong address a moment later.
-/// This is exactly the shape iroh's `RemoteStateActor` broadcasting one
-/// peer-wide `selected_path` across every one of a shared peer's
-/// connections can produce: a bled candidate from a different tetron
-/// network, marked `is_selected()` on this network's connection too.
+/// `in_subnet` comes from `classify_candidate_addr` above and is
+/// unconditionally `true` today (`PATHBLEED-STATUS-003`) -- the parameter
+/// stays, both because a candidate with `in_subnet == false` is still
+/// handled correctly if one is ever produced again (defensive, not dead
+/// code removed), and because the tier logic below reads the same either
+/// way. A candidate with `in_subnet == false` is excluded from both the
+/// `is_selected()`-preference check and the fallback scan below -- not
+/// just stripped of its selected flag, since the fallback loop matches by
+/// classification alone and would otherwise re-surface the same wrong
+/// address a moment later.
 ///
 /// `has_activity` (PATHBLEED-STATUS-002, a hardening layer on top of the
 /// subnet check) is whether the path's own `stats()` show any real traffic

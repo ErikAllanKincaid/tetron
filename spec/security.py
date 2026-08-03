@@ -606,6 +606,20 @@ class PathBleedSubnetScopeFilter(Requirement):
     this filter remains the runtime safety net for pre-existing installs
     that already have overlapping-subnet networks from before that guard
     existed.
+
+    **That core assumption itself is wrong for `Direct`/IP candidates --
+    corrected by `PATHBLEED-STATUS-003`, found 2026-08-02 while diagnosing
+    a live incident.** `network_subnet` here is this network's own virtual
+    *overlay* subnet (`membership::default_subnet() = 10.88.0.0/24`-style),
+    but a genuine Direct candidate's address is iroh's real physical
+    transport address (a LAN or public IP) -- categorically unrelated to
+    the overlay address space. A peer's real address is not scoped to any
+    one logical network in the first place (it is the same physical
+    machine regardless of which tetron network you share with them), so
+    checking it against *any* network's overlay subnet was never a
+    meaningful test -- it fails almost universally for genuine Direct
+    candidates, not just bled ones. See `PATHBLEED-STATUS-003` for the fix
+    and why `PATHBLEED-STATUS-002` alone is architecturally sufficient.
     """
     req_id = "PATHBLEED-STATUS-001"
 
@@ -644,6 +658,87 @@ class PathBleedActivityCorroboration(Requirement):
     active alternative outranks a selected-but-inactive one."
     """
     req_id = "PATHBLEED-STATUS-002"
+
+
+class PathBleedDropUselessSubnetCheck(Requirement):
+    """REQUIREMENT-ID: PATHBLEED-STATUS-003
+
+    Found 2026-08-02 diagnosing a live incident (a fresh, clean two-VM
+    reproduction -- no Docker/Tailscale/libvirt, same virtual LAN -- showed
+    `via_detail: DirectBled` for a genuine Direct candidate on both sides,
+    continuously, from 10s through 220s after join; confirmed the same
+    version boundary against real fleet history: `macbookpro` on v0.8.0
+    (predates this check, `git merge-base --is-ancestor` confirms) showed
+    real `Direct`, while this box on v0.8.2 (confirmed *already includes*
+    `PATHBLEED-STATUS-001`/`-002`) never once did, all session).
+
+    **The fix: `in_subnet` becomes unconditionally `true` for every
+    candidate type, `Direct`/IP included** -- matching how `Relay`/`Tor`
+    candidates are already treated (`ipc::ConnType::Relay`/`Tor` are
+    hardcoded `true` in the existing match in `gather_conn_info`,
+    `src/daemon/mesh/diagnostics.rs`). The `TransportAddr::Ip` match arm
+    computing `membership::ip_in_subnet`/`ipv6_in_network` against
+    `network_subnet` is deleted entirely for this purpose (the utility
+    functions themselves stay -- `ip_in_subnet` is still used by
+    `SUBNET-COLLISION-002`; only this one call site goes).
+
+    **Why this is safe, not a reversion of `PATH-BLEED-001`'s own fix:**
+    `Connection::paths()` already only returns paths for that specific,
+    correctly-selected connection object (iroh's own documented contract),
+    and `FINDINGS_PathBleed_DataLossAnalysis.md`'s own prior analysis
+    already proved misdelivery is architecturally impossible (QUIC's
+    connection-ID-keyed demux, not address-keyed) -- so there was never a
+    correctness risk to guard against here, only a display-accuracy one,
+    and the guard was checking the wrong thing for that too. Re-deriving
+    `choose_path_index`'s four tiers with `in_subnet` collapsed to a
+    constant `true`: tier 1 (`selected && in_subnet && (has_activity ||
+    sole)`) becomes `selected && (has_activity || sole)` -- unchanged in
+    substance, `PATHBLEED-STATUS-002`'s real protection stays intact
+    exactly as before. Tier 2 (`type==want && in_subnet && has_activity`)
+    becomes `type==want && has_activity` -- likewise still requires proven
+    activity, unaffected. Tier 3 (`type==want && in_subnet`, no activity
+    check) becomes plain type-preference among currently-open paths -- the
+    only tier that meaningfully changes, and it is fine now: a real,
+    currently-open Direct path is never wrong to report even before it has
+    carried its first byte on this specific connection, the same way a
+    brand-new not-yet-validated path was already correctly trusted when it
+    was the sole candidate (see `PATHBLEED-STATUS-002`'s own
+    `choose_path_selected_without_activity_still_trusted_if_sole_candidate`
+    test). No tier restructuring needed -- one computation deleted,
+    `choose_path_index`'s own code and tests otherwise untouched.
+
+    **Options considered and rejected, for the record:** (a) find a
+    different, still-cheap address-based check to replace the subnet
+    comparison -- not viable, a peer's real transport address is not
+    scoped to any one logical network in the first place (same physical
+    machine regardless of which tetron network is being discussed), so no
+    address-based check can meaningfully discriminate "legitimately this
+    network" from "bled from another" for `Direct`/IP candidates; (b) the
+    actual root-cause architectural fix, a separate iroh `Endpoint` per
+    network so there is no shared peer-identity bookkeeping to bleed
+    across networks at all -- technically possible, but a much bigger
+    change (multiplies UDP sockets/relay connections/discovery instances
+    per daemon) than this bug warrants; noted as a future option if the
+    underlying bleed ever matters beyond this status-display question, not
+    attempted here.
+
+    **Ripple effect onto `PATH-DIAG-004`, caught before implementation:**
+    `ViaDetail::DirectBled` (`ipc.rs`) is derived from exactly this
+    `in_subnet == false` signal for a `Direct` candidate
+    (`classify_via_detail`'s `has_bled_direct` check, `select.rs`). With
+    `in_subnet` now unconditionally `true`, that branch can never trigger
+    again -- `DirectBled` becomes unreachable in normal operation. Not
+    removed: `classify_via_detail`'s existing logic and its two tests
+    covering `DirectBled` (`via_detail_direct_bled_when_only_direct_
+    candidate_is_out_of_subnet`, `via_detail_prefers_unvalidated_over_
+    bled_when_both_present`, `src/daemon/mod.rs`) stay as defensive
+    coverage of the function's own documented contract given *any* input,
+    not deleted just because production code no longer produces that
+    input shape. `ViaDetail::DirectBled`'s own doc comment gets a note
+    that it is currently unreachable, so a future reader isn't confused
+    about why `--json` never shows it.
+    """
+    req_id = "PATHBLEED-STATUS-003"
 
 
 # --------------------------------------------------------------------------

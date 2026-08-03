@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tetron status` could never report a genuine direct connection as `Direct` (`PATHBLEED-STATUS-003`)**: since `PATHBLEED-STATUS-001` (0.8.2), a direct candidate's real transport address was checked against this network's own virtual overlay subnet — but a peer's real address is never scoped to a logical tetron network in the first place, so this check failed almost universally, not just for genuinely bled candidates. Status-layer only, per that requirement's own original scope: this did not affect which path iroh itself actually used to send data, only what `tetron status`/`--json` displayed. `PATHBLEED-STATUS-002`'s activity-based corroboration already provided the real protection this was meant to add; the incorrect address check is removed.
+
 ### Added
 
 - **Relay/direct path transitions now logged** (`PATH-DIAG-001`): the daemon subscribes to iroh's per-connection path-lifecycle events and logs path-opened/closed/selected/lagged transitions at debug/info/warn, so `journalctl`/the rolling debug log shows *when* and *why* a connection moved between relay and direct instead of only the current snapshot.
