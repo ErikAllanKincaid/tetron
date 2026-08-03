@@ -12,7 +12,7 @@ Any changes to tetron core require testing in the testsuite to verify no regress
 
 Tetron is a fork **derivative of [rayfish](https://github.com/rayfish/rayfish)**. tetron, a P2P mesh VPN powered by [iroh](https://iroh.computer), exists as a standalone product: connect machines into private overlay with stable identity-derived addresses. It follows a **"do one thing well"** Linux philosophy. It defaults to `10.88.0.0/24` (10.x slice avoids Tailscale's `100.64.0.0/10`). Tetron can have multiple terton networks, each with different IP range.
 
-The binary is **`tetron`**. The Cargo **package/library is `tetron`** (`[package] name = "tetron"`, `[[bin]] name = "tetron"`), with internal use tetron::…` paths and the `info,tetron=debug` log filter. The helper crate is `tetron-proto`. 
+The binary is **`tetron`**. The Cargo **package/library is `tetron`** (`[package] name = "tetron"`, `[[bin]] name = "tetron"`), with internal use tetron::…` paths and an `info` default log filter (file-log verbosity is a `tetron config set log-level` knob, LOG-003). The helper crate is `tetron-proto`. 
 
 Tetron has a growing list of addons. ../tetron-mobile/ ../tetron-relay/ ../tetron-systray/ ../tetron-testsuite/ ../tetron-webui/ etc.  Each has it's own README.md and workflow.
 
@@ -63,11 +63,12 @@ Read these whenever work is going to be done on the core architecture, not preem
 
 - **[`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)** — every `tetron <cmd>`, removed-feature history (`MINIMAL-*`), the privilege/access model. Read before touching `src/cli/`, `src/main.rs`, or any command's behavior.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — addressing scheme, architecture diagram, per-network TUN/multi-segment design, a module-by-module map of `src/`, and key flows (create/join/leave/kick/nuke/…). Read before touching `src/daemon/`, `src/membership.rs`, `src/transport.rs`, or anything under `src/daemon/mesh/`.
+- **[`docs/tetron-workflow.md`](docs/tetron-workflow.md)** — the full spec-first workflow, step by step: branch naming, spec-writing, dependency ordering between requirements, TDD, `reconcile.py` vs. testsuite, commit granularity, docs, cross-repo follow-up. Read before starting any non-trivial change.
 - Many files are in `DO-NOT-COMMIT/` including `TODO.md` and reasearch and planning files.
 
 ## Conventions
 
-- Use `cargo -q` for all cargo commands; `tracing` for logging. `main::init_tracing` composes layers (console + file) with **split filters**: console/CLI stays at `info`, rolling daily files under `logdir::log_dir()` capture our crate at `debug` (`info,tetron=debug`; dependencies stay at `info`). `RUST_LOG` overrides both. Returns a `LogGuard` that must stay alive for the process.
+- Use `cargo -q` for all cargo commands; `tracing` for logging. `main::init_tracing` composes layers (console + file) with **decoupled filters** (LOG-003): console/CLI is unconditionally `info`, full stop — it never consults `RUST_LOG` or the config key, so it can't get noisy. Rolling daily files under `logdir::log_dir()` capture our crate at a level resolved from, in order, `RUST_LOG` (if set) → `tetron config set log-level <level>` → compiled default `info` (dependencies stay at `info` regardless). The five per-packet forwarding-path events (`forward.rs`'s TUN read/routing/send-failure lines) are `trace!`, not `debug!`, so `log-level debug` gives useful mesh/connection detail without per-packet flood; `log-level trace` is the full per-packet dump. Returns a `LogGuard` that must stay alive for the process.
 - Tracing carries spans: network lifecycle handlers use `#[tracing::instrument]`; the per-peer reader + reconnect loop wrap tasks in `info_span!("peer"/"reconnect", …)` so the rolling-file logs are correlatable.
 - Panics are fail-fast in the daemon: `main::install_panic_hook` (set only for `tetron daemon`) records the panic, appends it to `panic.log`, then `std::process::abort()`. The service unit restarts it.
 - Never share I/O resources (TUN, sockets, streams) behind a Mutex — split into read/write halves. Avoid Mutex generally: prefer channels, atomics, or `RwLock`/`ArcSwap`.

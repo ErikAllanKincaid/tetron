@@ -9,12 +9,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **`tetron status` could never report a genuine direct connection as `Direct` (`PATHBLEED-STATUS-003`)**: since `PATHBLEED-STATUS-001` (0.8.2), a direct candidate's real transport address was checked against only the currently-queried network's own virtual overlay subnet — but a peer's real address is never scoped to one logical tetron network in the first place, so this check failed almost universally for genuine candidates. Fixed by checking against every overlay subnet/network this daemon manages instead of just one, and by corroborating with received (not merely transmitted) path traffic — both needed together to fix genuine direct reporting without reopening the original cross-network address-bleed bug it was guarding against. Status-layer only: does not affect which path iroh itself actually uses to send data, only what `tetron status`/`--json` displays.
+- **Default file-log verbosity caused real CPU overhead and unreadable logs** (`LOG-003`): the compiled default emitted a `debug`-level log line for every single TUN packet read/routed/dropped, which one real deployment measured at ~20% continuous CPU from formatting/writing overhead and thread lock contention alone. Default file-log level is now `info`; the five per-packet forwarding events are `trace`, not `debug`, so turning verbosity back up (`tetron config set log-level debug`) is now actually useful instead of reproducing the same flood.
+
+### Changed
+
+- **`RUST_LOG` no longer affects console output, only the file log** (`LOG-003`): previously, setting `RUST_LOG` silently overrode the console layer's own `info` filter too, so a manual override meant to inspect the file log also flooded the console/journal. Console output is now unconditionally `info` regardless of `RUST_LOG` or the new `log-level` config key.
 
 ### Added
 
 - **Relay/direct path transitions now logged** (`PATH-DIAG-001`): the daemon subscribes to iroh's per-connection path-lifecycle events and logs path-opened/closed/selected/lagged transitions at debug/info/warn, so `journalctl`/the rolling debug log shows *when* and *why* a connection moved between relay and direct instead of only the current snapshot.
 - **`tetron status --json` now reports every candidate path per connection** (`PATH-DIAG-002`), not just the one summarized by `conn_type`/`remote_addr`/`rtt_ms` — each candidate's type, iroh's own selection flag, in-subnet check, activity, and RTT (`connection.paths`). Plain-text output is unchanged.
 - **`tetron status --json` explains why a connection isn't `Direct`** (`PATH-DIAG-004`): a new `connection.via_detail` distinguishes no direct candidate existing at all, an in-subnet direct candidate that hasn't proven itself with real traffic yet, and a direct-shaped candidate excluded for being out-of-subnet — three situations that previously all looked like plain `relay`. `None` when the connection is already `Direct`. Plain-text output is unchanged.
+- **`tetron config set log-level <trace|debug|info|warn|error>`** (`LOG-003`): persisted override for the daemon's file-log verbosity, applied on restart — no systemd drop-in needed to turn heavy logging on/off. `RUST_LOG` still wins over this if set.
 
 ## [0.9.1] - 2026-07-30
 

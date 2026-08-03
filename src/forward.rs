@@ -210,9 +210,16 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
         // Zero-copy hand-off: slice the packet out of the pool as an owned
         // `Bytes` sharing the chunk's allocation — no copy, no per-packet malloc.
         let pkt = pool.split_to(n).freeze();
-        tracing::debug!(len = n, first_byte = pkt[0], "TUN read");
+        // LOG-003: these five lines fire on every packet (or every dropped/
+        // failed one) -- the busiest loop in the daemon -- so they are
+        // `trace!`, not `debug!`. Keeps `debug` genuinely useful (mesh/
+        // connection/admission-level detail, no per-packet flood) once an
+        // operator turns it back on via `tetron config set log-level debug`;
+        // `trace` remains the full per-packet dump for the rare case it's
+        // actually needed.
+        tracing::trace!(len = n, first_byte = pkt[0], "TUN read");
         let Some(info) = packet::parse_packet_info(&pkt) else {
-            tracing::debug!(len = n, "not IP, dropping");
+            tracing::trace!(len = n, "not IP, dropping");
             continue;
         };
         let lookup = match info.dst_ip {
@@ -220,13 +227,13 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             IpAddr::V6(v6) => peers.lookup_v6(&v6),
         };
         let Some(route) = lookup else {
-            tracing::debug!(dst = %info.dst_ip, "no peer for dst");
+            tracing::trace!(dst = %info.dst_ip, "no peer for dst");
             stats.record_drop(DropReason::NoPeer);
             continue;
         };
         // Reachability is "we share a network" — enforced by connection
         // existence. Packet filtering is the host firewall's job.
-        tracing::debug!(dst = %info.dst_ip, "routing to peer");
+        tracing::trace!(dst = %info.dst_ip, "routing to peer");
         let max_dgram = match route.conn.max_datagram_size() {
             Some(sz) => sz,
             None => {
@@ -263,7 +270,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             match route.conn.send_datagram(pkt) {
                 Ok(()) => stats.record_tx(n),
                 Err(e) => {
-                    tracing::debug!(dst = %info.dst_ip, error = %e, "datagram send failed");
+                    tracing::trace!(dst = %info.dst_ip, error = %e, "datagram send failed");
                     stats.record_drop(DropReason::SendFailure);
                 }
             }

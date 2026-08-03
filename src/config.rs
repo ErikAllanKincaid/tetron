@@ -398,10 +398,21 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 Some(parse_bool_value(&entries[0])?)
             };
         }
+        "log-level" => {
+            cfg.log_level = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "log-level takes a single value: trace/debug/info/warn/error"
+                );
+                Some(parse_log_level_value(&entries[0])?)
+            };
+        }
         other => anyhow::bail!(
             "unknown config key: {other} (expected relay, discovery-dns, subnet, \
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-             invite-default-expiry, selfcapture-mitigation, \
+             invite-default-expiry, selfcapture-mitigation, log-level, \
              drop-monitor.<window|threshold|cooldown>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
@@ -490,6 +501,16 @@ fn parse_bool_value(raw: &str) -> Result<bool> {
         "on" | "true" | "1" => Ok(true),
         "off" | "false" | "0" => Ok(false),
         _ => anyhow::bail!("invalid value: {raw} (expected on/off)"),
+    }
+}
+
+/// LOG-003: validates and canonicalizes a `log-level` value. Returns the
+/// lowercase level name, matching a `tracing`/`EnvFilter` directive.
+fn parse_log_level_value(raw: &str) -> Result<String> {
+    let lower = raw.to_ascii_lowercase();
+    match lower.as_str() {
+        "trace" | "debug" | "info" | "warn" | "error" => Ok(lower),
+        _ => anyhow::bail!("invalid log-level: {raw} (expected trace/debug/info/warn/error)"),
     }
 }
 
@@ -595,13 +616,20 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if k == "log-level" {
+            let val = match &cfg.log_level {
+                Some(level) => level.clone(),
+                None => "<default: info>".to_string(),
+            };
+            return Ok((k.to_string(), val));
+        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
             other => anyhow::bail!(
                 "unknown config key: {other} (expected relay, discovery-dns, subnet, \
                  nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
-                 invite-default-expiry, selfcapture-mitigation, \
+                 invite-default-expiry, selfcapture-mitigation, log-level, \
                  drop-monitor.<window|threshold|cooldown>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
@@ -630,6 +658,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("log-retention")?,
             row("invite-default-expiry")?,
             row("selfcapture-mitigation")?,
+            row("log-level")?,
         ]),
     }
 }
@@ -708,6 +737,13 @@ pub struct AppConfig {
     /// selfcapture-mitigation off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selfcapture_mitigation: Option<bool>,
+    /// Override for the daemon's file-log level (compiled default `info`,
+    /// LOG-003). `None` uses the compiled default. One of
+    /// `trace`/`debug`/`info`/`warn`/`error`. Read once at daemon startup
+    /// (`init_tracing`); `RUST_LOG` still wins over this if set. Set via
+    /// `tetron config set log-level <level>` (CONFIG-AUDIT-002 style).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }
@@ -767,6 +803,8 @@ struct Settings {
     invite_default_expiry: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     selfcapture_mitigation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    log_level: Option<String>,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -1017,6 +1055,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             log_retention: None,
             invite_default_expiry: None,
             selfcapture_mitigation: None,
+            log_level: None,
         }
     };
 
@@ -1058,6 +1097,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         log_retention: settings.log_retention,
         invite_default_expiry: settings.invite_default_expiry,
         selfcapture_mitigation: settings.selfcapture_mitigation,
+        log_level: settings.log_level,
         networks,
     })
 }
@@ -1084,6 +1124,16 @@ pub fn selfcapture_mitigation_enabled() -> bool {
         .ok()
         .and_then(|c| c.selfcapture_mitigation)
         .unwrap_or(true)
+}
+
+/// Resolved `log-level` value (LOG-003) for the daemon's file log. Compiled
+/// default is `"info"`. Read once at daemon startup by `init_tracing`;
+/// `RUST_LOG` still wins over this if set.
+pub fn log_level() -> String {
+    load()
+        .ok()
+        .and_then(|c| c.log_level)
+        .unwrap_or_else(|| "info".to_string())
 }
 
 /// Persist the node's operative overlay subnet (a local cache of the network's
@@ -1113,6 +1163,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         log_retention: config.log_retention,
         invite_default_expiry: config.invite_default_expiry,
         selfcapture_mitigation: config.selfcapture_mitigation,
+        log_level: config.log_level.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;
@@ -1695,6 +1746,26 @@ name = "test"
         // Garbage is rejected.
         assert!(config_set(&mut cfg, "listen-port", "not-a-port", false).is_err());
         assert!(config_set(&mut cfg, "nuke-proposal-ttl", "abc", false).is_err());
+    }
+
+    #[test]
+    fn config_set_get_log_level() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            config_get(&cfg, Some("log-level")).unwrap()[0].1,
+            "<default: info>"
+        );
+
+        config_set(&mut cfg, "log-level", "DEBUG", false).unwrap();
+        assert_eq!(cfg.log_level, Some("debug".to_string()));
+        assert_eq!(config_get(&cfg, Some("log-level")).unwrap()[0].1, "debug");
+
+        // Reset back to <default: info>.
+        config_set(&mut cfg, "log-level", "", false).unwrap();
+        assert_eq!(cfg.log_level, None);
+
+        // Garbage is rejected.
+        assert!(config_set(&mut cfg, "log-level", "verbose", false).is_err());
     }
 
     // Regression for the bug that prompted this change: concurrent saves of

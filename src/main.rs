@@ -279,25 +279,27 @@ pub(crate) enum ConfigAction {
         /// relay, discovery-dns, subnet,
         /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
         /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
-        /// invite-default-expiry, or selfcapture-mitigation (omit for all)
+        /// invite-default-expiry, selfcapture-mitigation, or log-level
+        /// (omit for all)
         key: Option<String>,
     },
     /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs;
     /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16); `ratelimit.*` takes a
     /// whole number; durations (`nuke-proposal-ttl`/`invite-default-expiry`) take
     /// a string like "24h"/"7d"; `listen-port`/`poller-interval`/`log-retention`
-    /// take a single whole number; `selfcapture-mitigation` takes on/off.
-    /// Applies on restart.
+    /// take a single whole number; `selfcapture-mitigation` takes on/off;
+    /// `log-level` takes trace/debug/info/warn/error. Applies on restart.
     Set {
         /// relay, discovery-dns, subnet,
         /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
         /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
-        /// invite-default-expiry, or selfcapture-mitigation
+        /// invite-default-expiry, selfcapture-mitigation, or log-level
         key: String,
         /// Server keys: comma list of presets/URLs/IPv4s. subnet: a CIDR.
         /// ratelimit.*/listen-port/poller-interval/log-retention: a whole number.
         /// nuke-proposal-ttl/invite-default-expiry: a duration ("24h"/"7d"/"30m").
-        /// selfcapture-mitigation: on/off. Empty resets to the default.
+        /// selfcapture-mitigation: on/off. log-level: trace/debug/info/warn/error.
+        /// Empty resets to the default.
         value: String,
         /// Replace the defaults instead of augmenting them (server keys only)
         #[arg(long)]
@@ -306,13 +308,13 @@ pub(crate) enum ConfigAction {
     /// Reset a key to its compiled default (server keys -> iroh n0; subnet ->
     /// 10.88.0.0/24; ratelimit.* -> compiled defaults; nuke-proposal-ttl -> 24h;
     /// listen-port -> 43737; poller-interval -> 60s; log-retention -> 7 days;
-    /// invite-default-expiry -> 7d; selfcapture-mitigation -> on)
+    /// invite-default-expiry -> 7d; selfcapture-mitigation -> on; log-level -> info)
     #[command(visible_alias = "rm")]
     Unset {
         /// relay, discovery-dns, subnet,
         /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
         /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
-        /// invite-default-expiry, or selfcapture-mitigation
+        /// invite-default-expiry, selfcapture-mitigation, or log-level
         key: String,
     },
 }
@@ -339,17 +341,28 @@ fn init_tracing(to_file: bool) -> LogGuard {
     use tracing_subscriber::prelude::*;
 
     // The global gate must be permissive enough for the most verbose layer (the
-    // file), or events are dropped before any layer sees them. Default it to our
-    // crate at `debug` (dependencies stay at `info` so iroh/quinn don't flood the
-    // file), then keep the console quieter with a per-layer `info` filter below.
-    // `RUST_LOG` overrides both, so an operator can still dial either up or down.
-    let global_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tetron=debug"));
-    let console_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    // file), or events are dropped before any layer sees them. `file_layer` has
+    // no filter of its own -- it gets whatever passes this gate directly.
+    //
+    // LOG-003: resolves, in order, `RUST_LOG` (the raw ecosystem-standard manual
+    // override, e.g. for a foreground `cargo run` session) -> `tetron config set
+    // log-level <level>` -> compiled default `info` (not `debug` -- a production
+    // default should not log every packet's routing decision when nothing is
+    // wrong; an operator chasing a live issue opts in via the config key).
+    let global_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
+        |_| tracing_subscriber::EnvFilter::new(format!("info,tetron={}", config::log_level())),
+    );
 
-    // Console layer — human text on stdout, held at `info` so CLI output and the
-    // daemon console stay readable while the file keeps the `debug` detail.
+    // Console layer — human text on stdout. Unconditionally `info`, and does
+    // NOT consult `RUST_LOG` or the `log-level` config key at all (LOG-003):
+    // both `global_filter` and this used to independently read the same
+    // `RUST_LOG` variable, so setting it silently made console as noisy as the
+    // file too. Console/journal output stays a clean, readable summary either
+    // way; verbose diagnosis happens in the file, which is written even for a
+    // foreground `tetron daemon` run (`to_file` is true for `Command::Daemon`
+    // specifically) -- so nothing is lost, just tail the file for `trace` detail.
+    let console_filter = tracing_subscriber::EnvFilter::new("info");
+
     let console_layer = tracing_subscriber::fmt::layer().with_filter(console_filter);
 
     // File layer — daemon only, human text with ANSI stripped, rotated daily.
