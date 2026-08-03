@@ -695,9 +695,16 @@ class PathTransitionLogging(Requirement):
     task topology that logs them.
 
     Pure `tracing` output -- no IPC/wire change, no new `ConnectionInfo`
-    field. `PATH-DIAG-003` depends on this landing first (it needs a
-    path-open timestamp source); `PATH-DIAG-002` and `PATH-DIAG-004` do not
-    depend on this one.
+    field. `PATH-DIAG-002` and `PATH-DIAG-004` do not depend on this one.
+
+    **`PATH-DIAG-003` (connection age, timestamped from this subscription)
+    was dropped 2026-08-02 before implementation** -- see
+    `DO-NOT-COMMIT/TODO.md`'s "Connection-age tracking, deferred" entry.
+    Its payoff turned out to be narrow (only meaningfully distinct from
+    `PATH-DIAG-004`'s `DirectUnvalidated` case) and this task's own log
+    lines already carry timestamps an external consumer can use to derive
+    the same thing closely enough, without tetron core threading new
+    per-connection state through `MeshCtx`/`ForwardCtx`.
 
     Implemented as a small `log_path_events` task spawned once from within
     `spawn_peer_reader` itself (`src/forward.rs`) -- not at any of its seven
