@@ -716,7 +716,6 @@ mod tests {
             active: true,
             daemon_version: "0.1.0".to_string(),
             networks: vec![NetworkStatus {
-                name: "gaming".to_string(),
                 network: "gaming".to_string(),
                 role: NetworkRole::Coordinator,
                 my_ip: Ipv4Addr::new(10, 88, 10, 5),
