@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Relay/direct path transitions now logged** (`PATH-DIAG-001`): the daemon subscribes to iroh's per-connection path-lifecycle events and logs path-opened/closed/selected/lagged transitions at debug/info/warn, so `journalctl`/the rolling debug log shows *when* and *why* a connection moved between relay and direct instead of only the current snapshot.
+- **`tetron status --json` now reports every candidate path per connection** (`PATH-DIAG-002`), not just the one summarized by `conn_type`/`remote_addr`/`rtt_ms` — each candidate's type, iroh's own selection flag, in-subnet check, activity, and RTT (`connection.paths`). Plain-text output is unchanged.
+
 ## [0.9.1] - 2026-07-30
 
 ### Added

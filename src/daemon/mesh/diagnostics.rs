@@ -195,7 +195,11 @@ impl MeshManager {
         // PATHBLEED-STATUS-002: `has_activity` corroborates a selected path with
         // its own real traffic (`stats().udp_tx.bytes`) before trusting it --
         // a freshly-opened, never-actually-used bled candidate reads as zero.
-        let classes: Vec<(ipc::ConnType, bool, bool, bool)> = paths
+        // PATH-DIAG-002: build the full per-candidate detail once, up front --
+        // `choose_path_index`'s existing `classes` shape is derived from it
+        // below rather than computed separately, so there is exactly one
+        // classification pass, not two.
+        let candidates: Vec<ipc::PathCandidateInfo> = paths
             .iter()
             .map(|p| {
                 let addr = p.remote_addr();
@@ -218,8 +222,20 @@ impl MeshManager {
                     (ipc::ConnType::Direct, in_subnet)
                 };
                 let has_activity = p.stats().udp_tx.bytes > 0;
-                (ct, p.is_selected(), in_subnet, has_activity)
+                ipc::PathCandidateInfo {
+                    conn_type: ct,
+                    remote_addr: addr.to_string(),
+                    is_selected: p.is_selected(),
+                    in_subnet,
+                    has_activity,
+                    rtt_ms: Some(p.rtt().as_secs_f64() * 1000.0),
+                }
             })
+            .collect();
+
+        let classes: Vec<(ipc::ConnType, bool, bool, bool)> = candidates
+            .iter()
+            .map(|c| (c.conn_type.clone(), c.is_selected, c.in_subnet, c.has_activity))
             .collect();
 
         let (conn_type, remote_addr, rtt_ms) = match choose_path_index(&classes)
@@ -247,6 +263,7 @@ impl MeshManager {
             datagrams_rx: stats.udp_rx.datagrams,
             lost_packets: stats.lost_packets,
             max_datagram_size: conn.max_datagram_size().map(|sz| sz as u64),
+            paths: candidates,
         }
     }
 }

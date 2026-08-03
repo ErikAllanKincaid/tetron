@@ -725,3 +725,53 @@ class PathTransitionLogging(Requirement):
     req_id = "PATH-DIAG-001"
 
 
+class PathCandidateListExposure(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-002
+
+    `gather_conn_info` (`src/daemon/mesh/diagnostics.rs:172-251`) already
+    computes, per connection, a `classes: Vec<(ConnType, bool, bool, bool)>`
+    -- one tuple per candidate path: `(conn_type, is_selected, in_subnet,
+    has_activity)`, the exact data `PATHBLEED-STATUS-001`/`-002` already
+    rely on -- plus each path's `.rtt()`, all discarded after
+    `choose_path_index` picks one winner. This requirement stops discarding
+    it: `ipc::ConnectionInfo` (`tetron-proto/src/ipc.rs:365-382`) gains a new
+    field carrying the full candidate list, populated from data already
+    computed in the same function -- no new instrumentation logic, purely
+    plumbing already-live data out to `--json`.
+
+    New wire type (naming subject to review):
+    ```rust
+    pub struct PathCandidateInfo {
+        pub conn_type: ConnType,
+        pub remote_addr: String,
+        pub is_selected: bool,
+        pub in_subnet: bool,
+        pub has_activity: bool,
+        pub rtt_ms: Option<f64>,
+    }
+    // on ConnectionInfo:
+    #[serde(default)]
+    pub paths: Vec<PathCandidateInfo>,
+    ```
+    `#[serde(default)]` matches the existing precedent
+    (`ConnectionInfo::max_datagram_size`, MTU-DIAG-001) so an older daemon's
+    response still decodes.
+
+    `--json` only for now, matching `MTU-DIAG-001`'s and `STATUS-002`'s
+    existing precedent that per-connection detail beyond the aligned
+    summary table is `--json`-only -- the plain-text `via` column is
+    unchanged by this requirement. `PATH-DIAG-004` depends on this landing
+    first (it classifies against this same candidate list).
+
+    **Cross-repo impact:** `tetron-proto`'s `ConnectionInfo` is the shared
+    wire type `tetron-webui` and `tetron-systray` both depend on. Additive
+    and backwards-compatible, but per standing practice
+    (`feedback_always_check_addons_on_wire_changes` in auto-memory) both
+    addon repos need an explicit `Cargo.toml` bump once this lands -- not
+    an assumed auto-follow. Whether either addon's UI renders the new field
+    is out of scope for this requirement (see each addon's own
+    `DO-NOT-COMMIT/TODO.md`).
+    """
+    req_id = "PATH-DIAG-002"
+
+
