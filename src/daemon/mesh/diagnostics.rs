@@ -19,10 +19,32 @@ impl MeshManager {
                     .collect()
             })
             .unwrap_or_default();
+        // PATHBLEED-STATUS-003 (corrected): every overlay subnet/network this
+        // daemon manages, not just the one being queried -- gather_conn_info
+        // needs the full set to recognize a candidate address that's
+        // actually one of THIS daemon's own overlay addresses on a
+        // *different* network (a self-captured/bled candidate,
+        // PATH-BLEED-001), which the currently-queried network's own subnet
+        // alone can't catch.
+        let managed_subnets: Vec<crate::membership::Subnet> = self
+            .networks
+            .iter()
+            .filter_map(|h| h.state.read().ok().map(|s| s.subnet))
+            .collect();
+        let managed_network_keys: Vec<EndpointId> =
+            self.networks.iter().map(|h| h.network_key).collect();
         let statuses: Vec<NetworkStatus> = self
             .networks
             .iter()
-            .map(|h| self.network_status(&h, my_id, &direct_names))
+            .map(|h| {
+                self.network_status(
+                    &h,
+                    my_id,
+                    &direct_names,
+                    &managed_subnets,
+                    &managed_network_keys,
+                )
+            })
             .collect();
 
         // STANDBY-PER-NETWORK: the top-level `active` used to mirror the one
@@ -64,6 +86,8 @@ impl MeshManager {
         h: &NetworkHandle,
         my_id: EndpointId,
         direct_names: &HashSet<String>,
+        managed_subnets: &[crate::membership::Subnet],
+        managed_network_keys: &[EndpointId],
     ) -> NetworkStatus {
         // Direct-connection networks are tagged `[direct]` regardless of role.
         let role = if direct_names.contains(&h.name) {
@@ -133,7 +157,9 @@ impl MeshManager {
             .iter()
             .filter(|m| m.identity != my_id)
             .map(|m| {
-                let connection = connected.get(&m.identity).map(Self::gather_conn_info);
+                let connection = connected
+                    .get(&m.identity)
+                    .map(|conn| Self::gather_conn_info(conn, managed_subnets, managed_network_keys));
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
@@ -166,7 +192,11 @@ impl MeshManager {
         }
     }
 
-    pub(crate) fn gather_conn_info(conn: &iroh::endpoint::Connection) -> ipc::ConnectionInfo {
+    pub(crate) fn gather_conn_info(
+        conn: &iroh::endpoint::Connection,
+        managed_subnets: &[crate::membership::Subnet],
+        managed_network_keys: &[EndpointId],
+    ) -> ipc::ConnectionInfo {
         let paths = conn.paths();
         // Classify every path, then pick which one to report. iroh only marks a
         // path `is_selected()` once its path-selector has promoted a winner;
@@ -176,17 +206,22 @@ impl MeshManager {
         // falls back to the best available (Direct > Relay > Tor) so a live
         // connection always reports a concrete path.
         //
-        // PATHBLEED-STATUS-003: classify_candidate_addr's `in_subnet` is
-        // unconditionally true for every type now -- a peer's real transport
-        // address is never scoped to one logical tetron network to begin with
-        // (see that requirement's own docstring; this superseded
-        // PATHBLEED-STATUS-001's original address-range check, which failed
-        // for genuine Direct candidates almost universally, not just bled
-        // ones).
+        // PATHBLEED-STATUS-003 (corrected): classify_candidate_addr checks a
+        // Direct candidate's address against every overlay subnet/network
+        // this daemon manages, not just this one -- a self-captured/bled
+        // overlay address (a peer's own address on a *different* one of the
+        // daemon's networks) is caught even though it isn't inside this
+        // specific network's own subnet, while a genuine real address (never
+        // inside any of them) is trusted. See that requirement's own
+        // docstring for the full account, including the first (wrong) cut
+        // this replaced.
         //
-        // PATHBLEED-STATUS-002: `has_activity` corroborates a selected path with
-        // its own real traffic (`stats().udp_tx.bytes`) before trusting it --
-        // a freshly-opened, never-actually-used bled candidate reads as zero.
+        // PATHBLEED-STATUS-002 (corrected): `has_activity` corroborates a
+        // selected path with real *received* traffic (`stats().udp_rx.bytes`)
+        // before trusting it -- transmitted-only (`udp_tx`) already counts a
+        // path's own unvalidated `PATH_CHALLENGE` probe, so it doesn't
+        // actually prove the path works; a freshly-opened, never-actually-
+        // validated bled candidate reads real activity as zero.
         // PATH-DIAG-002: build the full per-candidate detail once, up front --
         // `choose_path_index`'s existing `classes` shape is derived from it
         // below rather than computed separately, so there is exactly one
@@ -195,8 +230,9 @@ impl MeshManager {
             .iter()
             .map(|p| {
                 let addr = p.remote_addr();
-                let (ct, in_subnet) = classify_candidate_addr(addr);
-                let has_activity = p.stats().udp_tx.bytes > 0;
+                let (ct, in_subnet) =
+                    classify_candidate_addr(addr, managed_subnets, managed_network_keys);
+                let has_activity = p.stats().udp_rx.bytes > 0;
                 ipc::PathCandidateInfo {
                     conn_type: ct,
                     remote_addr: addr.to_string(),

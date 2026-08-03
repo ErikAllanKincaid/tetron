@@ -406,16 +406,12 @@ pub enum ViaDetail {
     /// An in-subnet `Direct` candidate exists but lacks real traffic, and
     /// something else with activity won instead (`PATHBLEED-STATUS-002`).
     DirectUnvalidated,
-    /// A `Direct`-shaped candidate exists but was excluded as out-of-subnet
-    /// (`PATHBLEED-STATUS-001`'s cross-network-bleed exclusion).
-    ///
-    /// **Currently unreachable in normal operation** (`PATHBLEED-STATUS-003`):
-    /// `in_subnet` is unconditionally `true` for every candidate now, so this
-    /// variant's own condition can never be met. Kept, not removed -- the
-    /// classification logic that would produce it stays as defensive
-    /// coverage of its documented contract; this is not a dead field on the
-    /// wire in the sense of never having existed, just not currently
-    /// producible.
+    /// A `Direct`-shaped candidate exists but was excluded as a
+    /// self-captured/bled overlay address -- it falls inside one of this
+    /// daemon's own managed overlay subnets (`PATHBLEED-STATUS-001`'s
+    /// cross-network-bleed exclusion, corrected in `PATHBLEED-STATUS-003`
+    /// to check against every managed network, not just the one being
+    /// queried).
     DirectBled,
 }
 

@@ -79,52 +79,84 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
 /// truth) and persist our own — possibly coordinator-corrected — hostname. Called
 /// whenever a roster update arrives so renames, joins, and departures all reflect
 /// in `*.ray` resolution immediately.
-/// Pick which connection path to report in `tetron status`. Prefers the path iroh
-/// has selected; otherwise falls back to the best concrete path so a live
-/// connection never renders as `Unknown` (`?`). Priority Direct > Relay > Tor.
-/// Classifies one candidate path's address into its `ConnType`
-/// (PATHBLEED-STATUS-003). `in_subnet` (the second element) is
-/// unconditionally `true` for every type, `Direct` included -- a peer's
-/// real transport address (a LAN or public IP, for a genuine Direct
-/// candidate) is never scoped to any one logical tetron network to begin
-/// with, so there was never anything meaningful to check about it
-/// (`PATHBLEED-STATUS-001`'s own docstring has the full corrected
-/// reasoning; superseded by this requirement, kept there for history).
-pub(crate) fn classify_candidate_addr(addr: &iroh::TransportAddr) -> (ipc::ConnType, bool) {
+/// Classifies one candidate path's address into its `ConnType` and whether
+/// it is trustworthy (PATHBLEED-STATUS-003, corrected). `Relay`/`Tor`
+/// addresses are not scoped to any tetron network (relay/discovery config
+/// is daemon-wide) -- always trustworthy. A `Direct`/IP candidate's address
+/// is trustworthy when it falls inside **none** of `managed_subnets` (v4)/
+/// `managed_network_keys`' derived prefixes (v6) -- every overlay
+/// subnet/network this *daemon* manages, not only the network currently
+/// being queried. A genuine real transport address (a LAN or public IP)
+/// will never coincidentally match any of them. A candidate that *does*
+/// match one is a self-captured/bled overlay address: iroh's own
+/// local-interface enumeration can pick up this daemon's TUN device and
+/// offer a peer's overlay IP on a *different* one of its shared networks as
+/// a "direct" candidate (`SELFCAPTURE-ROUTE-001` mitigates iroh's own
+/// outbound use of this; it does not remove the candidate from
+/// `Connection::paths()`) -- exactly the address shape
+/// `DO-NOT-COMMIT/RESULTS_PathBleed_DataLossTest.md`'s live reproduction
+/// recorded (`10.88.1.147`, a peer's own overlay address on its *other*
+/// network). Checking against every managed network, not just the one
+/// being queried, is what catches this -- checking only the current
+/// network's own subnet (the original `PATHBLEED-STATUS-001` design)
+/// rejects genuine candidates almost universally instead (they are never
+/// inside *any* overlay subnet, so restricting the check to one specific
+/// subnet fails for the same reason unconditional `true` overcorrected:
+/// see `PATHBLEED-STATUS-003`'s own docstring for the full account of both
+/// mistakes).
+pub(crate) fn classify_candidate_addr(
+    addr: &iroh::TransportAddr,
+    managed_subnets: &[crate::membership::Subnet],
+    managed_network_keys: &[EndpointId],
+) -> (ipc::ConnType, bool) {
     if addr.is_relay() {
-        (ipc::ConnType::Relay, true)
-    } else if addr.is_custom() {
-        (ipc::ConnType::Tor, true)
-    } else {
-        (ipc::ConnType::Direct, true)
+        return (ipc::ConnType::Relay, true);
     }
+    if addr.is_custom() {
+        return (ipc::ConnType::Tor, true);
+    }
+    let looks_self_captured_or_bled = match addr {
+        iroh::TransportAddr::Ip(socket_addr) => match socket_addr.ip() {
+            std::net::IpAddr::V4(v4) => managed_subnets
+                .iter()
+                .any(|&subnet| crate::membership::ip_in_subnet(v4, subnet)),
+            std::net::IpAddr::V6(v6) => managed_network_keys
+                .iter()
+                .any(|key| crate::membership::ipv6_in_network(v6, key)),
+        },
+        _ => false,
+    };
+    (ipc::ConnType::Direct, !looks_self_captured_or_bled)
 }
 
+/// Pick which connection path to report in `tetron status`. Prefers the path
+/// iroh has selected; otherwise falls back to the best concrete path so a
+/// live connection never renders as `Unknown` (`?`). Priority Direct > Relay
+/// > Tor.
+///
 /// Returns the index into `classes`, or `None` when there are no paths, or
 /// (PATHBLEED-STATUS-001/`-003`) when every path is untrustworthy.
 ///
 /// Each candidate is `(conn_type, is_selected, in_subnet, has_activity)`.
-/// `in_subnet` comes from `classify_candidate_addr` above and is
-/// unconditionally `true` today (`PATHBLEED-STATUS-003`) -- the parameter
-/// stays, both because a candidate with `in_subnet == false` is still
-/// handled correctly if one is ever produced again (defensive, not dead
-/// code removed), and because the tier logic below reads the same either
-/// way. A candidate with `in_subnet == false` is excluded from both the
-/// `is_selected()`-preference check and the fallback scan below -- not
-/// just stripped of its selected flag, since the fallback loop matches by
-/// classification alone and would otherwise re-surface the same wrong
-/// address a moment later.
+/// `in_subnet` comes from `classify_candidate_addr` above. A candidate with
+/// `in_subnet == false` is excluded from both the `is_selected()`-preference
+/// check and the fallback scan below -- not just stripped of its selected
+/// flag, since the fallback loop matches by classification alone and would
+/// otherwise re-surface the same wrong address a moment later.
 ///
 /// `has_activity` (PATHBLEED-STATUS-002, a hardening layer on top of the
-/// subnet check) is whether the path's own `stats()` show any real traffic
-/// -- a freshly-opened, never-actually-used candidate reads as zero even
-/// while `is_selected()` claims it and even while it's in-subnet (the
-/// residual case `PATHBLEED-STATUS-001`'s subnet check alone can't catch: two
-/// of a node's own networks happening to share an identical subnet from
-/// before `SUBNET-COLLISION-001` existed, where a bled candidate looks
-/// legitimately in-subnet by coincidence but has never actually carried this
-/// connection's traffic). Three tiers, each restricted to `in_subnet`
-/// candidates only:
+/// subnet check) is whether the path's own `stats()` show real *received*
+/// traffic (`PATHBLEED-STATUS-003` corrected this from transmitted to
+/// received -- a path's own attempted-but-unvalidated `PATH_CHALLENGE`
+/// probe already counts as transmitted activity, so only receipt actually
+/// proves the path works) -- a freshly-opened, never-actually-validated
+/// candidate reads as zero even while `is_selected()` claims it and even
+/// while it's in-subnet (the residual case `PATHBLEED-STATUS-001`'s subnet
+/// check alone can't catch: two of a node's own networks happening to share
+/// an identical subnet from before `SUBNET-COLLISION-001` existed, where a
+/// bled candidate looks legitimately in-subnet by coincidence but has never
+/// actually carried this connection's traffic). Three tiers, each
+/// restricted to `in_subnet` candidates only:
 /// 1. Selected *and* (active or the sole trustworthy candidate) -- the
 ///    strongest signal, trusted outright.
 /// 2. No tier-1 winner: prefer any candidate with real activity, by class

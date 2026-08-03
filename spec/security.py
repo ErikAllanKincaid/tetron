@@ -607,19 +607,21 @@ class PathBleedSubnetScopeFilter(Requirement):
     that already have overlapping-subnet networks from before that guard
     existed.
 
-    **That core assumption itself is wrong for `Direct`/IP candidates --
-    corrected by `PATHBLEED-STATUS-003`, found 2026-08-02 while diagnosing
-    a live incident.** `network_subnet` here is this network's own virtual
-    *overlay* subnet (`membership::default_subnet() = 10.88.0.0/24`-style),
-    but a genuine Direct candidate's address is iroh's real physical
-    transport address (a LAN or public IP) -- categorically unrelated to
-    the overlay address space. A peer's real address is not scoped to any
-    one logical network in the first place (it is the same physical
-    machine regardless of which tetron network you share with them), so
-    checking it against *any* network's overlay subnet was never a
-    meaningful test -- it fails almost universally for genuine Direct
-    candidates, not just bled ones. See `PATHBLEED-STATUS-003` for the fix
-    and why `PATHBLEED-STATUS-002` alone is architecturally sufficient.
+    **This check was too narrow, not meaningless -- corrected by
+    `PATHBLEED-STATUS-003`, found 2026-08-02 while diagnosing a live
+    incident.** `network_subnet` here is *this specific network's own*
+    virtual overlay subnet. A genuine Direct candidate's address (a real
+    LAN/public IP) will never fall inside it -- so checking only against
+    the currently-queried network's subnet rejects genuine candidates
+    almost universally. But the check itself is not meaningless: a bled
+    candidate's address (iroh offering a peer's own overlay IP on a
+    *different* one of its networks as a "direct" candidate,
+    `SELFCAPTURE-ROUTE-001`) genuinely does fall inside *some* overlay
+    subnet -- just not necessarily this one. `PATHBLEED-STATUS-003`'s
+    corrected fix checks against every network this daemon manages, not
+    only the one being queried, and does **not** conclude
+    `PATHBLEED-STATUS-002` is sufficient alone -- see that requirement's
+    own corrected docstring.
     """
     req_id = "PATHBLEED-STATUS-001"
 
@@ -656,6 +658,17 @@ class PathBleedActivityCorroboration(Requirement):
     for. The three-tier restructure (activity as its own tier, ahead of
     plain classification) is what actually achieves "an unselected but
     active alternative outranks a selected-but-inactive one."
+
+    **Corrected 2026-08-02 (`PATHBLEED-STATUS-003`): "never-actually-used
+    reads as zero" was only ever true of `udp_rx`, not `udp_tx`.** Traced
+    `noq-proto-1.1.0` directly: `udp_tx` increments for any outgoing
+    datagram on a path, including the QUIC `PATH_CHALLENGE` probe sent to
+    *validate* a brand-new candidate -- so a doomed, never-validating bled
+    candidate reads activity almost immediately, on its first probe, not
+    only once real traffic is confirmed. `has_activity` (`diagnostics.rs`)
+    now checks `udp_rx.bytes > 0` -- incremented only on actual receipt --
+    which is what this requirement's own reasoning always assumed it was
+    checking.
     """
     req_id = "PATHBLEED-STATUS-002"
 
@@ -672,71 +685,100 @@ class PathBleedDropUselessSubnetCheck(Requirement):
     real `Direct`, while this box on v0.8.2 (confirmed *already includes*
     `PATHBLEED-STATUS-001`/`-002`) never once did, all session).
 
-    **The fix: `in_subnet` becomes unconditionally `true` for every
-    candidate type, `Direct`/IP included** -- matching how `Relay`/`Tor`
-    candidates are already treated (`ipc::ConnType::Relay`/`Tor` are
-    hardcoded `true` in the existing match in `gather_conn_info`,
-    `src/daemon/mesh/diagnostics.rs`). The `TransportAddr::Ip` match arm
-    computing `membership::ip_in_subnet`/`ipv6_in_network` against
-    `network_subnet` is deleted entirely for this purpose (the utility
-    functions themselves stay -- `ip_in_subnet` is still used by
-    `SUBNET-COLLISION-002`; only this one call site goes).
+    **Corrected 2026-08-02, same day, before release -- an independent
+    review (a separate, larger/newer model given a full handoff package,
+    per the standing "check in at checkpoints" practice this session
+    itself added to `DO-NOT-COMMIT/TODO.md`) found this requirement's
+    first cut, committed as `a00eb88`, was itself wrong in exactly the
+    class of way `PATHBLEED-STATUS-001` originally was: a fix for a real
+    bug that broke a different real thing. That commit is superseded by
+    this corrected version -- kept in git history, not the current
+    design.**
 
-    **Why this is safe, not a reversion of `PATH-BLEED-001`'s own fix:**
-    `Connection::paths()` already only returns paths for that specific,
-    correctly-selected connection object (iroh's own documented contract),
-    and `FINDINGS_PathBleed_DataLossAnalysis.md`'s own prior analysis
-    already proved misdelivery is architecturally impossible (QUIC's
-    connection-ID-keyed demux, not address-keyed) -- so there was never a
-    correctness risk to guard against here, only a display-accuracy one,
-    and the guard was checking the wrong thing for that too. Re-deriving
-    `choose_path_index`'s four tiers with `in_subnet` collapsed to a
-    constant `true`: tier 1 (`selected && in_subnet && (has_activity ||
-    sole)`) becomes `selected && (has_activity || sole)` -- unchanged in
-    substance, `PATHBLEED-STATUS-002`'s real protection stays intact
-    exactly as before. Tier 2 (`type==want && in_subnet && has_activity`)
-    becomes `type==want && has_activity` -- likewise still requires proven
-    activity, unaffected. Tier 3 (`type==want && in_subnet`, no activity
-    check) becomes plain type-preference among currently-open paths -- the
-    only tier that meaningfully changes, and it is fine now: a real,
-    currently-open Direct path is never wrong to report even before it has
-    carried its first byte on this specific connection, the same way a
-    brand-new not-yet-validated path was already correctly trusted when it
-    was the sole candidate (see `PATHBLEED-STATUS-002`'s own
-    `choose_path_selected_without_activity_still_trusted_if_sole_candidate`
-    test). No tier restructuring needed -- one computation deleted,
-    `choose_path_index`'s own code and tests otherwise untouched.
+    **What the first cut got wrong.** It collapsed `in_subnet` to an
+    unconditional `true` for every candidate, reasoning that "a peer's
+    real transport address is never scoped to a logical tetron network."
+    That premise is false for the *exact* candidate `PATH-BLEED-001`'s own
+    live VM reproduction recorded: `DO-NOT-COMMIT/
+    RESULTS_PathBleed_DataLossTest.md:29-33` shows the bled `Direct`
+    candidate's `remote_addr` was `10.88.1.147` -- the peer's own
+    **overlay** address *on a different one of its networks*, not a real
+    LAN/public address at all. iroh's own local-interface enumeration can
+    pick up a node's TUN device and offer a peer's overlay IP as a
+    "direct" candidate (`SELFCAPTURE-ROUTE-001` mitigates iroh's own
+    *outbound* use of this, but does not remove the candidate from
+    `conn.paths()`'s list) -- so a bled candidate's address is
+    overlay-shaped, and checking it against *some* overlay subnet is
+    exactly the meaningful signal the first cut wrongly concluded didn't
+    exist. Collapsing `in_subnet` to `true` reopened `PATH-BLEED-001`'s
+    original symptom for this address shape while fixing it for the
+    other (genuine real-address) shape -- net effect, a regression traded
+    for a regression.
 
-    **Options considered and rejected, for the record:** (a) find a
-    different, still-cheap address-based check to replace the subnet
-    comparison -- not viable, a peer's real transport address is not
-    scoped to any one logical network in the first place (same physical
-    machine regardless of which tetron network is being discussed), so no
-    address-based check can meaningfully discriminate "legitimately this
-    network" from "bled from another" for `Direct`/IP candidates; (b) the
-    actual root-cause architectural fix, a separate iroh `Endpoint` per
-    network so there is no shared peer-identity bookkeeping to bleed
-    across networks at all -- technically possible, but a much bigger
-    change (multiplies UDP sockets/relay connections/discovery instances
-    per daemon) than this bug warrants; noted as a future option if the
-    underlying bleed ever matters beyond this status-display question, not
+    **Also wrong: leaning on `PATHBLEED-STATUS-002`'s `has_activity` alone
+    is not sufficient.** Traced `noq-proto-1.1.0`'s actual source: `udp_tx`
+    (`connection/mod.rs`'s `build_transmit`, ~line 1245) increments for
+    *any* outgoing datagram on a path, including the QUIC `PATH_CHALLENGE`
+    probe sent to validate a brand-new, unproven candidate (`connection/
+    mod.rs` ~line 6152-6172, flows through the same `build_transmit`).
+    So a doomed, never-validating bled candidate reads `has_activity: true`
+    almost immediately -- on its first validation attempt, not only once
+    real traffic is confirmed. `udp_rx` (incremented only on actual
+    receipt, `connection/mod.rs` ~line 2231) is the signal that is
+    actually safe to lean on; `PATHBLEED-STATUS-002`'s own docstring's
+    "never-actually-used bled candidate reads as zero" claim was only
+    ever true of `udp_rx`, not `udp_tx`.
+
+    **The corrected fix, two parts:**
+
+    1. **`in_subnet` checks against every overlay subnet/network-prefix
+       this daemon manages, not just the currently-queried network's
+       own.** `classify_candidate_addr` (`select.rs`) gains
+       `managed_subnets: &[Subnet]` (v4) and `managed_network_keys:
+       &[EndpointId]` (v6, for `ipv6_in_network`) parameters -- computed
+       once in `MeshManager::status()` (every joined network's own
+       `subnet`/`network_key`) and threaded through `network_status` into
+       `gather_conn_info`. A candidate's address is trustworthy
+       (`in_subnet: true`) when it falls inside **none** of them (a
+       genuine real address never will); it is treated as a bled/
+       self-captured overlay address (`in_subnet: false`, excluded) when
+       it falls inside **any** of them (including, harmlessly, the
+       currently-queried network's own -- a genuine candidate would never
+       coincidentally match that either). `ip_in_subnet`/
+       `ipv6_in_network` (`membership.rs`) are unchanged, just called
+       against the full managed set instead of one network.
+    2. **`has_activity` checks `udp_rx.bytes > 0`, not `udp_tx.bytes > 0`**
+       (`diagnostics.rs::gather_conn_info`) -- receipt-confirmed traffic,
+       not merely attempted transmission.
+
+    Re-deriving `choose_path_index`'s four tiers with this corrected
+    `in_subnet`: unchanged in shape from `PATHBLEED-STATUS-001`'s
+    original tiers, since `in_subnet` is `true`/`false` again (just
+    computed correctly this time) -- no tier restructuring, same as
+    before.
+
+    **`PATH-DIAG-004`'s `DirectBled` is reachable again**, correctly this
+    time -- its own doc-comment "currently unreachable" note (added when
+    the first cut shipped) is removed; it was never accurate for more
+    than a few hours.
+
+    **Also caught by the same review, noted but not fixed by this
+    requirement** (separate, smaller follow-ups, see `DO-NOT-COMMIT/
+    TODO.md`): `reconcile.py`'s `cargo test`/`cargo clippy` invocations
+    don't pass `--workspace`, so `tetron-proto`'s own tests and lints are
+    never checked by the per-commit gate; a stale "Draft for review, not
+    yet implemented" note was left in this file's own `PATH-DIAG-*`
+    section header after that batch actually shipped; `classify_via_detail`
+    can report `DirectUnvalidated` even when the Direct candidate genuinely
+    has activity, if `Relay` itself currently holds tier-1 priority (a
+    labeling-precision issue, not a trust/security one).
+
+    **Options considered and rejected, still true after the correction:**
+    the actual root-cause architectural fix (a separate iroh `Endpoint`
+    per network, so there is no shared peer-identity bookkeeping to bleed
+    across networks at all) remains technically possible but a much
+    bigger change than this bug warrants -- noted as a future option, not
     attempted here.
-
-    **Ripple effect onto `PATH-DIAG-004`, caught before implementation:**
-    `ViaDetail::DirectBled` (`ipc.rs`) is derived from exactly this
-    `in_subnet == false` signal for a `Direct` candidate
-    (`classify_via_detail`'s `has_bled_direct` check, `select.rs`). With
-    `in_subnet` now unconditionally `true`, that branch can never trigger
-    again -- `DirectBled` becomes unreachable in normal operation. Not
-    removed: `classify_via_detail`'s existing logic and its two tests
-    covering `DirectBled` (`via_detail_direct_bled_when_only_direct_
-    candidate_is_out_of_subnet`, `via_detail_prefers_unvalidated_over_
-    bled_when_both_present`, `src/daemon/mod.rs`) stay as defensive
-    coverage of the function's own documented contract given *any* input,
-    not deleted just because production code no longer produces that
-    input shape. `ViaDetail::DirectBled`'s own doc comment gets a note
-    that it is currently unreachable, so a future reader isn't confused
-    about why `--json` never shows it.
     """
     req_id = "PATHBLEED-STATUS-003"
 
@@ -745,8 +787,9 @@ class PathBleedDropUselessSubnetCheck(Requirement):
 # PATH-DIAG-*: relay-vs-direct path observability (Level 1 instrumentation)
 # --------------------------------------------------------------------------
 #
-# Draft for review -- not yet implemented, `reconcile.py` not yet run against
-# these. Motivated by a live incident 2026-08-02 (Android tablet + several
+# Implemented and shipped 2026-08-02 (PATH-DIAG-001/002/004; PATH-DIAG-003
+# was scoped and then dropped before implementation, see TODO.md).
+# Motivated by a live incident 2026-08-02 (Android tablet + several
 # LAN machines reporting relay while carrying real traffic; one peer's own
 # status showed `Direct` for connections this daemon reported `Unknown`/
 # `Relay` for). Full background: `DO-NOT-COMMIT/RESEARCH_RelayVsDirect_iroh.md`.
