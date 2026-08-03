@@ -428,13 +428,18 @@ pub struct PathCandidateInfo {
     /// `PATHBLEED-STATUS-001`/`-002` may override when deciding
     /// `ConnectionInfo::conn_type`.
     pub is_selected: bool,
-    /// `PATHBLEED-STATUS-001`: whether this path's address falls within
-    /// *this specific network's* own subnet (always `true` for Relay/Tor,
-    /// which are not network-scoped).
+    /// `PATHBLEED-STATUS-003`: whether this path's address falls within
+    /// *any* of this daemon's own managed overlay subnets, checked against
+    /// every network it belongs to, not just this one. `false` means a
+    /// self-captured/bled overlay address, not a trustworthy one. Always
+    /// `true` for Relay/Tor, which are not network-scoped.
     pub in_subnet: bool,
-    /// `PATHBLEED-STATUS-002`: whether this path has carried any real
-    /// traffic (`udp_tx.bytes > 0`) -- a freshly-opened, never-actually-used
-    /// candidate reads `false` here even if iroh marked it `is_selected`.
+    /// `PATHBLEED-STATUS-003`: whether this path has actually *received*
+    /// real traffic (`udp_rx.bytes > 0`). A freshly-opened,
+    /// never-actually-validated candidate reads `false` here even if iroh
+    /// marked it `is_selected`, since an unvalidated `PATH_CHALLENGE` probe
+    /// alone already counts as transmitted (`udp_tx`) activity without
+    /// proving the path works.
     pub has_activity: bool,
     pub rtt_ms: Option<f64>,
 }

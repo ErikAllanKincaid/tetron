@@ -25,11 +25,18 @@ impl MeshManager {
         // actually one of THIS daemon's own overlay addresses on a
         // *different* network (a self-captured/bled candidate,
         // PATH-BLEED-001), which the currently-queried network's own subnet
-        // alone can't catch.
+        // alone can't catch. Recovers a poisoned lock's data instead of
+        // dropping that network from the exclusion set (same idiom as
+        // logdir.rs/identity.rs's ENV_LOCK) -- this is a trust boundary, so
+        // it must fail closed (keep checking) rather than open (silently
+        // trust more).
         let managed_subnets: Vec<crate::membership::Subnet> = self
             .networks
             .iter()
-            .filter_map(|h| h.state.read().ok().map(|s| s.subnet))
+            .map(|h| match h.state.read() {
+                Ok(s) => s.subnet,
+                Err(poisoned) => poisoned.into_inner().subnet,
+            })
             .collect();
         let managed_network_keys: Vec<EndpointId> =
             self.networks.iter().map(|h| h.network_key).collect();

@@ -185,7 +185,10 @@ tetron on a restricted network.
 
 ## Current Observability (What You Can See Now)
 
-`tetron status --json` includes a `connection` block per peer with:
+`tetron status --json` includes a `connection` block per peer with the winning
+path's summary, the full candidate list (`paths[]`, `PATH-DIAG-002`), and
+`via_detail` explaining why the winner isn't `Direct` (`PATH-DIAG-004`, `null`
+when it is):
 
 ```json
 {
@@ -194,36 +197,62 @@ tetron on a restricted network.
   "rtt_ms": 12.5,
   "bytes_tx": 1048576,
   "bytes_rx": 2097152,
-  "max_datagram_size": 1200
+  "max_datagram_size": 1200,
+  "paths": [
+    {
+      "conn_type": "Direct",
+      "remote_addr": "192.168.1.42:43737",
+      "is_selected": false,
+      "in_subnet": true,
+      "has_activity": false,
+      "rtt_ms": null
+    },
+    {
+      "conn_type": "Relay",
+      "remote_addr": "https://usw1-1.relay.n0.iroh.link./",
+      "is_selected": true,
+      "in_subnet": true,
+      "has_activity": true,
+      "rtt_ms": 12.5
+    }
+  ],
+  "via_detail": "DirectUnvalidated"
 }
 ```
 
-This tells you what class of path is currently in use (Direct/Relay/Tor/Unknown)
-and its RTT and traffic stats. It does **not** tell you:
-- What other paths exist (and why they were not chosen)
-- What addresses iroh has discovered for the peer
-- Whether a direct path was attempted and failed, or was never attempted
-- How long the connection has been in each state
+This example is exactly the "why relay" case this doc is about: a Direct
+candidate exists at the right LAN address and is in-subnet (trustworthy, not
+a bled overlay address -- `PATHBLEED-STATUS-003`), but has never actually
+received traffic yet, so the already-proven Relay path wins for now --
+`via_detail: "DirectUnvalidated"` says exactly that. Each `paths[]` entry's
+`in_subnet`/`has_activity` are the same trust signals `choose_path_index`
+itself uses (see `select.rs`'s own doc comment for the full tiering), not a
+separate summary of them.
 
-## Planned Observability (From TODO, Not Yet Built)
+What this still does **not** tell you:
+- What addresses iroh has *discovered* for the peer but never offered as a
+  candidate at all -- a peer missing from `paths[]` entirely (not merely
+  `has_activity: false`) is a discovery gap, not a validation-timing one, but
+  there's no field naming iroh's raw address list to confirm that directly.
+- How long the connection has been in its current state.
+- Whether a direct probe was attempted and failed outright, vs. never
+  attempted (both currently look like "no Direct entry in `paths[]`").
 
-The TODO item "Observability and control around relay vs. direct connections"
-(2026-07-29) proposes adding to `tetron status --json`:
+## Planned Observability (Not Yet Built)
 
-| Field | Purpose |
+Still open from the original TODO item ("Observability and control around
+relay vs. direct connections", 2026-07-29) -- `paths[]`/`via_detail` above
+covers the rest of that item's original field list:
+
+| Field/command | Purpose |
 |---|---|
-| `paths[]` | All known paths per peer, not just the winner. Each entry: type, addr, selected, rtt, tx/rx. |
-| `selected_path_reason` | Why the current path was chosen: `selected` / `active` / `fallback` (the tier from `choose_path_index`). |
-| `known_addrs[]` | All addresses iroh has discovered for this peer (relay, DHT, STUN, local). This alone answers "does iroh know the LAN IP?" |
-| `connection_age_secs` | How long the connection has been established. |
+| `known_addrs[]` | All addresses iroh has discovered for this peer (relay, DHT, STUN, local), independent of whether any became a `paths[]` candidate. Answers "does iroh even know the LAN IP?" directly instead of inferring it from a missing candidate. |
+| `connection_age_secs` | How long the connection has been established. Scoped out once (`PATH-DIAG-003`) as not worth the added state for what it would answer; revisit if a real diagnosis needs it. |
 | `direct_probe_state` | Has a direct probe been attempted? Succeeded? Failed? Never tried? |
+| `tetron paths <peer>` | Dump all known paths and addresses for a specific peer outside `status --json`. |
+| `tetron paths <peer> --force-switch` | Trigger path re-evaluation. |
 
-And new CLI commands:
-
-- `tetron paths <peer>` -- dump all known paths and addresses for a specific peer
-- `tetron paths <peer> --force-switch` -- trigger path re-evaluation
-
-These have not been implemented yet.
+None of these have been implemented yet.
 
 ## How to Tell the Difference (Field Guide)
 
@@ -232,7 +261,8 @@ These have not been implemented yet.
 | `via relay`, port 43737 confirmed open on both sides | Probation timing or address discovery gap | Wait 30s, re-check status |
 | `via relay`, port 43737 blocked by firewall on one side | Firewall | Allow UDP 43737 |
 | `via relay`, port 43737 in use by another process | Port conflict | `tetron config set listen-port <alt>` |
-| `via relay`, never switches to direct even after minutes, both ports open | Address discovery gap (iroh does not know the LAN IP) | Check `known_addrs` when the observability feature is built. Workaround: restart the daemon on both sides |
+| `via relay`, no `Direct` entry in `paths[]` at all, even after minutes, both ports open | Address discovery gap (iroh likely does not know the LAN IP) | No direct way to confirm yet (needs `known_addrs[]`, not built). Workaround: restart the daemon on both sides |
+| `via relay`, a `Direct` entry exists in `paths[]` but `has_activity` stays `false` | Probe sent but never validated -- firewall or NAT blocking the direct path, not a discovery gap | Re-check causes 1 and 5 above |
 | Path alternates between direct and relay | Connection migration or unstable network | Check for packet loss on the LAN |
 | `via (you)` | That is you | Nothing to diagnose |
 

@@ -151,11 +151,14 @@ pub(crate) fn classify_candidate_addr(
 /// probe already counts as transmitted activity, so only receipt actually
 /// proves the path works) -- a freshly-opened, never-actually-validated
 /// candidate reads as zero even while `is_selected()` claims it and even
-/// while it's in-subnet (the residual case `PATHBLEED-STATUS-001`'s subnet
-/// check alone can't catch: two of a node's own networks happening to share
-/// an identical subnet from before `SUBNET-COLLISION-001` existed, where a
-/// bled candidate looks legitimately in-subnet by coincidence but has never
-/// actually carried this connection's traffic). Three tiers, each
+/// while it's in-subnet. The residual case this actually still catches,
+/// now that `in_subnet` (`PATHBLEED-STATUS-003`) checks every managed
+/// subnet directly rather than only the currently-queried network's own: a
+/// bled candidate whose address is the peer's own overlay address on a
+/// network *they* belong to but *this daemon* does not -- it never appears
+/// in `managed_subnets` at all, so the subnet check can't exclude it, and
+/// `has_activity` is the only remaining defense (documented as a residual
+/// gap in `PATHBLEED-STATUS-003`'s own docstring). Three tiers, each
 /// restricted to `in_subnet` candidates only:
 /// 1. Selected *and* (active or the sole trustworthy candidate) -- the
 ///    strongest signal, trusted outright.

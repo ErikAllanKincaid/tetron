@@ -779,6 +779,69 @@ class PathBleedDropUselessSubnetCheck(Requirement):
     across networks at all) remains technically possible but a much
     bigger change than this bug warrants -- noted as a future option, not
     attempted here.
+
+    **Second independent review (2026-08-03, checkpoint 2), follow-ups
+    landed same day.** The corrected fix's core logic was confirmed sound
+    and safe to land; the review's concrete findings were addressed
+    directly rather than left as more TODO items:
+
+    - `tetron-proto/src/ipc.rs`'s `PathCandidateInfo::in_subnet`/
+      `has_activity` doc comments still described the *first* cut's
+      semantics ("this specific network's own subnet"; "`udp_tx.bytes >
+      0`") on a struct that ships over the wire to `tetron-webui`/
+      `tetron-systray` -- corrected to match this requirement's actual
+      scope (every managed subnet) and signal (`udp_rx`).
+    - `MeshManager::status()`'s `managed_subnets` computation
+      (`diagnostics.rs`) used `.read().ok().map(...)`, silently dropping
+      a network from the exclusion set entirely if its state lock were
+      ever poisoned -- fails open on exactly the trust boundary this
+      requirement exists to enforce. Changed to recover the guard's data
+      via `PoisonError::into_inner()` instead (same idiom already used
+      elsewhere in this codebase, e.g. `logdir.rs`/`identity.rs`'s
+      `ENV_LOCK`), so a poisoned lock still contributes its subnet to the
+      exclusion set rather than silently widening what counts as
+      trustworthy.
+    - `choose_path_index`'s own doc comment (`select.rs`) still cited
+      "two of a node's own networks happening to share an identical
+      subnet, from before `SUBNET-COLLISION-001`" as the residual case
+      `PATHBLEED-STATUS-002`'s activity gate exists to catch -- true of
+      the *original* `PATHBLEED-STATUS-001` design (which only checked
+      the currently-queried network's own subnet, so a coincidental
+      collision was the only way a same-daemon bleed got caught at all),
+      but no longer the operative reasoning once `-003` checks every
+      managed subnet directly. Corrected to name the reasoning below
+      instead.
+
+    **Two residual gaps, documented as permanent known limitations, not
+    fixed** (both narrower than the original bug, in the same class of
+    incompleteness that motivated writing this requirement's own history
+    down rather than treating any single cut as final):
+
+    1. **Bled candidate from a network the peer shares but this daemon
+       does not.** `managed_subnets` is built from `self.networks` --
+       *this* daemon's own joined networks. If the peer offers a
+       candidate that is their own overlay address on some *other*
+       network of theirs that this daemon isn't a member of, it never
+       appears in `managed_subnets` at all, so the subnet check cannot
+       exclude it -- `PATHBLEED-STATUS-002`'s `has_activity` gate is the
+       only remaining defense (an unvalidated candidate still reads no
+       activity), same as before this requirement's correction, just
+       narrowed from "always insufficient" to "insufficient only for
+       this specific unshared-network shape."
+    2. **Inverse false positive.** If a user's real LAN subnet
+       numerically overlaps one of their own chosen overlay subnets --
+       never true by default (tetron's `10.88.0.0/24` default vs. a
+       typical home `192.168.x.0/24` LAN) but possible with a
+       user-configured overlay range -- a genuine Direct candidate on
+       that LAN would be wrongly excluded as if it were a bled overlay
+       address. Not observed in practice; noted here so a future report
+       of "direct never wins even though the LAN address is clearly
+       right" is recognized rather than re-diagnosed from scratch.
+
+    `docs/ARCHITECTURE.md` and `docs/CONNECTIVITY.md` updated alongside
+    (both described pre-`-003` design, and `CONNECTIVITY.md`'s "Planned
+    Observability" table listed `PATH-DIAG-001/002/004`'s already-shipped
+    fields as not-yet-built).
     """
     req_id = "PATHBLEED-STATUS-003"
 
