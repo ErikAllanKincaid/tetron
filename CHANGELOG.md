@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-08-03
+
 ### Fixed
 
 - **`tetron status` could never report a genuine direct connection as `Direct` (`PATHBLEED-STATUS-003`)**: since `PATHBLEED-STATUS-001` (0.8.2), a direct candidate's real transport address was checked against only the currently-queried network's own virtual overlay subnet — but a peer's real address is never scoped to one logical tetron network in the first place, so this check failed almost universally for genuine candidates. Fixed by checking against every overlay subnet/network this daemon manages instead of just one, and by corroborating with received (not merely transmitted) path traffic — both needed together to fix genuine direct reporting without reopening the original cross-network address-bleed bug it was guarding against. Status-layer only: does not affect which path iroh itself actually uses to send data, only what `tetron status`/`--json` displays.
@@ -686,7 +688,8 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.2...v0.9.3
 [0.9.1]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.8.2...v0.9.0
 [0.1.6]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...v0.1.6
