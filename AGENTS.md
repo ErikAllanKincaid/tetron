@@ -26,7 +26,10 @@ Tetron has a growing list of addons. ../tetron-mobile/ ../tetron-relay/ ../tetro
 
 ## Spec-first workflow (libspec + reconcile.py)
 
-Changes are **spec-driven and committed one requirement at a time**:
+Changes are **spec-driven and committed one requirement at a time**. Full
+step-by-step version, including branch naming, dependency-ordering
+between requirements, and testsuite/docs/cross-repo follow-up:
+**[`docs/tetron-workflow.md`](docs/tetron-workflow.md)**. Summary:
 
 1. **Edit spec** — define/amend requirements under `spec/`. Decompose broad requirements into granular, single-responsibility classes (e.g. `HelpCommandReq`) rather than monolithic blocks.
 2. **Diff spec (mandatory before coding)** — run `uv run libspec diff` (or the `libspec_diff` MCP tool) to review drift/dependencies before writing code.
