@@ -371,6 +371,15 @@ pub fn spawn_peer_reader(
     // Tag every event from this reader (drops, connection-lost) with the peer
     // and network so the report bundle's logs are correlatable per peer.
     let span = tracing::info_span!("peer", peer = %peer_id.fmt_short(), net = %network);
+    // PATH-DIAG-001: log relay/direct path transitions for this peer. Shares
+    // the reader's own span (cloned here, before `reader` moves `conn`/
+    // `network`) so both sets of log lines correlate under the same
+    // `peer`/`net` tags. Runs detached — iroh's `path_events()` stream ends
+    // on its own once the connection closes, nothing here needs to observe
+    // or cancel it.
+    tokio::spawn(
+        log_path_events(conn.clone(), peer_id, network.clone()).instrument(span.clone()),
+    );
     let reader = async move {
         // FRAG-002: per-connection IPv6 reassembly state. Lives for the
         // reader task's lifetime; never shared across peers, so no locking.
@@ -449,6 +458,56 @@ pub fn spawn_peer_reader(
         }
     };
     tokio::spawn(reader.instrument(span))
+}
+
+/// Logs each path-lifecycle transition (opened / closed / selected / lagged)
+/// for one peer connection at `debug`/`info`/`warn`, per `PATH-DIAG-001`.
+///
+/// Not unit-tested: iroh's `PathEvent` is `#[non_exhaustive]` at both the
+/// enum and every struct-variant level, so tetron's own test code cannot
+/// construct a `PathEvent` value to hand to a synthetic test — only iroh
+/// internals can. Getting a real one requires an actual live connection.
+/// Verified instead via `cargo build`/`clippy` (a non-exhaustive `match`
+/// forces every variant to be handled) and a `tetron-testsuite` live check.
+///
+/// TODO: if a future `PATH-DIAG-*` (or unrelated) change needs to unit-test
+/// logic that consumes real iroh path/connection events, revisit pulling in
+/// iroh's `test-utils` cargo feature (`src/test_utils/test_transport.rs`'s
+/// in-memory `TestNetwork`/`TestTransport`) as a dev-dependency — not done
+/// here since it would add a new dependency feature combination and a new
+/// test pattern for this codebase, disproportionate to this single item.
+async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String) {
+    use futures::StreamExt;
+    let mut events = conn.path_events();
+    while let Some(event) = events.next().await {
+        match event {
+            iroh::endpoint::PathEvent::Opened { remote_addr, .. } => {
+                tracing::debug!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path opened");
+            }
+            iroh::endpoint::PathEvent::Closed { remote_addr, last_stats, .. } => {
+                tracing::debug!(
+                    peer = %peer_id.fmt_short(), net = %network, %remote_addr,
+                    tx_bytes = last_stats.udp_tx.bytes, rx_bytes = last_stats.udp_rx.bytes,
+                    "path closed"
+                );
+            }
+            iroh::endpoint::PathEvent::Selected { remote_addr, .. } => {
+                tracing::info!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path selected");
+            }
+            iroh::endpoint::PathEvent::Lagged { missed, .. } => {
+                tracing::warn!(
+                    peer = %peer_id.fmt_short(), net = %network, missed,
+                    "path-event stream lagged — some transitions were not observed"
+                );
+            }
+            _ => {
+                tracing::debug!(
+                    peer = %peer_id.fmt_short(), net = %network,
+                    "unrecognised path event variant (iroh added a new one)"
+                );
+            }
+        }
+    }
 }
 
 /// Spawns a task that consumes packets from `tun_rx` and writes them to the TUN

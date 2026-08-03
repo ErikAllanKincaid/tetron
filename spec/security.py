@@ -644,3 +644,84 @@ class PathBleedActivityCorroboration(Requirement):
     active alternative outranks a selected-but-inactive one."
     """
     req_id = "PATHBLEED-STATUS-002"
+
+
+# --------------------------------------------------------------------------
+# PATH-DIAG-*: relay-vs-direct path observability (Level 1 instrumentation)
+# --------------------------------------------------------------------------
+#
+# Draft for review -- not yet implemented, `reconcile.py` not yet run against
+# these. Motivated by a live incident 2026-08-02 (Android tablet + several
+# LAN machines reporting relay while carrying real traffic; one peer's own
+# status showed `Direct` for connections this daemon reported `Unknown`/
+# `Relay` for). Full background: `DO-NOT-COMMIT/RESEARCH_RelayVsDirect_iroh.md`.
+# Human-readable design: `DO-NOT-COMMIT/PLAN_RelayVsDirect_Level1Instrumentation.md`.
+#
+# All four requirements below extend `choose_path_index`/`gather_conn_info`
+# (`src/daemon/mesh/select.rs`, `src/daemon/mesh/diagnostics.rs`), the exact
+# functions `PATHBLEED-STATUS-001`/`-002` above already modify -- this is a
+# further layer on the same status-observability logic, not a new subsystem.
+#
+# Checked against `MINIMAL-006` (removed `torpedo ping`/`torpedo netcheck`
+# plus the original, larger `daemon/mesh/diagnostics.rs`) and `MINIMAL-009`
+# (removed the Prometheus exporter and `torpedo report` bundle, but
+# explicitly kept "per-peer counters that status display... needs... as
+# plain fields"): none of PATH-DIAG-001..004 reintroduces active probing or
+# an export surface. All four are passive -- surfacing state iroh and
+# tetron already compute/receive, the same category MTU-DIAG-001 already
+# established as in-scope post-MINIMAL. `tetron ping --paths`/`tetron
+# probe`/`tetron-connectivity-watch` (Level 2/3 of the same brainstorm)
+# would need their own explicit reckoning with `MINIMAL-006` when/if they're
+# specced -- flagged here so it isn't missed later, not addressed by this
+# batch.
+
+class PathTransitionLogging(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-001
+
+    Subscribes to iroh's `Connection::path_events()` (vendored
+    `iroh-1.0.3`, `src/endpoint/connection.rs:1161-1178` -- a live stream of
+    path-opened / path-closed-with-final-stats / selected-path-changed /
+    `Lagged` events, ending when the connection closes) once per peer
+    connection, logging each event at `debug`/`info`. Not subscribed to
+    anywhere in tetron today.
+
+    Placement: alongside the existing per-peer reader/reconnect task
+    (`info_span!("peer"/"reconnect", …)` per `AGENTS.md`'s tracing
+    conventions), so these log lines are already correlated by that span
+    without inventing a new one. Whether this is a distinct spawned task per
+    connection or folded into the existing per-peer reader loop directly is
+    an implementation decision, not fixed by this requirement -- the
+    observable requirement is only that transitions get logged, not the
+    task topology that logs them.
+
+    Pure `tracing` output -- no IPC/wire change, no new `ConnectionInfo`
+    field. `PATH-DIAG-003` depends on this landing first (it needs a
+    path-open timestamp source); `PATH-DIAG-002` and `PATH-DIAG-004` do not
+    depend on this one.
+
+    Implemented as a small `log_path_events` task spawned once from within
+    `spawn_peer_reader` itself (`src/forward.rs`) -- not at any of its seven
+    external call sites -- sharing the reader's own connection (cloned) and
+    span, so no call site needed to change.
+
+    **Found while writing this requirement's own tests, not just designed
+    up front:** iroh's `PathEvent` is `#[non_exhaustive]` at both the enum
+    and every struct-variant level, so tetron's own test code cannot
+    construct a `PathEvent` to hand a synthetic unit test -- only iroh
+    internals can. Getting a real one needs an actual live connection.
+    Decision (USER, 2026-08-02): skip a synthetic unit test for this one
+    requirement rather than pull in iroh's `test-utils` cargo feature
+    (in-memory `TestNetwork`/`TestTransport`, `src/test_utils/
+    test_transport.rs`) purely to obtain one -- a real new dependency
+    feature combination and test pattern for this codebase, disproportionate
+    to a ~10-line logging item. Verified instead via `cargo build`/`clippy`
+    (the non-exhaustive `match` forces every variant to be handled) and a
+    `tetron-testsuite` live check. Revisit test-utils if a future
+    `PATH-DIAG-*` (or unrelated) change needs to unit-test logic consuming
+    real iroh path/connection events -- flagged as a TODO at
+    `log_path_events`'s own doc comment in `src/forward.rs`, not re-decided
+    here.
+    """
+    req_id = "PATH-DIAG-001"
+
+
