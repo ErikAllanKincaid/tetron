@@ -19,10 +19,39 @@ impl MeshManager {
                     .collect()
             })
             .unwrap_or_default();
+        // PATHBLEED-STATUS-003 (corrected): every overlay subnet/network this
+        // daemon manages, not just the one being queried -- gather_conn_info
+        // needs the full set to recognize a candidate address that's
+        // actually one of THIS daemon's own overlay addresses on a
+        // *different* network (a self-captured/bled candidate,
+        // PATH-BLEED-001), which the currently-queried network's own subnet
+        // alone can't catch. Recovers a poisoned lock's data instead of
+        // dropping that network from the exclusion set (same idiom as
+        // logdir.rs/identity.rs's ENV_LOCK) -- this is a trust boundary, so
+        // it must fail closed (keep checking) rather than open (silently
+        // trust more).
+        let managed_subnets: Vec<crate::membership::Subnet> = self
+            .networks
+            .iter()
+            .map(|h| match h.state.read() {
+                Ok(s) => s.subnet,
+                Err(poisoned) => poisoned.into_inner().subnet,
+            })
+            .collect();
+        let managed_network_keys: Vec<EndpointId> =
+            self.networks.iter().map(|h| h.network_key).collect();
         let statuses: Vec<NetworkStatus> = self
             .networks
             .iter()
-            .map(|h| self.network_status(&h, my_id, &direct_names))
+            .map(|h| {
+                self.network_status(
+                    &h,
+                    my_id,
+                    &direct_names,
+                    &managed_subnets,
+                    &managed_network_keys,
+                )
+            })
             .collect();
 
         // STANDBY-PER-NETWORK: the top-level `active` used to mirror the one
@@ -64,6 +93,8 @@ impl MeshManager {
         h: &NetworkHandle,
         my_id: EndpointId,
         direct_names: &HashSet<String>,
+        managed_subnets: &[crate::membership::Subnet],
+        managed_network_keys: &[EndpointId],
     ) -> NetworkStatus {
         // Direct-connection networks are tagged `[direct]` regardless of role.
         let role = if direct_names.contains(&h.name) {
@@ -71,7 +102,7 @@ impl MeshManager {
         } else {
             h.role.clone()
         };
-        let (members, member_count, nuke_proposals, subnet, subnet_str, nuke_consensus_threshold) = {
+        let (members, member_count, nuke_proposals, subnet_str, nuke_consensus_threshold) = {
             let s = match h.state.read() {
                 Ok(s) => s,
                 Err(_) => {
@@ -118,7 +149,6 @@ impl MeshManager {
                 s.roster(),
                 count,
                 proposals,
-                s.subnet,
                 format!("{base}/{prefix}"),
                 s.nuke_consensus_threshold,
             )
@@ -136,7 +166,7 @@ impl MeshManager {
             .map(|m| {
                 let connection = connected
                     .get(&m.identity)
-                    .map(|conn| Self::gather_conn_info(conn, subnet, &h.network_key));
+                    .map(|conn| Self::gather_conn_info(conn, managed_subnets, managed_network_keys));
                 PeerStatus {
                     endpoint_id: m.identity,
                     ip: m.ip,
@@ -171,8 +201,8 @@ impl MeshManager {
 
     pub(crate) fn gather_conn_info(
         conn: &iroh::endpoint::Connection,
-        network_subnet: crate::membership::Subnet,
-        network_key: &EndpointId,
+        managed_subnets: &[crate::membership::Subnet],
+        managed_network_keys: &[EndpointId],
     ) -> ipc::ConnectionInfo {
         let paths = conn.paths();
         // Classify every path, then pick which one to report. iroh only marks a
@@ -183,43 +213,47 @@ impl MeshManager {
         // falls back to the best available (Direct > Relay > Tor) so a live
         // connection always reports a concrete path.
         //
-        // PATHBLEED-STATUS-001: `in_subnet` additionally checks each path's own
-        // address against *this specific network's own* subnet -- iroh's
-        // `RemoteStateActor` shares path-selection state across every network a
-        // peer is a member of, so `is_selected()` alone can be poisoned by a
-        // path that legitimately belongs to a *different* one of that peer's
-        // networks (PATH-BLEED-001). Relay/Tor addresses are not network-scoped
-        // (tetron's relay/discovery config is daemon-wide), so there is nothing
-        // bleed-shaped to check there -- always `true`.
+        // PATHBLEED-STATUS-003 (corrected): classify_candidate_addr checks a
+        // Direct candidate's address against every overlay subnet/network
+        // this daemon manages, not just this one -- a self-captured/bled
+        // overlay address (a peer's own address on a *different* one of the
+        // daemon's networks) is caught even though it isn't inside this
+        // specific network's own subnet, while a genuine real address (never
+        // inside any of them) is trusted. See that requirement's own
+        // docstring for the full account, including the first (wrong) cut
+        // this replaced.
         //
-        // PATHBLEED-STATUS-002: `has_activity` corroborates a selected path with
-        // its own real traffic (`stats().udp_tx.bytes`) before trusting it --
-        // a freshly-opened, never-actually-used bled candidate reads as zero.
-        let classes: Vec<(ipc::ConnType, bool, bool, bool)> = paths
+        // PATHBLEED-STATUS-002 (corrected): `has_activity` corroborates a
+        // selected path with real *received* traffic (`stats().udp_rx.bytes`)
+        // before trusting it -- transmitted-only (`udp_tx`) already counts a
+        // path's own unvalidated `PATH_CHALLENGE` probe, so it doesn't
+        // actually prove the path works; a freshly-opened, never-actually-
+        // validated bled candidate reads real activity as zero.
+        // PATH-DIAG-002: build the full per-candidate detail once, up front --
+        // `choose_path_index`'s existing `classes` shape is derived from it
+        // below rather than computed separately, so there is exactly one
+        // classification pass, not two.
+        let candidates: Vec<ipc::PathCandidateInfo> = paths
             .iter()
             .map(|p| {
                 let addr = p.remote_addr();
-                let (ct, in_subnet) = if addr.is_relay() {
-                    (ipc::ConnType::Relay, true)
-                } else if addr.is_custom() {
-                    (ipc::ConnType::Tor, true)
-                } else {
-                    let in_subnet = match addr {
-                        iroh::TransportAddr::Ip(socket_addr) => match socket_addr.ip() {
-                            std::net::IpAddr::V4(v4) => {
-                                crate::membership::ip_in_subnet(v4, network_subnet)
-                            }
-                            std::net::IpAddr::V6(v6) => {
-                                crate::membership::ipv6_in_network(v6, network_key)
-                            }
-                        },
-                        _ => true,
-                    };
-                    (ipc::ConnType::Direct, in_subnet)
-                };
-                let has_activity = p.stats().udp_tx.bytes > 0;
-                (ct, p.is_selected(), in_subnet, has_activity)
+                let (ct, in_subnet) =
+                    classify_candidate_addr(addr, managed_subnets, managed_network_keys);
+                let has_activity = p.stats().udp_rx.bytes > 0;
+                ipc::PathCandidateInfo {
+                    conn_type: ct,
+                    remote_addr: addr.to_string(),
+                    is_selected: p.is_selected(),
+                    in_subnet,
+                    has_activity,
+                    rtt_ms: Some(p.rtt().as_secs_f64() * 1000.0),
+                }
             })
+            .collect();
+
+        let classes: Vec<(ipc::ConnType, bool, bool, bool)> = candidates
+            .iter()
+            .map(|c| (c.conn_type.clone(), c.is_selected, c.in_subnet, c.has_activity))
             .collect();
 
         let (conn_type, remote_addr, rtt_ms) = match choose_path_index(&classes)
@@ -235,6 +269,7 @@ impl MeshManager {
             }
             None => (ipc::ConnType::Unknown, None, None),
         };
+        let via_detail = classify_via_detail(&classes, &conn_type);
 
         let stats = conn.stats();
         ipc::ConnectionInfo {
@@ -247,6 +282,8 @@ impl MeshManager {
             datagrams_rx: stats.udp_rx.datagrams,
             lost_packets: stats.lost_packets,
             max_datagram_size: conn.max_datagram_size().map(|sz| sz as u64),
+            paths: candidates,
+            via_detail,
         }
     }
 }

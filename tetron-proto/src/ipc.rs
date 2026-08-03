@@ -379,6 +379,69 @@ pub struct ConnectionInfo {
     /// daemon's response still decodes.
     #[serde(default)]
     pub max_datagram_size: Option<u64>,
+    /// Every candidate path considered for this connection (PATH-DIAG-002),
+    /// not just the one `conn_type`/`remote_addr`/`rtt_ms` above summarize --
+    /// `src/daemon/mesh/diagnostics.rs::gather_conn_info` already computed
+    /// this data to pick the winner reported above; this field stops
+    /// discarding the rest. `--json`-only, matching `max_datagram_size`'s own
+    /// precedent (`MTU-DIAG-001`) of per-connection detail beyond the
+    /// aligned summary table living here rather than in plain-text output.
+    /// `#[serde(default)]` so an older daemon's response still decodes.
+    #[serde(default)]
+    pub paths: Vec<PathCandidateInfo>,
+    /// Why `conn_type` isn't `Direct` (PATH-DIAG-004) -- `None` when it is,
+    /// since there is nothing to explain. Derived from the same `paths`
+    /// data above by `select::classify_via_detail`. `#[serde(default)]` so
+    /// an older daemon's response still decodes.
+    #[serde(default)]
+    pub via_detail: Option<ViaDetail>,
+}
+
+/// Why a connection's `conn_type` isn't `Direct` (PATH-DIAG-004), derived
+/// from the same candidate data as `ConnectionInfo::paths`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViaDetail {
+    /// No `Direct` candidate exists at all, in-subnet or otherwise.
+    NoDirectCandidate,
+    /// An in-subnet `Direct` candidate exists but lacks real traffic, and
+    /// something else with activity won instead (`PATHBLEED-STATUS-002`).
+    DirectUnvalidated,
+    /// A `Direct`-shaped candidate exists but was excluded as a
+    /// self-captured/bled overlay address -- it falls inside one of this
+    /// daemon's own managed overlay subnets (`PATHBLEED-STATUS-001`'s
+    /// cross-network-bleed exclusion, corrected in `PATHBLEED-STATUS-003`
+    /// to check against every managed network, not just the one being
+    /// queried).
+    DirectBled,
+}
+
+/// One candidate path considered for a connection (PATH-DIAG-002) -- iroh's
+/// own view of a path plus the trust classification
+/// `PATHBLEED-STATUS-001`/`-002` already compute for it, so a reader can see
+/// *why* `ConnectionInfo`'s own single summarized `conn_type` is what it is
+/// instead of only the end result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathCandidateInfo {
+    pub conn_type: ConnType,
+    pub remote_addr: String,
+    /// iroh's own `Path::is_selected()` -- the raw signal
+    /// `PATHBLEED-STATUS-001`/`-002` may override when deciding
+    /// `ConnectionInfo::conn_type`.
+    pub is_selected: bool,
+    /// `PATHBLEED-STATUS-003`: whether this path's address falls within
+    /// *any* of this daemon's own managed overlay subnets, checked against
+    /// every network it belongs to, not just this one. `false` means a
+    /// self-captured/bled overlay address, not a trustworthy one. Always
+    /// `true` for Relay/Tor, which are not network-scoped.
+    pub in_subnet: bool,
+    /// `PATHBLEED-STATUS-003`: whether this path has actually *received*
+    /// real traffic (`udp_rx.bytes > 0`). A freshly-opened,
+    /// never-actually-validated candidate reads `false` here even if iroh
+    /// marked it `is_selected`, since an unvalidated `PATH_CHALLENGE` probe
+    /// alone already counts as transmitted (`udp_tx`) activity without
+    /// proving the path works.
+    pub has_activity: bool,
+    pub rtt_ms: Option<f64>,
 }
 
 /// Per-`DropReason` drop counters (MTU-DIAG-001), surfaced daemon-wide via
@@ -716,7 +779,6 @@ mod tests {
             active: true,
             daemon_version: "0.1.0".to_string(),
             networks: vec![NetworkStatus {
-                name: "gaming".to_string(),
                 network: "gaming".to_string(),
                 role: NetworkRole::Coordinator,
                 my_ip: Ipv4Addr::new(10, 88, 10, 5),
@@ -739,6 +801,26 @@ mod tests {
                         datagrams_rx: 0,
                         lost_packets: 0,
                         max_datagram_size: Some(1162),
+                        via_detail: None,
+                        paths: vec![
+                            PathCandidateInfo {
+                                conn_type: ConnType::Direct,
+                                remote_addr: "1.2.3.4:43737".to_string(),
+                                is_selected: true,
+                                in_subnet: true,
+                                has_activity: true,
+                                rtt_ms: Some(5.0),
+                            },
+                            PathCandidateInfo {
+                                conn_type: ConnType::Relay,
+                                remote_addr: "relay:https://usw1-1.relay.n0.iroh.link./"
+                                    .to_string(),
+                                is_selected: false,
+                                in_subnet: true,
+                                has_activity: false,
+                                rtt_ms: Some(40.0),
+                            },
+                        ],
                     }),
                     is_coordinator: false,
                 }],
@@ -781,11 +863,60 @@ mod tests {
                         .max_datagram_size,
                     Some(1162)
                 );
+                assert_eq!(
+                    networks[0].peers[0].connection.as_ref().unwrap().via_detail,
+                    None
+                );
+                let paths = &networks[0].peers[0].connection.as_ref().unwrap().paths;
+                assert_eq!(paths.len(), 2);
+                assert_eq!(paths[0].conn_type, ConnType::Direct);
+                assert!(paths[0].is_selected);
+                assert!(paths[0].has_activity);
+                assert_eq!(paths[1].conn_type, ConnType::Relay);
+                assert!(!paths[1].is_selected);
+                assert!(!paths[1].has_activity);
                 assert_eq!(drops.fragmentation_failed, 5);
                 assert_eq!(fragmented_ipv4, 3);
                 assert_eq!(fragmented_ipv6, 1);
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    /// PATH-DIAG-002/004: an older daemon's serialized `ConnectionInfo`
+    /// (from before the `paths`/`via_detail` fields existed) must still
+    /// decode -- constructs the msgpack payload by hand, without either
+    /// field, rather than relying on `#[serde(default)]` being exercised
+    /// only via the current struct literal (which always has both fields
+    /// and would not catch a regression in the attribute itself).
+    #[test]
+    fn test_connection_info_paths_defaults_on_old_payload() {
+        #[derive(Serialize)]
+        struct OldConnectionInfo {
+            conn_type: ConnType,
+            remote_addr: Option<String>,
+            rtt_ms: Option<f64>,
+            bytes_tx: u64,
+            bytes_rx: u64,
+            datagrams_tx: u64,
+            datagrams_rx: u64,
+            lost_packets: u64,
+        }
+        let old = OldConnectionInfo {
+            conn_type: ConnType::Relay,
+            remote_addr: Some("relay:https://usw1-1.relay.n0.iroh.link./".to_string()),
+            rtt_ms: Some(40.0),
+            bytes_tx: 100,
+            bytes_rx: 200,
+            datagrams_tx: 1,
+            datagrams_rx: 2,
+            lost_packets: 0,
+        };
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let decoded: ConnectionInfo = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.conn_type, ConnType::Relay);
+        assert_eq!(decoded.max_datagram_size, None);
+        assert!(decoded.paths.is_empty());
+        assert_eq!(decoded.via_detail, None);
     }
 }

@@ -1350,6 +1350,160 @@ mod accept_handler_tests {
         assert_eq!(super::choose_path_index(&classes), Some(0));
     }
 
+    // PATH-DIAG-004: `classify_via_detail` explains *why* a non-Direct
+    // `conn_type` was reported, derived from the same `classes` data
+    // `choose_path_index` above already consumes.
+
+    #[test]
+    fn via_detail_none_when_winner_is_direct() {
+        use ipc::ConnType::*;
+        // Nothing to explain -- the report already says Direct.
+        let classes = [(Direct, true, true, true)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Direct),
+            None
+        );
+    }
+
+    #[test]
+    fn via_detail_no_direct_candidate_when_none_present() {
+        use ipc::ConnType::*;
+        let classes = [(Relay, true, true, true)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::NoDirectCandidate)
+        );
+    }
+
+    #[test]
+    fn via_detail_direct_unvalidated_when_inactive_in_subnet_direct_loses_to_active_relay() {
+        use ipc::ConnType::*;
+        // Same fixture as `choose_path_falls_back_...`-style tests above:
+        // an in-subnet but inactive Direct candidate loses to an active
+        // Relay one -- the PATHBLEED-STATUS-002 case.
+        let classes = [(Relay, false, true, true), (Direct, true, true, false)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectUnvalidated)
+        );
+    }
+
+    #[test]
+    fn via_detail_direct_bled_when_only_direct_candidate_is_out_of_subnet() {
+        use ipc::ConnType::*;
+        // A Direct-shaped candidate exists but was excluded as out-of-subnet
+        // (PATHBLEED-STATUS-001) -- distinct from "unvalidated": there is no
+        // in-subnet Direct candidate to eventually trust at all.
+        let classes = [(Relay, false, true, true), (Direct, true, false, false)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectBled)
+        );
+    }
+
+    #[test]
+    fn via_detail_prefers_unvalidated_over_bled_when_both_present() {
+        use ipc::ConnType::*;
+        // Edge case: both an in-subnet-but-inactive Direct and a separate
+        // out-of-subnet Direct-shaped candidate exist. DirectUnvalidated is
+        // the more directly actionable reason, so it takes priority.
+        let classes = [
+            (Relay, false, true, true),
+            (Direct, false, true, false),
+            (Direct, true, false, false),
+        ];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectUnvalidated)
+        );
+    }
+
+    // PATHBLEED-STATUS-003 (corrected): `classify_candidate_addr` checks a
+    // Direct candidate's address against *every* overlay subnet/network
+    // prefix this daemon manages, not just the currently-queried network's
+    // own -- trustworthy (`in_subnet: true`) when it matches none of them
+    // (a genuine real address never will), treated as a self-captured/bled
+    // overlay address (`in_subnet: false`) when it matches any of them.
+
+    fn test_network_key(seed: u8) -> EndpointId {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = seed;
+        SecretKey::from(key_bytes).public()
+    }
+
+    #[test]
+    fn classify_candidate_addr_direct_when_not_in_any_managed_subnet() {
+        use std::net::{Ipv4Addr, SocketAddr};
+        // A real LAN address, nowhere near any tetron overlay subnet --
+        // exactly the case PATHBLEED-STATUS-003's first (wrong) cut fixed
+        // by accident and this corrected version fixes for the right
+        // reason: it matches none of the daemon's own managed subnets.
+        let addr = iroh::TransportAddr::Ip(SocketAddr::new(
+            Ipv4Addr::new(192, 168, 121, 244).into(),
+            43737,
+        ));
+        let managed_subnets = [(Ipv4Addr::new(10, 88, 0, 0), 24)];
+        let managed_keys = [test_network_key(1)];
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &managed_subnets, &managed_keys),
+            (ipc::ConnType::Direct, true)
+        );
+    }
+
+    #[test]
+    fn classify_candidate_addr_direct_bled_when_inside_a_managed_subnet() {
+        use std::net::{Ipv4Addr, SocketAddr};
+        // The exact live signature from DO-NOT-COMMIT/
+        // RESULTS_PathBleed_DataLossTest.md: a peer's own overlay address
+        // *on a different one of the daemon's managed networks* shows up
+        // as a "Direct" candidate. Must be excluded even though it isn't
+        // inside the *currently queried* network's own subnet -- that's
+        // exactly what PATHBLEED-STATUS-003's first cut got wrong.
+        let addr = iroh::TransportAddr::Ip(SocketAddr::new(
+            Ipv4Addr::new(10, 88, 1, 147).into(),
+            43737,
+        ));
+        let managed_subnets = [
+            (Ipv4Addr::new(10, 88, 0, 0), 24), // the network being queried
+            (Ipv4Addr::new(10, 88, 1, 0), 24), // a different managed network -- the bleed source
+        ];
+        let managed_keys = [test_network_key(1), test_network_key(2)];
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &managed_subnets, &managed_keys),
+            (ipc::ConnType::Direct, false)
+        );
+    }
+
+    #[test]
+    fn classify_candidate_addr_direct_bled_v6_when_inside_a_managed_network_prefix() {
+        use std::net::SocketAddr;
+        // IPv6 counterpart: a bled candidate whose address falls under one
+        // of the daemon's own managed networks' derived IPv6 prefix.
+        let bled_network = test_network_key(2);
+        let bled_peer = test_network_key(99);
+        let v6 = crate::membership::derive_ipv6(&bled_peer, &bled_network);
+        let addr = iroh::TransportAddr::Ip(SocketAddr::new(v6.into(), 43737));
+        let managed_subnets = [(std::net::Ipv4Addr::new(10, 88, 0, 0), 24)];
+        let managed_keys = [test_network_key(1), bled_network];
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &managed_subnets, &managed_keys),
+            (ipc::ConnType::Direct, false)
+        );
+    }
+
+    #[test]
+    fn classify_candidate_addr_relay_bypasses_subnet_check_entirely() {
+        // Regression check: Relay is trusted unconditionally, before the
+        // subnet check ever runs -- unaffected by the correction.
+        let addr = iroh::TransportAddr::Relay(
+            "https://relay.example.com".parse().unwrap(),
+        );
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &[], &[]),
+            (ipc::ConnType::Relay, true)
+        );
+    }
+
     #[test]
     fn subnet_collision_detects_overlap() {
         use std::net::Ipv4Addr;

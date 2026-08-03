@@ -23,14 +23,21 @@ def check_build() -> dict:
 
 
 def check_clippy() -> dict:
-    r = run(["cargo", "clippy", "--all-targets", "--quiet", "--", "-D", "warnings"])
+    # --workspace: without it, this only lints the root `tetron` package --
+    # tetron-proto's own code was never checked by this gate (found during
+    # PATHBLEED-STATUS-003's review).
+    r = run(["cargo", "clippy", "--workspace", "--all-targets", "--quiet", "--", "-D", "warnings"])
     # -D warnings makes clippy fail (non-zero) if there are any warnings, so a
     # clean pass means returncode == 0; report 0 warnings in that case.
     return {"warnings": 0 if r.returncode == 0 else r.stderr.count("warning:")}
 
 
 def check_tests() -> dict:
-    r = run(["cargo", "test", "--quiet"])
+    # --workspace: without it, this only runs the root `tetron` package's
+    # tests -- tetron-proto's own test suite was never exercised by this gate
+    # (found during PATHBLEED-STATUS-003's review; a stale test literal in
+    # tetron-proto had been broken for a while as a direct result).
+    r = run(["cargo", "test", "--workspace", "--quiet"])
     return {"pass": r.returncode == 0}
 
 
