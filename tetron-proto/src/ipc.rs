@@ -389,6 +389,26 @@ pub struct ConnectionInfo {
     /// `#[serde(default)]` so an older daemon's response still decodes.
     #[serde(default)]
     pub paths: Vec<PathCandidateInfo>,
+    /// Why `conn_type` isn't `Direct` (PATH-DIAG-004) -- `None` when it is,
+    /// since there is nothing to explain. Derived from the same `paths`
+    /// data above by `select::classify_via_detail`. `#[serde(default)]` so
+    /// an older daemon's response still decodes.
+    #[serde(default)]
+    pub via_detail: Option<ViaDetail>,
+}
+
+/// Why a connection's `conn_type` isn't `Direct` (PATH-DIAG-004), derived
+/// from the same candidate data as `ConnectionInfo::paths`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViaDetail {
+    /// No `Direct` candidate exists at all, in-subnet or otherwise.
+    NoDirectCandidate,
+    /// An in-subnet `Direct` candidate exists but lacks real traffic, and
+    /// something else with activity won instead (`PATHBLEED-STATUS-002`).
+    DirectUnvalidated,
+    /// A `Direct`-shaped candidate exists but was excluded as out-of-subnet
+    /// (`PATHBLEED-STATUS-001`'s cross-network-bleed exclusion).
+    DirectBled,
 }
 
 /// One candidate path considered for a connection (PATH-DIAG-002) -- iroh's
@@ -772,6 +792,7 @@ mod tests {
                         datagrams_rx: 0,
                         lost_packets: 0,
                         max_datagram_size: Some(1162),
+                        via_detail: None,
                         paths: vec![
                             PathCandidateInfo {
                                 conn_type: ConnType::Direct,
@@ -833,6 +854,10 @@ mod tests {
                         .max_datagram_size,
                     Some(1162)
                 );
+                assert_eq!(
+                    networks[0].peers[0].connection.as_ref().unwrap().via_detail,
+                    None
+                );
                 let paths = &networks[0].peers[0].connection.as_ref().unwrap().paths;
                 assert_eq!(paths.len(), 2);
                 assert_eq!(paths[0].conn_type, ConnType::Direct);
@@ -849,12 +874,12 @@ mod tests {
         }
     }
 
-    /// PATH-DIAG-002: an older daemon's serialized `ConnectionInfo` (from
-    /// before the `paths` field existed) must still decode -- constructs the
-    /// msgpack payload by hand, without the field, rather than relying on
-    /// `#[serde(default)]` being exercised only via the current struct
-    /// literal (which always has the field and would not catch a regression
-    /// in the attribute itself).
+    /// PATH-DIAG-002/004: an older daemon's serialized `ConnectionInfo`
+    /// (from before the `paths`/`via_detail` fields existed) must still
+    /// decode -- constructs the msgpack payload by hand, without either
+    /// field, rather than relying on `#[serde(default)]` being exercised
+    /// only via the current struct literal (which always has both fields
+    /// and would not catch a regression in the attribute itself).
     #[test]
     fn test_connection_info_paths_defaults_on_old_payload() {
         #[derive(Serialize)]
@@ -883,5 +908,6 @@ mod tests {
         assert_eq!(decoded.conn_type, ConnType::Relay);
         assert_eq!(decoded.max_datagram_size, None);
         assert!(decoded.paths.is_empty());
+        assert_eq!(decoded.via_detail, None);
     }
 }

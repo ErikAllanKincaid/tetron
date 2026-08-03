@@ -251,6 +251,7 @@ impl MeshManager {
             }
             None => (ipc::ConnType::Unknown, None, None),
         };
+        let via_detail = classify_via_detail(&classes, &conn_type);
 
         let stats = conn.stats();
         ipc::ConnectionInfo {
@@ -264,6 +265,7 @@ impl MeshManager {
             lost_packets: stats.lost_packets,
             max_datagram_size: conn.max_datagram_size().map(|sz| sz as u64),
             paths: candidates,
+            via_detail,
         }
     }
 }

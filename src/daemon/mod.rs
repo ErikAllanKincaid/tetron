@@ -1350,6 +1350,74 @@ mod accept_handler_tests {
         assert_eq!(super::choose_path_index(&classes), Some(0));
     }
 
+    // PATH-DIAG-004: `classify_via_detail` explains *why* a non-Direct
+    // `conn_type` was reported, derived from the same `classes` data
+    // `choose_path_index` above already consumes.
+
+    #[test]
+    fn via_detail_none_when_winner_is_direct() {
+        use ipc::ConnType::*;
+        // Nothing to explain -- the report already says Direct.
+        let classes = [(Direct, true, true, true)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Direct),
+            None
+        );
+    }
+
+    #[test]
+    fn via_detail_no_direct_candidate_when_none_present() {
+        use ipc::ConnType::*;
+        let classes = [(Relay, true, true, true)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::NoDirectCandidate)
+        );
+    }
+
+    #[test]
+    fn via_detail_direct_unvalidated_when_inactive_in_subnet_direct_loses_to_active_relay() {
+        use ipc::ConnType::*;
+        // Same fixture as `choose_path_falls_back_...`-style tests above:
+        // an in-subnet but inactive Direct candidate loses to an active
+        // Relay one -- the PATHBLEED-STATUS-002 case.
+        let classes = [(Relay, false, true, true), (Direct, true, true, false)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectUnvalidated)
+        );
+    }
+
+    #[test]
+    fn via_detail_direct_bled_when_only_direct_candidate_is_out_of_subnet() {
+        use ipc::ConnType::*;
+        // A Direct-shaped candidate exists but was excluded as out-of-subnet
+        // (PATHBLEED-STATUS-001) -- distinct from "unvalidated": there is no
+        // in-subnet Direct candidate to eventually trust at all.
+        let classes = [(Relay, false, true, true), (Direct, true, false, false)];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectBled)
+        );
+    }
+
+    #[test]
+    fn via_detail_prefers_unvalidated_over_bled_when_both_present() {
+        use ipc::ConnType::*;
+        // Edge case: both an in-subnet-but-inactive Direct and a separate
+        // out-of-subnet Direct-shaped candidate exist. DirectUnvalidated is
+        // the more directly actionable reason, so it takes priority.
+        let classes = [
+            (Relay, false, true, true),
+            (Direct, false, true, false),
+            (Direct, true, false, false),
+        ];
+        assert_eq!(
+            super::classify_via_detail(&classes, &Relay),
+            Some(ipc::ViaDetail::DirectUnvalidated)
+        );
+    }
+
     #[test]
     fn subnet_collision_detects_overlap() {
         use std::net::Ipv4Addr;

@@ -775,3 +775,77 @@ class PathCandidateListExposure(Requirement):
     req_id = "PATH-DIAG-002"
 
 
+class ViaDetailReasonField(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-004
+
+    Today, several genuinely different situations all render identically as
+    plain `relay` (or `?`) via `choose_path_index`. This requirement adds an
+    explicit machine-readable reason distinguishing them, classified from
+    the same `classes` data `PATH-DIAG-002` already exposes -- depends on
+    that requirement landing first, since it needs the full candidate list
+    in scope rather than re-deriving it separately.
+
+    **Corrected 2026-08-02 while implementing this requirement, not just
+    designed up front -- traced `choose_path_index`'s actual four tiers
+    precisely rather than trusting an earlier summary of it, matching
+    `PATHBLEED-STATUS-002`'s own precedent of documenting a real
+    implementation-time discovery in this docstring.** The original design
+    here listed a third case, "a direct candidate exists and even carries
+    traffic, but iroh hasn't marked it `is_selected` yet, still reports
+    relay." That case cannot actually happen: tier 2
+    (`ct == want && in_subnet && has_activity`) does not check `is_selected`
+    at all, so an in-subnet, active Direct candidate always wins at tier 2
+    regardless of iroh's own selection state. What the original design
+    missed instead: tier 3 (`ct == want && in_subnet`, no activity check)
+    means an in-subnet Direct candidate with **zero** activity still wins
+    unless tier 2 already matched something else in-subnet-and-active
+    first -- and separately, a Direct-*shaped* candidate can be excluded
+    from *every* tier by being **out-of-subnet**
+    (`PATHBLEED-STATUS-001`'s cross-network-bleed exclusion), a genuinely
+    different reason than "unvalidated."
+
+    Corrected three-way split:
+    - `NoDirectCandidate` -- no `Direct` entry in the candidate list at
+      all (in-subnet or otherwise).
+    - `DirectUnvalidated` -- an in-subnet Direct candidate exists but
+      lacks real traffic, and something else with activity wins instead
+      (the genuine `PATHBLEED-STATUS-002` case: tier 2 matched a
+      different, active, in-subnet candidate before tier 3 ever got a
+      chance to fall back to the inactive Direct one).
+    - `DirectBled` -- a Direct-shaped candidate exists but was excluded
+      as out-of-subnet (`PATHBLEED-STATUS-001`'s own exclusion) --
+      replaces the original, inaccurate `DirectNotYetSelected`.
+
+    Only populated when the reported `conn_type` is *not* `Direct` --
+    `None` when it is, since there is nothing to explain. If both an
+    in-subnet-but-inactive Direct candidate and an out-of-subnet
+    Direct-shaped one are present simultaneously, `DirectUnvalidated`
+    takes priority over `DirectBled` as the more directly actionable
+    reason -- an edge case, not expected to matter in practice.
+
+    New wire type (naming subject to review):
+    ```rust
+    pub enum ViaDetail {
+        NoDirectCandidate,
+        DirectUnvalidated,     // the PATHBLEED-STATUS-002 case
+        DirectBled,            // the PATHBLEED-STATUS-001 case
+    }
+    // on ConnectionInfo:
+    #[serde(default)]
+    pub via_detail: Option<ViaDetail>,
+    ```
+
+    Directly motivated by this session's live incident: manually
+    re-deriving this exact distinction by hand from raw `--json` candidate
+    data (before `PATH-DIAG-002` even existed to make that data available
+    normally) is what surfaced the asymmetric-classification finding in the
+    first place -- this requirement makes that reasoning a first-class,
+    queryable field instead of something only reconstructable by an agent
+    or engineer reading source and cross-referencing two machines' status
+    output by hand.
+
+    `--json` only for now, same precedent as `PATH-DIAG-002`; whether
+    plain-text ever shows it inline (e.g. `relay (unvalidated)`) is an open
+    question for review, not decided here.
+    """
+    req_id = "PATH-DIAG-004"

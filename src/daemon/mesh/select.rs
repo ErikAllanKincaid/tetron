@@ -160,6 +160,40 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool, bool)]) -
     classes.iter().position(|(_, _, in_subnet, _)| *in_subnet)
 }
 
+/// PATH-DIAG-004: explains *why* `winner_conn_type` isn't `ipc::ConnType::Direct`,
+/// derived from the same `classes` data `choose_path_index` above consumes.
+/// `None` when the winner *is* Direct -- nothing to explain.
+///
+/// Corrected 2026-08-02 while implementing this (see `PATH-DIAG-004`'s own
+/// spec docstring for the full story): an in-subnet, active Direct
+/// candidate always wins by `choose_path_index`'s own tier 2 regardless of
+/// `is_selected`, so "selected? / not yet selected?" is never actually the
+/// distinguishing factor here. The two real reasons are whether a Direct
+/// candidate exists in-subnet at all (just unvalidated, PATHBLEED-STATUS-002)
+/// versus existing only out-of-subnet (bled, PATHBLEED-STATUS-001) versus
+/// not existing at all.
+pub(crate) fn classify_via_detail(
+    classes: &[(ipc::ConnType, bool, bool, bool)],
+    winner_conn_type: &ipc::ConnType,
+) -> Option<ipc::ViaDetail> {
+    if *winner_conn_type == ipc::ConnType::Direct {
+        return None;
+    }
+    let has_in_subnet_direct = classes
+        .iter()
+        .any(|(ct, _, in_subnet, _)| *ct == ipc::ConnType::Direct && *in_subnet);
+    if has_in_subnet_direct {
+        return Some(ipc::ViaDetail::DirectUnvalidated);
+    }
+    let has_bled_direct = classes
+        .iter()
+        .any(|(ct, _, in_subnet, _)| *ct == ipc::ConnType::Direct && !*in_subnet);
+    if has_bled_direct {
+        return Some(ipc::ViaDetail::DirectBled);
+    }
+    Some(ipc::ViaDetail::NoDirectCandidate)
+}
+
 /// SUBNET-COLLISION-001: returns the first subnet in `existing` that overlaps
 /// `candidate`, or `None` if there is no collision. Shared by `create`'s
 /// explicit-`--subnet` check and `join`'s network-subnet check -- both build
