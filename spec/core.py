@@ -213,6 +213,77 @@ class ProactiveDropMonitor(Requirement):
     req_id = "LOG-002"
 
 
+class ConfigurableLogLevelAndConsoleFileDecoupling(Requirement):
+    """REQUIREMENT-ID: LOG-003
+
+    Found 2026-08-03 (`DO-NOT-COMMIT/Memory_bug_notes.md`): a real machine
+    saw ~20% continuous CPU across Tokio worker threads, traced to
+    `init_tracing()` (`src/main.rs`)'s file-layer default
+    (`info,tetron=debug`) emitting a `tracing::debug!` for every single
+    TUN packet read, fragment, and mesh reconvergence poll tick --
+    formatting/writing that volume across 8 Tokio threads caused real
+    logging overhead and thread lock contention. The same spam also
+    defeats the file log's own diagnostic purpose: a log this verbose is
+    not usable for finding anything in it. The `info,tetron=debug` split
+    was set up for chasing a specific past bug, not a permanent
+    architectural stance -- too much log is bad regardless of why the
+    default was originally chosen.
+
+    **Three parts:**
+
+    1. **`forward.rs`'s five per-packet log lines reclassified from
+       `debug!` to `trace!`**: `"TUN read"`, `"not IP, dropping"`,
+       `"no peer for dst"`, `"routing to peer"`, `"datagram send
+       failed"` -- every one of these fires on every packet (or every
+       dropped/failed one), on the single busiest loop in the daemon.
+       `reconverge.rs`'s periodic poller-tick `debug!` is untouched --
+       once per poll interval per network, negligible by comparison, and
+       still a legitimate "is the poller alive" signal at `debug`.
+       Reclassifying these five is what makes `debug` genuinely useful
+       again once turned back on: mesh/connection/admission-level
+       detail (path opened/closed, reconverge, join/kick) survives at
+       `debug` with no per-packet flood; `trace` remains available as
+       the full per-packet dump for the rare case it's actually needed.
+
+    2. **`tetron config set log-level <trace|debug|info|warn|error>`**
+       (`CONFIG-AUDIT-002` style key): persisted override for the file
+       layer's default, read once at daemon startup same as
+       `log-retention`. Compiled default `info` (not `debug` --
+       reclassifying (1) alone would still leave every TUN packet's
+       classification/routing decision logged at `debug` by default,
+       which is still needless log volume for a production default with
+       nothing currently wrong). An operator chasing a live issue sets
+       this, restarts, gets the detail, then unsets it -- no systemd
+       drop-in required, matching how every other `CONFIG-AUDIT-002` key
+       already works.
+
+    3. **Console/file filter decoupling.** `init_tracing` builds
+       `registry().with(global_filter).with(console_layer).with(file_layer)`
+       -- `global_filter` is the *registry-level* ceiling (must be as
+       permissive as the most verbose consumer, since `file_layer` has no
+       filter of its own and gets whatever passes it); `console_layer`
+       additionally narrows to its own `console_filter` on top of that.
+       That architecture already supports independent console/file
+       verbosity -- except both filters independently called
+       `EnvFilter::try_from_default_env()`, and both read the *same*
+       `RUST_LOG` variable, so setting `RUST_LOG` at all silently
+       overrode `console_filter`'s own hardcoded `"info"` fallback too.
+       Fixed by no longer having `console_filter` consult `RUST_LOG` (or
+       the new config key) at all -- it is unconditionally `"info"`.
+       `global_filter` (the file layer's effective level) now resolves,
+       in order: `RUST_LOG` if set (kept as the raw, ecosystem-standard
+       manual override, e.g. for a foreground `cargo run` session) → the
+       `log-level` config key → compiled default `info`. Console/journal
+       output stays a clean, readable summary regardless of either;
+       verbose diagnosis happens in the file, which is written even for
+       a foreground `tetron daemon` run (`to_file` is true for
+       `Command::Daemon` specifically) -- so nothing is lost, a
+       developer just tails the file instead of stdout when they want
+       `trace`-level detail interactively.
+    """
+    req_id = "LOG-003"
+
+
 class RemovePeriodicStatsLogger(Requirement):
     """REQUIREMENT-ID: LOG-001
 
