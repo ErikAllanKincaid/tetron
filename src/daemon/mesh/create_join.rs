@@ -1225,7 +1225,6 @@ impl MeshManager {
             live_state_rx,
             reconverge_notify_rx,
             self.promote_tx.clone(),
-            self.protocol_router.pending_pongs.clone(),
         )
     }
 
@@ -1267,7 +1266,6 @@ impl MeshManager {
             cancel.clone(),
             self.promote_tx.clone(),
             self.left_tx.clone(),
-            self.protocol_router.pending_pongs.clone(),
         )
         .await
     }

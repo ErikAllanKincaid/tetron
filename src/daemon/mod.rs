@@ -764,7 +764,6 @@ impl MeshManager {
                 disconnect_tx,
                 token: cancel,
                 dht_notify,
-                pending_pongs: self.protocol_router.pending_pongs.clone(),
             })),
         );
         // Flip the stored role so `tetron status` reports Coordinator immediately.
@@ -1237,7 +1236,6 @@ mod accept_handler_tests {
             disconnect_tx,
             token: CancellationToken::new(),
             dht_notify: None,
-            pending_pongs: Arc::new(DashMap::new()),
         }))
     }
 

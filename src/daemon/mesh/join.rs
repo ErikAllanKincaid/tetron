@@ -105,9 +105,6 @@ pub(crate) async fn join_mesh_shared(
     // this network's name here if it discovers we've been dropped from the
     // authoritative roster, so the daemon loop can leave it locally.
     left_tx: mpsc::Sender<String>,
-    // Shared with the router; lets the member control reader resolve `tetron ping`
-    // Pongs back to the waiting handler.
-    pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) -> Result<JoinResult> {
     // A whole-bundle clone for the debounced reconverge worker, which forwards
     // the ctx straight to `reconverge_and_apply`.
@@ -263,7 +260,6 @@ pub(crate) async fn join_mesh_shared(
         net_pubkey,
         promote_tx.clone(),
         reconverge_notify.clone(),
-        pending_pongs.clone(),
         global_gate.clone(),
     );
 
@@ -693,7 +689,6 @@ fn spawn_member_control_listener(
     net_pubkey_c: EndpointId,
     promote_tx: mpsc::Sender<String>,
     reconverge_notify: Arc<tokio::sync::Notify>,
-    pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
 ) {
     tokio::spawn(async move {
@@ -811,11 +806,6 @@ fn spawn_member_control_listener(
                                 ControlMsg::Ping { nonce } => {
                                     respond_pong(&initial_conn, nonce).await;
                                 }
-                                ControlMsg::Pong { nonce } => {
-                                    if let Some((_, tx)) = pending_pongs.remove(&nonce) {
-                                        let _ = tx.send(());
-                                    }
-                                }
                                 _ => {}
                             }
                         }
@@ -846,7 +836,6 @@ pub(crate) fn spawn_reconnect_loop(
     live_state_rx: tokio::sync::oneshot::Receiver<SharedNetworkState>,
     reconverge_notify_rx: tokio::sync::oneshot::Receiver<Arc<tokio::sync::Notify>>,
     promote_tx: mpsc::Sender<String>,
-    pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 ) -> JoinHandle<()> {
     // The reconnect MeshHello reads the current hostname fresh from config
     // (`outgoing_hostname`), so no captured hostname is threaded through.
@@ -941,7 +930,6 @@ pub(crate) fn spawn_reconnect_loop(
             let stats = stats.clone();
             let promote_tx = promote_tx.clone();
             let reconverge_notify = reconverge_notify.clone();
-            let pending_pongs = pending_pongs.clone();
             let live_state = live_state.clone();
             let global_gate = global_gate.clone();
 
@@ -1001,7 +989,6 @@ pub(crate) fn spawn_reconnect_loop(
                                     cl_net_pubkey,
                                     promote_tx.clone(),
                                     reconverge_notify.clone(),
-                                    pending_pongs.clone(),
                                     global_gate.clone(),
                                 );
                             }

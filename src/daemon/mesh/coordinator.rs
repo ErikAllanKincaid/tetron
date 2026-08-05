@@ -89,19 +89,16 @@ pub(crate) fn spawn_peer_cleanup(
 }
 
 /// Coordinator-side per-member control reader. Continuously accepts control
-/// streams from one member and answers `Ping`/`Pong`; every other message
-/// (including `MeshHello` — hostname is fixed at join, MINIMAL-014 removed
-/// rename propagation) is received but not acted on. Runs until the network
-/// token is cancelled or the connection drops.
-#[allow(clippy::too_many_arguments)]
+/// streams from one member and answers `Ping`; every other message (including
+/// `MeshHello` — hostname is fixed at join, MINIMAL-014 removed rename
+/// propagation) is received but not acted on. Runs until the network token is
+/// cancelled or the connection drops.
 pub(crate) fn spawn_coordinator_control_reader(
     conn: Connection,
     remote_id: EndpointId,
     _peer_ip: Ipv4Addr,
     _network_name: String,
     token: CancellationToken,
-    // Fires the waiting `tetron ping` handler when a matching `Pong` arrives.
-    pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
 ) {
     tokio::spawn(async move {
@@ -132,21 +129,11 @@ pub(crate) fn spawn_coordinator_control_reader(
                     return;
                 }
             }
-            match msg {
-                ControlMsg::Ping { nonce } => {
-                    respond_pong(&conn, nonce).await;
-                    continue;
-                }
-                ControlMsg::Pong { nonce } => {
-                    if let Some((_, tx)) = pending_pongs.remove(&nonce) {
-                        let _ = tx.send(());
-                    }
-                    continue;
-                }
-                // Every other control message (including MeshHello — its
-                // hostname is inert since MINIMAL-014 fixed hostname at join)
-                // is received but not acted on here.
-                _ => {}
+            // Every other control message (including an inbound Pong, and
+            // MeshHello — whose hostname is inert since MINIMAL-014 fixed
+            // hostname at join) is received but not acted on here.
+            if let ControlMsg::Ping { nonce } = msg {
+                respond_pong(&conn, nonce).await;
             }
         }
     });
