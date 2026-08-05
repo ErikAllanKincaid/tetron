@@ -212,8 +212,12 @@ pub(crate) struct NetworkState {
     /// Access mode, carried through from config for wire/config-format
     /// compatibility. Admission is invite-only regardless of this value
     /// (`LIVE-001`) and tetron never creates an `Open` network
-    /// (`MINIMAL-013`), so nothing in this daemon consults it anymore --
-    /// same dead-weight class as `membership::OpenPolicy`/`policy_for_mode`.
+    /// (`MINIMAL-013`), so nothing in this daemon consults it anymore. The
+    /// matching `membership::MembershipPolicy` abstraction it was named
+    /// alongside is gone (`TREE-SHAKE-004`); this field outlives it only
+    /// because the sibling `config::NetworkConfig::group_mode` still
+    /// round-trips through `networks/<name>.toml`, so dropping it is a
+    /// config-format migration rather than a delete.
     #[allow(dead_code)]
     mode: GroupMode,
     /// Reusable join keys carried in the signed blob (keyed by hex
