@@ -551,6 +551,165 @@ class WorkspaceTrim(Requirement):
     req_id = "MINIMAL-016"
 
 
+# --------------------------------------------------------------------------
+# Dead-code sweep (TREE-SHAKE-*)
+#
+# Driven by the tiered audit in DO-NOT-COMMIT/AUDIT_dead-code-tree-shake_
+# 2026-08-05.md and its same-day per-item code verification pass. The tree is
+# warning-clean -- every piece of dead code here is hidden behind
+# `#[allow(dead_code)]` or lives in the lib crate's `pub` surface -- so this
+# is a semantic reachability sweep, not a "fix what rustc warns about" pass.
+#
+# Dependency ordering: TREE-SHAKE-001 through -005 are mutually independent.
+# None consumes state, types, or symbols introduced by another; each touches a
+# disjoint set of files (Cargo.toml / transport+create_join / the pending_pongs
+# plumbing / membership.rs / comment-and-ignore-file text). They may land in
+# any order, or in parallel, one commit each.
+#
+# Explicitly NOT in scope, and why:
+#   - `images/torpedo2.png`. The audit filed it Tier 0 "safe to remove" as a
+#     pre-fork brand asset; verification disproved that -- `README.md:3`
+#     renders it as the README banner. It is live. At most a rename candidate
+#     for a future branding pass, never a removal candidate.
+#   - `NetworkState.mode` / `config::NetworkConfig::group_mode` (audit Tier 1
+#     #1). Runtime-dead, but `group_mode` round-trips through
+#     `networks/<name>.toml` on every node, so removing it is a config-format
+#     migration (serde tolerance for the existing key, plus a testsuite
+#     upgrade check), not a delete. Deferred to its own requirement.
+#   - Everything in audit Tier 1 #2, Tier 2, and Tier 3: test fixtures kept by
+#     design, deliberately-retained surfaces, and the KEEP-ON-PURPOSE list.
+#
+# These do not reintroduce anything a `MINIMAL-*` requirement removed; they
+# finish removals those requirements left partially done (MINIMAL-010's
+# firewall/QR surfaces, MINIMAL-016's stale-reference sweep precedent).
+# --------------------------------------------------------------------------
+
+class RemoveUnusedDependencies(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-001
+
+    Drop the three direct `Cargo.toml` dependencies with zero references
+    anywhere in `src/`, `tetron-proto/src/`, `benches/`, or `build.rs`:
+    `serde_yml`, `qr2term` (the legacy terminal-QR invite surface, gone with
+    the invite UX rework), and `async-trait`. Regenerate `Cargo.lock` in the
+    same commit so `cargo build --release --locked` stays green.
+
+    Every other direct dependency has real references and stays, including
+    the ones an unused-dependency tool would misreport: `iroh-tor-transport`
+    (optional, behind the `tor` feature, TOR-M01), `iroh-blobs` (GroupBlob
+    transport, MINIMAL-004), `ratelimit` (HARDEN-004), `clap_complete` (the
+    `completions` subcommand), and the vendored `noq-udp` path dependency.
+
+    Independent of TREE-SHAKE-002..005.
+    """
+    req_id = "TREE-SHAKE-001"
+
+
+class RemoveUncalledMeshHelpers(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-002
+
+    Remove two uncallable helpers, each carrying `#[allow(dead_code)]` and
+    each verified to have zero call sites repo-wide (the only grep hit is its
+    own definition):
+
+    - `transport::accept_connection_with_alpn` -- a leftover from an older
+      accept path; the live accept path does not use it.
+    - `daemon::mesh::create_join::try_dht_fallback_join` -- the file's own
+      adjacent comment already calls it "this dead-code path" (MULTISEG-002
+      era).
+
+    Neither is part of the embedding API surface an external consumer could
+    reach: `try_dht_fallback_join` is `pub(crate)`, and
+    `accept_connection_with_alpn` is `pub` only because the whole module is.
+
+    Independent of TREE-SHAKE-001, -003, -004, -005.
+    """
+    req_id = "TREE-SHAKE-002"
+
+
+class RemovePendingPongsPlumbing(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-003
+
+    Remove the `pending_pongs` map and all of its plumbing. The type is
+    `Arc<DashMap<u64, oneshot::Sender<()>>>`, threaded through field
+    declarations, clones, struct literals, and function parameters across
+    `daemon/mod.rs`, `daemon/mesh/accept.rs`, `daemon/mesh/coordinator.rs`,
+    `daemon/mesh/join.rs`, and `daemon/mesh/create_join.rs`. Verification
+    found every one of those sites to be plumbing: there is **no `.insert()`
+    anywhere in the tree**, so the two readers
+    (`coordinator.rs` and `join.rs`, both `pending_pongs.remove(&nonce)`) can
+    never hit and the map only ever holds nothing. Previously recorded as
+    Finding #4 of the memory-leak audit.
+
+    **Keep the `ControlMsg::Ping`/`Pong` wire variants.** They are alive and
+    unrelated to this map: the passive Pong responder in `daemon/mod.rs`
+    answers Ping probes sent by other nodes, and both `coordinator.rs` and
+    `join.rs` handle inbound Ping. What is dead is the local
+    wait-for-my-own-Pong bookkeeping that nothing ever registers into, not
+    the liveness protocol itself. Removing the variants would break the wire
+    format for peers that still probe us.
+
+    Independent of TREE-SHAKE-001, -002, -004, -005.
+    """
+    req_id = "TREE-SHAKE-003"
+
+
+class RemoveMembershipPolicyDeadWeight(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-004
+
+    Remove the unused access-policy abstraction from `membership.rs`: the
+    `MembershipPolicy` trait, its two implementors `OpenPolicy` and
+    `RestrictedPolicy`, and the `policy_for_mode` dispatch function.
+    Verification found no non-test, non-definition caller anywhere in the
+    repo; `daemon/mod.rs`'s own comment on the adjacent `mode` field already
+    names this the "same dead-weight class".
+
+    The abstraction is unreachable by construction, not merely unused:
+    admission is invite-only regardless of any policy (`LIVE-001`) and tetron
+    never creates an `Open` network (`MINIMAL-013`), so no code path can
+    consult a policy object even in principle.
+
+    The only references are two unit tests that exercise the trait's own
+    `allows_join` return value and nothing else. They encode no behavior that
+    survives the removal, so they are deleted with it rather than rewritten.
+    This is deliberately NOT the test-fixture-by-design case covered by
+    `membership.rs`'s `validate_reusable`/`validate_invite` wrappers or
+    `mesh/select.rs`'s `DialOutcome`/`pick_first_welcome`, whose tests encode
+    a live spec over live logic -- those stay.
+
+    Independent of TREE-SHAKE-001, -002, -003, -005.
+    """
+    req_id = "TREE-SHAKE-004"
+
+
+class SweepStaleArtifactReferences(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-005
+
+    Comment-and-config-text sweep for two classes of reference to files that
+    no longer exist, in the same vein as MINIMAL-016's doc-comment pass:
+
+    - `spec/design_spec.py`, which was split into
+      `spec/{core,branding,addressing,membership,cli,security,constraints}.py`
+      on 2026-07-28. Eight stale references remain, all inert comment or
+      documentation text with no functional import: `daemon/mod.rs` (two),
+      `daemon/mesh/runtime.rs`, `forward.rs`, `packet.rs`, `membership.rs`,
+      `spec/main_spec.py`, `README.md`, and `CHANGELOG.md`. Repoint each at
+      the module that actually holds the requirement it cites, rather than
+      deleting the citation.
+    - `.gitignore` entries for trees removed by MINIMAL-016 and the rename
+      requirements: `/ray-proto/target` and the whole `android/` block
+      (`android/.gradle/`, `android/build/`, `android/app/build/`,
+      `**/jniLibs/**`, `android/local.properties`, `android/keystore.properties`,
+      `*.jks`, `*.keystore`, `**/.cxx/`, `android/.idea/`, `*.iml`). Neither
+      `ray-proto/` nor `android/` exists in the tree. The Android client now
+      lives in the separate `tetron-mobile` repository with its own
+      `.gitignore`, so these entries cannot become relevant again here.
+
+    No behavior changes; nothing is compiled from any of it. Independent of
+    TREE-SHAKE-001..004.
+    """
+    req_id = "TREE-SHAKE-005"
+
+
 class TorPerNetworkPolicy(Requirement):
     """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
 
