@@ -16,8 +16,6 @@ pub(crate) struct CoordinatorAcceptState {
     pub(crate) disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     pub(crate) token: CancellationToken,
     pub(crate) dht_notify: Option<Arc<tokio::sync::Notify>>,
-    /// Shared with the router; lets the control reader resolve `tetron ping` Pongs.
-    pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl CoordinatorAcceptState {
@@ -43,7 +41,6 @@ impl CoordinatorAcceptState {
         let token = self.token.clone();
         let disconnect_tx = self.disconnect_tx.clone();
         let network = self.network_name.clone();
-        let pending_pongs = self.pending_pongs.clone();
         let ctx = self.ctx.clone();
         tokio::spawn(async move {
             send_member_sync(&conn).await;
@@ -53,7 +50,6 @@ impl CoordinatorAcceptState {
                 peer_ip,
                 network.clone(),
                 token.clone(),
-                pending_pongs,
                 ctx.global_gate.clone(),
             );
             forward::spawn_peer_reader(
@@ -440,7 +436,6 @@ impl CoordinatorAcceptState {
             peer_ip,
             self.network_name.clone(),
             self.token.clone(),
-            self.pending_pongs.clone(),
             self.ctx.global_gate.clone(),
         );
         forward::spawn_peer_reader(
@@ -642,10 +637,6 @@ impl ProtocolHandler for MeshProtocol {
 pub(crate) struct ProtocolRouter {
     blobs: BlobsProtocol,
     handlers: DashMap<Vec<u8>, Arc<MeshProtocol>>,
-    /// In-flight `tetron ping` probes, keyed by nonce. The control reader fires the
-    /// oneshot when the matching `Pong` arrives so the ping handler can measure
-    /// round-trip time. Cloned into both control readers.
-    pub(crate) pending_pongs: Arc<DashMap<u64, tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl ProtocolRouter {
@@ -653,7 +644,6 @@ impl ProtocolRouter {
         Self {
             blobs,
             handlers: DashMap::new(),
-            pending_pongs: Arc::new(DashMap::new()),
         }
     }
 

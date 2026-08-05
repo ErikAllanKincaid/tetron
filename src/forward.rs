@@ -314,7 +314,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                     // reserves fragmenting to the originating host), so this uses a
                     // tetron-internal envelope instead of a literal Fragment
                     // extension header -- see `packet::fragment_ipv6` and
-                    // `Ipv6Fragmentation` in spec/design_spec.py.
+                    // `Ipv6Fragmentation` in spec/addressing.py.
                     let id = NEXT_FRAG6_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     match packet::fragment_ipv6(&pkt, id, max_dgram) {
                         Some(fragments) => {

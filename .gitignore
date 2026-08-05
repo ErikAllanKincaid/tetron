@@ -1,19 +1,7 @@
 /target
-/ray-proto/target
 /docs/upstream
 .superpowers
 .claude/
-
-# Android build outputs / local config
-android/.gradle/
-android/build/
-android/app/build/
-**/jniLibs/**
-android/local.properties
-android/keystore.properties
-*.jks
-*.keystore
-**/.cxx/
 
 # OS / editor cruft
 .DS_Store
@@ -28,10 +16,6 @@ android/keystore.properties
 *.key
 secrets/
 /DO-NOT-COMMIT/
-
-# Android Studio / IntelliJ project settings
-android/.idea/
-*.iml
 
 # Python bytecode (libspec specs)
 __pycache__/

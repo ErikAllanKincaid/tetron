@@ -1110,7 +1110,7 @@ impl MeshManager {
         // forwarding tasks, then actually delete the device rather than
         // relying on the kernel to reclaim it whenever the whole process
         // eventually exits (the pre-existing stale-TUN-on-teardown gap this
-        // requirement closes — see `spec/design_spec.py`'s MULTISEG-003).
+        // requirement closes — see `spec/addressing.py`'s MULTISEG-003).
         if let Some(tasks) = handle.tun_tasks.lock().unwrap().take() {
             tasks.cancel.cancel();
             tasks.writer.abort();

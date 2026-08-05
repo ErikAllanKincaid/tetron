@@ -212,8 +212,12 @@ pub(crate) struct NetworkState {
     /// Access mode, carried through from config for wire/config-format
     /// compatibility. Admission is invite-only regardless of this value
     /// (`LIVE-001`) and tetron never creates an `Open` network
-    /// (`MINIMAL-013`), so nothing in this daemon consults it anymore --
-    /// same dead-weight class as `membership::OpenPolicy`/`policy_for_mode`.
+    /// (`MINIMAL-013`), so nothing in this daemon consults it anymore. The
+    /// matching `membership::MembershipPolicy` abstraction it was named
+    /// alongside is gone (`TREE-SHAKE-004`); this field outlives it only
+    /// because the sibling `config::NetworkConfig::group_mode` still
+    /// round-trips through `networks/<name>.toml`, so dropping it is a
+    /// config-format migration rather than a delete.
     #[allow(dead_code)]
     mode: GroupMode,
     /// Reusable join keys carried in the signed blob (keyed by hex
@@ -324,7 +328,7 @@ impl NetworkState {
 ///
 /// **MULTISEG-002:** each network owns its own data-plane bundle (`peers`,
 /// `tun_name`, `tun_tx`, `tun_tasks`) instead of sharing one daemon-wide copy
-/// — see that requirement in `spec/design_spec.py` for the full rationale.
+/// — see that requirement in `spec/addressing.py` for the full rationale.
 #[allow(dead_code)]
 pub struct NetworkHandle {
     name: String,
@@ -764,7 +768,6 @@ impl MeshManager {
                 disconnect_tx,
                 token: cancel,
                 dht_notify,
-                pending_pongs: self.protocol_router.pending_pongs.clone(),
             })),
         );
         // Flip the stored role so `tetron status` reports Coordinator immediately.
@@ -1237,7 +1240,6 @@ mod accept_handler_tests {
             disconnect_tx,
             token: CancellationToken::new(),
             dht_notify: None,
-            pending_pongs: Arc::new(DashMap::new()),
         }))
     }
 
@@ -2099,7 +2101,7 @@ mod headless_tests {
     /// to leave behind. `--force` still bypasses the check entirely. (The
     /// "successfully auto-promoted a reachable member" happy path needs a
     /// real live QUIC connection to exercise -- not covered here; see this
-    /// requirement's own live-testing caveat in `spec/design_spec.py`.)
+    /// requirement's own live-testing caveat in `spec/security.py`.)
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leave_blocks_on_sole_coordinator_with_unreachable_members() {

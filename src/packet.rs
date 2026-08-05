@@ -283,7 +283,7 @@ const MAX_REASSEMBLED_IPV6_PACKET: usize = 1280;
 /// [`Ipv6Reassembler`], not a generic IP stack) for both ends of this hop, so
 /// a small tetron-internal envelope is the natural fit here rather than
 /// reimplementing RFC 8200 SS4.5 verbatim (see `FRAG-002` in
-/// `spec/design_spec.py`). `id` should be unique per fragmented packet on
+/// `spec/addressing.py`). `id` should be unique per fragmented packet on
 /// this connection (the caller supplies it, typically from a per-connection
 /// counter) so concurrent or overlapping fragment sets can't be confused
 /// with each other by the receiver.
