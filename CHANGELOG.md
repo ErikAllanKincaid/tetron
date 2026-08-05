@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Internal
+
+- **Dead-code sweep (`TREE-SHAKE-001..005`)**: removed code the compiler could not flag, because every piece of it was masked by `#[allow(dead_code)]` or lived in the library crate's `pub` surface. Three unused direct dependencies (`serde_yml`, `qr2term`, `async-trait`), two uncallable helpers (`transport::accept_connection_with_alpn`, `create_join::try_dht_fallback_join`), the `pending_pongs` map and its plumbing across five files (nothing ever inserted into it, so both readers could never hit), and the unreachable `MembershipPolicy`/`OpenPolicy`/`RestrictedPolicy`/`policy_for_mode` abstraction. Also repointed eight stale `spec/design_spec.py` references at the domain modules that replaced it, and pruned `.gitignore` entries for the long-removed `ray-proto/` and `android/` trees. No behavior change: the `ControlMsg::Ping`/`Pong` wire variants are untouched and Ping probes are still answered, and the smaller dependency graph is the only user-facing effect (a slightly faster build).
+
 ## [0.9.3] - 2026-08-03
 
 ### Fixed
