@@ -249,7 +249,7 @@ pub trait IdentityProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay subnet (configurable; see spec/design_spec.py SUBNET-*)
+// Overlay subnet (configurable; see spec/addressing.py SUBNET-*)
 // ---------------------------------------------------------------------------
 
 /// The overlay subnet as `(base address, prefix length)`. `None` in a

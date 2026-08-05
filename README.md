@@ -266,7 +266,7 @@ Do not run `tetron nuke <network-key>` when uninstalling -- that destroys the ne
 
 ## Development
 
-Developed with [Specification-driven development](https://en.wikipedia.org/wiki/Specification-driven_development) using [libspec](https://github.com/drhodes/libspec). Each requirement is a documented class in `spec/design_spec.py`; the `reconcile.py` gate enforces automatable constraints. Commits are recorded with `libspec link` so the spec keeps a complete history alongside the code.
+Developed with [Specification-driven development](https://en.wikipedia.org/wiki/Specification-driven_development) using [libspec](https://github.com/drhodes/libspec). Each requirement is a documented class in one of the domain modules under `spec/`; the `reconcile.py` gate enforces automatable constraints. Commits are recorded with `libspec link` so the spec keeps a complete history alongside the code.
 
 ## Relationship to upstream & license
 
