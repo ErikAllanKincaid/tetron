@@ -205,19 +205,6 @@ fn apply_discovery(mut builder: Builder, o: &ServerOverride) -> Result<Builder> 
     Ok(builder)
 }
 
-#[allow(dead_code)]
-pub async fn accept_connection_with_alpn(ep: &Endpoint) -> Result<(Connection, Vec<u8>)> {
-    let incoming = ep.accept().await.context("no incoming connection")?;
-    let conn = incoming.await.context("failed to accept connection")?;
-    let alpn = conn.alpn().to_vec();
-    tracing::info!(
-        peer = %conn.remote_id().fmt_short(),
-        alpn = %String::from_utf8_lossy(&alpn),
-        "peer connected"
-    );
-    Ok((conn, alpn))
-}
-
 /// Connects to a peer by EndpointId with a specific ALPN. iroh handles
 /// NAT traversal and falls back to relay if direct connection fails.
 ///
