@@ -412,6 +412,42 @@ class Ipv6Fragmentation(Requirement):
 
 
 # --------------------------------------------------------------------------
+# IPV4-MIN-IHL-001: reject IPv4 headers shorter than five words (upstream
+# 6d008d5 `fix(firewall)`, ported from the 2026-08-05 upstream review)
+# --------------------------------------------------------------------------
+
+class Ipv4MinimumIhl(Requirement):
+    """REQUIREMENT-ID: IPV4-MIN-IHL-001
+
+    `packet::parse_ipv4` (`src/packet.rs`) accepted `ihl < 5`: the length
+    check `packet.len() < header_len` is always satisfied by a short IHL
+    (e.g. `ihl = 1` gives `header_len = 4`, and a 20+ byte packet trivially
+    passes), so "ports"/TCP-flags/ICMP fields were read from bytes inside
+    the IP header. Every OS drops such headers on receive anyway (RFC 791:
+    IHL must be at least 5).
+
+    Fix (ported from upstream `6d008d5`): reject `ihl < 5` outright at the
+    top of `parse_ipv4`, returning `None` like any other malformed header.
+
+    Impact today is nil — tetron's consumers read only fixed-offset
+    fields (`evaluate_inbound` uses `info.src_ip`; the TUN-routing path
+    uses `info.dst_ip`; neither depends on IHL) — so this is defense-in-
+    depth: the parser advertises "packet info," and the next consumer of
+    `PacketInfo`'s ports/flags/icmp fields would otherwise inherit the bug.
+    Modeled on the existing `parse_too_short` test; new test
+    `parse_rejects_short_ihl` covers `ihl < 5` with a long-enough packet.
+
+    Independent of INVITE-CHECKSUM-001, DHT-ERRCAUSE-001, and
+    TUN-SENDERCACHE-001: disjoint files, no shared state. May land in any
+    order.
+
+    Found: 2026-08-05, upstream rayfish review `a56b4b9..b002168`
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-05.md`, item 4).
+    """
+    req_id = "IPV4-MIN-IHL-001"
+
+
+# --------------------------------------------------------------------------
 # TUN-SENDERCACHE-001: per-reader arc_swap Cache for the swappable TUN
 # writer (upstream e537db6 `perf(forward)`, ported from the 2026-08-05
 # upstream review)

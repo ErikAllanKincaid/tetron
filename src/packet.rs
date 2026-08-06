@@ -58,6 +58,13 @@ fn parse_ipv4(packet: &[u8]) -> Option<PacketInfo> {
         return None;
     }
     let ihl = (packet[0] & 0x0F) as usize;
+    // IPV4-MIN-IHL-001: RFC 791 requires IHL >= 5. A shorter header would
+    // pass the length check below (header_len < 20), so ports/flags/icmp
+    // fields would be read from bytes inside the IP header. Every OS drops
+    // these on receive anyway.
+    if ihl < 5 {
+        return None;
+    }
     let header_len = ihl * 4;
     if packet.len() < header_len {
         return None;
@@ -497,6 +504,18 @@ mod tests {
     #[test]
     fn parse_too_short() {
         assert!(parse_packet_info(&[0x45; 10]).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_short_ihl() {
+        // IPV4-MIN-IHL-001: an IPv4 header whose IHL is less than 5 words
+        // (RFC 791: IHL must be >= 5) is rejected even when the packet is
+        // long enough that the old `packet.len() < header_len` check passed
+        // — otherwise ports/flags/icmp fields would be read from bytes
+        // inside the IP header.
+        let mut p = vec![0u8; 24];
+        p[0] = 0x41; // version 4, IHL = 1 (short header)
+        assert!(parse_packet_info(&p).is_none());
     }
 
     #[test]
