@@ -527,16 +527,51 @@ If you're also running `tetron-webui`/`tetron-systray`, they upgrade independent
 
 ## 12. Backup
 
-Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/.config/tetron` on macOS: `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically.
+Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `/var/root/Library/Application Support/tetron` on a macOS standard install (the daemon runs as a root LaunchDaemon; a per-user install instead uses `~/.config/tetron`): `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically.
+
+### Encrypted backup with tetron-backup.sh (recommended)
+
+`contrib/tetron-backup.sh` wraps the manual commands below: tar + [`age`](https://github.com/FiloSottile/age), passphrase-encrypted, one command to back up and one to restore (it stops and restarts the tetron daemon around a restore). Get it any of three ways, no repo clone needed:
+
+```bash
+# 1. install-tetron-suite.sh component (root-owned, /usr/local/bin)
+curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh -o install-tetron-suite.sh
+bash install-tetron-suite.sh --yes-core backup
+
+# 2. webui: Add-ons > Config Backup popup serves the script itself
+
+# 3. plain fetch
+curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/tetron-backup.sh -o tetron-backup.sh
+chmod +x tetron-backup.sh
+```
+
+Back up (prompts for a passphrase twice; the archive lands in the current directory as `tetron-backup-<host>-<date>.tar.age`):
+
+```bash
+sudo ./tetron-backup.sh
+```
+
+Verify a backup without restoring it:
+
+```bash
+age -d tetron-backup-*.tar.age | tar -tzf -
+```
+
+Restore onto a fresh machine (same identity, so it resumes as the exact same node on every network it was a member of -- do not do this on two machines at once, that's key duplication, not a backup). The script stops the daemon, restores, and starts it again:
+
+```bash
+sudo ./tetron-backup.sh --restore tetron-backup-*.tar.age
+```
+
+**The passphrase is the only key.** `age -p` stores it nowhere -- lose it, lose the backup. And `secret_key` is your identity: anyone with the archive and the passphrase can impersonate this node on every network it is a member of, so keep archives offline or somewhere you trust.
+
+### Manual fallback (no script)
 
 ```bash
 # Linux (root-owned tree, 0600 secret_key) -- sudo preserves ownership/perms.
 # Lands in the current directory, not under /etc -- `-C /etc` only tells tar
 # where to find the "tetron" path being archived, not where the output goes.
 sudo tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C /etc tetron
-
-# macOS (user-owned, no sudo needed)
-tar czf tetron-backup-$(date +%Y%m%d).tar.gz -C ~/.config tetron
 ```
 
 **Encrypt it before it leaves this machine.** `secret_key` is your identity -- anyone with a copy can impersonate this node on every network it's a member of. [`age`](https://github.com/FiloSottile/age) is the simplest option, no keyring to manage:
@@ -546,14 +581,15 @@ age -p -o tetron-backup-$(date +%Y%m%d).tar.gz.age tetron-backup-$(date +%Y%m%d)
 shred -u tetron-backup-$(date +%Y%m%d).tar.gz   # remove the unencrypted copy
 ```
 
-**Restore** onto a fresh machine (same identity, so it resumes as the exact same node on every network it was a member of -- do not do this on two machines at once, that's key duplication, not a backup):
+**Restore** (Linux):
 
 ```bash
 age -d -o tetron-backup.tar.gz tetron-backup.tar.gz.age
-sudo tar xzf tetron-backup.tar.gz -C /etc      # Linux
-tar xzf tetron-backup.tar.gz -C ~/.config      # macOS
+sudo tar xzf tetron-backup.tar.gz -C /etc
 sudo tetron restart
 ```
+
+On macOS use `tetron-backup.sh` instead of the manual commands: it resolves the daemon's config path for you, which differs between the root LaunchDaemon install (`/var/root/Library/Application Support/tetron`) and a per-user install (`~/.config/tetron`).
 
 ---
 

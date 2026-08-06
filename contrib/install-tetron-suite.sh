@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# install-tetron-suite.sh: install or upgrade tetron, tetron-webui, and
-# tetron-systray to their latest GitHub releases in one pass. Idempotent --
-# a component already at the latest release version is left untouched.
+# install-tetron-suite.sh: install or upgrade tetron, tetron-webui,
+# tetron-systray, and tetron-backup.sh to their latest GitHub releases in
+# one pass. Idempotent -- a component already at the latest release version
+# is left untouched.
 # Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
 # this repo first is not required.
 #
 # Usage:
-#   ./install-tetron-suite.sh [--check] [--yes-core] [core] [webui] [systray]
+#   ./install-tetron-suite.sh [--check] [--yes-core] [core] [webui] [systray] [backup]
 #
 #   --check      report installed vs. latest versions only, change nothing
 #   --yes-core   allow the core `tetron` component to be installed/upgraded
@@ -14,10 +15,16 @@
 #                non-interactive/scripted run; installing/upgrading core
 #                needs sudo and briefly disconnects every peer on this
 #                host while the daemon restarts)
-#   component names (core/webui/systray) restrict which components this
-#   run touches -- default is all three. A component not currently
+#   component names (core/webui/systray/backup) restrict which components
+#   this run touches -- default is all four. A component not currently
 #   installed is skipped unless its name is passed explicitly (so a bare
 #   run never installs something you didn't already have).
+#
+#   backup is a script, not a versioned binary: it fetches
+#   contrib/tetron-backup.sh from the tetron repo's main branch (no
+#   release tag to compare against), installs to /usr/local/bin next to
+#   the core binary, and is considered up to date whenever it is already
+#   present -- delete it first to force a refresh.
 
 set -uo pipefail
 
@@ -50,18 +57,18 @@ for arg in "$@"; do
 	case "$arg" in
 	--check) CHECK_ONLY=1 ;;
 	--yes-core) YES_CORE=1 ;;
-	core | webui | systray)
+	core | webui | systray | backup)
 		COMPONENTS+=("$arg")
 		EXPLICIT_COMPONENTS=1
 		;;
 	-h | --help)
-		sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
 	esac
 done
-[ "${#COMPONENTS[@]}" -eq 0 ] && COMPONENTS=(core webui systray)
+[ "${#COMPONENTS[@]}" -eq 0 ] && COMPONENTS=(core webui systray backup)
 
 # --- platform detection, same suffixes tetron-webui's addons.rs::asset_suffix() uses ---
 os="$(uname -s)"
@@ -79,10 +86,10 @@ esac
 PLATFORM="${plat_os}-${plat_arch}"
 
 # --- per-component config ---
-component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; esac; }
-component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; esac; }
-component_default_dir() { case "$1" in core) echo /usr/local/bin ;; *) echo "$HOME/.local/bin" ;; esac; }
-component_needs_sudo() { case "$1" in core) echo 1 ;; *) echo 0 ;; esac; }
+component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; backup) echo tetron-backup.sh ;; esac; }
+component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
+component_default_dir() { case "$1" in core) echo /usr/local/bin ;; backup) echo /usr/local/bin ;; *) echo "$HOME/.local/bin" ;; esac; }
+component_needs_sudo() { case "$1" in core) echo 1 ;; backup) echo 1 ;; *) echo 0 ;; esac; }
 
 # Prefer wherever the binary is actually already installed (PATH) over the
 # default dir, so an install in a nonstandard location is upgraded in
@@ -175,9 +182,54 @@ install_component() {
 	[ -n "$ver" ] && log_pass "$comp: version $ver"
 }
 
+# The backup component is a raw script, not a release binary: no checksum
+# sidecar convention and no `install` subcommand to register a service.
+# Fetches contrib/tetron-backup.sh from the repo's main branch (floating,
+# same as the webui's own Config Backup proxy -- there is no release tag
+# for a script) and drops it next to the core binary.
+install_backup() {
+	local comp="$1" dest="$2" bin repo url tmpdir sudo_prefix
+	bin="$(component_binary "$comp")"
+	repo="$(component_repo "$comp")"
+	url="https://raw.githubusercontent.com/$repo/main/contrib/$bin"
+	sudo_prefix=""
+	[ "$(component_needs_sudo "$comp")" -eq 1 ] && sudo_prefix="sudo"
+
+	tmpdir="$(mktemp -d)"
+	trap 'rm -rf "$tmpdir"' RETURN
+
+	log_info "$comp: downloading $url ..."
+	curl -fsSL -o "$tmpdir/$bin" "$url" \
+		|| fatal "$comp: failed to download $bin"
+	log_info "$comp: installing to $dest..."
+	$sudo_prefix mkdir -p "$(dirname "$dest")"
+	$sudo_prefix install -m 0755 "$tmpdir/$bin" "$dest" \
+		|| fatal "$comp: failed to install $bin to $dest"
+
+	log_pass "$comp: installed/upgraded successfully"
+}
+
 any_failed=0
 for comp in "${COMPONENTS[@]}"; do
 	dest="$(component_dest "$comp")"
+
+	# backup is a script with no version: skip the release-tag compare
+	# entirely. Present = up to date; missing = install (same confirm as
+	# core -- root-owned /usr/local/bin) when passed explicitly.
+	if [ "$comp" = "backup" ]; then
+		if [ -x "$dest" ]; then
+			log_pass "$comp: installed ($dest)"
+		elif [ "$EXPLICIT_COMPONENTS" -eq 0 ]; then
+			log_info "$comp: not installed, skipping (pass 'backup' explicitly to install it fresh)"
+		else
+			log_info "$comp: not installed"
+			[ "$CHECK_ONLY" -eq 1 ] && continue
+			confirm_core || continue
+			install_backup "$comp" "$dest" || any_failed=1
+		fi
+		continue
+	fi
+
 	current="$(installed_version "$dest")"
 	latest="$(latest_tag "$(component_repo "$comp")")" || {
 		log_error "$comp: failed to query latest release -- skipping"
