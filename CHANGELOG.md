@@ -6,11 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Invite codes now carry a checksum** (`INVITE-CHECKSUM-001`): `tetron invite create` mints codes with 4 trailing blake3 bytes, so a dropped/garbled character is rejected up front as "invalid invite code" instead of later failing as a confusing join error for a network that doesn't exist. Codes issued before this change still redeem — the decoder accepts the legacy unchecksummed form, so there is no migration step.
+
+### Changed
+
+- **Join-time DHT failures now name the discovery server and fail fast** (`DHT-ERRCAUSE-001`): the join error for an unreachable network record previously double-wrapped the same context and dropped the underlying pkarr cause. It now shows the server actually used and the full error chain, and a resolve that hangs past 15s times out with a clear message instead of stalling `tetron join` indefinitely.
+
+### Fixed
+
+- **`tetron join` error for a blackholed discovery relay** (`DHT-ERRCAUSE-001`): previously hung with nothing on screen; now bounded by a 15s resolve timeout (see Changed).
+
+### Performance
+
+- **Per-reader TUN sender cache** (`TUN-SENDERCACHE-001`): each peer reader now resolves the swappable TUN writer through an `arc_swap` cache built once at spawn instead of reloading it on every inbound datagram — two atomic refcount ops removed from the hottest inbound path (upstream measured 11ns → 1ns per packet). No behavior change: the cache revalidates on every packet, so a TUN re-attach is still picked up.
+
 ### Internal
 
 - **Pure decision logic extracted from the mesh create/join/lifecycle code (`PURE-LOGIC-001`)**: `create_join.rs`/`runtime.rs`/`join.rs` had zero unit tests. Four previously-inline, untested decision points (the `tetron nuke` solo-coordinator outcome, an IP-collision check on join, reconnect backoff, and the reconnect-or-skip classification for a disconnect event) moved into `src/daemon/mesh/select.rs`, the existing pure-decision-helpers module, with unit tests. No new dependencies, no behavior change: 284 lib tests now (272 + 12 new), same call-site behavior, verified live via `tetron-testsuite`.
 - **`membership.rs` modularized (`MODULARIZE-001/002`)**: the pure overlay-addressing cluster (`Subnet`, subnet math, IPv4/IPv6 derivation) moved to a new `src/addressing.rs`; `IdentityProvider`/`IrohIdentityProvider` moved into the existing `src/identity.rs`; the `InviteEntry`/`ReusableKey` record types moved into the existing `src/invite.rs`, next to the invite-code encoding logic that mints values of them. `membership.rs`'s 1,808-line flat test module was split to match. No behavior change: every `crate::membership::…` path still compiles via re-export, no wire/config format changed, and the same 272 lib tests pass, only relocated.
 - **Dead-code sweep (`TREE-SHAKE-001..005`)**: removed code the compiler could not flag, because every piece of it was masked by `#[allow(dead_code)]` or lived in the library crate's `pub` surface. Three unused direct dependencies (`serde_yml`, `qr2term`, `async-trait`), two uncallable helpers (`transport::accept_connection_with_alpn`, `create_join::try_dht_fallback_join`), the `pending_pongs` map and its plumbing across five files (nothing ever inserted into it, so both readers could never hit), and the unreachable `MembershipPolicy`/`OpenPolicy`/`RestrictedPolicy`/`policy_for_mode` abstraction. Also repointed eight stale `spec/design_spec.py` references at the domain modules that replaced it, and pruned `.gitignore` entries for the long-removed `ray-proto/` and `android/` trees. No behavior change: the `ControlMsg::Ping`/`Pong` wire variants are untouched and Ping probes are still answered, and the smaller dependency graph is the only user-facing effect (a slightly faster build).
+- **IPv4 parser rejects headers with IHL < 5** (`IPV4-MIN-IHL-001`): RFC 791 requires an IPv4 header of at least five words; a shorter IHL previously slipped past the length check and let port/flag/icmp fields be read from bytes inside the IP header. No behavior change today (routing and anti-spoof read only fixed-offset source/destination addresses), but the parser no longer advertises malformed headers as valid "packet info."
 
 ## [0.9.3] - 2026-08-03
 
