@@ -710,6 +710,81 @@ class SweepStaleArtifactReferences(Requirement):
     req_id = "TREE-SHAKE-005"
 
 
+# --------------------------------------------------------------------------
+# Modularization sweep (MODULARIZE-*)
+#
+# Driven by DO-NOT-COMMIT/PROPOSAL_codebase-modularization-sweep_2026-08-05.md
+# (supersedes the earlier standalone PROPOSAL_modularize-membership_2026-08-05.md).
+# Behavior-free: no call site, wire format, or test assertion changes, only
+# where symbols are declared. Placed alongside TREE-SHAKE-* rather than in
+# spec/addressing.py or spec/membership.py because, like the dead-code sweep,
+# this is cross-cutting internal-structure maintenance, not a user-facing
+# behavioral domain.
+#
+# Dependency ordering: MODULARIZE-002 assumes MODULARIZE-001's module layout
+# already exists (it moves tests to match), so 001 must land first.
+# --------------------------------------------------------------------------
+
+class ExtractAddressingIdentityInvite(Requirement):
+    """REQUIREMENT-ID: MODULARIZE-001
+
+    Extract `src/membership.rs`'s pure overlay-addressing cluster into a new
+    sibling module `src/addressing.rs`, mirroring the existing
+    `spec/addressing.py` domain, and relocate two adjacent items whose
+    previous home in `membership.rs` didn't match their nature:
+
+    - **Addressing** (pure, stateless): `Subnet`, `default_subnet`,
+      `resolve_subnet`, `subnet_change_warning`, `subnet_host_mask`,
+      `subnet_netmask`, `ip_in_subnet`, `validate_subnet_matches_roster`,
+      `subnets_overlap`, `next_available_subnet`, `subnet_gateway`,
+      `parse_cidr`, the `cidr_opt` serde module, `derive_ip`,
+      `derive_ip_with_index`, `assign_ip`, `derive_ipv6`,
+      `IPV6_NETWORK_PREFIX_LEN`, `ipv6_network_prefix`, `ipv6_in_network` ->
+      new `src/addressing.rs`. `validate_subnet_matches_roster` and
+      `assign_ip` keep a dependency back on `crate::membership::{Member,
+      MemberList}` for their signatures -- expected, not a defect; the
+      re-export shim is what makes this safe regardless of which direction
+      a given function's types point.
+
+      NOT moved, despite being addressing-adjacent: `ensure_in_cgnat_range`.
+      It is physically defined in the blob-validation section (used by
+      `validate_member`/`validate_approved`), not the addressing section --
+      an early draft of this requirement (the standalone proposal doc)
+      miscounted it as part of the addressing cluster by line-range alone
+      without checking the actual `fn` location; verified against HEAD
+      before implementing and corrected here.
+    - **Identity**: the `IdentityProvider` trait and `IrohIdentityProvider`
+      struct -> the existing `src/identity.rs`, which already exists for
+      exactly this kind of item.
+    - **Invite record types**: the `InviteEntry` and `ReusableKey` struct
+      definitions plus their `from_secret` constructors -> the existing
+      `src/invite.rs`, which already holds the invite-code encoding logic
+      that mints values of these types, so type and logic are no longer
+      split across two files. The map-level `revoke_reusable`/
+      `validate_reusable_key`/`revoke_invite`/`validate_invite` functions,
+      and `GroupBlob`'s own `validate_reusable`/`validate_invite` wrapper
+      methods, stay in `membership.rs` -- they operate on the whole
+      `GroupBlob.reusable_keys`/`invites` maps, not just one type, and
+      moving them would entangle this requirement with blob serialization
+      instead of module placement.
+
+    `membership.rs` keeps a `pub use` re-export of every relocated item (the
+    pattern already proven in this file via `pub use tetron_proto::
+    GroupMode`), so every existing `crate::membership::…` call site (146
+    references across 18 files, verified against HEAD) compiles unchanged.
+
+    No wire/serialization format change: `serde`'s derived output is driven
+    by field names and `#[serde(...)]` attributes on the struct, not by the
+    Rust module the struct is declared in, so `GroupBlob`'s canonical
+    msgpack encoding and `NetworkConfig`'s TOML round-trip are unaffected --
+    every derive attribute moved with its struct unchanged.
+
+    Independent of MODULARIZE-002 in principle, but MODULARIZE-002 assumes
+    this requirement's module layout already exists, so it must land first.
+    """
+    req_id = "MODULARIZE-001"
+
+
 class TorPerNetworkPolicy(Requirement):
     """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
 
