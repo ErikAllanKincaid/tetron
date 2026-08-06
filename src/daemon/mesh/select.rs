@@ -261,3 +261,99 @@ pub(crate) fn find_subnet_collision(
         .copied()
         .find(|&e| crate::membership::subnets_overlap(e, candidate))
 }
+
+/// Outcome of `tetron nuke`'s solo-coordinator branch (NUKE-CONSENSUS,
+/// PURE-LOGIC-001): a network with only one coordinator has no one to
+/// second, so it either nukes immediately or is refused outright -- there
+/// is no propose/consensus path. Pure specification of that branch's three
+/// outcomes, extracted from `runtime.rs::nuke_network`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SoloNukeOutcome {
+    /// `--cancel` or `--second` was passed, but there is no consensus in
+    /// play with a single coordinator -- nothing to cancel or second.
+    NothingToCancelOrSecond,
+    /// Other members exist and `--force` was not passed; refuse rather
+    /// than strand them.
+    WouldStrandMembers,
+    /// Nuke immediately.
+    Proceed,
+}
+
+pub(crate) fn solo_coordinator_nuke_outcome(
+    cancel: bool,
+    second_present: bool,
+    has_other_members: bool,
+    force: bool,
+) -> SoloNukeOutcome {
+    if cancel || second_present {
+        return SoloNukeOutcome::NothingToCancelOrSecond;
+    }
+    if has_other_members && !force {
+        return SoloNukeOutcome::WouldStrandMembers;
+    }
+    SoloNukeOutcome::Proceed
+}
+
+/// Whether a just-received `Welcome` roster already assigns `my_ip` to a
+/// different identity than `my_identity` (PURE-LOGIC-001) -- an IP-hijack/
+/// collision that must abort the join rather than proceed with a
+/// conflicting address. Returns the colliding member's identity, if any.
+/// Extracted from `join.rs::perform_join_handshake`.
+pub(crate) fn welcome_ip_collision(
+    members: &[Member],
+    my_ip: Ipv4Addr,
+    my_identity: EndpointId,
+) -> Option<EndpointId> {
+    members
+        .iter()
+        .find(|m| m.ip == my_ip && m.identity != my_identity)
+        .map(|m| m.identity)
+}
+
+/// Doubles `current` for the next reconnect attempt, capped at `max`
+/// (exponential backoff, PURE-LOGIC-001). Extracted from
+/// `join.rs::spawn_reconnect_loop`'s per-peer retry loop for direct unit
+/// testing, independent of that loop's own tokio/async machinery.
+pub(crate) fn next_backoff(current: std::time::Duration, max: std::time::Duration) -> std::time::Duration {
+    (current * 2).min(max)
+}
+
+/// Outcome of one disconnect event in the per-peer reconnect loop
+/// (PURE-LOGIC-001): whether to redial the peer, or one of three reasons
+/// not to. Extracted from `join.rs::spawn_reconnect_loop`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ReconnectDecision {
+    /// Redial the peer.
+    Reconnect,
+    /// The stored connection was already replaced by a fresher one; this
+    /// disconnect event is for the old, now-irrelevant connection.
+    IgnoreStaleDisconnect,
+    /// A deliberate `tetron leave` -- the peer is gone for good.
+    PeerLeftDeliberately,
+    /// We ourselves just pruned this peer from the roster (kicked or
+    /// departed); the close that woke this loop was our own doing.
+    PeerRemovedFromRoster,
+}
+
+/// `removed` is whether the peer's route was actually still the one that
+/// died (`false` means a stale event for an already-superseded connection).
+/// `prunes_member` is `CloseReason::prunes_member()` for the event's close
+/// code. `was_pruned_locally` is whether this `(network, peer)` pair was
+/// present in the one-shot `pruned_peers` suppression set (and has already
+/// been removed from it by the caller).
+pub(crate) fn reconnect_decision(
+    removed: bool,
+    prunes_member: bool,
+    was_pruned_locally: bool,
+) -> ReconnectDecision {
+    if !removed {
+        return ReconnectDecision::IgnoreStaleDisconnect;
+    }
+    if prunes_member {
+        return ReconnectDecision::PeerLeftDeliberately;
+    }
+    if was_pruned_locally {
+        return ReconnectDecision::PeerRemovedFromRoster;
+    }
+    ReconnectDecision::Reconnect
+}
