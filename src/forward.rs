@@ -170,10 +170,13 @@ pub struct DisconnectEvent {
 pub struct ForwardCtx {
     /// Swappable sender cell for the TUN writer. Peer readers outlive TUN
     /// attach/detach cycles (the control plane stays up across a VPN toggle), so
-    /// they resolve the current writer per packet via `tun_tx.load_full()` rather
-    /// than capturing one sender. After a detach + re-attach the cell points at
-    /// the new writer, so a reader spawned during the first `up()` keeps
-    /// forwarding after the next one. See [`DaemonState::attach_tun`].
+    /// they resolve the current writer per packet rather than capturing one
+    /// sender. Each reader wraps this cell in an `arc_swap::cache::Cache`
+    /// (TUN-SENDERCACHE-001) that revalidates against it on every load and only
+    /// re-clones when a re-attach actually stores a new sender. After a detach +
+    /// re-attach the cell points at the new writer, so a reader spawned during
+    /// the first `up()` keeps forwarding after the next one. See
+    /// [`DaemonState::attach_tun`].
     pub tun_tx: Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>,
     pub disconnect_tx: mpsc::Sender<DisconnectEvent>,
     pub token: CancellationToken,
@@ -391,6 +394,15 @@ pub fn spawn_peer_reader(
         // FRAG-002: per-connection IPv6 reassembly state. Lives for the
         // reader task's lifetime; never shared across peers, so no locking.
         let mut reassembler = packet::Ipv6Reassembler::new();
+        // TUN-SENDERCACHE-001: per-reader cache of the swappable TUN writer.
+        // Resolving `tun_tx.load_full()` per datagram costs two atomic refcount
+        // ops on the hottest inbound path even though the cell only changes on
+        // a TUN re-attach; the Cache reuses the held sender and clones only
+        // when a re-attach actually stores a new one (upstream e537db6: 11ns ->
+        // 1ns/packet). Swap semantics are unchanged — `load()` revalidates
+        // against the cell, so a detach + re-attach is picked up on the next
+        // packet.
+        let mut tun_cache = arc_swap::cache::Cache::new(tun_tx);
         loop {
             // Wait for the next datagram, exiting on cancellation or connection
             // loss. Keeping the `select!` to "yield a datagram or return" leaves
@@ -446,12 +458,14 @@ pub fn spawn_peer_reader(
             match evaluate_inbound(&packet_to_process, peer_ip, peer_ipv6) {
                 InboundDecision::Accept => {
                     stats.record_rx(packet_to_process.len());
-                    // Resolve the live writer for each packet: the sender is
-                    // swapped on every TUN re-attach (VPN toggle). A send error
-                    // means the writer is currently down (standby between a
-                    // detach and the next attach); drop the packet and keep the
-                    // reader alive so it forwards again once a new TUN attaches.
-                    let _ = tun_tx.load_full().send(packet_to_process).await;
+                    // Resolve the live writer per packet via the reader's
+                    // cached handle: the sender is swapped on every TUN
+                    // re-attach (VPN toggle), and the Cache revalidates on
+                    // each load. A send error means the writer is currently
+                    // down (standby between a detach and the next attach);
+                    // drop the packet and keep the reader alive so it
+                    // forwards again once a new TUN attaches.
+                    let _ = tun_cache.load().send(packet_to_process).await;
                 }
                 InboundDecision::DropMalformed => stats.record_drop(DropReason::Malformed),
                 InboundDecision::DropSpoof => {

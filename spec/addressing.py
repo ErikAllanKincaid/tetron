@@ -412,6 +412,48 @@ class Ipv6Fragmentation(Requirement):
 
 
 # --------------------------------------------------------------------------
+# TUN-SENDERCACHE-001: per-reader arc_swap Cache for the swappable TUN
+# writer (upstream e537db6 `perf(forward)`, ported from the 2026-08-05
+# upstream review)
+# --------------------------------------------------------------------------
+
+class TunSenderCache(Requirement):
+    """REQUIREMENT-ID: TUN-SENDERCACHE-001
+
+    Each per-peer reader (`forward::spawn_peer_reader`) resolves the
+    swappable TUN writer with `tun_tx.load_full()` on every inbound
+    datagram — two atomic refcount operations on the hottest inbound path.
+    The writer is only ever swapped on a TUN re-attach (VPN toggle), so the
+    per-packet resolution is almost always redundant.
+
+    Fix (ported from upstream `e537db6`): give each reader an
+    `arc_swap::cache::Cache` built once at spawn time
+    (`Cache::new(tun_tx)`), and resolve via `cache.load()` per datagram.
+    The cache revalidates against the cell and reuses the held value,
+    cloning only when a re-attach actually stores a new sender. tetron
+    already depends on `arc_swap` (1.9.2) and the cell is the same
+    `Arc<arc_swap::ArcSwap<mpsc::Sender<Bytes>>>` shape upstream
+    optimized; the Cache is a drop-in swap at the read site
+    (`src/forward.rs`, `spawn_peer_reader`'s `Accept` arm).
+
+    Zero behavior change: the sender still resolves per datagram with the
+    same swap semantics across TUN attach/detach cycles (the Cache
+    revalidates on every `load`, so a detach + re-attach is picked up on
+    the next packet). Upstream measured 11.0 ns -> 1.0 ns per packet on
+    its `writer_resolve` bench; the optional `benches/forward.rs`
+    microbench is not required for this port.
+
+    Independent of INVITE-CHECKSUM-001, DHT-ERRCAUSE-001, and
+    IPV4-MIN-IHL-001: disjoint files, no shared state. May land in any
+    order.
+
+    Found: 2026-08-05, upstream rayfish review `a56b4b9..b002168`
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-05.md`, item 3).
+    """
+    req_id = "TUN-SENDERCACHE-001"
+
+
+# --------------------------------------------------------------------------
 # MULTISEG-001: per-network subnet field on NetworkConfig (additive, unread)
 # --------------------------------------------------------------------------
 
