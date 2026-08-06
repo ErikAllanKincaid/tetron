@@ -16,6 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`tetron join` now reports a corrupted invite code specifically** (`INVITE-CHECKSUM-001`): previously a mistyped invite (checksum mismatch) was silently treated as a bare room id and denied with the generic "a valid invite key is required" message; the CLI now tells a genuine 32-byte room id apart from a 48/52-byte invite-shaped failure and surfaces the specific error ("invalid invite code: checksum mismatch") up front.
 - **`tetron join` error for a blackholed discovery relay** (`DHT-ERRCAUSE-001`): previously hung with nothing on screen; now bounded by a 15s resolve timeout (see Changed).
 
 ### Performance

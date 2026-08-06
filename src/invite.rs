@@ -130,6 +130,16 @@ pub fn encode_invite_code(
     bs58::encode(&bytes).into_string()
 }
 
+/// True when `s` is a bare room id: a base58 string that decodes to exactly
+/// the 32-byte network public key. Used by the CLI (INVITE-CHECKSUM-001) to
+/// tell a *corrupted invite code* (a failed `decode_invite_code` that proves
+/// the input was meant to be an invite — e.g. a 52-byte checksum mismatch)
+/// apart from a *bare room id*, which must keep flowing to the daemon so it
+/// can deny it with the invite-required message.
+pub fn is_bare_room_id(s: &str) -> bool {
+    matches!(bs58::decode(s).into_vec(), Ok(v) if v.len() == 32)
+}
+
 /// Decode an invite code into `(network_pubkey, secret)`.
 ///
 /// Accepts both the checksummed 52-byte form (verifies the trailing 4-byte
@@ -245,5 +255,24 @@ mod tests {
         bytes[0] ^= 0x01;
         let tampered = bs58::encode(&bytes).into_string();
         assert!(decode_invite_code(&tampered).is_err());
+    }
+
+    #[test]
+    fn bare_room_id_detection() {
+        // INVITE-CHECKSUM-001 CLI discrimination: a base58 string that
+        // decodes to 32 bytes (a bare network pubkey) is a room id, not an
+        // invite — so the CLI lets it flow to the daemon for denial.
+        assert!(is_bare_room_id(&bs58::encode(test_id(5).as_bytes()).into_string()));
+        // An encoded invite (48-byte legacy or 52-byte checksummed) is not.
+        let secret: [u8; SECRET_LEN] = rand::random();
+        assert!(!is_bare_room_id(&encode_invite_code(&test_id(6), &secret)));
+        // Neither is a tampered one.
+        let code = encode_invite_code(&test_id(6), &secret);
+        let mut bytes = bs58::decode(&code).into_vec().unwrap();
+        bytes[0] ^= 0x01;
+        let tampered = bs58::encode(&bytes).into_string();
+        assert!(!is_bare_room_id(&tampered));
+        // Garbage that isn't base58 at all is not a room id either.
+        assert!(!is_bare_room_id("not base58!!"));
     }
 }

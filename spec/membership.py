@@ -504,10 +504,21 @@ class InviteCodeChecksum(Requirement):
 
     `src/invite.rs`'s existing tests (`code_roundtrip`,
     `decode_rejects_bad_length`) extend; new coverage: legacy-48 decode,
-    checksum-mismatch rejection, and encoded-length assertion. Pure
-    join-path UX; the invite code never crosses the wire (decoded
-    client-side into `network_key` + `invite_secret` before IPC, per
-    INVITE-008), so there is no wire or `tetron-proto` change.
+    checksum-mismatch rejection, encoded-length assertion, and
+    `is_bare_room_id` discrimination. Pure join-path UX; the invite code
+    never crosses the wire (decoded client-side into `network_key` +
+    `invite_secret` before IPC, per INVITE-008), so there is no wire or
+    `tetron-proto` change.
+
+    **Follow-up, 2026-08-05 (found by independent code review of the
+    initial commit):** `cli/network.rs`'s `ipc_join` matched on
+    `Err(_)` and treated *any* decode failure as a bare room id — which
+    would have swallowed the specific "checksum mismatch" error behind
+    the daemon's generic "a valid invite key is required" denial. Fixed
+    by adding `invite::is_bare_room_id` (base58 decodes to exactly 32
+    bytes): only a genuine room id falls through to the daemon; a
+    48/52-byte-shaped failure (corrupted or mistyped invite) now returns
+    the specific decode error up front.
 
     Independent of DHT-ERRCAUSE-001, TUN-SENDERCACHE-001, and
     IPV4-MIN-IHL-001: disjoint files, no shared state. May land in any

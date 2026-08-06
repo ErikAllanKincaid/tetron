@@ -126,6 +126,13 @@ pub(crate) async fn ipc_join(
     // resolved public key, never invite-code text.
     let (network_key, invite) = match invite::decode_invite_code(invite_code) {
         Ok((net_pubkey, secret)) => (net_pubkey.to_string(), Some(secret)),
+        // INVITE-CHECKSUM-001: a decode failure is only the room-id fallback
+        // for a *genuine* bare room id (32-byte base58). Anything that was
+        // clearly meant to be an invite (48/52-byte payload, e.g. a checksum
+        // mismatch from a corrupted or mistyped code) surfaces the specific
+        // error up front instead of silently reaching the daemon as a room id
+        // and getting the generic "a valid invite key is required" denial.
+        Err(e) if !invite::is_bare_room_id(invite_code) => return Err(e),
         Err(_) => (invite_code.to_string(), None),
     };
     let mut stream = ipc::connect().await?;
