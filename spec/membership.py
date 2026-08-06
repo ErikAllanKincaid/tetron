@@ -473,6 +473,63 @@ class InviteExpiryDefault(Requirement):
     req_id = "INVITE-009"
 
 
+# --------------------------------------------------------------------------
+# INVITE-CHECKSUM-001: invite codes carry a blake3 checksum (upstream
+# ba15684 `feat(invite)`, ported from the 2026-08-05 upstream review)
+# --------------------------------------------------------------------------
+
+class InviteCodeChecksum(Requirement):
+    """REQUIREMENT-ID: INVITE-CHECKSUM-001
+
+    The invite code is `bs58(network_pubkey(32) || secret(16))` — 48 bytes
+    (the BLOB-001 format; it already superseded INVITE-008's coordinator-
+    pinning shape) — with no integrity check. base58 carries no error
+    detection of its own, so a dropped/garbled character can still decode
+    to a payload of the right length: a "well-formed" invite for a network
+    that doesn't exist. The user sees a confusing join failure much later
+    instead of "invalid invite code".
+
+    Fix (ported from upstream `ba15684`): `encode_invite_code` appends 4
+    bytes of `blake3(payload)` after the 48-byte payload (52 bytes total
+    before base58). `decode_invite_code` accepts BOTH the checksummed form
+    (verifies the 4-byte checksum, rejecting on mismatch) and the legacy
+    unchecksummed 48-byte form — codes already handed out keep working.
+    The break is one-directional: new codes are 4 bytes longer, so an OLD
+    peer cannot redeem them, but no in-flight migration is needed (both
+    ends ship in the same release).
+
+    Documented boundary: a corruption that shrinks the payload by exactly
+    those 4 bytes lands on the legacy shape and skips the check — closes
+    when legacy support is dropped in a future protocol version.
+
+    `src/invite.rs`'s existing tests (`code_roundtrip`,
+    `decode_rejects_bad_length`) extend; new coverage: legacy-48 decode,
+    checksum-mismatch rejection, encoded-length assertion, and
+    `is_bare_room_id` discrimination. Pure join-path UX; the invite code
+    never crosses the wire (decoded client-side into `network_key` +
+    `invite_secret` before IPC, per INVITE-008), so there is no wire or
+    `tetron-proto` change.
+
+    **Follow-up, 2026-08-05 (found by independent code review of the
+    initial commit):** `cli/network.rs`'s `ipc_join` matched on
+    `Err(_)` and treated *any* decode failure as a bare room id — which
+    would have swallowed the specific "checksum mismatch" error behind
+    the daemon's generic "a valid invite key is required" denial. Fixed
+    by adding `invite::is_bare_room_id` (base58 decodes to exactly 32
+    bytes): only a genuine room id falls through to the daemon; a
+    48/52-byte-shaped failure (corrupted or mistyped invite) now returns
+    the specific decode error up front.
+
+    Independent of DHT-ERRCAUSE-001, TUN-SENDERCACHE-001, and
+    IPV4-MIN-IHL-001: disjoint files, no shared state. May land in any
+    order.
+
+    Found: 2026-08-05, upstream rayfish review `a56b4b9..b002168`
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-05.md`, item 1).
+    """
+    req_id = "INVITE-CHECKSUM-001"
+
+
 class RemoveLiveApproval(Requirement):
     """REQUIREMENT-ID: LIVE-001
 
@@ -938,6 +995,56 @@ class BackgroundConcurrentBoundedDials(Requirement):
     MINIMAL-* rewrites make no guarantee upstream fixes were ever inherited.
     """
     req_id = "DIAL-001"
+
+
+# --------------------------------------------------------------------------
+# DHT-ERRCAUSE-001: join-path DHT resolution error stutter + missing cause
+# (upstream 24b6a03 `fix(dht)`, ported from the 2026-08-05 upstream review)
+# --------------------------------------------------------------------------
+
+class DhtResolveErrorCause(Requirement):
+    """REQUIREMENT-ID: DHT-ERRCAUSE-001
+
+    Every DHT discovery failure during join rendered as
+    `failed to resolve network record: failed to resolve network record:
+    Service 'pkarr' failed` — the same context wrapped twice, once in
+    `dht::resolve_network_packet` (`src/dht.rs`, `map_err(|e| anyhow!(
+    "failed to resolve network record: {e}"))`) and again at the call site
+    (`src/daemon/mesh/create_join.rs`'s `resolve_and_fetch_blob`, `.context(
+    "failed to resolve network record")`). The inner `{e}` formatting also
+    throws away the pkarr source chain that holds the real cause — `{e:#}`
+    renders it. And there is no total timeout on the resolve: a blackholed
+    relay can hang `join` with nothing on screen.
+
+    Fix (ported from upstream `24b6a03`):
+
+    1. `dht::resolve_network_packet` becomes the single wrap: it names the
+       discovery server actually used (`dht::effective_pkarr_url()`) and
+       renders the full source chain with `{e:#}` — e.g. `failed to
+       resolve network record via https://dns.iroh.link/pkarr: ...`.
+    2. `create_join.rs`'s `resolve_and_fetch_blob` drops its redundant
+       `.context("failed to resolve network record")`, so the error
+       propagates wrapped exactly once. No other caller re-wraps it.
+    3. `dht::resolve_network_packet` caps the resolve with
+       `tokio::time::timeout(RESOLVE_TIMEOUT)` (15s), mapping the timeout
+       to a message that names the server and the bound — a blackholed
+       relay fails fast with a diagnosable error instead of hanging join.
+
+    `dht.rs`'s existing tests (`effective_url_defaults_when_unset`,
+    `network_record_roundtrip`, ...) are unaffected; the timeout/error-
+    formatting path is verified by `cargo build`/`clippy` and the
+    testsuite (the resolve itself needs a live client, same precedent as
+    PATH-DIAG-001's log lines). Small, high-diagnosability, squarely the
+    "one thing" (join) done well.
+
+    Independent of INVITE-CHECKSUM-001, TUN-SENDERCACHE-001, and
+    IPV4-MIN-IHL-001: disjoint files, no shared state. May land in any
+    order.
+
+    Found: 2026-08-05, upstream rayfish review `a56b4b9..b002168`
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-05.md`, item 2).
+    """
+    req_id = "DHT-ERRCAUSE-001"
 
 
 # --------------------------------------------------------------------------

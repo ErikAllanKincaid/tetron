@@ -194,18 +194,34 @@ pub async fn publish_network(
         .map_err(|e| anyhow::anyhow!("failed to publish network record: {e}"))
 }
 
+/// Total bound on a single pkarr resolve, so a blackholed discovery relay
+/// fails `join` fast with a diagnosable error instead of hanging with
+/// nothing on screen (DHT-ERRCAUSE-001).
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Resolves the raw signed network record packet. Use this when you need fields
 /// beyond `(blob_hash, seed_peers)` — e.g. [`mesh_version_from_record`] for the
 /// pre-dial compatibility check. Decode the standard fields with
 /// [`decode_network_record`].
+///
+/// DHT-ERRCAUSE-001: this is the single place a resolve failure is wrapped —
+/// it names the discovery server actually used and renders the full source
+/// chain (`{e:#}`), and it caps the resolve at [`RESOLVE_TIMEOUT`] so a dead
+/// relay errors out rather than hanging the join. Callers must not re-wrap
+/// with their own "failed to resolve network record" context.
 pub async fn resolve_network_packet(
     client: &PkarrRelayClient,
     network_pubkey: EndpointId,
 ) -> Result<SignedPacket> {
-    client
-        .resolve(network_pubkey)
+    let server = effective_pkarr_url();
+    tokio::time::timeout(RESOLVE_TIMEOUT, client.resolve(network_pubkey))
         .await
-        .map_err(|e| anyhow::anyhow!("failed to resolve network record: {e}"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "timed out after {RESOLVE_TIMEOUT:?} resolving network record via {server}"
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("failed to resolve network record via {server}: {e:#}"))
 }
 
 pub async fn resolve_network(
