@@ -556,15 +556,8 @@ async fn perform_join_handshake(
         match msg {
             ControlMsg::Welcome { members, approved } => {
                 tracing::info!(network = %network_name, "welcomed to network");
-                if let Some(existing) = members
-                    .iter()
-                    .find(|m| m.ip == my_ip && m.identity != my_identity)
-                {
-                    anyhow::bail!(
-                        "IP collision: {} is already assigned to {}",
-                        my_ip,
-                        existing.identity
-                    );
+                if let Some(existing) = welcome_ip_collision(&members, my_ip, my_identity) {
+                    anyhow::bail!("IP collision: {my_ip} is already assigned to {existing}");
                 }
                 Ok(HandshakeOutcome::Admitted { members, approved })
             }
@@ -911,9 +904,11 @@ pub(crate) fn spawn_reconnect_loop(
             // and closed the connection ourselves — that close is what woke this
             // loop. The peer still lists us, so re-dialing would re-form the link.
             // Consume the one-shot suppression entry and skip.
-            if pruned_peers
+            let was_pruned_locally = pruned_peers
                 .remove(&(network_name.clone(), peer_id))
-                .is_some()
+                .is_some();
+            if reconnect_decision(removed, event.reason.prunes_member(), was_pruned_locally)
+                == ReconnectDecision::PeerRemovedFromRoster
             {
                 tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer removed from roster, not reconnecting");
                 continue;
@@ -945,7 +940,7 @@ pub(crate) fn spawn_reconnect_loop(
                         _ = token.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
                     }
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
+                    backoff = next_backoff(backoff, BACKOFF_MAX);
 
                     match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
                         Ok(conn) => {

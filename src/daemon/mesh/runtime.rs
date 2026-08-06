@@ -431,15 +431,19 @@ impl MeshManager {
         }
 
         if coordinator_count <= 1 {
-            if cancel || second.is_some() {
-                return IpcMessage::Error {
-                    message: "no consensus needed with a single coordinator; nuke runs immediately, nothing to cancel or second".to_string(),
-                };
-            }
-            if has_other_members && !force {
-                return IpcMessage::Error {
-                    message: "network has other members — use --force to destroy, or transfer ownership first".to_string(),
-                };
+            match solo_coordinator_nuke_outcome(cancel, second.is_some(), has_other_members, force)
+            {
+                SoloNukeOutcome::NothingToCancelOrSecond => {
+                    return IpcMessage::Error {
+                        message: "no consensus needed with a single coordinator; nuke runs immediately, nothing to cancel or second".to_string(),
+                    };
+                }
+                SoloNukeOutcome::WouldStrandMembers => {
+                    return IpcMessage::Error {
+                        message: "network has other members — use --force to destroy, or transfer ownership first".to_string(),
+                    };
+                }
+                SoloNukeOutcome::Proceed => {}
             }
             let (net_secret_key, tombstone_generation) = {
                 let handle = self.networks.get(name).unwrap();

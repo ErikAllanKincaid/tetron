@@ -808,6 +808,79 @@ class SplitMembershipTestModule(Requirement):
     req_id = "MODULARIZE-002"
 
 
+# --------------------------------------------------------------------------
+# Core-mesh pure-logic extraction (PURE-LOGIC-*)
+#
+# `create_join.rs`/`runtime.rs`/`join.rs` (the mesh create/join/lifecycle
+# state machine) have zero unit tests -- flagged in
+# DO-NOT-COMMIT/PROPOSAL_codebase-modularization-sweep_2026-08-05.md and
+# TODO_DETAILS.md#core-mesh-zero-unit-tests. This is the no-new-deps
+# alternative to reaching for iroh's test-utils feature
+# (TODO_DETAILS.md#core-mesh-pure-logic-split): extract the genuinely pure
+# decision logic embedded in those three files into
+# `src/daemon/mesh/select.rs`, which already exists as this exact "pure
+# decision helpers... no I/O, unit-tested directly" module
+# (`coordinator_dial_order`, `find_subnet_collision`, `classify_candidate_addr`,
+# `choose_path_index`, `classify_via_detail`, `persisted_roster` already live
+# there). This requirement extends that established pattern rather than
+# inventing a new one or a new module.
+#
+# Behavior-free: no call site's observable behavior changes, only where the
+# decision logic is declared and that it is now independently testable.
+# --------------------------------------------------------------------------
+
+class ExtractCoreMeshPureLogic(Requirement):
+    """REQUIREMENT-ID: PURE-LOGIC-001
+
+    Extract four genuinely pure, currently-untested decision points from
+    `create_join.rs`/`runtime.rs`/`join.rs` into `src/daemon/mesh/select.rs`,
+    each as a small pure function plus unit tests in `daemon/mod.rs` (matching
+    the existing per-function test-module convention there, e.g.
+    `coordinator_dial_order_tests`):
+
+    - **`solo_coordinator_nuke_outcome`** (from `runtime.rs::nuke_network`'s
+      solo-coordinator branch): given `(cancel, second_present,
+      has_other_members, force)`, decides `NothingToCancelOrSecond` /
+      `WouldStrandMembers` / `Proceed`. The highest-value extraction --
+      real branching logic on the network-destroying path, previously
+      untested as a unit even though the lower-level primitives it's
+      adjacent to (`nuke_consensus_reached`, `active_nuke_proposers`,
+      `resolve_nuke_proposer`, `coordinator_count`) already are.
+    - **`welcome_ip_collision`** (from `join.rs::perform_join_handshake`'s
+      `Welcome` handling): given the just-received roster, `my_ip`, and
+      `my_identity`, returns the colliding member's identity if some other
+      identity already claims `my_ip` -- an IP-hijack check that previously
+      ran inline inside an async handshake function.
+    - **`next_backoff`** (from `join.rs::spawn_reconnect_loop`): the
+      exponential-backoff-with-cap arithmetic (`(current * 2).min(max)`),
+      previously inline and untestable in isolation from the reconnect
+      loop's own async/tokio machinery.
+    - **`reconnect_decision`** (from `join.rs::spawn_reconnect_loop`):
+      given `(removed, prunes_member, was_pruned_locally)`, decides
+      `Reconnect` / `IgnoreStaleDisconnect` / `PeerLeftDeliberately` /
+      `PeerRemovedFromRoster` -- the three-way skip-or-reconnect branch a
+      disconnect event goes through, previously embedded in the same loop
+      as the actual redial I/O.
+
+    Explicitly NOT attempted: `runtime.rs::leave_network`'s stranding
+    computation (partitioning members into connected/unreachable requires
+    an async `grant_admin_key` call interleaved with the decision, so it
+    doesn't cleanly separate without deeper restructuring than this
+    behavior-free pass should risk) and the propose-vs-execute consensus
+    branch in `nuke_network` (already effectively backed by the tested
+    `nuke_consensus_reached`/`active_nuke_proposers` primitives via the
+    same comparison, so there is no untested logic left to extract there).
+
+    No wire/serialization change: none of the four functions touch a
+    serialized type. Every existing call site's behavior is unchanged --
+    verified by `cargo test` still passing and a live `tetron-testsuite`
+    regression pass (`AGENTS.md`'s mandatory core-change check) covering
+    the actual create/join/nuke/reconnect paths these functions were
+    extracted from.
+    """
+    req_id = "PURE-LOGIC-001"
+
+
 class TorPerNetworkPolicy(Requirement):
     """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
 

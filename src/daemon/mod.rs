@@ -1633,6 +1633,156 @@ mod coordinator_dial_order_tests {
 }
 
 #[cfg(test)]
+mod nuke_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_or_second_with_solo_coordinator_has_nothing_to_act_on() {
+        assert_eq!(
+            solo_coordinator_nuke_outcome(true, false, false, false),
+            SoloNukeOutcome::NothingToCancelOrSecond
+        );
+        assert_eq!(
+            solo_coordinator_nuke_outcome(false, true, false, false),
+            SoloNukeOutcome::NothingToCancelOrSecond
+        );
+    }
+
+    #[test]
+    fn other_members_without_force_refuses() {
+        assert_eq!(
+            solo_coordinator_nuke_outcome(false, false, true, false),
+            SoloNukeOutcome::WouldStrandMembers
+        );
+    }
+
+    #[test]
+    fn other_members_with_force_proceeds() {
+        assert_eq!(
+            solo_coordinator_nuke_outcome(false, false, true, true),
+            SoloNukeOutcome::Proceed
+        );
+    }
+
+    #[test]
+    fn no_other_members_proceeds_without_force() {
+        assert_eq!(
+            solo_coordinator_nuke_outcome(false, false, false, false),
+            SoloNukeOutcome::Proceed
+        );
+    }
+}
+
+#[cfg(test)]
+mod welcome_ip_collision_tests {
+    use super::*;
+    use crate::membership::default_subnet;
+
+    fn test_id(seed: u8) -> EndpointId {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = seed;
+        SecretKey::from(key_bytes).public()
+    }
+
+    fn mk(id: EndpointId, ip: Ipv4Addr) -> Member {
+        Member {
+            identity: id,
+            ip,
+            is_coordinator: false,
+            hostname: None,
+            user_identity: None,
+            device_cert: None,
+            collision_index: 0,
+            last_seen: None,
+        }
+    }
+
+    #[test]
+    fn detects_ip_claimed_by_a_different_identity() {
+        let mine = test_id(1);
+        let other = test_id(2);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        let members = vec![mk(other, ip)];
+        assert_eq!(welcome_ip_collision(&members, ip, mine), Some(other));
+    }
+
+    #[test]
+    fn own_entry_at_own_ip_is_not_a_collision() {
+        let mine = test_id(1);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        let members = vec![mk(mine, ip)];
+        assert_eq!(welcome_ip_collision(&members, ip, mine), None);
+    }
+
+    #[test]
+    fn no_match_at_all_is_not_a_collision() {
+        let mine = test_id(1);
+        let other = test_id(2);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        let other_ip = crate::membership::derive_ip(&other, default_subnet());
+        let members = vec![mk(other, other_ip)];
+        assert_eq!(welcome_ip_collision(&members, ip, mine), None);
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_and_caps_at_max() {
+        let max = Duration::from_secs(30);
+        let b = Duration::from_secs(1);
+        let b = next_backoff(b, max);
+        assert_eq!(b, Duration::from_secs(2));
+        let b = next_backoff(b, max);
+        assert_eq!(b, Duration::from_secs(4));
+        // Keep doubling past the cap; must clamp, never exceed it.
+        let mut b = b;
+        for _ in 0..10 {
+            b = next_backoff(b, max);
+        }
+        assert_eq!(b, max);
+    }
+
+    #[test]
+    fn stale_disconnect_is_ignored_regardless_of_other_flags() {
+        assert_eq!(
+            reconnect_decision(false, true, true),
+            ReconnectDecision::IgnoreStaleDisconnect
+        );
+        assert_eq!(
+            reconnect_decision(false, false, false),
+            ReconnectDecision::IgnoreStaleDisconnect
+        );
+    }
+
+    #[test]
+    fn deliberate_leave_is_not_reconnected() {
+        assert_eq!(
+            reconnect_decision(true, true, false),
+            ReconnectDecision::PeerLeftDeliberately
+        );
+    }
+
+    #[test]
+    fn self_pruned_peer_is_not_reconnected() {
+        assert_eq!(
+            reconnect_decision(true, false, true),
+            ReconnectDecision::PeerRemovedFromRoster
+        );
+    }
+
+    #[test]
+    fn ordinary_disconnect_reconnects() {
+        assert_eq!(
+            reconnect_decision(true, false, false),
+            ReconnectDecision::Reconnect
+        );
+    }
+}
+
+#[cfg(test)]
 mod dial_fallback_tests {
     use super::*;
 
