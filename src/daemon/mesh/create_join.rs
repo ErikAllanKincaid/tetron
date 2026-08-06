@@ -838,9 +838,11 @@ impl MeshManager {
         net_pubkey: EndpointId,
     ) -> Result<crate::membership::GroupBlob> {
         let pkarr_client = dht::create_pkarr_client(&self.endpoint)?;
-        let record = dht::resolve_network_packet(&pkarr_client, net_pubkey)
-            .await
-            .context("failed to resolve network record")?;
+        // DHT-ERRCAUSE-001: `resolve_network_packet` already wraps with the
+        // server name + full source chain and a 15s bound — re-wrapping here
+        // would duplicate the context (the pre-fix "failed to resolve network
+        // record: failed to resolve network record: ..." stutter).
+        let record = dht::resolve_network_packet(&pkarr_client, net_pubkey).await?;
 
         // Absent version (older record) ⇒ skip and let the ALPN gate decide.
         if let Some(net_ver) = dht::mesh_version_from_record(&record) {

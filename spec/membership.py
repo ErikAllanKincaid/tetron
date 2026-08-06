@@ -987,6 +987,56 @@ class BackgroundConcurrentBoundedDials(Requirement):
 
 
 # --------------------------------------------------------------------------
+# DHT-ERRCAUSE-001: join-path DHT resolution error stutter + missing cause
+# (upstream 24b6a03 `fix(dht)`, ported from the 2026-08-05 upstream review)
+# --------------------------------------------------------------------------
+
+class DhtResolveErrorCause(Requirement):
+    """REQUIREMENT-ID: DHT-ERRCAUSE-001
+
+    Every DHT discovery failure during join rendered as
+    `failed to resolve network record: failed to resolve network record:
+    Service 'pkarr' failed` — the same context wrapped twice, once in
+    `dht::resolve_network_packet` (`src/dht.rs`, `map_err(|e| anyhow!(
+    "failed to resolve network record: {e}"))`) and again at the call site
+    (`src/daemon/mesh/create_join.rs`'s `resolve_and_fetch_blob`, `.context(
+    "failed to resolve network record")`). The inner `{e}` formatting also
+    throws away the pkarr source chain that holds the real cause — `{e:#}`
+    renders it. And there is no total timeout on the resolve: a blackholed
+    relay can hang `join` with nothing on screen.
+
+    Fix (ported from upstream `24b6a03`):
+
+    1. `dht::resolve_network_packet` becomes the single wrap: it names the
+       discovery server actually used (`dht::effective_pkarr_url()`) and
+       renders the full source chain with `{e:#}` — e.g. `failed to
+       resolve network record via https://dns.iroh.link/pkarr: ...`.
+    2. `create_join.rs`'s `resolve_and_fetch_blob` drops its redundant
+       `.context("failed to resolve network record")`, so the error
+       propagates wrapped exactly once. No other caller re-wraps it.
+    3. `dht::resolve_network_packet` caps the resolve with
+       `tokio::time::timeout(RESOLVE_TIMEOUT)` (15s), mapping the timeout
+       to a message that names the server and the bound — a blackholed
+       relay fails fast with a diagnosable error instead of hanging join.
+
+    `dht.rs`'s existing tests (`effective_url_defaults_when_unset`,
+    `network_record_roundtrip`, ...) are unaffected; the timeout/error-
+    formatting path is verified by `cargo build`/`clippy` and the
+    testsuite (the resolve itself needs a live client, same precedent as
+    PATH-DIAG-001's log lines). Small, high-diagnosability, squarely the
+    "one thing" (join) done well.
+
+    Independent of INVITE-CHECKSUM-001, TUN-SENDERCACHE-001, and
+    IPV4-MIN-IHL-001: disjoint files, no shared state. May land in any
+    order.
+
+    Found: 2026-08-05, upstream rayfish review `a56b4b9..b002168`
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-05.md`, item 2).
+    """
+    req_id = "DHT-ERRCAUSE-001"
+
+
+# --------------------------------------------------------------------------
 # CONVERGE-007: a kick-coded connection close never mutates the roster
 # --------------------------------------------------------------------------
 
