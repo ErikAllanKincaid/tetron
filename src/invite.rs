@@ -142,6 +142,17 @@ mod tests {
     }
 
     #[test]
+    fn reusable_key_from_secret_sets_id_and_expiry() {
+        let secret = [5u8; 16];
+        let (hash, key) = ReusableKey::from_secret(&secret, 100, 50);
+        assert_eq!(hash, blake3::hash(&secret).to_hex().to_string());
+        assert_eq!(key.id, hash[..8]);
+        assert_eq!(key.created, 100);
+        assert_eq!(key.expires, 150);
+        assert!(!key.revoked);
+    }
+
+    #[test]
     fn code_roundtrip() {
         let net = test_id(1);
         let secret: [u8; SECRET_LEN] = rand::random();

@@ -785,6 +785,29 @@ class ExtractAddressingIdentityInvite(Requirement):
     req_id = "MODULARIZE-001"
 
 
+class SplitMembershipTestModule(Requirement):
+    """REQUIREMENT-ID: MODULARIZE-002
+
+    Split `membership.rs`'s single flat `mod tests` block (1,808 of the
+    file's 2,925 pre-`MODULARIZE-001` lines) to match the module layout
+    `MODULARIZE-001` establishes: tests for relocated addressing/identity/
+    invite-type items move to their new modules (`src/addressing.rs`,
+    `src/identity.rs`, `src/invite.rs`), colocated with the code they test,
+    matching this repo's TDD convention (`docs/tetron-workflow.md` step 5).
+    Tests for what remains in `membership.rs` (roster, `GroupBlob`, nuke
+    consensus, tombstone, blob validation) stay in `membership.rs`'s own
+    `#[cfg(test)]` module.
+
+    Behavior-free: no test is added, removed, or changed in what it
+    asserts, only which file it lives in and, where a moved test referenced
+    a symbol now re-exported from `membership.rs`, updated to reference the
+    symbol's new home directly.
+
+    Depends on MODULARIZE-001 (assumes its module layout already exists).
+    """
+    req_id = "MODULARIZE-002"
+
+
 class TorPerNetworkPolicy(Requirement):
     """REQUIREMENT-ID: TOR-M01  (post-MINIMAL, deferred)
 

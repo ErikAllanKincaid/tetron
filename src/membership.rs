@@ -719,16 +719,6 @@ pub fn trusted_reconverge_hash(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn subnet_change_warning_fires_only_on_mismatch() {
-        use super::{default_subnet, subnet_change_warning};
-        let live = default_subnet();
-        let other = ("10.99.0.0".parse::<std::net::Ipv4Addr>().unwrap(), 16u8);
-        assert!(subnet_change_warning(live, live).is_none());
-        let w = subnet_change_warning(other, live).expect("mismatch must warn");
-        assert!(w.contains("sudo tetron restart"), "{w}");
-    }
-
     use super::*;
     use std::collections::BTreeMap;
 
@@ -737,150 +727,6 @@ mod tests {
         key_bytes[0] = seed;
         let key = iroh::SecretKey::from(key_bytes);
         key.public()
-    }
-
-    #[test]
-    fn test_derive_ip_deterministic() {
-        let id = test_id(1);
-        let ip1 = derive_ip(&id, default_subnet());
-        let ip2 = derive_ip(&id, default_subnet());
-        assert_eq!(ip1, ip2);
-    }
-
-    #[test]
-    fn test_derive_ip_in_default_subnet() {
-        let id = test_id(1);
-        let ip = derive_ip(&id, default_subnet());
-        assert!(ip_in_subnet(ip, default_subnet()));
-    }
-
-    #[test]
-    fn test_derive_ip_different_identities_differ() {
-        let ip1 = derive_ip(&test_id(1), default_subnet());
-        let ip2 = derive_ip(&test_id(2), default_subnet());
-        assert_ne!(ip1, ip2);
-    }
-
-    #[test]
-    fn test_derive_ip_avoids_reserved() {
-        // Was previously checked against 100.64.0.0/100.64.0.1 -- reserved
-        // addresses for the pre-fork default subnet, not this one. Since
-        // `default_subnet()` never derives an address outside 10.88.0.0/24,
-        // that comparison was vacuously true for every `i`, silently testing
-        // nothing. Must be this subnet's own reserved addresses.
-        let (base, _) = default_subnet();
-        let reserved1 = base;
-        let reserved2 = Ipv4Addr::from(u32::from(base) + 1);
-        for i in 0..=255u8 {
-            let ip = derive_ip(&test_id(i), default_subnet());
-            assert_ne!(ip, reserved1);
-            assert_ne!(ip, reserved2);
-        }
-    }
-
-    #[test]
-    fn test_derive_ip_with_index_zero_matches_derive_ip() {
-        for i in 0..=255u8 {
-            let id = test_id(i);
-            assert_eq!(
-                derive_ip(&id, default_subnet()),
-                derive_ip_with_index(&id, 0, default_subnet())
-            );
-        }
-    }
-
-    #[test]
-    fn test_derive_ip_with_index_rotates() {
-        let id = test_id(1);
-        let ip0 = derive_ip_with_index(&id, 0, default_subnet());
-        let ip1 = derive_ip_with_index(&id, 1, default_subnet());
-        let ip2 = derive_ip_with_index(&id, 2, default_subnet());
-        assert_ne!(ip0, ip1);
-        assert_ne!(ip1, ip2);
-    }
-
-    #[test]
-    fn test_derive_ipv6_deterministic() {
-        let id = test_id(1);
-        let net = test_id(100);
-        assert_eq!(derive_ipv6(&id, &net), derive_ipv6(&id, &net));
-    }
-
-    #[test]
-    fn test_derive_ipv6_in_200_range() {
-        let net = test_id(100);
-        for i in 0..=255u8 {
-            let ipv6 = derive_ipv6(&test_id(i), &net);
-            let octets = ipv6.octets();
-            assert_eq!(octets[0], 0x02, "first byte must be 0x02 for 200::/7");
-        }
-    }
-
-    #[test]
-    fn test_derive_ipv6_different_identities_differ() {
-        let net = test_id(100);
-        let a = derive_ipv6(&test_id(1), &net);
-        let b = derive_ipv6(&test_id(2), &net);
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn test_derive_ipv6_same_identity_different_networks_differ() {
-        let id = test_id(1);
-        let net_a = test_id(100);
-        let net_b = test_id(101);
-        assert_ne!(derive_ipv6(&id, &net_a), derive_ipv6(&id, &net_b));
-    }
-
-    #[test]
-    fn test_derive_ipv6_shares_network_prefix() {
-        let net = test_id(100);
-        let a = derive_ipv6(&test_id(1), &net);
-        let b = derive_ipv6(&test_id(2), &net);
-        assert_eq!(a.octets()[..7], b.octets()[..7], "same network -> same /56 prefix");
-        let prefix = ipv6_network_prefix(&net);
-        assert_eq!(a.octets()[..7], prefix.octets()[..7]);
-    }
-
-    #[test]
-    fn test_ipv6_network_prefix_deterministic_and_distinct() {
-        let net_a = test_id(100);
-        let net_b = test_id(101);
-        assert_eq!(ipv6_network_prefix(&net_a), ipv6_network_prefix(&net_a));
-        assert_ne!(ipv6_network_prefix(&net_a), ipv6_network_prefix(&net_b));
-        assert_eq!(ipv6_network_prefix(&net_a).octets()[0], 0x02);
-        assert_eq!(
-            &ipv6_network_prefix(&net_a).octets()[7..],
-            &[0u8; 9],
-            "peer-part bits must be zeroed in the prefix address"
-        );
-    }
-
-    #[test]
-    fn ipv6_in_network_matches_own_prefix_only() {
-        let net_a = test_id(100);
-        let net_b = test_id(101);
-        let prefix_a = ipv6_network_prefix(&net_a);
-        // The network's own prefix address always matches itself.
-        assert!(ipv6_in_network(prefix_a, &net_a));
-        // A derived peer address (same /56, distinct low bits) still matches.
-        let peer_addr = derive_ipv6(&test_id(200), &net_a);
-        assert!(ipv6_in_network(peer_addr, &net_a));
-        // The identical address does not match a different network's prefix.
-        assert!(!ipv6_in_network(peer_addr, &net_b));
-    }
-
-    #[test]
-    fn test_iroh_identity_provider() {
-        let key = iroh::SecretKey::generate();
-        let endpoint_id = key.public();
-        let provider = IrohIdentityProvider::new(endpoint_id, 0, default_subnet());
-
-        let ip = provider.local_ip();
-        assert!(ip_in_subnet(ip, default_subnet()));
-
-        let id = provider.local_identity();
-        assert_eq!(provider.derive_ip(&id), ip);
     }
 
     #[test]
@@ -1613,17 +1459,6 @@ mod tests {
     }
 
     #[test]
-    fn reusable_key_from_secret_sets_id_and_expiry() {
-        let secret = [5u8; 16];
-        let (hash, key) = ReusableKey::from_secret(&secret, 100, 50);
-        assert_eq!(hash, blake3::hash(&secret).to_hex().to_string());
-        assert_eq!(key.id, hash[..8]);
-        assert_eq!(key.created, 100);
-        assert_eq!(key.expires, 150);
-        assert!(!key.revoked);
-    }
-
-    #[test]
     fn revoke_reusable_by_full_id_and_prefix() {
         let secret = [6u8; 16];
         let (hash, key) = ReusableKey::from_secret(&secret, 0, 100);
@@ -1929,32 +1764,6 @@ mod tests {
         assert!(list.get(&id).unwrap().is_coordinator);
     }
 
-    /// Brute-force (birthday approach) to find two distinct identities whose
-    /// index-0 IPv4 collides. The 22-bit space makes this likely within ~a few
-    /// thousand iterations. Bounded at 200_000 to avoid a runaway test.
-    fn find_colliding_pair() -> Option<(EndpointId, EndpointId)> {
-        let mut seen: HashMap<Ipv4Addr, EndpointId> = HashMap::new();
-        for i in 0u32..200_000 {
-            // Vary bytes across the whole 32-byte key to get good hash dispersion.
-            let mut key_bytes = [0u8; 32];
-            let b = i.to_le_bytes();
-            key_bytes[0] = b[0];
-            key_bytes[1] = b[1];
-            key_bytes[2] = b[2];
-            key_bytes[3] = b[3];
-            let id = iroh::SecretKey::from(key_bytes).public();
-            let ip = derive_ip(&id, default_subnet());
-            if let Some(existing) = seen.get(&ip) {
-                if *existing != id {
-                    return Some((*existing, id));
-                }
-            } else {
-                seen.insert(ip, id);
-            }
-        }
-        None
-    }
-
     #[test]
     fn validate_member_accepts_declared_index_rejects_mismatch() {
         let id = test_id(5);
@@ -1992,45 +1801,6 @@ mod tests {
         };
         let dup = derive_ip(&a, default_subnet());
         assert!(validate_no_duplicate_ips(&[m(a, dup), m(test_id(2), dup)]).is_err());
-    }
-
-    #[test]
-    fn assign_ip_rotates_on_collision() {
-        let (a, b) = find_colliding_pair()
-            .expect("birthday bound: should find a collision within 200k identities");
-        // Sanity: a and b both map to the same index-0 IP.
-        assert_eq!(
-            derive_ip(&a, default_subnet()),
-            derive_ip(&b, default_subnet())
-        );
-        let ip0 = derive_ip(&a, default_subnet());
-
-        // Add `a` to the list at its index-0 IP.
-        let mut list = MemberList::new();
-        let (assigned_a, idx_a) = assign_ip(&list, &a, default_subnet());
-        assert_eq!(idx_a, 0, "first peer always gets index 0");
-        assert_eq!(assigned_a, ip0);
-        list.add(Member {
-            identity: a,
-            ip: assigned_a,
-            is_coordinator: false,
-            hostname: None,
-            user_identity: None,
-            device_cert: None,
-            collision_index: idx_a,
-            last_seen: None,
-        })
-        .unwrap();
-
-        // Now assign_ip for `b` must rotate to index >= 1.
-        let (ip_b, idx_b) = assign_ip(&list, &b, default_subnet());
-        assert!(idx_b >= 1, "colliding identity must rotate to index >= 1");
-        assert_ne!(ip_b, ip0, "rotated IP must differ from the occupied slot");
-        assert_eq!(
-            ip_b,
-            derive_ip_with_index(&b, idx_b, default_subnet()),
-            "assigned IP must equal derive_ip_with_index at that index"
-        );
     }
 
     #[test]
@@ -2073,106 +1843,6 @@ mod tests {
     const CUSTOM: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 16);
 
     #[test]
-    fn derive_ip_lands_in_custom_subnet_and_avoids_reserved() {
-        for seed in 1u8..40 {
-            let ip = derive_ip(&test_id(seed), CUSTOM);
-            assert!(ip_in_subnet(ip, CUSTOM), "{ip} not in {CUSTOM:?}");
-            let host = u32::from(ip) & subnet_host_mask(16);
-            assert!(host >= 2, "{ip} must avoid network(.0)/gateway(.1)");
-            // A custom-subnet address must NOT be a default-range CGNAT address.
-            assert!(!ip_in_subnet(ip, default_subnet()));
-        }
-    }
-
-    #[test]
-    fn derive_ip_is_deterministic_per_subnet() {
-        let id = test_id(7);
-        assert_eq!(derive_ip(&id, CUSTOM), derive_ip(&id, CUSTOM));
-        // Different subnets generally yield different addresses.
-        assert_ne!(
-            u32::from(derive_ip(&id, CUSTOM)) & !subnet_host_mask(16),
-            u32::from(derive_ip(&id, default_subnet())) & !subnet_host_mask(10),
-        );
-    }
-
-    #[test]
-    fn netmask_and_gateway_track_prefix() {
-        assert_eq!(subnet_netmask(10), Ipv4Addr::new(255, 192, 0, 0));
-        assert_eq!(subnet_netmask(16), Ipv4Addr::new(255, 255, 0, 0));
-        assert_eq!(subnet_netmask(24), Ipv4Addr::new(255, 255, 255, 0));
-        assert_eq!(subnet_gateway(CUSTOM), Ipv4Addr::new(10, 99, 0, 1));
-        assert_eq!(
-            subnet_gateway(default_subnet()),
-            Ipv4Addr::new(10, 88, 0, 1)
-        );
-    }
-
-    #[test]
-    fn subnets_overlap_detects_both_directions_but_not_disjoint() {
-        let overlay = (Ipv4Addr::new(10, 88, 0, 0), 16);
-        // A LAN address inside our range overlaps.
-        assert!(subnets_overlap((Ipv4Addr::new(10, 88, 5, 2), 24), overlay));
-        // A broad host route (10/8) that CONTAINS our range overlaps.
-        assert!(subnets_overlap((Ipv4Addr::new(10, 0, 0, 5), 8), overlay));
-        // Identical range overlaps itself.
-        assert!(subnets_overlap(overlay, overlay));
-        // A disjoint home LAN does not.
-        assert!(!subnets_overlap(
-            (Ipv4Addr::new(192, 168, 1, 5), 24),
-            overlay
-        ));
-        // Crucially, Tailscale's 100.64.0.0/10 does NOT overlap 10.88.0.0/24 —
-        // this is the whole point of the safe default.
-        assert!(!subnets_overlap(
-            (Ipv4Addr::new(100, 64, 0, 1), 10),
-            overlay
-        ));
-    }
-
-    #[test]
-    fn next_available_subnet_returns_candidate_when_free() {
-        let candidate = (Ipv4Addr::new(10, 88, 0, 0), 24);
-        let existing = vec![(Ipv4Addr::new(10, 77, 0, 0), 24)];
-        assert_eq!(
-            next_available_subnet(candidate, existing.into_iter()),
-            candidate
-        );
-    }
-
-    #[test]
-    fn next_available_subnet_advances_past_one_collision() {
-        // Exactly the live-testing scenario: a second network created with no
-        // explicit --subnet must not silently reuse the first one's.
-        let candidate = (Ipv4Addr::new(10, 77, 0, 0), 24);
-        let existing = vec![(Ipv4Addr::new(10, 77, 0, 0), 24)];
-        let picked = next_available_subnet(candidate, existing.clone().into_iter());
-        assert_ne!(picked, candidate);
-        assert!(!existing.iter().any(|&e| subnets_overlap(e, picked)));
-    }
-
-    #[test]
-    fn next_available_subnet_advances_past_several_collisions_in_order() {
-        let candidate = (Ipv4Addr::new(10, 77, 0, 0), 24);
-        // Three networks already occupy the first three /24 blocks in order.
-        let existing = vec![
-            (Ipv4Addr::new(10, 77, 0, 0), 24),
-            (Ipv4Addr::new(10, 77, 1, 0), 24),
-            (Ipv4Addr::new(10, 77, 2, 0), 24),
-        ];
-        let picked = next_available_subnet(candidate, existing.clone().into_iter());
-        assert_eq!(picked, (Ipv4Addr::new(10, 77, 3, 0), 24));
-        assert!(!existing.iter().any(|&e| subnets_overlap(e, picked)));
-    }
-
-    #[test]
-    fn next_available_subnet_keeps_prefix_length() {
-        let candidate = (Ipv4Addr::new(10, 88, 0, 0), 16);
-        let existing = vec![(Ipv4Addr::new(10, 88, 0, 0), 16)];
-        let picked = next_available_subnet(candidate, existing.into_iter());
-        assert_eq!(picked.1, 16);
-    }
-
-    #[test]
     fn ensure_in_range_respects_custom_subnet() {
         // In-subnet host is accepted.
         assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 99, 5, 9), CUSTOM).is_ok());
@@ -2181,14 +1851,6 @@ mod tests {
         assert!(ensure_in_cgnat_range(Ipv4Addr::new(10, 99, 0, 1), CUSTOM).is_err());
         // A 100.64.0.0/10 (Tailscale/legacy) address is outside the custom subnet.
         assert!(ensure_in_cgnat_range(Ipv4Addr::new(100, 64, 0, 5), CUSTOM).is_err());
-    }
-
-    #[test]
-    fn parse_cidr_roundtrips_and_rejects_garbage() {
-        assert_eq!(parse_cidr("10.99.0.0/16").unwrap(), CUSTOM);
-        assert!(parse_cidr("10.99.0.0").is_err());
-        assert!(parse_cidr("not-an-ip/16").is_err());
-        assert!(parse_cidr("10.0.0.0/33").is_err());
     }
 
     #[test]
@@ -2478,50 +2140,5 @@ mod tests {
             2,
         );
         assert!(try_decode_tombstone(hash, 7).is_none());
-    }
-
-    #[test]
-    fn validate_subnet_matches_roster_ok_when_consistent() {
-        // The roster's own recorded IP for this identity actually falls
-        // within the subnet being validated -- no mismatch, no error.
-        let subnet = default_subnet();
-        let members = make_member_list_in(&[1, 2], subnet);
-        let me = test_id(1);
-        assert!(validate_subnet_matches_roster(subnet, members.all(), &me).is_ok());
-    }
-
-    #[test]
-    fn validate_subnet_matches_roster_rejects_mismatch() {
-        // SUBNET-DRIFT-001: this is the exact shape of the live bug -- a
-        // roster whose own recorded IP for this identity was assigned in one
-        // subnet, checked against a *different*, wrongly re-resolved one.
-        const OTHER: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 24);
-        let subnet = default_subnet();
-        let members = make_member_list_in(&[1, 2], subnet);
-        let me = test_id(1);
-        let recorded_ip = members
-            .all()
-            .into_iter()
-            .find(|m| m.identity == me)
-            .unwrap()
-            .ip
-            .to_string();
-        let err = validate_subnet_matches_roster(OTHER, members.all(), &me)
-            .expect_err("mismatched subnet must be rejected, not silently accepted");
-        // Names both the roster's recorded address and the wrongly-resolved
-        // subnet, so an operator (or a bug report) has enough to act on.
-        assert!(err.contains(&recorded_ip));
-        assert!(err.contains("10.99.0.0"));
-    }
-
-    #[test]
-    fn validate_subnet_matches_roster_ok_when_identity_absent() {
-        // A fresh join: the roster doesn't contain this identity yet (not
-        // admitted), so there is nothing to check against -- must not error.
-        let subnet = default_subnet();
-        let members = make_member_list_in(&[1, 2], subnet);
-        let not_yet_a_member = test_id(99);
-        const OTHER: Subnet = (Ipv4Addr::new(10, 99, 0, 0), 24);
-        assert!(validate_subnet_matches_roster(OTHER, members.all(), &not_yet_a_member).is_ok());
     }
 }

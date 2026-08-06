@@ -142,7 +142,21 @@ impl IdentityProvider for IrohIdentityProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addressing::{default_subnet, ip_in_subnet};
     use crate::config::CONFIG_ENV_LOCK;
+
+    #[test]
+    fn test_iroh_identity_provider() {
+        let key = SecretKey::generate();
+        let endpoint_id = key.public();
+        let provider = IrohIdentityProvider::new(endpoint_id, 0, default_subnet());
+
+        let ip = provider.local_ip();
+        assert!(ip_in_subnet(ip, default_subnet()));
+
+        let id = provider.local_identity();
+        assert_eq!(provider.derive_ip(&id), ip);
+    }
 
     #[test]
     fn device_cert_store_then_load() {
