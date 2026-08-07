@@ -157,7 +157,7 @@ impl MeshCtx {
 }
 
 /// Project a roster's `Member`s into the persistable `config::MemberEntry` form
-/// (drops the runtime-only `user_identity`/`device_cert`/`collision_index`).
+/// (drops the runtime-only `collision_index`).
 pub(crate) fn to_member_entries<'a>(
     members: impl IntoIterator<Item = &'a Member>,
 ) -> Vec<config::MemberEntry> {
@@ -1630,8 +1630,6 @@ mod coordinator_dial_order_tests {
             ip: derive_ip(&id, default_subnet()),
             is_coordinator: coord,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1648,8 +1646,6 @@ mod coordinator_dial_order_tests {
             ip: derive_ip(&id, default_subnet()),
             is_coordinator: coord,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1759,8 +1755,6 @@ mod welcome_ip_collision_tests {
             ip,
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         }
@@ -2345,8 +2339,6 @@ mod headless_tests {
                 ip: daemon.identity.local_ip(),
                 is_coordinator: true,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -2357,8 +2349,6 @@ mod headless_tests {
                 ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: false,
                 hostname: Some("member-a".to_string()),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -2369,8 +2359,6 @@ mod headless_tests {
                 ip: Ipv4Addr::new(10, 88, 0, 3),
                 is_coordinator: false,
                 hostname: Some("member-b".to_string()),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -2532,8 +2520,6 @@ mod headless_tests {
                 ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: false,
                 hostname: Some("erikk-thinkpad-p1".to_string()),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })

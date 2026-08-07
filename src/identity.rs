@@ -10,7 +10,6 @@ use anyhow::{Context, Result};
 use iroh::{EndpointId, SecretKey};
 
 use crate::addressing::{Subnet, derive_ip, derive_ip_with_index};
-use crate::control::DeviceCert;
 
 use crate::config::config_dir;
 
@@ -47,43 +46,6 @@ pub fn load_collision_index() -> Result<u32> {
         s.trim().parse::<u32>().context("parse collision_index")
     } else {
         Ok(0)
-    }
-}
-
-fn device_cert_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("device_cert"))
-}
-
-pub fn store_device_cert(cert: &DeviceCert) -> Result<()> {
-    let path = device_cert_path()?;
-    let bytes = rmp_serde::to_vec_named(cert).context("serialize device cert")?;
-    crate::config::write_file(&path, &bytes, false).context("write device cert")?;
-    tracing::info!(user = %cert.user_identity.fmt_short(), "stored device certificate");
-    Ok(())
-}
-
-/// Delete this device's stored cert (`tetron unpair` best-effort wipe on the
-/// unpaired device). Idempotent: succeeds if the file is already absent.
-pub fn delete_device_cert() -> Result<()> {
-    let path = device_cert_path()?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).context("delete device cert"),
-    }
-}
-
-pub fn load_device_cert() -> Result<Option<DeviceCert>> {
-    let path = device_cert_path()?;
-    if path.exists() {
-        let bytes = std::fs::read(&path).context("read device cert")?;
-        let cert: DeviceCert = rmp_serde::from_slice(&bytes).context("decode device cert")?;
-        if !cert.verify() {
-            anyhow::bail!("stored device certificate has invalid signature");
-        }
-        Ok(Some(cert))
-    } else {
-        Ok(None)
     }
 }
 
@@ -143,7 +105,6 @@ impl IdentityProvider for IrohIdentityProvider {
 mod tests {
     use super::*;
     use crate::addressing::{default_subnet, ip_in_subnet};
-    use crate::config::CONFIG_ENV_LOCK;
 
     #[test]
     fn test_iroh_identity_provider() {
@@ -156,31 +117,5 @@ mod tests {
 
         let id = provider.local_identity();
         assert_eq!(provider.derive_ip(&id), ip);
-    }
-
-    #[test]
-    fn device_cert_store_then_load() {
-        // Serialize against other tests that mutate `TETRON_CONFIG_DIR` (see
-        // `daemon::headless_tests`), since lib tests share one process and run
-        // on parallel threads.
-        let _env_lock = CONFIG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("TETRON_CONFIG_DIR", tmp.path());
-        }
-
-        let user = SecretKey::generate();
-        let device = SecretKey::generate().public();
-        let cert = DeviceCert::create(&user, &device, 0);
-
-        assert!(load_device_cert().unwrap().is_none());
-        store_device_cert(&cert).unwrap();
-        let loaded = load_device_cert()
-            .unwrap()
-            .expect("cert present after store");
-        assert_eq!(loaded.user_identity, cert.user_identity);
-        assert_eq!(loaded.device_key, cert.device_key);
-        assert!(loaded.verify());
     }
 }

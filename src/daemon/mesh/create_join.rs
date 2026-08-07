@@ -252,8 +252,6 @@ impl MeshManager {
                 ip: my_ip,
                 is_coordinator: true,
                 hostname: Some(my_hostname.to_string()),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -270,8 +268,6 @@ impl MeshManager {
                         identity: peer_id,
                         ip: peer_ip,
                         hostname: peer_hostname,
-                        user_identity: None,
-                        device_cert: None,
                         collision_index: 0,
                     },
                     &member_list,
@@ -895,8 +891,6 @@ impl MeshManager {
                 ip: entry.ip,
                 is_coordinator: entry.is_coordinator,
                 hostname: entry.hostname.clone(),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -908,8 +902,6 @@ impl MeshManager {
                 identity: entry.identity,
                 ip: entry.ip,
                 hostname: entry.hostname.clone(),
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
             })
             .collect();
@@ -1563,7 +1555,6 @@ impl MeshManager {
                                     identity: my_identity,
                                     ip: my_ip,
                                     hostname: my_hostname,
-                                    device_cert: None,
                                 },
                             )
                             .await;

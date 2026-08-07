@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Internal
+
+- **Dead-code sweep, round 3 (`TREE-SHAKE-006..008`)**: removed the `_tetron_certgen` pkarr cert-floor record, the pairing-ticket codec (`PairMsg`/`PairNetwork`/`encode_pairing_ticket`/`decode_pairing_ticket`), and the `DeviceCert` type itself (plus the `CertRefresh`/`Unpaired` control messages, the `device_cert` field on three `ControlMsg` variants, and the `device_cert`/`user_identity` fields on `Member`/`ApprovedEntry`) — all orphaned since `MINIMAL-004` removed device pairing, missed by two prior `TREE-SHAKE` passes and a tagged release because `pub` items in the library crate's surface are invisible to rustc's `dead_code` lint. One `accept.rs` anti-spoofing check (reject a `MeshHello` whose claimed identity doesn't match its transport-authenticated identity) is preserved exactly, with its now-unreachable device-cert-verification sub-path removed. No behavior change: every field removed already carried `#[serde(default, skip_serializing_if = "Option::is_none")]` and encoding uses name-keyed msgpack throughout, so no build has ever put these fields on the wire — removing them changes zero bytes of what any current or past tetron build actually sends. No ALPN version bump.
+
 ## [0.10.0] - 2026-08-07
 
 ### Added

@@ -80,8 +80,6 @@ impl MeshManager {
                             ip: entry.ip,
                             is_coordinator: entry.is_coordinator,
                             hostname: entry.hostname.clone(),
-                            user_identity: None,
-                            device_cert: None,
                             collision_index: 0,
                             last_seen: None,
                         });
@@ -91,8 +89,6 @@ impl MeshManager {
                             identity: entry.identity,
                             ip: entry.ip,
                             hostname: entry.hostname.clone(),
-                            user_identity: None,
-                            device_cert: None,
                             collision_index: 0,
                         };
                         let _ = approved_list.approve(ae, &member_list);
@@ -107,8 +103,6 @@ impl MeshManager {
                     ip: my_ip,
                     is_coordinator: true,
                     hostname: persisted_hostname.clone(),
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                     last_seen: None,
                 })

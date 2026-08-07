@@ -16,8 +16,6 @@ use anyhow::{Result, bail};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
-use crate::control::DeviceCert;
-
 /// Overlay addressing (Subnet, IP derivation, IPv6) — moved to
 /// `crate::addressing` (MODULARIZE-001); re-exported so every existing
 /// `crate::membership::Subnet`/`derive_ip`/… path keeps compiling.
@@ -56,10 +54,6 @@ pub struct Member {
     pub is_coordinator: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_identity: Option<EndpointId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_cert: Option<DeviceCert>,
     /// Index used to resolve IPv4 collisions in the 22-bit CGNAT space.
     /// 0 for most peers; incremented only when `derive_ip_with_index(identity, 0)`
     /// collides with an already-assigned address.
@@ -175,10 +169,6 @@ pub struct ApprovedEntry {
     pub ip: Ipv4Addr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_identity: Option<EndpointId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_cert: Option<DeviceCert>,
     /// Index used to resolve IPv4 collisions. Mirrors `Member.collision_index`
     /// for the same identity; defaults to 0 for backward-compatible decoding.
     #[serde(default)]
@@ -738,8 +728,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -758,8 +746,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -777,8 +763,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -788,8 +772,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         });
@@ -805,8 +787,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -816,8 +796,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: true,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -834,8 +812,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 10, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -854,8 +830,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 2),
             is_coordinator: true,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -865,8 +839,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 3),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -882,8 +854,6 @@ mod tests {
             identity: id,
             ip: Ipv4Addr::new(10, 88, 5, 10),
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
         };
         let members = MemberList::new();
@@ -902,8 +872,6 @@ mod tests {
                 ip: Ipv4Addr::new(10, 88, 5, 10),
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -912,8 +880,6 @@ mod tests {
             identity: test_id(2),
             ip: Ipv4Addr::new(10, 88, 5, 10),
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
         };
         assert!(approved.approve(entry, &members).is_err());
@@ -929,8 +895,6 @@ mod tests {
                     identity: test_id(1),
                     ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                 },
                 &members,
@@ -941,8 +905,6 @@ mod tests {
                 identity: test_id(2),
                 ip: Ipv4Addr::new(10, 88, 5, 10),
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
             },
             &members,
@@ -961,8 +923,6 @@ mod tests {
                     identity: id,
                     ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                 },
                 &members,
@@ -974,8 +934,6 @@ mod tests {
                     identity: id,
                     ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                 },
                 &members,
@@ -995,8 +953,6 @@ mod tests {
                     identity: id,
                     ip: Ipv4Addr::new(10, 88, 5, 10),
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                 },
                 &members,
@@ -1014,16 +970,12 @@ mod tests {
                 identity: test_id(1),
                 ip: Ipv4Addr::new(10, 88, 0, 2),
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
             },
             ApprovedEntry {
                 identity: test_id(2),
                 ip: Ipv4Addr::new(10, 88, 0, 3),
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
             },
         ];
@@ -1044,8 +996,6 @@ mod tests {
                 ip: derive_ip(&id, default_subnet()),
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             });
@@ -1154,8 +1104,6 @@ mod tests {
                     identity: id3,
                     ip: derive_ip(&id3, default_subnet()),
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                 },
                 &members,
@@ -1260,8 +1208,6 @@ mod tests {
                 ip: derive_ip(&id, default_subnet()),
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: Some(12345),
             })
@@ -1306,8 +1252,6 @@ mod tests {
                 ip: derive_ip(&id, default_subnet()),
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             })
@@ -1542,8 +1486,6 @@ mod tests {
             ip: derive_ip(&id, default_subnet()),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1564,8 +1506,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 99), // in-subnet, but does NOT equal derive_ip(test_id(7))
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1583,8 +1523,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 0, 0, 5),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1604,8 +1542,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 0),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1614,8 +1550,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 1),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1633,8 +1567,6 @@ mod tests {
             identity: id,
             ip: Ipv4Addr::new(10, 88, 0, 99),
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
         };
         assert!(validate_approved(&entry, default_subnet()).is_err());
@@ -1660,8 +1592,6 @@ mod tests {
                     ip,
                     is_coordinator: false,
                     hostname: None,
-                    user_identity: None,
-                    device_cert: None,
                     collision_index: 0,
                     last_seen: None,
                 };
@@ -1693,8 +1623,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 99), // in-subnet, but not derive_ip(test_id(1))
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1725,8 +1653,6 @@ mod tests {
             ip: Ipv4Addr::new(10, 88, 0, 1), // TUN gateway
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1754,8 +1680,6 @@ mod tests {
             ip: derive_ip(&id, default_subnet()),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         })
@@ -1772,8 +1696,6 @@ mod tests {
             ip: derive_ip_with_index(&id, 2, default_subnet()),
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 2,
             last_seen: None,
         };
@@ -1794,8 +1716,6 @@ mod tests {
             ip,
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1822,8 +1742,6 @@ mod tests {
             ip,
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         };
@@ -1882,8 +1800,6 @@ mod tests {
                 ip,
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: idx,
                 last_seen: None,
             })
@@ -1901,8 +1817,6 @@ mod tests {
             ip: derive_ip(&id, default_subnet()),
             is_coordinator,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: 0,
             last_seen: None,
         }

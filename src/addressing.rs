@@ -502,8 +502,6 @@ mod tests {
             ip: assigned_a,
             is_coordinator: false,
             hostname: None,
-            user_identity: None,
-            device_cert: None,
             collision_index: idx_a,
             last_seen: None,
         })
@@ -645,8 +643,6 @@ mod tests {
                 ip,
                 is_coordinator: false,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: idx,
                 last_seen: None,
             })
