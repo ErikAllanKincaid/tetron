@@ -47,7 +47,7 @@ def check_hardcoded_cgnat(
     """Grep the touched files for leftover 100.64/100.100 literals. Comment lines
     documenting the default subnet (now 10.88.0.0/16) or the legacy/Tailscale
     100.64.0.0/10 range are allowed; anything beyond that is unexpected."""
-    touched = ["src/membership.rs", "src/tun.rs", "src/dns.rs"]
+    touched = ["src/membership.rs", "src/tun.rs", "src/dns.rs", "src/addressing.rs"]
     unexpected = 0
     for f in touched:
         p = Path(f)
@@ -242,6 +242,9 @@ def check_dependency_absence() -> dict:
         "config",
         "chacha20poly1305",
         "argon2",
+        "serde_yml",
+        "qr2term",
+        "async-trait",
     ]
     p = Path("Cargo.toml")
     text = p.read_text()

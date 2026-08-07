@@ -25,6 +25,14 @@ class NoLeftoverHardcodedCgnat(Constraint):
     files, other than the CLI default fallback value itself (which is an
     intentional, explicit default, not a hidden hardcode).
 
+    The touched-file list (`reconcile.py`'s `check_hardcoded_cgnat`) must
+    track wherever the subnet math actually lives, not just its original
+    location. Found stale 2026-08-06: `src/membership.rs`/`tun.rs`/`dns.rs`
+    were listed, but MODULARIZE-001 (2026-08-05) had already moved the real
+    `Subnet`/CIDR/derivation logic to `src/addressing.rs`, which was never
+    added -- a hardcoded-literal regression there would have passed this
+    gate clean. Fixed by adding `src/addressing.rs` to the list.
+
     ENFORCEMENT (reconcile.py): grep_hardcoded_cgnat.unexpected_count equals 0.
     """
     constraint_id = "CON-002"
@@ -231,6 +239,12 @@ class DependencyAbsenceGate(Constraint):
     encryption-at-rest direction floated in that same TODO section, never
     wired up. Removing them doesn't foreclose that idea -- re-add if it's
     ever actually built).
+
+    Also bans `serde_yml`, `qr2term`, and `async-trait` (removed by
+    TREE-SHAKE-001, merged 2026-08-05 -- confirmed gone from `Cargo.toml`,
+    but the banned-dep list here was never updated for them, so an
+    accidental re-add of any of the three would have passed this gate
+    clean; found and fixed 2026-08-06 during the same audit as CON-002).
 
     ENFORCEMENT (reconcile.py): dependency_absence.unexpected_count equals 0.
     """
