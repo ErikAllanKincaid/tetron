@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`contrib/tetron-backup.sh`**: a standalone POSIX-sh encrypted backup/restore of the config tree (`secret_key`, `settings.toml`, every `networks/*.toml`) using tar + `age -p`. Backup and restore are each one command; restore stops and restarts the tetron daemon around the extraction. It is the single source of truth for config backup and reaches users three ways with no repo clone: `install-tetron-suite.sh backup` (new component, installs to `/usr/local/bin`), the tetron-webui Add-ons > Config Backup popup (the webui proxies this file), and a direct raw.githubusercontent fetch documented in the HOWTO. The HOWTO's Backup section now leads with the script and keeps the manual tar+age commands as a no-script fallback; its macOS path claims were corrected to the root LaunchDaemon layout (`/var/root/Library/Application Support/tetron`).
 - **Invite codes now carry a checksum** (`INVITE-CHECKSUM-001`): `tetron invite create` mints codes with 4 trailing blake3 bytes, so a dropped/garbled character is rejected up front as "invalid invite code" instead of later failing as a confusing join error for a network that doesn't exist. Codes issued before this change still redeem — the decoder accepts the legacy unchecksummed form, so there is no migration step.
 
 ### Changed
