@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Tetron is a personal, actively-developed fork of rayfish. Tagged releases exist (`v0.1.0` through the current `v0.8.2`), but there is no formal backport policy, so report against the latest tag or current `main`.
+Tagged releases (`v0.8.0` through the current `latest`), but there is no formal backport policy, so report against the latest tag or current `main`.
 
 ## Reporting a vulnerability
 

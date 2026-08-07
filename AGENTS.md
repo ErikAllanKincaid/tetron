@@ -6,7 +6,7 @@ All work must be in a branch.
 Any changes to tetron core require testing in the testsuite to verify no regression.
 **All work must use libspec workflow.**
 
-> **THIS REPOSITORY IS `tetron`**, a standalone P2P mesh VPN. This file is the canonical reference; read it before doing anything. The requirements in `spec/` govern the work (superseding the old `docs/PROPOSAL.md`/`docs/PLAN.md`, retired 2026-07-27 once this file covered the same ground; still available gitignored under `DO-NOT-COMMIT/`). Full tetron (the feature-rich fork of rayfish) lives in its own repository; `origin` points at it for cherry-picks — not wire-compatible with this fork (D1 severed by RENAME-M02, see `docs/ARCHITECTURE.md`).
+> **THIS REPOSITORY IS `tetron`**, a standalone P2P mesh VPN. This file is the canonical reference; read it before doing anything. The requirements in `spec/`.  See `docs/ARCHITECTURE.md`).
 
 ## What tetron is (and is not)
 
@@ -14,13 +14,13 @@ Tetron is a fork **derivative of [rayfish](https://github.com/rayfish/rayfish)**
 
 The binary is **`tetron`**. The Cargo **package/library is `tetron`** (`[package] name = "tetron"`, `[[bin]] name = "tetron"`), with internal use tetron::…` paths and an `info` default log filter (file-log verbosity is a `tetron config set log-level` knob, LOG-003). The helper crate is `tetron-proto`. 
 
+#### Addons
+
 Tetron has a growing list of addons. ../tetron-mobile/ ../tetron-relay/ ../tetron-systray/ ../tetron-testsuite/ ../tetron-webui/ etc.  Each has it's own README.md and workflow.
 
 ## KEEP-ON-PURPOSE — do NOT rename these
 
-**An agent must not "finish the rename" on any of these:**
-
-- **Relay/discovery presets** — the `"rayfish"` config keyword and its preset URLs (`relay.iroh.rayfish.xyz`, `dns.iroh.rayfish.xyz`). Protected by **CON-001**; `reconcile.py`'s `relay_preset_untouched` check requires the literal `"rayfish" => Ok(preset.to_string())` in `src/config.rs`. Renaming would point nodes at nonexistent infrastructure.
+**Relay/discovery presets** — the `"rayfish"` config keyword and its preset URLs (`relay.iroh.rayfish.xyz`, `dns.iroh.rayfish.xyz`). This is an optional extra relay. We may remove this when we get the `tetron-relay`  
 
 **Author attribution:** `Cargo.toml`/`tetron-proto/Cargo.toml`'s `authors` is `["Dario", "ErikAllanKincaid"]` — Security reports go through GitHub private reporting (`SECURITY.md`), not email.
 

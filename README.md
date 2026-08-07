@@ -43,7 +43,7 @@ ping 10.88.x.y                                    # reach the other node by its 
 
 ## How to quickstart
 
-tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that owns the TUN device and the iroh endpoint. Everything else is an unprivileged `tetron` command talking to it over a local socket.
+Tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that owns the TUN device and the iroh endpoint. Everything else is an unprivileged `tetron` command talking to it over a local socket.
 
 ```bash
 # Install the binary and bring the node online (needs root once).
@@ -94,10 +94,6 @@ ping <other-ip>                     # reach the other node by its mesh IP (from 
 ```
 
 If the default `10.88.0.0/24` collides with a network you already use, pass `--subnet` at create time (above) or set a new node-wide default with `tetron config set subnet <cidr>`; see [docs/HOWTO.md](docs/HOWTO.md) for details.
-
-## Why this fork
-
-Upstream hardcodes its overlay IPv4 range to the CGNAT block (100.64.0.0/10) Tailscale and rayfish use, and refuses to start if another interface already holds an address there, so the two cannot run on the same host. Tetron makes the subnet configurable instead (see above), and takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic never collides with rayfish either. It also strips several subsystems, see [Features](#features) below for the full list, because the purpose is a "do one thing well", single-purpose mesh, with Invite-key admission as the sole enrollment method.
 
 ## How it works
 
@@ -168,8 +164,6 @@ Reach peers by their **mesh IP**, listed with their hostnames in `tetron status`
 - **Near-instant standby** -- `tetron standby`/`resume` toggle just the data plane (TUN + routes) without dropping peer connections; `sudo tetron stop`/`start` go fully offline/online. Add `--network <name>` to either to standby just one joined network instead of all of them.
 
 Run `tetron --help` (and `tetron <command> --help`) for the full surface: `create`/`join`/`leave`/`nuke`, `invite` (create/list/revoke), `admin` (add/list)/`kick`, `config` (get/set/unset), `status` (`--json`), `resume`/`standby`, `install`/`restart`/`uninstall`/`start`/`stop`, `set-operator`, `version`, and `completions`.
-
-> **Removed from upstream rayfish**: file sharing and multi-device pairing, declarative apply layer (`apply`/`alias`), Magic DNS and all OS DNS mutation, userspace firewall, permissionless ("open") networks, hostname renaming, ephemeral members, and self-update. Packet filtering is the host firewall's job; name resolution is `/etc/hosts`'s job; copy files with `scp`/`rsync` over mesh IPs; upgrade by replacing the binary.
 
 ## Permissions
 
@@ -264,10 +258,14 @@ sudo rm -rf /etc/tetron/          # optional: wipe config + identity on Linux (~
 
 Do not run `tetron nuke <network-key>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).
 
+## Why this fork
+
+Tetron is a fork derivative of [rayfish](https://github.com/rayfish/rayfish). Upstream hardcodes its overlay IPv4 range to the CGNAT block (100.64.0.0/10) Tailscale and rayfish use, and refuses to start if another interface already holds an address there, so the two cannot run on the same host. Tetron makes the subnet configurable instead (see above), and takes on a distinct identity (binary `tetron`, ALPNs `tetron/net/...`, config under `/etc/tetron`, UDP port 43737) so its traffic never collides with rayfish either. It also strips many subsystems, see [Features](#features) above, because the purpose is a "do one thing well", single-purpose mesh, with Invite-key admission as the sole enrollment method.
+
 ## Development
 
 Developed with [Specification-driven development](https://en.wikipedia.org/wiki/Specification-driven_development) using [libspec](https://github.com/drhodes/libspec). Each requirement is a documented class in one of the domain modules under `spec/`; the `reconcile.py` gate enforces automatable constraints. Commits are recorded with `libspec link` so the spec keeps a complete history alongside the code.
 
-## Relationship to upstream & license
+## License
 
-Tetron is an honest  derivative of [rayfish](https://github.com/rayfish/rayfish), licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is it's work; see the [changelog](CHANGELOG.md) for what this fork changes. 
+Tetron is licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is it's work; see the [changelog](CHANGELOG.md) for what this fork changes. 
