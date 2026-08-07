@@ -46,6 +46,12 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // final snapshot.
     crate::peercache::spawn_periodic_save(token.clone());
 
+    // Spawn a periodic task that sweeps `pruned_peers` for entries whose
+    // network no longer exists (CONVERGE-009). The reconnect loop's own
+    // disconnect handler is the primary consumer; this only catches what
+    // that path's edge cases leave behind.
+    daemon.spawn_pruned_peers_gc(token.clone());
+
     // The promotion receiver was stashed on the daemon by the builder; take it
     // back to drive the IPC loop.
     let promote_rx = daemon

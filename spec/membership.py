@@ -1218,6 +1218,51 @@ class NoUnconditionalFirstPublish(Requirement):
     req_id = "CONVERGE-008"
 
 
+class PrunedPeersPeriodicGc(Requirement):
+    """REQUIREMENT-ID: CONVERGE-009
+
+    `pruned_peers` (the `Arc<DashSet<(String, EndpointId)>>` CONVERGE-007
+    introduced as the signed-roster-driven arbiter for reconnect
+    suppression) is populated by `prune_departed_peers`
+    (`reconverge.rs:215`, one insert per peer no longer in the verified
+    roster) and consumed exactly once, by the reconnect loop's disconnect
+    handler (`join.rs:907`, `pruned_peers.remove(...)`) -- but only on the
+    branch that actually reaches that line. Two earlier `continue`s in the
+    same handler skip it entirely: `!removed` (a stale disconnect event for
+    a connection already superseded by a fresh dial) and
+    `event.reason.prunes_member()` (a deliberate `tetron leave`). An entry
+    inserted for a peer whose disconnect event lands on either of those
+    branches is never removed -- there is no periodic sweep anywhere in the
+    daemon that revisits `pruned_peers` independent of that one consumer
+    path.
+
+    Found triaging the 2026-08-02 memory-leak audit (Finding #3,
+    `DO-NOT-COMMIT/tetron_memleak.md`); confirmed present by direct
+    inspection against `main` 2026-08-06 -- grepped for any interval/GC
+    task touching `pruned_peers`, found none.
+
+    In practice this is narrow (most disconnects do reach the removal
+    line) and each leaked entry is small (one `(String, EndpointId)` per
+    stuck tuple), but it is still unbounded over the lifetime of a
+    long-running, churny mesh -- the same "should shrink, never does"
+    shape as CACHE-002, just a different subsystem.
+
+    Fix: a periodic sweep (piggybacked on the same cadence as an existing
+    daemon-wide periodic task rather than a new dedicated interval) that
+    drops any `pruned_peers` entry whose network name is no longer present
+    in `self.networks` -- a peer pruned from a network the daemon has since
+    left or torn down can never be consumed by that network's reconnect
+    loop again, since the loop itself is gone. This does not touch the
+    happy-path removal in `join.rs:907`, which stays the primary,
+    immediate consumer; the sweep only catches what that path's two
+    `continue` branches leave behind.
+
+    Independent of CACHE-002 -- different subsystem (roster-prune
+    suppression vs. peer address persistence), no shared state.
+    """
+    req_id = "CONVERGE-009"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 
