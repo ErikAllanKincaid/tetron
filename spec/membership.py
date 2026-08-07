@@ -618,6 +618,39 @@ class PeerAddressCache(Requirement):
     req_id = "CACHE-001"
 
 
+class PeerAddressCacheEviction(Requirement):
+    """REQUIREMENT-ID: CACHE-002
+
+    `PeerAddrCache` (CACHE-001) only ever inserts into its in-memory
+    `HashMap<EndpointId, (Vec<TransportAddr>, u64)>` (`update`,
+    `peercache.rs:87-91`) -- nothing removes an entry once written. The
+    30-day age-based pruning documented at the top of the module ("Entries
+    older than 30 days are pruned on load") only actually runs in
+    `PeerAddrCache::new`, at daemon startup. `spawn_periodic_save`'s
+    5-minute save tick calls `save()`, which just serializes whatever is
+    currently in the map -- it does not filter by age. A daemon that stays
+    up longer than 30 days without a restart keeps every distinct peer
+    it has ever connected to resident in memory (and re-persisted to disk
+    every 5 minutes) indefinitely, growing with total unique peers ever
+    seen rather than with current membership or traffic.
+
+    Found triaging the 2026-08-02 memory-leak audit (Finding #2,
+    `DO-NOT-COMMIT/tetron_memleak.md`); confirmed present by direct
+    inspection against `main` 2026-08-06.
+
+    Fix: apply the same age filter `new()` already uses to `save()`, so
+    the in-memory map itself is pruned on the same 5-minute cadence it is
+    written to disk on, not only at the next process start. `lookup`/
+    `update` are otherwise unchanged -- an entry re-updated within the
+    30-day window keeps refreshing its `last_seen` and survives normally;
+    only entries that have gone stale in memory are dropped.
+
+    Independent of CONVERGE-009 -- different subsystem (peer address
+    persistence vs. roster-prune suppression), no shared state.
+    """
+    req_id = "CACHE-002"
+
+
 class InviteInBlob(Requirement):
     """REQUIREMENT-ID: BLOB-001
 
