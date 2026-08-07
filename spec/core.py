@@ -710,6 +710,168 @@ class SweepStaleArtifactReferences(Requirement):
     req_id = "TREE-SHAKE-005"
 
 
+class RemoveCertFloorDeadCode(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-006
+
+    Remove the orphaned `_tetron_certgen` cert-floor record cluster from
+    `dht.rs`: the `CERT_FLOOR_RECORD_NAME` const, `encode_cert_floor_record`/
+    `decode_cert_floor_record`, `publish_cert_floor`/`resolve_cert_floor`,
+    and their own unit tests (which exercise only these functions and encode
+    no behavior that survives the removal).
+
+    Found 2026-08-07 while verifying an external PR's memory-leak claim
+    (two of the three functions it proposed wrapping in a timeout turned out
+    to have zero callers anywhere). Provenance via `git log`/`git show`:
+    added in `3d5d1af` (`feat(pair): add \\`ray unpair\\` to revoke a paired
+    device`, 2026-07-05) as the pkarr-published revocation-generation floor
+    backing device unpairing. `MINIMAL-004` (`1d04c31`, "remove file sharing
+    and device pairing") removed the whole pairing feature and its own
+    commit message explicitly names "the `_torpedo_certgen` revocation
+    floor" as one of the things removed -- but never touched `dht.rs` at all
+    (`git show 1d04c31 -- src/dht.rs` is empty). Unreachable by
+    construction, not merely unused: pairing is permanently gone
+    (MINIMAL-004), so nothing can ever construct a value to publish or
+    resolve through this record type.
+
+    Same blind spot as TREE-SHAKE-001..005: `pub` items in the library
+    crate's surface are invisible to rustc's `dead_code` lint, so this
+    survived two prior dedicated sweeps and a tagged release (`v0.10.0`)
+    undetected. The cross-repo verification method that caught it is now
+    documented as a reusable procedure at `docs/tetron-workflow.md` section
+    12, "Cross-repo dead-code sweep".
+
+    Independent of TREE-SHAKE-001..005 and of TREE-SHAKE-007/-008 below
+    (dht.rs's cert-floor cluster does not reference `control.rs`'s
+    `DeviceCert`/`PairMsg` types or `identity.rs`'s storage functions, and
+    nothing references it back).
+    """
+    req_id = "TREE-SHAKE-006"
+
+
+class RemovePairingTicketCodecDeadCode(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-007
+
+    Remove the orphaned pairing-ticket codec from `control.rs`: the
+    `PairMsg` enum (`Request`/`Response` variants), the `PairNetwork` struct
+    (used only as a `PairMsg::Response` field), `encode_pairing_ticket`/
+    `decode_pairing_ticket`, and their own roundtrip unit test. Zero callers
+    outside the test: `PAIR_ALPN` no longer exists anywhere in the tree and
+    no `accept.rs` arm dispatches `PairMsg`, so nothing can ever send or
+    receive one.
+
+    Same provenance and same TREE-SHAKE-006 discovery session (2026-08-07):
+    orphaned by `MINIMAL-004`'s pairing removal, missed by both prior
+    `TREE-SHAKE` passes for the same `pub`-surface blind spot.
+
+    Must land before TREE-SHAKE-008: `PairMsg::Response` holds a `cert:
+    DeviceCert` field, so this requirement's removal must precede
+    `DeviceCert`'s own removal in TREE-SHAKE-008, not the other way around
+    -- removing `DeviceCert` first would leave `PairMsg` failing to
+    compile. Independent of TREE-SHAKE-001..006.
+    """
+    req_id = "TREE-SHAKE-007"
+
+
+class RemoveDeviceCertDeadCode(Requirement):
+    """REQUIREMENT-ID: TREE-SHAKE-008
+
+    Remove the `DeviceCert` type and everything downstream of it, once
+    TREE-SHAKE-007 has cleared `PairMsg`'s reference to it:
+
+    - `control.rs`: the `DeviceCert` struct + its `impl` block; the
+      `CertRefresh`/`Unpaired` `ControlMsg` variants (zero references
+      anywhere outside their own definition -- confirmed no match arm in
+      the entire tree names either variant, so no catch-all/wildcard
+      pattern needs updating for their removal); the `device_cert:
+      Option<DeviceCert>` field on `ControlMsg::JoinRequest`,
+      `::MeshHello`, and `::MemberApproved`.
+    - `membership.rs`: the `device_cert: Option<DeviceCert>` field on
+      `Member` and `ApprovedEntry`, and the `user_identity:
+      Option<EndpointId>` field on both -- found during this requirement's
+      own implementation, not the original round-3 sweep: every
+      construction site across the entire codebase (~50, exhaustively
+      grepped) sets `user_identity: None`; its only non-`None` source
+      anywhere was `device_cert.as_ref().map(|c| c.user_identity)` in
+      `accept.rs`, which is itself always `None` today (device_cert is
+      always `None`). Once `device_cert` is gone, `user_identity` has zero
+      remaining producers -- same provably-dead bar as everything else in
+      this series, just discovered one level deeper.
+    - `identity.rs`: `store_device_cert`/`load_device_cert`/
+      `delete_device_cert` (+ the private `device_cert_path` helper) and
+      their roundtrip test. `delete_device_cert`'s own doc comment names
+      the removed feature directly ("`tetron unpair` best-effort wipe").
+    - `daemon/mesh/accept.rs`: drop the `device_cert: Option<control::
+      DeviceCert>` parameter from `redeem_invite_and_admit`, `admit_peer`,
+      and `admit_approved_member`, and the `user_id_opt =
+      device_cert.as_ref().map(|c| c.user_identity)` derivations (always
+      `None` given the above).
+
+    **The one spot requiring care, not a mechanical deletion:** the
+    `MeshHello` handler in `accept.rs` destructures `device_cert` inside a
+    real, currently-executing anti-spoofing check --
+
+    ```rust
+    let effective_user_id = if peer_identity == transport_id {
+        peer_identity
+    } else if let Some(ref cert) = device_cert {
+        if !cert.verify() || cert.device_key != transport_id
+            || cert.user_identity != peer_identity {
+            tracing::warn!(...); return;
+        }
+        cert.user_identity
+    } else {
+        return;
+    };
+    let _ = effective_user_id;
+    ```
+
+    The middle branch (verify a presented device cert) is unreachable --
+    `device_cert` can never be `Some` in a real message, same as
+    everywhere else in this series. But the outer behavior -- reject a
+    `MeshHello` whose claimed `identity` doesn't match its
+    transport-authenticated identity -- is live, executing, meaningful
+    anti-spoofing logic, not dead code, and must be preserved exactly.
+    Simplifies to:
+
+    ```rust
+    let effective_user_id = if peer_identity == transport_id {
+        peer_identity
+    } else {
+        return;
+    };
+    let _ = effective_user_id;
+    ```
+
+    identical observable behavior for every message any current or past
+    tetron build has ever sent (nothing has ever presented a device cert,
+    so the removed branch could never have been taken), reviewed and
+    confirmed with USER before implementation given its entanglement with
+    live security logic rather than pure dead-code deletion.
+
+    **Wire-format safety, checked before implementation, not assumed:**
+    every field removed here (`device_cert` on the three `ControlMsg`
+    variants, `device_cert`/`user_identity` on `Member`/`ApprovedEntry`)
+    already carries `#[serde(default, skip_serializing_if =
+    "Option::is_none")]`, and encoding throughout (`encode_msg`,
+    `canonical_group_bytes`, `group_blob_hash`) uses `rmp_serde::
+    to_vec_named` -- name-keyed msgpack, not positional. Since every real
+    code path already sets these fields to `None`, no build has ever put
+    them on the wire; removing them changes zero bytes of what is
+    currently sent. Safe in both rolling-upgrade directions: an old build
+    receiving a message from a build with the field already removed
+    decodes fine (`#[serde(default)]` fills the missing key), and a new
+    build receiving a message from an old build that still sends the
+    (always-empty-when-present) key ignores the unknown key by default
+    (named-map decoding, no `deny_unknown_fields`). No ALPN version bump
+    needed -- not a breaking wire change, only a formalization of what
+    every build's actual bytes already are.
+
+    Same discovery session as TREE-SHAKE-006/-007 (2026-08-07). Depends on
+    TREE-SHAKE-007 landing first (see that requirement's docstring).
+    """
+    req_id = "TREE-SHAKE-008"
+
+
 # --------------------------------------------------------------------------
 # Modularization sweep (MODULARIZE-*)
 #
