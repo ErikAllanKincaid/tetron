@@ -26,7 +26,7 @@ tetron version | tetron --version | tetron -V        # print the compiled versio
 
 > **Self-update is REMOVED (MINIMAL-002).** No `tetron update`/`auto-update`, no `src/update.rs`. Upgrade by replacing the binary and running `sudo tetron restart`.
 
-> **File sharing and device pairing are REMOVED (MINIMAL-004).** No `tetron send`/`files`/`pair`/`unpair`, no `onepassword.rs`/`revocation.rs`/`DeviceUserMap`. One device = one user. Copy files with `scp`/`rsync` over the mesh IPs; back up `<config_dir>/secret_key` yourself (see `README.md`'s Backup section). **D1 wire compat:** `control.rs` keeps the `DeviceCert`/`PairMsg`/`CertRefresh`/`Unpaired` types so a full-tetron peer is decoded-and-ignored, never errored.
+> **File sharing and device pairing are REMOVED (MINIMAL-004).** No `tetron send`/`files`/`pair`/`unpair`, no `onepassword.rs`/`revocation.rs`/`DeviceUserMap`. One device = one user. Copy files with `scp`/`rsync` over the mesh IPs; back up `<config_dir>/secret_key` yourself (see `README.md`'s Backup section). The `DeviceCert`/`PairMsg`/`CertRefresh`/`Unpaired` D1-wire-compat types were removed entirely (`TREE-SHAKE-006..008`, 2026-08-07) — `RENAME-M02` already severed wire compatibility with full-tetron at the ALPN level, so they were unreachable by construction, not merely unused.
 
 > **The declarative apply layer and node-local aliases are REMOVED (MINIMAL-011).** No `tetron apply`/`alias`/`identityof`. Reconcile a fleet with a script over `tetron status --json`.
 

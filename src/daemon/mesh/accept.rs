@@ -93,45 +93,20 @@ impl CoordinatorAcceptState {
             Ok(Ok(m)) => m,
             _ => return,
         };
-        let (invite_secret, hostname, device_cert) = match msg {
+        let (invite_secret, hostname) = match msg {
             ControlMsg::JoinRequest {
                 invite_secret,
                 hostname,
-                device_cert,
-            } => (invite_secret, hostname, device_cert),
+            } => (invite_secret, hostname),
             // Tolerate a bare MeshHello from older clients as a no-invite join.
-            ControlMsg::MeshHello {
-                hostname,
-                device_cert,
-                ..
-            } => (None, hostname, device_cert),
+            ControlMsg::MeshHello { hostname, .. } => (None, hostname),
             _ => return,
         };
 
-        // Verify a device certificate if one is presented (full-tetron peers
-        // with paired devices send one; tetron itself never does). A verified
-        // cert is stored in the roster verbatim so full peers keep their
-        // multi-device metadata; tetron does no revocation-floor checking or
-        // reissue (pairing was removed by MINIMAL-004).
-        if let Some(ref cert) = device_cert
-            && (!cert.verify() || cert.device_key != remote_id)
-        {
-            tracing::warn!(peer = %remote_id.fmt_short(), "invalid device certificate");
-            return;
-        }
-
         // Unknown peer presenting an invite secret: verify and burn it.
         if let Some(secret) = invite_secret {
-            self.redeem_invite_and_admit(
-                conn,
-                send,
-                remote_id,
-                peer_ip,
-                hostname,
-                device_cert,
-                secret,
-            )
-            .await;
+            self.redeem_invite_and_admit(conn, send, remote_id, peer_ip, hostname, secret)
+                .await;
             return;
         }
 
@@ -177,7 +152,6 @@ impl CoordinatorAcceptState {
         remote_id: EndpointId,
         peer_ip: Ipv4Addr,
         hostname: Option<String>,
-        device_cert: Option<control::DeviceCert>,
         secret: Vec<u8>,
     ) {
         // Phase 1: check blob invite table.
@@ -208,7 +182,6 @@ impl CoordinatorAcceptState {
                     remote_id,
                     peer_ip,
                     hostname,
-                    device_cert,
                     false,
                 )
                 .await;
@@ -230,16 +203,8 @@ impl CoordinatorAcceptState {
             );
             // Reusable joins are non-authoritative: joiner-chosen name,
             // collision --> suffix.
-            self.admit_peer(
-                conn,
-                send,
-                remote_id,
-                peer_ip,
-                hostname,
-                device_cert,
-                false,
-            )
-            .await;
+            self.admit_peer(conn, send, remote_id, peer_ip, hostname, false)
+                .await;
         } else {
             tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected");
             self.deny(&conn, send, "invite rejected".to_string())
@@ -269,7 +234,6 @@ impl CoordinatorAcceptState {
         remote_id: EndpointId,
         _suggested_ip: Ipv4Addr,
         hostname: Option<String>,
-        device_cert: Option<control::DeviceCert>,
         // The hostname is coordinator-authoritative (came from an invite binding).
         // Authoritative names are rejected on collision (no silent rename), so no
         // peer can claim another's name (and its Magic-DNS entry).
@@ -284,7 +248,6 @@ impl CoordinatorAcceptState {
                 }
             };
 
-        let user_id_opt = device_cert.as_ref().map(|c| c.user_identity);
         let snap_bytes = {
             let mut s = self.state.write().unwrap();
             let _ = s.members.add(Member {
@@ -292,8 +255,6 @@ impl CoordinatorAcceptState {
                 ip: peer_ip,
                 is_coordinator: false,
                 hostname: final_hostname.clone(),
-                user_identity: user_id_opt,
-                device_cert: device_cert.clone(),
                 collision_index,
                 last_seen: Some(crate::membership::now_secs()),
             });
@@ -310,7 +271,6 @@ impl CoordinatorAcceptState {
                 identity: remote_id,
                 ip: peer_ip,
                 hostname: final_hostname.clone(),
-                device_cert: device_cert.clone(),
             },
         )
         .await;
@@ -491,24 +451,16 @@ impl MemberAcceptState {
             identity: peer_identity,
             ip,
             hostname,
-            device_cert,
             ..
         }) = control::recv_msg(&mut recv).await
         else {
             return;
         };
-        // Verify identity: either transport key matches, or a valid device cert is present
+        // Verify identity: the transport key must match the claimed identity.
+        // No device-cert mechanism exists anymore (pairing removed by
+        // MINIMAL-004), so a mismatch is always rejected.
         let effective_user_id = if peer_identity == transport_id {
             peer_identity
-        } else if let Some(ref cert) = device_cert {
-            if !cert.verify()
-                || cert.device_key != transport_id
-                || cert.user_identity != peer_identity
-            {
-                tracing::warn!(peer = %transport_id.fmt_short(), "invalid device certificate");
-                return;
-            }
-            cert.user_identity
         } else {
             return;
         };
@@ -529,7 +481,7 @@ impl MemberAcceptState {
             None
         };
         if is_approved {
-            self.admit_approved_member(conn, peer_identity, ip, final_hostname, device_cert)
+            self.admit_approved_member(conn, peer_identity, ip, final_hostname)
                 .await;
         } else if is_member {
             if final_hostname.is_some() {
@@ -552,12 +504,10 @@ impl MemberAcceptState {
         peer_identity: EndpointId,
         ip: Ipv4Addr,
         final_hostname: Option<String>,
-        device_cert: Option<control::DeviceCert>,
     ) {
         let (snap_bytes, ip) = {
             let mut s = self.state.write().unwrap();
             let approved_entry = s.approved.remove(&peer_identity);
-            let user_id_opt = device_cert.as_ref().map(|c| c.user_identity);
             // Trust the authoritative IP + collision index recorded when the
             // peer was approved, not the peer-supplied MeshHello.ip.
             let (member_ip, member_idx) = approved_entry
@@ -569,8 +519,6 @@ impl MemberAcceptState {
                 ip: member_ip,
                 is_coordinator: false,
                 hostname: final_hostname.clone(),
-                user_identity: user_id_opt,
-                device_cert: device_cert.clone(),
                 collision_index: member_idx,
                 last_seen: Some(crate::membership::now_secs()),
             });

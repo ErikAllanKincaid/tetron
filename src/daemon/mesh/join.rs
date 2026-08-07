@@ -336,7 +336,6 @@ async fn send_reconnect_hello(
             identity: my_identity,
             ip: my_ip,
             hostname: outgoing_hostname(network_name),
-            device_cert: None,
         },
     )
     .await
@@ -478,7 +477,6 @@ fn spawn_roster_peer_dials(
                                 identity: my_identity,
                                 ip: my_ip,
                                 hostname: outgoing_hostname(network_name),
-                                device_cert: None,
                             },
                         )
                         .await
@@ -545,7 +543,6 @@ async fn perform_join_handshake(
             &ControlMsg::JoinRequest {
                 invite_secret,
                 hostname: my_hostname.clone(),
-                device_cert: None,
             },
         )
         .await
@@ -711,7 +708,7 @@ fn spawn_member_control_listener(
                             }
                             match msg {
                                 ControlMsg::MemberApproved { identity, ip, hostname, .. } => {
-                                    let entry = ApprovedEntry { identity, ip, hostname, user_identity: None, device_cert: None, collision_index: 0 };
+                                    let entry = ApprovedEntry { identity, ip, hostname, collision_index: 0 };
                                     let mut s = live_state.write().unwrap();
                                     let members = s.members.clone();
                                     let _ = s.approved.approve(entry, &members);
@@ -957,7 +954,6 @@ pub(crate) fn spawn_reconnect_loop(
                                     identity: my_identity,
                                     ip: my_ip,
                                     hostname: outgoing_hostname(&net_name),
-                                    device_cert: None,
                                 },
                             )
                             .await

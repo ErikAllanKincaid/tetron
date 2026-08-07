@@ -7,102 +7,23 @@ use std::net::Ipv4Addr;
 
 use anyhow::{Context, Result};
 use iroh::endpoint::{RecvStream, SendStream};
-use iroh::{EndpointId, SecretKey, Signature};
+use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
 use crate::membership::{ApprovedEntry, Member};
-
-/// Certificate proving a device belongs to a user identity.
-///
-/// The user's private key signs the device's public key. Any peer can verify
-/// the binding using only the user's public key.
-///
-/// `generation` is the cert's issuance epoch (`tetron unpair`). A user publishes a
-/// current "floor" generation to pkarr; verifiers reject any cert below it, so a
-/// bump revokes every device at once and the ones you keep are re-issued fresh
-/// certs at the new generation. The signature covers the generation, so it can't
-/// be edited to jump the floor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceCert {
-    pub user_identity: EndpointId,
-    pub device_key: EndpointId,
-    /// Issuance epoch. `0` for certs minted before the epoch scheme existed
-    /// (back-compat) and for the pre-rotation baseline.
-    #[serde(default)]
-    pub generation: u64,
-    pub signature: Signature,
-}
-
-impl DeviceCert {
-    /// Bytes the signature covers. For `generation == 0` this is the device key
-    /// alone — exactly the pre-epoch scheme, so certs issued before this field
-    /// existed (deserialized as generation 0) still verify. For `generation > 0`
-    /// the little-endian generation is appended, binding it into the signature.
-    fn signing_bytes(device_pubkey: &EndpointId, generation: u64) -> Vec<u8> {
-        let mut bytes = device_pubkey.as_bytes().to_vec();
-        if generation > 0 {
-            bytes.extend_from_slice(&generation.to_le_bytes());
-        }
-        bytes
-    }
-
-    pub fn create(user_secret: &SecretKey, device_pubkey: &EndpointId, generation: u64) -> Self {
-        let signature = user_secret.sign(&Self::signing_bytes(device_pubkey, generation));
-        Self {
-            user_identity: user_secret.public(),
-            device_key: *device_pubkey,
-            generation,
-            signature,
-        }
-    }
-
-    pub fn verify(&self) -> bool {
-        self.user_identity
-            .verify(
-                &Self::signing_bytes(&self.device_key, self.generation),
-                &self.signature,
-            )
-            .is_ok()
-    }
-}
-
-/// One of the primary's networks, shared during pairing so the new device can
-/// auto-join it. `network_key` is the network public key (bare room id) as a
-/// hex string; no secret is shared because the device cert is the credential.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PairNetwork {
-    pub name: String,
-    pub network_key: String,
-}
-
-/// Messages for the device pairing protocol (ALPN `tetron/pair/1`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PairMsg {
-    Request {
-        secret: [u8; 32],
-        device_pubkey: EndpointId,
-    },
-    Response {
-        cert: DeviceCert,
-        #[serde(default)]
-        networks: Vec<PairNetwork>,
-    },
-}
 
 /// Control messages exchanged between peers over QUIC bidirectional streams.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMsg {
     /// Sent by a joining peer as the first message on an initial (non-reconnect)
     /// join. Carries an optional invite secret (for invite-gated admission) and
-    /// the joiner's desired hostname/device cert. The coordinator branches on the
-    /// secret and the network's access mode to admit, gate, or deny.
+    /// the joiner's desired hostname. The coordinator branches on the secret
+    /// and the network's access mode to admit, gate, or deny.
     JoinRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         invite_secret: Option<Vec<u8>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        device_cert: Option<DeviceCert>,
     },
     /// Coordinator response telling the joiner it has been queued for live
     /// approval (closed network, no invite). The joiner retries until accepted.
@@ -123,16 +44,12 @@ pub enum ControlMsg {
         ip: Ipv4Addr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        device_cert: Option<DeviceCert>,
     },
     MemberApproved {
         identity: EndpointId,
         ip: Ipv4Addr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        device_cert: Option<DeviceCert>,
     },
     Welcome {
         members: Vec<Member>,
@@ -179,21 +96,6 @@ pub enum ControlMsg {
     /// Echo reply to a `Ping`, carrying the originating nonce.
     Pong {
         nonce: u64,
-    },
-    /// Primary → secondary: this device has been unpaired (`tetron unpair`). Sent
-    /// best-effort over a shared network's mesh connection. The receiver acts on
-    /// it only when the sender's identity is the `user_identity` in its own device
-    /// cert (so a stranger cannot trigger a wipe): it deletes its stored device
-    /// cert and leaves the networks it holds only by that cert. The authoritative
-    /// revocation is the signed pkarr record; this is just a courtesy wipe for a
-    /// cooperative device.
-    Unpaired,
-    /// Primary → secondary: a freshly-signed cert at a new generation, pushed
-    /// after a rotation (`tetron unpair`) so a kept device stays above the floor.
-    /// Accepted only when it is signed by the device's own user identity and
-    /// binds the device's own key at a generation no lower than the current one.
-    CertRefresh {
-        cert: DeviceCert,
     },
 }
 
@@ -262,34 +164,10 @@ pub async fn recv_framed<T: serde::de::DeserializeOwned>(stream: &mut RecvStream
     rmp_serde::from_slice(&body).context("decode framed message")
 }
 
-/// A pairing ticket is `bs58(endpoint_id[32] || secret[32])`, minted by the
-/// primary device's `start_pairing` and presented by the joining device.
-pub fn encode_pairing_ticket(endpoint: EndpointId, secret: &[u8; 32]) -> String {
-    let mut buf = Vec::with_capacity(64);
-    buf.extend_from_slice(endpoint.as_bytes());
-    buf.extend_from_slice(secret);
-    bs58::encode(buf).into_string()
-}
-
-pub fn decode_pairing_ticket(s: &str) -> Result<(EndpointId, [u8; 32])> {
-    let raw = bs58::decode(s.trim())
-        .into_vec()
-        .context("ticket is not base58")?;
-    anyhow::ensure!(
-        raw.len() == 64,
-        "pairing ticket must be 64 bytes, got {}",
-        raw.len()
-    );
-    let endpoint = EndpointId::from_bytes(&raw[..32].try_into().unwrap())
-        .context("ticket endpoint id invalid")?;
-    let mut secret = [0u8; 32];
-    secret.copy_from_slice(&raw[32..]);
-    Ok((endpoint, secret))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::SecretKey;
 
     fn test_id(seed: u8) -> EndpointId {
         let mut key_bytes = [0u8; 32];
@@ -306,8 +184,6 @@ mod tests {
                 ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: true,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             }],
@@ -323,7 +199,6 @@ mod tests {
             identity: test_id(1),
             ip: Ipv4Addr::new(10, 88, 0, 4),
             hostname: None,
-            device_cert: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -335,7 +210,6 @@ mod tests {
         let msg = ControlMsg::JoinRequest {
             invite_secret: Some(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             hostname: Some("alice".to_string()),
-            device_cert: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -347,7 +221,6 @@ mod tests {
         let msg = ControlMsg::JoinRequest {
             invite_secret: None,
             hostname: None,
-            device_cert: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -386,7 +259,6 @@ mod tests {
             identity: test_id(1),
             ip: Ipv4Addr::new(10, 88, 12, 34),
             hostname: None,
-            device_cert: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -402,8 +274,6 @@ mod tests {
                 ip: Ipv4Addr::new(10, 88, 0, 2),
                 is_coordinator: true,
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
                 last_seen: None,
             }],
@@ -411,8 +281,6 @@ mod tests {
                 identity: test_id(2),
                 ip: Ipv4Addr::new(10, 88, 0, 5),
                 hostname: None,
-                user_identity: None,
-                device_cert: None,
                 collision_index: 0,
             }],
         };
@@ -465,86 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn test_device_cert_sign_verify() {
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let cert = DeviceCert::create(&user_key, &device_key.public(), 0);
-        assert!(cert.verify());
-        assert_eq!(cert.user_identity, user_key.public());
-        assert_eq!(cert.device_key, device_key.public());
-    }
-
-    #[test]
-    fn test_device_cert_generation_sign_verify() {
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let cert = DeviceCert::create(&user_key, &device_key.public(), 7);
-        assert!(cert.verify());
-        assert_eq!(cert.generation, 7);
-    }
-
-    #[test]
-    fn test_device_cert_generation_tamper_fails() {
-        // Editing the generation to jump a floor breaks the signature.
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let mut cert = DeviceCert::create(&user_key, &device_key.public(), 3);
-        cert.generation = 9;
-        assert!(!cert.verify());
-    }
-
-    #[test]
-    fn test_device_cert_gen0_backcompat() {
-        // A generation-0 cert signs over the device key alone, so a cert minted
-        // before the field existed (deserialized as generation 0) still verifies.
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let legacy_sig = user_key.sign(device_key.public().as_bytes());
-        let cert = DeviceCert {
-            user_identity: user_key.public(),
-            device_key: device_key.public(),
-            generation: 0,
-            signature: legacy_sig,
-        };
-        assert!(cert.verify());
-    }
-
-    #[test]
-    fn test_device_cert_rejects_wrong_signer() {
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let wrong_key = test_key(3);
-        let mut cert = DeviceCert::create(&user_key, &device_key.public(), 0);
-        cert.user_identity = wrong_key.public();
-        assert!(!cert.verify());
-    }
-
-    #[test]
-    fn test_roundtrip_mesh_hello_with_cert() {
-        let user_key = test_key(1);
-        let device_key = test_key(2);
-        let cert = DeviceCert::create(&user_key, &device_key.public(), 0);
-        let msg = ControlMsg::MeshHello {
-            identity: device_key.public(),
-            ip: Ipv4Addr::new(10, 88, 0, 5),
-            hostname: Some("alice".to_string()),
-            device_cert: Some(cert),
-        };
-        let bytes = encode_msg(&msg);
-        let decoded = decode_msg(&bytes).unwrap();
-        assert_eq!(msg, decoded);
-        if let ControlMsg::MeshHello {
-            device_cert: Some(c),
-            ..
-        } = &decoded
-        {
-            assert!(c.verify());
-        } else {
-            panic!("expected MeshHello with cert");
-        }
-    }
-
-    #[test]
     fn test_roundtrip_invite_share_and_used() {
         for msg in [
             ControlMsg::InviteShare {
@@ -575,41 +363,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pairing_ticket_roundtrips() {
-        let endpoint = iroh::SecretKey::generate().public();
-        let secret = [7u8; 32];
-        let ticket = encode_pairing_ticket(endpoint, &secret);
-        let (got_endpoint, got_secret) = decode_pairing_ticket(&ticket).unwrap();
-        assert_eq!(got_endpoint, endpoint);
-        assert_eq!(got_secret, secret);
-    }
-
-    #[test]
-    fn decode_pairing_ticket_rejects_wrong_length() {
-        // 64-byte payload is required (32 + 32); an invite code (80 bytes) must not parse.
-        let eighty = bs58::encode(vec![0u8; 80]).into_string();
-        assert!(decode_pairing_ticket(&eighty).is_err());
-        assert!(decode_pairing_ticket("not-base58!!").is_err());
-    }
-
-    #[test]
-    fn pair_response_networks_defaults_when_absent() {
-        // An old Response encoded without the networks field must still decode,
-        // with an empty list.
-        #[derive(serde::Serialize)]
-        enum OldPairMsg {
-            Response { cert: DeviceCert },
-        }
-        let user = SecretKey::generate();
-        let device = SecretKey::generate().public();
-        let cert = DeviceCert::create(&user, &device, 0);
-        let bytes = rmp_serde::to_vec_named(&OldPairMsg::Response { cert: cert.clone() }).unwrap();
-
-        let decoded: PairMsg = rmp_serde::from_slice(&bytes).unwrap();
-        match decoded {
-            PairMsg::Response { networks, .. } => assert!(networks.is_empty()),
-            _ => panic!("expected Response"),
-        }
-    }
 }
