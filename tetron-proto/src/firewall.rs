@@ -1,9 +1,9 @@
 //! Firewall enums shared across the IPC boundary.
 //!
-//! These live here (rather than in `ray`'s `firewall` module) so the protocol
+//! These live here (rather than in `tetron`'s `firewall` module) so the protocol
 //! crate can carry them typed — `FirewallState`, `FirewallRuleView`,
 //! `FirewallAdd`, and `FirewallDefault` use these enums directly instead of
-//! stringly-typed fields. `ray`'s `firewall` module re-exports them so the
+//! stringly-typed fields. `tetron`'s `firewall` module re-exports them so the
 //! daemon's logic keeps its original `firewall::Action` paths.
 
 use std::str::FromStr;

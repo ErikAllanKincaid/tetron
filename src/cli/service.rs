@@ -254,7 +254,7 @@ pub(crate) async fn install_and_start_service(
                 other => eprintln!("Unexpected response: {other:?}"),
             }
             // We're root here (installing the service). Grant the invoking user
-            // operator access so they can run `ray` without sudo from now on,
+            // operator access so they can run `tetron` without sudo from now on,
             // the way `tailscale up --operator=$USER` does.
             grant_operator_to_invoking_user().await;
             Ok(())
@@ -273,7 +273,7 @@ pub(crate) async fn install_and_start_service(
 }
 
 /// When the service is (re)installed under `sudo`, grant the invoking user
-/// (`$SUDO_USER`) operator access so subsequent `ray` commands work without
+/// (`$SUDO_USER`) operator access so subsequent `tetron` commands work without
 /// root. Best-effort: silent if there is no `$SUDO_USER` or the daemon refuses.
 pub(crate) async fn grant_operator_to_invoking_user() {
     let Ok(user) = std::env::var("SUDO_USER") else {

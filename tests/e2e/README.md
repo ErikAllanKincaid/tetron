@@ -1,6 +1,6 @@
-# Rayfish end-to-end tests
+# tetron end-to-end tests
 
-Each scenario provisions real Scaleway instances, deploys `ray` over SSH, drives a
+Each scenario provisions real Scaleway instances, deploys `tetron` over SSH, drives a
 flow end to end, and prints a `PASS`/`FAIL` line per check (exit non-zero on any
 failure). The shared SSH/deploy/reset/assert plumbing lives in
 [`../lib/`](../lib) and is sourced by every scenario.

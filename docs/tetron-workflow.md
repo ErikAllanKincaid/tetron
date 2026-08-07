@@ -128,3 +128,73 @@ never assume it auto-follows just because the change is additive. Per the
 standing priority order (core, then addons, then integration), this
 follow-up is separate, later work, not bundled into the branch that
 changed core.
+
+## 12. Cross-repo dead-code sweep
+
+Not a per-commit step like `reconcile.py` — run this before cutting a
+release, and after any feature removal, not on every branch. Written up
+here (rather than folded into an existing step) because the same method
+generalizes to any crate with a public library surface consumed by more
+than one downstream repo, so it is worth preserving as a portable
+procedure, not just a tetron-specific note.
+
+**Why a normal build/lint pass cannot catch this class of dead code:**
+rustc's `dead_code` lint only fires on private items. Anything `pub` in a
+library crate's surface is exempt by design, because the compiler cannot
+tell "reachable from a real external consumer" apart from "just never
+cleaned up." tetron's own `src/lib.rs` is consumed three different ways —
+`tetron-mobile` depends on the full `tetron` crate directly and calls into
+it as a library; `tetron-webui`/`tetron-systray` depend only on the
+separate `tetron-proto` crate; `src/main.rs`/`src/cli/` (the binary) call
+into the lib crate for everything else. A `pub` item can be real (reachable
+from any one of those three) or genuinely dead (reachable from none) — only
+cross-repo grepping settles which, an in-repo-only check is not enough.
+This is exactly the gap that let a fully-orphaned cluster in `src/dht.rs`
+(the `_tetron_certgen` cert-floor record — `CERT_FLOOR_RECORD_NAME`,
+`encode_cert_floor_record`/`decode_cert_floor_record`,
+`publish_cert_floor`/`resolve_cert_floor`, plus their own tests) survive
+two prior dedicated dead-code sweeps (`TREE-SHAKE-001..005`) and a tagged
+release before being found — see
+`DO-NOT-COMMIT/ANALYSIS_external-PR12-dht-leak-claim_2026-08-07.md` for the
+discovery and `TODO_DETAILS.md#certfloor-dead-code-cleanup` for the
+follow-up, the worked example this procedure is written from.
+
+**Method:**
+
+1. Enumerate every top-level `pub fn`/`pub struct`/`pub enum`/`pub const`/
+   `pub static` in the library crate(s) — for tetron, `src/*.rs` +
+   `src/**/*.rs` (excluding `src/main.rs`/`src/cli/**`, which are the
+   binary's own dispatch surface, not library API — but do check whether
+   items *defined* in the lib and *used* by the binary have real callers
+   there) plus `tetron-proto/src/**/*.rs`.
+2. For each item, grep for usage — never the definition line itself, and
+   never a `#[cfg(test)]` block referencing it (a test exercising dead code
+   is not a real caller, it just proves the dead code still compiles) —
+   across every consumer: the rest of this repo, and the full checkout of
+   every downstream repo that depends on it (for tetron: `tetron-mobile`,
+   `tetron-webui`, `tetron-systray`). Zero hits outside the item's own
+   definition and its own tests marks it a dead-code candidate.
+3. Exclude known-legitimate categories before flagging anything, so the
+   output stays trustworthy: trait-method implementations required by a
+   trait signature even when never called directly; enum
+   variants/struct fields that exist only for a derive macro's benefit
+   (`clap` subcommand dispatch, `serde` (de)serialization) even when never
+   referenced by name in ordinary Rust code; anything already documented
+   elsewhere as deliberately-kept compatibility scaffolding (tetron's own
+   `d1_wire_compat_audit` — `src/control.rs`'s `DeviceCert`/`PairMsg`/
+   `CertRefresh`/`Unpaired` — is the standing example: real, deliberate,
+   not a new finding, do not re-flag it every sweep).
+4. For each confirmed candidate, get real provenance instead of guessing —
+   `git log --follow -S<symbol> -- <file>` finds when it was introduced;
+   diffing forward from there toward the commit that removed its last
+   caller (usually a feature-removal commit) confirms *why* it went dead,
+   not just *that* it did. This matters for scoping the eventual fix
+   correctly — deleting a whole orphaned cluster cleanly, rather than just
+   the one symbol that happened to get grepped first.
+5. Complementary automated check, not a replacement for steps 1-4:
+   `cargo-udeps`/`cargo-machete` if installed, for unused *dependencies*
+   rather than unused *code* — same spirit, different axis, and cheap to
+   run alongside.
+6. Report confirmed-dead items separately from anything merely
+   plausible-but-unverified — don't let a "probably dead" guess sit next to
+   a grep-confirmed finding with the same weight.

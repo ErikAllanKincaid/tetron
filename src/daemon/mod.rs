@@ -939,7 +939,7 @@ impl MeshManager {
         })
     }
 
-    /// Persist the operator UID so that user can run mutating `ray` commands
+    /// Persist the operator UID so that user can run mutating `tetron` commands
     /// without root. Authorization (root-only) is enforced in `check_authorized`.
     pub(crate) fn set_operator(&self, uid: u32) -> IpcMessage {
         let mut app_config = match config::load() {

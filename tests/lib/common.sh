@@ -105,7 +105,7 @@ wait_daemons(){
 }
 
 # ---------------------------------------------------------------------------
-# JSON-backed status helpers. Every `ray` subcommand takes a global `--json`
+# JSON-backed status helpers. Every `tetron` subcommand takes a global `--json`
 # flag (color/spinners off, machine-readable). We run it on the remote host and
 # parse the JSON *locally* with jq, so assertions don't scrape coloured tables.
 # jq is already a provisioning prerequisite (see tests/e2e/README.md).

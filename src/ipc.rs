@@ -1,6 +1,6 @@
-//! IPC protocol — re-exported from the shared `ray-proto` crate.
+//! IPC protocol — re-exported from the shared `tetron-proto` crate.
 //!
-//! The message enum, codec, and socket helpers live in `ray-proto` so GUI
+//! The message enum, codec, and socket helpers live in `tetron-proto` so GUI
 //! frontends can speak the exact same wire protocol. Kept as `crate::ipc::*` here
 //! so the daemon/CLI continue to use their original paths unchanged.
 

@@ -1,7 +1,7 @@
 //! Small enums referenced by [`crate::ipc::IpcMessage`].
 //!
-//! These live here (rather than in `ray`'s `membership`/`config` modules) so the
-//! protocol crate is self-contained. `ray` re-exports them at their original paths,
+//! These live here (rather than in `tetron`'s `membership`/`config` modules) so the
+//! protocol crate is self-contained. `tetron` re-exports them at their original paths,
 //! so the daemon's logic is untouched.
 
 use std::fmt;
