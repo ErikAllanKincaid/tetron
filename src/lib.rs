@@ -1,10 +1,12 @@
-//! Internal library crate for the `ray` binary. **Not a stable public API** —
-//! exposed only so Criterion benchmarks (see `benches/`) and integration tests
-//! can exercise the internal data path (the hot forwarding loop, packet
-//! parsing) without going through the binary. No semver
-//! guarantees on any of these modules; depend on the `ray` binary, not this
-//! crate. `src/main.rs` is a thin clap CLI + IPC client built on top, importing
-//! these modules via `use tetron::…`.
+//! Library crate backing the `tetron` binary. **Not a stable public API** —
+//! it is also embedded directly by `tetron-mobile` (a separate proprietary
+//! crate, git dependency pinned by exact `rev`, no semver) and exposed so
+//! Criterion benchmarks (see `benches/`) and integration tests can exercise
+//! the internal data path (the hot forwarding loop, packet parsing) without
+//! going through the binary. No semver guarantees on any of these modules —
+//! any consumer, internal or external, must pin an exact commit, not a
+//! version range. `src/main.rs` is a thin clap CLI + IPC client built on top,
+//! importing these modules via `use tetron::…`.
 #![doc(hidden)]
 
 pub const APP_NAME: &str = "tetron";

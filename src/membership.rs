@@ -69,7 +69,7 @@ pub struct Member {
 
 /// Controls who can approve new members joining the network.
 ///
-/// Defined in `ray-proto` (shared with GUI frontends); re-exported here so
+/// Defined in `tetron-proto` (shared with GUI frontends); re-exported here so
 /// existing `crate::membership::GroupMode` paths keep working.
 pub use tetron_proto::GroupMode;
 

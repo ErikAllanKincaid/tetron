@@ -533,8 +533,8 @@ async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String)
 
 /// Spawns a task that consumes packets from `tun_rx` and writes them to the TUN
 /// device. Single instance per session, serializes writes without a Mutex.
-/// `active` is the data-plane gate: while it is false (standby, after `ray
-/// down`) inbound datagrams are dropped instead of written, so a node that
+/// `active` is the data-plane gate: while it is false (standby, after `tetron
+/// standby`) inbound datagrams are dropped instead of written, so a node that
 /// stays connected to peers still carries no traffic.
 pub fn spawn_tun_writer<W: crate::tun::TunWrite>(
     mut tun: W,

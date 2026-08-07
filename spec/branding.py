@@ -356,6 +356,31 @@ class ReleaseWorkflowLinuxOnlyForNow(Requirement):
     `release.yml` as of this release. **Android is unaffected and remains
     gated off** — its blockers (deep-link scheme mismatch, Kotlin/package
     identity rename) are unrelated and still unresolved.
+
+    **Addendum, 2026-08-07: the Android half is closed, resolved by
+    deletion rather than by finishing the in-repo build.** The "undecided"
+    question above (finish or drop) was answered by a later, separate
+    architectural decision this requirement predates: Android/iOS moved
+    into its own separate repo (`tetron-mobile`, proprietary, git-deps on
+    this crate directly — see that repo's own `AGENTS.md`), not by
+    finishing the `android/`+`ray-mobile` in-repo Gradle/Kotlin build this
+    job was written for. That in-repo path was never going to be
+    reactivated — `MINIMAL-016` removed the `ray-mobile` workspace member
+    and `android/` directory from this repo entirely, so the disabled job
+    referenced a package and directory that no longer exist even to
+    resume from. Found 2026-08-07 during a dead-code sweep (same session
+    that found the orphaned `_tetron_certgen`/pairing-ticket clusters —
+    see `CERTFLOOR-*`-adjacent `DO-NOT-COMMIT/TODO_DETAILS.md` entries).
+    The `android:` job (~90 lines each) is deleted from both `release.yml`
+    and `nightly.yml`, mirroring how `build-macos`'s `if: false` was
+    removed once macOS actually shipped, rather than left as permanent
+    dead weight. Real Android platform support in this crate itself
+    (`#[cfg(target_os = "android")]` throughout `tun.rs`/`daemon/mod.rs`/
+    `config.rs`/`create_join.rs`/`runtime.rs`/`bootstrap.rs`/
+    `selfcapture.rs`, and `Cargo.toml`'s Android-conditional dependency
+    block) is unaffected and stays — `tetron-mobile` depends on exactly
+    that, live and in active use; only the in-repo CI *build* of an APK
+    was ever dead.
     """
     req_id = "CI-002"
 

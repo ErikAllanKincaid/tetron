@@ -655,7 +655,7 @@ pub(crate) fn uid_for_user(user: &str) -> Option<u32> {
     user.parse::<u32>().ok()
 }
 
-/// `tetron set-operator <user>`: authorize a local user to run mutating ray
+/// `tetron set-operator <user>`: authorize a local user to run mutating tetron
 /// commands without sudo (Tailscale's `--operator` model). The daemon enforces
 /// that this call itself comes from root.
 async fn cmd_set_operator(user: &str) -> Result<()> {
