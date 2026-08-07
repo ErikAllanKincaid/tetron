@@ -484,6 +484,42 @@ fn should_promote(current: NetworkRole) -> bool {
     !current.is_coordinator()
 }
 
+/// Whether a `pruned_peers` entry for `network_name` should survive a
+/// periodic GC sweep (CONVERGE-009), given the set of network names
+/// currently present in `self.networks`. A pruned-peer entry for a network
+/// the daemon no longer runs can never be consumed by that network's
+/// reconnect loop (the loop itself is gone with the network), so it is
+/// always safe to drop.
+fn pruned_peer_entry_is_live(
+    live_networks: &std::collections::HashSet<String>,
+    network_name: &str,
+) -> bool {
+    live_networks.contains(network_name)
+}
+
+#[cfg(test)]
+mod pruned_peers_gc_tests {
+    use super::*;
+
+    #[test]
+    fn entry_for_a_still_running_network_survives() {
+        let live: std::collections::HashSet<String> = ["net-a".to_string()].into();
+        assert!(pruned_peer_entry_is_live(&live, "net-a"));
+    }
+
+    #[test]
+    fn entry_for_a_torn_down_network_is_dropped() {
+        let live: std::collections::HashSet<String> = ["net-a".to_string()].into();
+        assert!(!pruned_peer_entry_is_live(&live, "net-b"));
+    }
+
+    #[test]
+    fn empty_networks_drops_every_entry() {
+        let live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(!pruned_peer_entry_is_live(&live, "net-a"));
+    }
+}
+
 impl MeshManager {
     /// Gracefully take the whole node offline: cancel the daemon-wide shutdown
     /// token (stopping every network run loop, the accept loop, and the
@@ -530,6 +566,39 @@ impl MeshManager {
         for entry in self.networks.iter() {
             crate::peercache::refresh_from_peers(&entry.value().peers);
         }
+    }
+
+    /// Spawn a background task that periodically drops `pruned_peers`
+    /// entries for networks no longer present in `self.networks` (CONVERGE-009).
+    /// `join.rs`'s reconnect-loop disconnect handler remains the primary,
+    /// immediate consumer (`pruned_peers.remove(...)` on the happy path);
+    /// this sweep only catches what its two early-`continue` branches
+    /// (stale disconnect, deliberate leave) leave behind — a peer pruned
+    /// from a network the daemon has since left or torn down can never be
+    /// consumed by that network's reconnect loop again, since the loop
+    /// itself is gone. Runs on the same cadence as `peercache`'s periodic
+    /// save (`PRUNED_PEERS_GC_INTERVAL` mirrors `peercache::SAVE_INTERVAL`)
+    /// rather than a bespoke interval. The task exits when `token` is
+    /// cancelled.
+    pub(crate) fn spawn_pruned_peers_gc(self: &Arc<Self>, token: CancellationToken) {
+        const PRUNED_PEERS_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+        let networks = self.networks.clone();
+        let pruned_peers = self.pruned_peers.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(PRUNED_PEERS_GC_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let live: std::collections::HashSet<String> =
+                            networks.iter().map(|e| e.key().clone()).collect();
+                        pruned_peers.retain(|(network_name, _)| {
+                            pruned_peer_entry_is_live(&live, network_name)
+                        });
+                    }
+                    _ = token.cancelled() => break,
+                }
+            }
+        });
     }
 
     /// Build a fresh, empty per-network data-plane bundle (MULTISEG-002): a new

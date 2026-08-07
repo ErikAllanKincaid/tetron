@@ -61,10 +61,7 @@ impl PeerAddrCache {
         let now = now_secs();
         let inner = entries
             .into_iter()
-            .filter(|e| {
-                let age_secs = now.saturating_sub(e.last_seen);
-                age_secs < PRUNE_DAYS * 86400
-            })
+            .filter(|e| is_fresh(e.last_seen, now))
             .map(|e| (e.id, (e.addrs, e.last_seen)))
             .collect();
         PeerAddrCache {
@@ -89,8 +86,20 @@ impl PeerAddrCache {
         self.inner.lock().unwrap().insert(id, (addrs, now));
     }
 
+    /// Drop entries older than `PRUNE_DAYS` (CACHE-002). Without this the
+    /// in-memory map only ever grows: `update` has no eviction path, and
+    /// the age filter in `new` only runs once, at daemon startup.
+    fn prune_stale(&self) {
+        let now = now_secs();
+        self.inner
+            .lock()
+            .unwrap()
+            .retain(|_, (_, last_seen)| is_fresh(*last_seen, now));
+    }
+
     /// Write the cache to disk atomically.
     fn save(&self) {
+        self.prune_stale();
         let inner = self.inner.lock().unwrap();
         let entries: Vec<Entry> = inner
             .iter()
@@ -203,4 +212,67 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Whether an entry last seen at `last_seen` is still within the
+/// `PRUNE_DAYS` retention window as of `now`.
+fn is_fresh(last_seen: u64, now: u64) -> bool {
+    now.saturating_sub(last_seen) < PRUNE_DAYS * 86400
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_id(seed: u8) -> EndpointId {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = seed;
+        let key = iroh::SecretKey::from(key_bytes);
+        key.public()
+    }
+
+    fn addr() -> Vec<TransportAddr> {
+        vec![iroh::TransportAddr::Ip(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            4242,
+        )))]
+    }
+
+    #[test]
+    fn prune_stale_drops_entries_past_the_retention_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PeerAddrCache::new(dir.path());
+        let now = now_secs();
+        let stale_id = test_id(1);
+        let fresh_id = test_id(2);
+        {
+            let mut inner = cache.inner.lock().unwrap();
+            inner.insert(stale_id, (addr(), now - (PRUNE_DAYS + 1) * 86400));
+            inner.insert(fresh_id, (addr(), now));
+        }
+
+        cache.prune_stale();
+
+        let inner = cache.inner.lock().unwrap();
+        assert!(!inner.contains_key(&stale_id));
+        assert!(inner.contains_key(&fresh_id));
+    }
+
+    #[test]
+    fn save_prunes_stale_entries_before_persisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PeerAddrCache::new(dir.path());
+        let now = now_secs();
+        {
+            let mut inner = cache.inner.lock().unwrap();
+            inner.insert(test_id(1), (addr(), now - (PRUNE_DAYS + 1) * 86400));
+            inner.insert(test_id(2), (addr(), now));
+        }
+
+        cache.save();
+
+        let data = std::fs::read(dir.path().join(CACHE_FILENAME)).unwrap();
+        let entries: Vec<Entry> = rmp_serde::from_slice(&data).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
 }

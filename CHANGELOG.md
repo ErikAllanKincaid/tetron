@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`tetron join` now reports a corrupted invite code specifically** (`INVITE-CHECKSUM-001`): previously a mistyped invite (checksum mismatch) was silently treated as a bare room id and denied with the generic "a valid invite key is required" message; the CLI now tells a genuine 32-byte room id apart from a 48/52-byte invite-shaped failure and surfaces the specific error ("invalid invite code: checksum mismatch") up front.
 - **`tetron join` error for a blackholed discovery relay** (`DHT-ERRCAUSE-001`): previously hung with nothing on screen; now bounded by a 15s resolve timeout (see Changed).
+- **Two long-running-daemon memory leaks fixed**, found in the 2026-08-02 memory-leak audit: the peer address cache (`CACHE-002`) kept every distinct peer ever connected to resident in memory forever, since its 30-day age pruning only ran once, at startup — it now re-applies on every 5-minute periodic save. The roster-prune reconnect-suppression set (`CONVERGE-009`) could accumulate entries that a stale-disconnect or deliberate-leave event skipped removing — a new periodic sweep drops any entry for a network the daemon no longer runs. Both are slow, peer-count/roster-churn-bounded leaks, not the crash-inducing kind; unrelated findings from the same audit were downgraded (does not reproduce) or found to not be leaks at all.
 
 ### Performance
 
