@@ -180,6 +180,8 @@ pub fn decode_cert_floor_record(packet: &SignedPacket) -> Result<u64> {
 // Publish / resolve
 // ---------------------------------------------------------------------------
 
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub async fn publish_network(
     client: &PkarrRelayClient,
     key: &SecretKey,
@@ -188,9 +190,9 @@ pub async fn publish_network(
     seed_peers: &[EndpointId],
 ) -> Result<()> {
     let packet = encode_network_record(key, blob_hash, generation, seed_peers)?;
-    client
-        .publish(&packet)
+    tokio::time::timeout(PUBLISH_TIMEOUT, client.publish(&packet))
         .await
+        .map_err(|_| anyhow::anyhow!("timed out publishing network record"))?
         .map_err(|e| anyhow::anyhow!("failed to publish network record: {e}"))
 }
 
@@ -242,9 +244,9 @@ pub async fn publish_cert_floor(
     generation: u64,
 ) -> Result<()> {
     let packet = encode_cert_floor_record(user_secret, generation)?;
-    client
-        .publish(&packet)
+    tokio::time::timeout(PUBLISH_TIMEOUT, client.publish(&packet))
         .await
+        .map_err(|_| anyhow::anyhow!("timed out publishing cert-floor record"))?
         .map_err(|e| anyhow::anyhow!("failed to publish cert-floor record: {e}"))
 }
 
@@ -255,9 +257,9 @@ pub async fn resolve_cert_floor(
     client: &PkarrRelayClient,
     user_pubkey: EndpointId,
 ) -> Result<u64> {
-    let packet = client
-        .resolve(user_pubkey)
+    let packet = tokio::time::timeout(RESOLVE_TIMEOUT, client.resolve(user_pubkey))
         .await
+        .map_err(|_| anyhow::anyhow!("timed out resolving cert-floor record"))?
         .map_err(|e| anyhow::anyhow!("failed to resolve cert-floor record: {e}"))?;
     decode_cert_floor_record(&packet)
 }

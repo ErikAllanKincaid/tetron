@@ -676,10 +676,19 @@ impl ProtocolRouter {
                         let Some(incoming) = incoming else { return };
                         let router = router.clone();
                         tokio::spawn(async move {
-                            let conn = match incoming.await {
-                                Ok(c) => c,
-                                Err(e) => {
+                            let conn = match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                incoming,
+                            )
+                            .await
+                            {
+                                Ok(Ok(c)) => c,
+                                Ok(Err(e)) => {
                                     tracing::debug!(error = ?e, "incoming handshake failed");
+                                    return;
+                                }
+                                Err(_) => {
+                                    tracing::debug!("incoming handshake timed out");
                                     return;
                                 }
                             };
