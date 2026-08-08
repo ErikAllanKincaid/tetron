@@ -16,9 +16,9 @@
 #                needs sudo and briefly disconnects every peer on this
 #                host while the daemon restarts)
 #   component names (core/webui/systray/backup) restrict which components
-#   this run touches -- default is all four. A component not currently
-#   installed is skipped unless its name is passed explicitly (so a bare
-#   run never installs something you didn't already have).
+#   this run touches -- default is all four, freshly installed or
+#   upgraded as needed. It is called "install", not "upgrade" -- a
+#   component missing on this host is installed, not silently skipped.
 #
 #   backup is a script, not a versioned binary: it fetches
 #   contrib/tetron-backup.sh from the tetron repo's main branch (no
@@ -51,7 +51,6 @@ require_cmd curl install
 CHECK_ONLY=0
 YES_CORE=0
 COMPONENTS=()
-EXPLICIT_COMPONENTS=0
 
 for arg in "$@"; do
 	case "$arg" in
@@ -59,7 +58,6 @@ for arg in "$@"; do
 	--yes-core) YES_CORE=1 ;;
 	core | webui | systray | backup)
 		COMPONENTS+=("$arg")
-		EXPLICIT_COMPONENTS=1
 		;;
 	-h | --help)
 		sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
@@ -219,8 +217,6 @@ for comp in "${COMPONENTS[@]}"; do
 	if [ "$comp" = "backup" ]; then
 		if [ -x "$dest" ]; then
 			log_pass "$comp: installed ($dest)"
-		elif [ "$EXPLICIT_COMPONENTS" -eq 0 ]; then
-			log_info "$comp: not installed, skipping (pass 'backup' explicitly to install it fresh)"
 		else
 			log_info "$comp: not installed"
 			[ "$CHECK_ONLY" -eq 1 ] && continue
@@ -236,11 +232,6 @@ for comp in "${COMPONENTS[@]}"; do
 		any_failed=1
 		continue
 	}
-
-	if [ ! -x "$dest" ] && [ "$EXPLICIT_COMPONENTS" -eq 0 ]; then
-		log_info "$comp: not installed, skipping (pass '$comp' explicitly to install it fresh)"
-		continue
-	fi
 
 	status="$comp: installed=${current:-none} latest=$latest"
 	if [ -n "$current" ] && [ "$current" = "$latest" ]; then

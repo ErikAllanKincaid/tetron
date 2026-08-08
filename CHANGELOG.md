@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`contrib/install-tetron-suite.sh` now installs any missing component by default instead of silently skipping it.** A bare run (no component names passed) previously only upgraded components already present and skipped anything not yet installed, requiring the component's name to be passed explicitly to get a fresh install — surprising on a first-time host, where a plain `curl ... | bash` reported every component as "not installed, skipping" and installed nothing. It now installs or upgrades all four (`core`/`webui`/`systray`/`backup`) by default; passing explicit component names still restricts which ones a run touches. `core`'s existing sudo/confirmation gate (`--yes-core`, needed non-interactively since it briefly disconnects every peer on the host) is unchanged.
+
 ### Internal
 
 - **Dead-code sweep, round 3 (`TREE-SHAKE-006..008`)**: removed the `_tetron_certgen` pkarr cert-floor record, the pairing-ticket codec (`PairMsg`/`PairNetwork`/`encode_pairing_ticket`/`decode_pairing_ticket`), and the `DeviceCert` type itself (plus the `CertRefresh`/`Unpaired` control messages, the `device_cert` field on three `ControlMsg` variants, and the `device_cert`/`user_identity` fields on `Member`/`ApprovedEntry`) — all orphaned since `MINIMAL-004` removed device pairing, missed by two prior `TREE-SHAKE` passes and a tagged release because `pub` items in the library crate's surface are invisible to rustc's `dead_code` lint. One `accept.rs` anti-spoofing check (reject a `MeshHello` whose claimed identity doesn't match its transport-authenticated identity) is preserved exactly, with its now-unreachable device-cert-verification sub-path removed. No behavior change: every field removed already carried `#[serde(default, skip_serializing_if = "Option::is_none")]` and encoding uses name-keyed msgpack throughout, so no build has ever put these fields on the wire — removing them changes zero bytes of what any current or past tetron build actually sends. No ALPN version bump.
