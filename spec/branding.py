@@ -974,6 +974,28 @@ class MuslReleaseTargets(Requirement):
     unconfirmed, stated plainly rather than assumed fine by extension
     from the x86_64 result.
 
+    **Addendum, 2026-08-08: aarch64-unknown-linux-musl confirmed live on
+    real Raspberry Pi 5 hardware, closing the gap above.** A tetron
+    member already running on the fleet (roster hostname `rpi5-test`,
+    real host `eak10-us-standard`, aarch64, Debian 12 bookworm,
+    `6.12.47+rpt-rpi-2712` kernel) was inspected directly over SSH:
+    `/usr/local/bin/tetron` is `file`/`ldd`-confirmed statically linked
+    ("not a dynamic executable"), running `tetron 0.9.0` -- built after
+    this requirement's own `936b070` fix landed, so it already carries
+    the `noq-udp` alignment patch. `systemctl show tetron` reports the
+    service `active` continuously since 2026-08-03 with only 1 restart
+    total (not a crash loop), `journalctl -u tetron -p err` has zero
+    entries, and `tetron status` shows a healthy direct connection to a
+    peer (2-4ms RTT) with only ordinary `no_peer` drops from
+    currently-offline roster members -- no daemon-crash symptoms. Same
+    bar as the x86_64 verification above: the real daemon running, not
+    just `--version`. This confirms the specific open question directly:
+    a **native-runner** aarch64-musl build (not the local Docker
+    cross-compilation path) does produce a working binary in the field.
+    The local `cross`-via-Docker issue noted above remains a separate,
+    still-open tooling gap -- CI already avoids it by using a native
+    runner -- not reopened by this finding.
+
     **Added to both `release.yml` and `nightly.yml`'s matrix**
     (`x86_64-unknown-linux-musl`/`aarch64-unknown-linux-musl`, same
     runners as the matching gnu entries), with a new conditional
