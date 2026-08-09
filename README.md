@@ -233,7 +233,7 @@ tetron version                 # confirm the new build (version + git sha)
 
 ## Backup
 
-Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/.config/tetron` on macOS: `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically -- back it up yourself before anything risky (a big upgrade, a disk swap, decommissioning old hardware).
+Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `~/Library/Application Support/tetron` on macOS (`/var/root/...` for the standard root-LaunchDaemon install): `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically -- back it up yourself before anything risky (a big upgrade, a disk swap, decommissioning old hardware).
 
 ```bash
 # Linux (root-owned tree, 0600 secret_key) -- sudo preserves ownership/perms
@@ -277,8 +277,9 @@ Tetron primarily targets **Linux** (systemd service, x86_64/aarch64) and **macOS
 ```bash
 tetron leave <network-name>       # optional: leave gracefully first, so the coordinator can prune you
 sudo tetron uninstall             # removes the system service (systemd on Linux, launchd on macOS)
-sudo rm -rf /etc/tetron/          # optional: wipe config + identity on Linux (~/.config/tetron on
-                                   # macOS) -- back up /etc/tetron/secret_key first if you need the key
+sudo rm -rf /etc/tetron/          # optional: wipe config + identity on Linux (~/Library/Application
+                                   # Support/tetron on macOS) -- back up /etc/tetron/secret_key first
+                                   # if you need the key
 ```
 
 Do not run `tetron nuke <network-key>` when uninstalling -- that destroys the network for everyone, not just your machine (`tetron leave` is the per-machine equivalent).

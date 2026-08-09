@@ -527,7 +527,7 @@ If you're also running `tetron-webui`/`tetron-systray`, they upgrade independent
 
 ## 12. Backup
 
-Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `/var/root/Library/Application Support/tetron` on a macOS standard install (the daemon runs as a root LaunchDaemon; a per-user install instead uses `~/.config/tetron`): `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically.
+Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on Linux, `/var/root/Library/Application Support/tetron` on a macOS standard install (the daemon runs as a root LaunchDaemon; a per-user manual run instead uses `~/Library/Application Support/tetron` under that user's own home, not `/var/root`): `secret_key` (your permanent Ed25519 identity -- the one file that determines your address on every network you've joined), `settings.toml` (global settings), and `networks/<name>.toml` (per-network secret/public key, hostname, admin list). None of this is backed up automatically.
 
 ### Encrypted backup with tetron-backup.sh (recommended)
 
@@ -589,7 +589,7 @@ sudo tar xzf tetron-backup.tar.gz -C /etc
 sudo tetron restart
 ```
 
-On macOS use `tetron-backup.sh` instead of the manual commands: it resolves the daemon's config path for you, which differs between the root LaunchDaemon install (`/var/root/Library/Application Support/tetron`) and a per-user install (`~/.config/tetron`).
+On macOS use `tetron-backup.sh` instead of the manual commands: it resolves the daemon's config path for you, which differs between the root LaunchDaemon install (`/var/root/Library/Application Support/tetron`) and a per-user manual run (`~/Library/Application Support/tetron` under that user's own home).
 
 ---
 
@@ -599,9 +599,9 @@ tetron normally uses compiled-in default paths:
 
 | Path | Linux | macOS |
 |---|---|---|
-| Config directory | `/etc/tetron` | `~/.config/tetron` |
-| Log directory | `/var/log/tetron` | `~/Library/Logs/tetron` |
-| IPC socket | `/var/run/tetron/tetron.sock` | `~/Library/Logs/tetron/tetron.sock` |
+| Config directory | `/etc/tetron` | `~/Library/Application Support/tetron` (`/var/root/...` for the root LaunchDaemon) |
+| Log directory | `/var/log/tetron` | `/Library/Logs/tetron` (fixed system path, not under any user's home) |
+| IPC socket | `/var/run/tetron/tetron.sock` | `/var/run/tetron.sock` |
 
 On a non-FHS distribution (NixOS, Guix) or any layout where these do not fit, each path can be overridden with an environment variable:
 

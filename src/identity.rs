@@ -1,4 +1,6 @@
-//! Persistent Ed25519 identity stored at `~/.config/tetron/secret_key`.
+//! Persistent Ed25519 identity stored at `<config_dir()>/secret_key`
+//! (`crate::config::config_dir`) -- `/etc/tetron` on Linux, `~/Library/
+//! Application Support/tetron` on macOS.
 //!
 //! The same keypair is used across restarts, giving each node a stable
 //! [`EndpointId`](iroh::EndpointId) and deterministic virtual IP.
