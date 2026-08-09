@@ -109,6 +109,23 @@ default, even when several were designed together in the same sitting
 shipped this way) — bundle only when a reviewer explicitly decides the
 requirements are too entangled to review separately.
 
+**`.github/PULL_REQUEST_TEMPLATE.md` is deliberately minimal, 2026-08-09.**
+Only two sections: "What this does" (commit subjects + bodies — the
+`Why` used to be a separate heading, cut because it was the same commit
+content split across two headings for no reason) and "Manual
+verification beyond CI" (live/hardware/testsuite checks CI can't do —
+always states either what was done or that nothing beyond CI was).
+Dropped entirely, not shrunk: the checklist ("title is conventional",
+"cargo build/test/clippy pass", docs/CHANGELOG/ALPN reminders) —
+`cargo build/test/clippy` duplicates `ci.yml`'s unfiltered
+`pull_request` trigger (already enforced before anyone could check a
+box), and the rest duplicates this step and step 10, which should catch
+those *before* a PR exists, not re-ask at PR time. `contrib/pr-body.py`
+fills both remaining sections in from the branch's own commits — paste
+its output into the PR description field. GitHub PRs are opened through
+the web UI in this workflow, not `gh`; the script only ever prints to
+stdout, never invokes `gh`.
+
 ## 10. Docs
 
 Update whichever of `AGENTS.md`, `docs/CLI_REFERENCE.md`,
