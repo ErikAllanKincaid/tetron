@@ -4278,10 +4278,13 @@ name = "tetron-proto"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "bs58",
  "bytes",
  "derive_more 2.1.1",
  "futures",
  "iroh",
+ "rand 0.10.2",
  "rmp-serde",
  "serde",
  "tokio",
