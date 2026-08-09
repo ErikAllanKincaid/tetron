@@ -286,9 +286,8 @@ None of these have been implemented yet.
 - Path classification: `src/daemon/mesh/diagnostics.rs::gather_conn_info`
 - Path selection: `src/daemon/mesh/select.rs::choose_path_index`
 - Connection info wire format: `tetron-proto/src/ipc.rs (ConnectionInfo)`
-- Transport / endpoint setup: `src/transport.rs`
-- Relay config override: `src/config.rs (ServerOverride, build_relay_mode)`
-- Connectivity TODO: `DO-NOT-COMMIT/TODO.md` "Observability and control around relay vs. direct connections"
+- Transport / endpoint setup / relay mode resolution: `src/transport.rs (build_relay_mode)`
+- Relay config override type: `src/config/schema.rs (ServerOverride)`
 
 ### External
 - QUIC datagram RFC 9221: https://datatracker.ietf.org/doc/rfc9221/
