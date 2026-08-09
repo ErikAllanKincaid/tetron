@@ -121,10 +121,16 @@ Dropped entirely, not shrunk: the checklist ("title is conventional",
 `pull_request` trigger (already enforced before anyone could check a
 box), and the rest duplicates this step and step 10, which should catch
 those *before* a PR exists, not re-ask at PR time. `contrib/pr-body.py`
-fills both remaining sections in from the branch's own commits — paste
-its output into the PR description field. GitHub PRs are opened through
-the web UI in this workflow, not `gh`; the script only ever prints to
-stdout, never invokes `gh`.
+fills both remaining sections in from the branch's own commits.
+**Default output is a ready-to-open GitHub compare URL** (`?quick_pull=1
+&title=...&body=...` — a documented GitHub feature, pre-fills the "Open a
+pull request" form on page load, no paste step) with the title
+auto-filled too when the branch is a single commit. `--text` prints the
+raw markdown instead, for the rare case the URL is too long (script warns
+and falls back to this automatically past ~7000 chars) or something about
+it misbehaves. GitHub PRs are opened through the web UI in this workflow,
+not `gh`; the script only ever prints text/a URL, never invokes `gh` or
+makes a network call of its own.
 
 ## 10. Docs
 

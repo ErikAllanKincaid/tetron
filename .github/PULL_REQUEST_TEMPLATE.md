@@ -3,10 +3,13 @@ Keep the title as a conventional commit subject (feat/fix/docs/style/ci/chore/..
 since release notes are generated from commit subjects by git-cliff.
 Example: fix(ssh): reuse the host's OpenSSH ed25519 key for mesh SSH
 
-Both sections below can be auto-filled from this branch's own commits:
+Seeing this blank means a PR got opened the long way. Next time, run this
+first and open the link it prints instead -- both sections below arrive
+already filled in from the branch's own commits, no paste required:
   contrib/pr-body.py
-Paste the output here. Edit if the draft doesn't read right -- don't
-retype from scratch. Not `gh` -- this workflow uses the web UI.
+(--text prints plain markdown to paste here by hand, if the URL is ever
+too long or something about it misbehaves.) Not `gh` -- this workflow
+uses the web UI; the script only ever prints text/a URL.
 -->
 
 ## What this does
