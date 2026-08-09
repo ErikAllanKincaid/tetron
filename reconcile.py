@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/tetron
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-013, CON-M01, CON-M03, CON-M04)
+# Checks the automatable constraints (CON-001..CON-013, CON-014, CON-M01, CON-M03, CON-M04)
 # from spec/constraints.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
@@ -218,6 +218,43 @@ def check_test_subnet_identity() -> dict:
     return {"unexpected_count": n}
 
 
+def check_ci_workflow_references() -> dict:
+    """CON-014: no `.github/workflows/*.yml` `run:` block may reference a
+    cargo workspace member (`-p <crate>`/`--package <crate>`) or a bare `cd
+    <path>` that does not exist in the current tree. Regex/token-based, same
+    spirit as the identity checks above -- not a full YAML/shell parse.
+    Dynamic paths (`cd $FOO`/`cd ${{ matrix.x }}`) are skipped, not flagged,
+    since they cannot be resolved statically."""
+    workflows_dir = Path(".github/workflows")
+    if not workflows_dir.is_dir():
+        return {"unexpected_count": 0, "unexpected": []}
+
+    members: set[str] = set()
+    r = run(["cargo", "metadata", "--no-deps", "--format-version", "1"])
+    if r.returncode == 0:
+        try:
+            members = {pkg["name"] for pkg in json.loads(r.stdout)["packages"]}
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    pkg_pat = re.compile(r"(?:-p|--package)\s+([A-Za-z0-9_-]+)")
+    cd_pat = re.compile(r"\bcd\s+([^\s;&|]+)")
+    unexpected = []
+    for f in sorted(workflows_dir.glob("*.yml")):
+        text = f.read_text()
+        for m in pkg_pat.finditer(text):
+            name = m.group(1)
+            if name not in members:
+                unexpected.append(f"{f}: -p {name} (not a workspace member)")
+        for m in cd_pat.finditer(text):
+            path = m.group(1)
+            if path.startswith("$") or path == "-":
+                continue
+            if not Path(path).exists():
+                unexpected.append(f"{f}: cd {path} (path does not exist)")
+    return {"unexpected_count": len(unexpected), "unexpected": unexpected}
+
+
 def check_dependency_absence() -> dict:
     """CON-M01: Cargo.toml's [dependencies] section must not name any dep owned
     by a removed subsystem. iroh, iroh-blobs, and iroh-tor-transport are exempt
@@ -366,6 +403,7 @@ if __name__ == "__main__":
         "cli_reference_identity": check_cli_reference_identity(),
         "test_harness_identity": check_test_harness_identity(),
         "test_subnet_identity": check_test_subnet_identity(),
+        "ci_workflow_references": check_ci_workflow_references(),
         "dependency_absence": check_dependency_absence(),
         "crate_identity": check_crate_identity(),
         "product_identity": check_product_identity(),
@@ -385,6 +423,7 @@ if __name__ == "__main__":
         and ctx["cli_reference_identity"]["unexpected_count"] == 0
         and ctx["test_harness_identity"]["unexpected_count"] == 0
         and ctx["test_subnet_identity"]["unexpected_count"] == 0
+        and ctx["ci_workflow_references"]["unexpected_count"] == 0
         and ctx["dependency_absence"]["unexpected_count"] == 0
         and ctx["crate_identity"]["leak_count"] == 0
         and ctx["product_identity"]["binary_name"] == "tetron"

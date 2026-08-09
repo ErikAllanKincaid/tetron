@@ -212,6 +212,30 @@ class NoResidualTestCgnatLeak(Constraint):
     enforcement_logic = "{{ test_subnet_identity.unexpected_count == 0 }}"
 
 
+class NoDeadCiWorkflowReferences(Constraint):
+    """CONSTRAINT-ID: CON-014
+
+    Added 2026-08-08 as a direct result of the 2026-08-08 `reconcile.py`
+    16-check audit — none of the existing checks could have caught the dead
+    `android:` job (`.github/workflows/release.yml`/`nightly.yml`, referencing
+    the removed `-p ray-mobile` workspace member and `android/app/src/main/
+    java` directory, dead since MINIMAL-016) before it was found by hand
+    during a dead-code sweep, two dedicated sweeps and a tagged release later
+    (see CI-002's 2026-08-07 addendum). This is the reusable, cheap,
+    scriptable half of the audit's angle-2 findings — unlike the cross-repo
+    dead-pub-surface check (too slow/heavy for a per-commit gate, left as a
+    manual `docs/tetron-workflow.md` §12 step), this one only ever greps
+    `.github/workflows/*.yml` `run:` blocks for `-p`/`--package <crate>` and
+    `cd <path>` references, then confirms each resolves against `cargo
+    metadata`'s real workspace members / an existing filesystem path.
+
+    ENFORCEMENT (reconcile.py): ci_workflow_references.unexpected_count
+    equals 0.
+    """
+    constraint_id = "CON-014"
+    enforcement_logic = "{{ ci_workflow_references.unexpected_count == 0 }}"
+
+
 # --------------------------------------------------------------------------
 # Constraints: tetron gates (CON-M*)
 # --------------------------------------------------------------------------
