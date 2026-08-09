@@ -1081,6 +1081,57 @@ class DhtResolveErrorCause(Requirement):
 
 
 # --------------------------------------------------------------------------
+# DHT-ERRCAUSE-002: publish_network has no timeout on its outbound HTTP call
+# --------------------------------------------------------------------------
+
+class DhtPublishTimeout(Requirement):
+    """REQUIREMENT-ID: DHT-ERRCAUSE-002
+
+    `dht::publish_network` (`src/dht.rs`) calls `client.publish(&packet)`
+    with no timeout at all, unlike its sibling `resolve_network_packet`
+    (`DHT-ERRCAUSE-001`), which has carried a 15s `RESOLVE_TIMEOUT` since
+    2026-08-05. `reqwest`'s `connect_timeout`/`timeout` both default to
+    `None`, and iroh's pkarr client construction never overrides either
+    (confirmed against vendored `reqwest`/`iroh` source) — a relay that
+    accepts the TCP connection but never responds hangs `client.publish()`
+    forever.
+
+    This is a real, narrow gap, not hypothetical: `spawn_network_publisher`/
+    `spawn_lazy_publisher` (`src/daemon/mesh/publish.rs`) each `.await` this
+    call directly inside their polling loop, with no surrounding
+    `tokio::select!`/timeout of their own — a hang here doesn't just delay
+    one publish, it wedges the whole loop permanently, including its own
+    `token.cancelled()` check, since that check is unreachable until the
+    `.await` returns. Found 2026-08-07 during external PR #12's DHT-leak
+    claim verification (`DO-NOT-COMMIT/ANALYSIS_external-PR12-dht-leak-claim_2026-08-07.md`,
+    "Recommendation" item 1) — PR #12 itself wrapped this same call for the
+    wrong stated reason (a leak claim Step 0 refuted; two of its other two
+    wrapped functions were also dead code, removed by `TREE-SHAKE-006`) and
+    is not being merged, but the gap it incidentally wrapped is real and
+    worth fixing on its own merits.
+
+    Fix: `publish_network` gets the same `tokio::time::timeout` treatment as
+    `resolve_network_packet` — a `PUBLISH_TIMEOUT` constant (15s, matching
+    `RESOLVE_TIMEOUT` — same relay, same class of HTTP call, no reason for a
+    different bound) wrapping `client.publish(&packet)`, with an error
+    naming `effective_pkarr_url()` and the bound, same message shape as
+    `DHT-ERRCAUSE-001`. Callers already just log-and-continue on any `Err`
+    (`tracing::warn!(error = %e, ...)`), so a timeout surfaces exactly like
+    any other publish failure — no caller-side change needed.
+
+    Verified by `cargo build`/`clippy`/testsuite, not a new unit test — same
+    precedent as `DHT-ERRCAUSE-001`'s own timeout wrap, which needs a live
+    client to exercise and was verified the same way.
+
+    Independent of everything else in this module: touches only
+    `dht::publish_network`, no shared state with `HARDEN-007` (same session,
+    different file, `src/daemon/mesh/accept.rs`) beyond both being spun off
+    the same PR #12 analysis. May land in either order.
+    """
+    req_id = "DHT-ERRCAUSE-002"
+
+
+# --------------------------------------------------------------------------
 # CONVERGE-007: a kick-coded connection close never mutates the roster
 # --------------------------------------------------------------------------
 
