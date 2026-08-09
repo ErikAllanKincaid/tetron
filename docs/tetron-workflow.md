@@ -109,19 +109,22 @@ default, even when several were designed together in the same sitting
 shipped this way) — bundle only when a reviewer explicitly decides the
 requirements are too entangled to review separately.
 
-**No PR template, on purpose.** `.github/PULL_REQUEST_TEMPLATE.md` was
-removed 2026-08-09 — every section it asked for duplicated something
-already true elsewhere and cost real time to retype per PR: "what/why"
-duplicated the commit log GitHub already shows on the PR page, "cargo
-build/test/clippy pass" duplicated `ci.yml`'s unfiltered `pull_request`
-trigger (already enforced by the time anyone could check a box), and the
-docs/CHANGELOG/ALPN reminders duplicated this step and step 10, which
-should catch those *before* a PR exists, not re-ask at PR time. If a
-reviewer needs the reasoning behind a change, it belongs in the commit
-body (steps 2-6 above already ask for that) — write it once, don't
-restate it in a second place. GitHub PRs are opened through the web UI
-in this workflow, not `gh` — do not add tooling that assumes `gh pr
-create`.
+**`.github/PULL_REQUEST_TEMPLATE.md` is deliberately minimal, 2026-08-09.**
+Only two sections: "What this does" (commit subjects + bodies — the
+`Why` used to be a separate heading, cut because it was the same commit
+content split across two headings for no reason) and "Manual
+verification beyond CI" (live/hardware/testsuite checks CI can't do —
+always states either what was done or that nothing beyond CI was).
+Dropped entirely, not shrunk: the checklist ("title is conventional",
+"cargo build/test/clippy pass", docs/CHANGELOG/ALPN reminders) —
+`cargo build/test/clippy` duplicates `ci.yml`'s unfiltered
+`pull_request` trigger (already enforced before anyone could check a
+box), and the rest duplicates this step and step 10, which should catch
+those *before* a PR exists, not re-ask at PR time. `contrib/pr-body.py`
+fills both remaining sections in from the branch's own commits — paste
+its output into the PR description field. GitHub PRs are opened through
+the web UI in this workflow, not `gh`; the script only ever prints to
+stdout, never invokes `gh`.
 
 ## 10. Docs
 
