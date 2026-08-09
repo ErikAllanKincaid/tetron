@@ -4,6 +4,15 @@
 > "Spec-first workflow (libspec + reconcile.py)". This file is the fuller,
 > step-by-step reference — read it before starting a non-trivial change,
 > not just when something goes wrong.
+>
+> **Kept intentionally generic** — this is a reusable spec-first
+> development process, portable to any repo using the same libspec +
+> reconcile.py-style methodology, not just this one. Tetron-specific
+> facts (the `KEEP-ON-PURPOSE` list, specific requirement IDs, incident
+> narratives, "why we chose X" decision history) belong in `AGENTS.md`
+> or `DO-NOT-COMMIT/TODO_DETAILS.md`/`TODO-Done.md`, not here — link to
+> them instead of restating them. If you're adding a tetron-specific
+> paragraph to this file, it probably belongs in one of those instead.
 
 ## Checklist
 
@@ -26,33 +35,23 @@
 
 All work happens on a feature branch — never directly on `main`. Name it
 `<type>/<slug>`, matching this repo's conventional-commit types
-(`feat`/`fix`/`docs`/`chore`/…) and its existing branch history (e.g.
-`feat/portability-005-android-active-gate`). The slug should name the
-requirement(s) the branch carries, not the ticket/conversation that
-prompted it.
+(`feat`/`fix`/`docs`/`chore`/…). The slug should name the requirement(s)
+the branch carries, not the ticket/conversation that prompted it.
 
 ## 2. Spec first
 
 Every change is driven by a requirement (or several) under `spec/` —
 modular Python, one requirement per class, decomposed into granular,
-single-responsibility pieces rather than one monolithic block (e.g.
-`PATHBLEED-STATUS-001`/`-002` are two separate classes, not one). The
+single-responsibility pieces rather than one monolithic block. The
 requirement ID is the first line of the class's docstring. Pick the
 module by what code the requirement actually touches, not by an abstract
-theme — existing requirements are grouped by the function/subsystem they
-modify (`PATHBLEED-STATUS-*` sits in `security.py` because that's where
-`choose_path_index` already lived, not because path selection is
-inherently a security topic).
+theme.
 
 Before writing a new requirement, check whether an existing one already
-covers — or explicitly forbids — the same territory. This fork has a
-"KEEP-ON-PURPOSE" list and a set of `MINIMAL-*` removal requirements
-(things deliberately stripped during the original minimalism pass); a new
-requirement that quietly reintroduces what one of those removed needs to
-say so explicitly and explain why this is a different, in-scope case
-(see `MTU-DIAG-001`'s own docstring for the pattern: passive surfacing of
-already-computed state is in scope even though `MINIMAL-006` removed
-active probing commands).
+covers — or explicitly forbids — the same territory. (This repo
+specifically: `AGENTS.md`'s `KEEP-ON-PURPOSE` list and `spec/core.py`'s
+`MINIMAL-*` removal requirements — a new requirement that quietly
+reintroduces what one of those removed needs to say so explicitly.)
 
 ## 3. Dependency-ordering constraints
 
@@ -75,11 +74,8 @@ intended — nothing unrelated should show as changed.
 
 ## 5. TDD
 
-Tests first, per requirement, before implementation exists. Existing
-precedent: `PATHBLEED-STATUS-001`/`-002`'s unit tests
-(`src/daemon/mod.rs`) were written alongside/ahead of the logic they
-cover, colocated near the code under test rather than in a separate test
-tree.
+Tests first, per requirement, before implementation exists. Colocated
+near the code under test, not in a separate test tree.
 
 ## 6. Implement
 
@@ -88,10 +84,10 @@ pass; nothing more.
 
 ## 7. `reconcile.py`
 
-The fast, local, per-commit gate — sixteen checks, must exit `0` before
-each commit. This is separate from, and prior to, step 8 — it is not a
-substitute for testsuite coverage, and testsuite is not a substitute for
-it.
+The fast, local, per-commit gate — must exit `0` before each commit
+(check count lives in `AGENTS.md`, not duplicated here since it drifts).
+This is separate from, and prior to, step 8 — it is not a substitute for
+testsuite coverage, and testsuite is not a substitute for it.
 
 ## 8. testsuite
 
@@ -104,24 +100,14 @@ does not attempt. Not required for addon-only changes.
 Conventional subject (`feat`/`fix`/`docs`/…), matching `git-cliff`'s
 release-note rendering. **No authorship trailer of any kind** — the
 commit author is already set by git config. One commit per requirement by
-default, even when several were designed together in the same sitting
-(`PATHBLEED-STATUS-001`/`-002` and `SUBNET-COLLISION-001`/`-002` both
-shipped this way) — bundle only when a reviewer explicitly decides the
-requirements are too entangled to review separately.
+default, even when several were designed together in the same sitting —
+bundle only when a reviewer explicitly decides the requirements are too
+entangled to review separately.
 
-**`.github/PULL_REQUEST_TEMPLATE.md` is one word, `tetron`, 2026-08-09.**
-Everything before this — a full What/Why/checklist template, then a
-trimmed two-section version, then a script (`contrib/pr-body.py`) to
-auto-fill it and print a pre-filled GitHub URL — was tried and abandoned
-in the same session. The URL approach assumed a local browser; it broke
-the moment the actual working setup turned out to be SSH'd in from a
-different machine with no display to open a link on, and hand-copying a
-several-hundred-character URL out of a wrapping terminal isn't usable
-either. USER's call: not worth further engineering — "just make the
-template say tetron, this is a waste of time." Commit messages already
-carry the real description (steps 2-6 ask for that); GitHub's PR page
-shows the commit log natively. Reopen this only if a genuinely different
-mechanism comes up, not a variant of URL-generation.
+`.github/PULL_REQUEST_TEMPLATE.md` is intentionally minimal — commit
+messages already carry the real description (steps 2-6 ask for that);
+GitHub's PR page shows the commit log natively. See `DO-NOT-COMMIT/
+TODO-Done.md` for what was tried before landing here, if relevant.
 
 ## 10. Docs
 
@@ -146,85 +132,43 @@ changed core.
 ## 12. Cross-repo dead-code sweep
 
 Not a per-commit step like `reconcile.py` — run this before cutting a
-release, and after any feature removal, not on every branch. Written up
-here (rather than folded into an existing step) because the same method
-generalizes to any crate with a public library surface consumed by more
-than one downstream repo, so it is worth preserving as a portable
-procedure, not just a tetron-specific note.
+release, and after any feature removal, not on every branch. Applies to
+any crate with a public library surface consumed by more than one
+downstream repo: rustc's `dead_code` lint only fires on private items,
+so a `pub` item with zero real external callers is invisible to a normal
+build/lint pass — only cross-repo grepping settles "reachable from a
+real consumer" versus "just never cleaned up." (This repo hit exactly
+that gap once — see `TODO_DETAILS.md#certfloor-dead-code-cleanup` for
+the worked example, not repeated here.)
 
-**Why a normal build/lint pass cannot catch this class of dead code:**
-rustc's `dead_code` lint only fires on private items. Anything `pub` in a
-library crate's surface is exempt by design, because the compiler cannot
-tell "reachable from a real external consumer" apart from "just never
-cleaned up." tetron's own `src/lib.rs` is consumed three different ways —
-`tetron-mobile` depends on the full `tetron` crate directly and calls into
-it as a library; `tetron-webui`/`tetron-systray` depend only on the
-separate `tetron-proto` crate; `src/main.rs`/`src/cli/` (the binary) call
-into the lib crate for everything else. A `pub` item can be real (reachable
-from any one of those three) or genuinely dead (reachable from none) — only
-cross-repo grepping settles which, an in-repo-only check is not enough.
-This is exactly the gap that let a fully-orphaned cluster in `src/dht.rs`
-(the `_tetron_certgen` cert-floor record — `CERT_FLOOR_RECORD_NAME`,
-`encode_cert_floor_record`/`decode_cert_floor_record`,
-`publish_cert_floor`/`resolve_cert_floor`, plus their own tests) survive
-two prior dedicated dead-code sweeps (`TREE-SHAKE-001..005`) and a tagged
-release before being found — see
-`DO-NOT-COMMIT/ANALYSIS_external-PR12-dht-leak-claim_2026-08-07.md` for the
-discovery and `TODO_DETAILS.md#certfloor-dead-code-cleanup` for the
-follow-up, the worked example this procedure is written from.
-
-**Deliberately not automated in `reconcile.py`/CI.** This check is
-addon-aware by nature — it has to grep `tetron-mobile`/`tetron-webui`/
-`tetron-systray` to mean anything. `reconcile.py` and `ci.yml` are core's
-own per-commit gate; they must not require sibling repos to exist on disk,
-and core has no business depending on knowledge of its downstream
-consumers' repo layout just to validate itself (the dependency direction
-is the other way around — addons depend on core, not the reverse).
-Scoped 2026-08-09: keep this manual, run-by-hand step, but automate its
-mechanical half (steps 1-2 below) as a script in `contrib/` — the same
-place this repo's other addon-aware tooling already lives
-(`install-tetron-suite.sh`), never in the core gate.
+**Deliberately not automated in `reconcile.py`/CI**, in any repo this
+method is used in: this check is addon-aware by nature (it has to grep
+sibling repos to mean anything), and a per-commit gate must not require
+sibling repos to exist on disk — the dependency direction is consumers
+depend on the library, not the reverse. Steps 1-2 below are still
+automatable as a standalone script, just never wired into the gate
+itself. (This repo's copy: `contrib/cross-repo-dead-code-sweep.py`.)
 
 **Method:**
 
 1. Enumerate every top-level `pub fn`/`pub struct`/`pub enum`/`pub const`/
    `pub static`, plus `pub fn` methods inside inherent (non-trait) `impl`
-   blocks, in the library crate(s) — for tetron, `src/*.rs` + `src/**/*.rs`
-   (excluding `src/main.rs`/`src/cli/**`, which are the binary's own
-   dispatch surface, not library API — but do check whether items *defined*
-   in the lib and *used* by the binary have real callers there) plus
-   `tetron-proto/src/**/*.rs`.
+   blocks, in the library crate(s) — excluding the binary's own dispatch
+   surface (but do check whether items *defined* in the lib and *used* by
+   the binary have real callers there too).
 2. For each item, grep for usage — never the definition line itself, and
    never a `#[cfg(test)]` block referencing it (a test exercising dead code
    is not a real caller, it just proves the dead code still compiles) —
    across every consumer: the rest of this repo, and the full checkout of
-   every downstream repo that depends on it (for tetron: `tetron-mobile`,
-   `tetron-webui`, `tetron-systray`). Zero hits outside the item's own
-   definition and its own tests marks it a dead-code candidate.
-
-   **Steps 1-2 are automated:** `python3
-   contrib/cross-repo-dead-code-sweep.py` (run from `~/code/tetron`, with
-   `tetron-mobile`/`tetron-webui`/`tetron-systray` checked out as siblings —
-   `--consumer <path>` overrides the default sibling-directory guess, and a
-   missing consumer repo is reported as INCONCLUSIVE rather than silently
-   treated as "no usage found"). It does not attempt steps 3-4 — its output
-   is candidates to review, not confirmed findings, and it says so in its
-   own output. `#cross-repo-dead-code-sweep-script` in
-   `DO-NOT-COMMIT/TODO_DETAILS.md` has the worked example: a clean run
-   against this repo's actual siblings reproduced both previously-known
-   loose ends from the `_tetron_certgen` cleanup (`APP_NAME` in
-   `src/lib.rs`, `remove_by_network` in `src/peers.rs`) with no other
-   false positives.
+   every downstream repo that depends on it. Zero hits outside the item's
+   own definition and its own tests marks it a dead-code candidate.
 3. Exclude known-legitimate categories before flagging anything, so the
    output stays trustworthy: trait-method implementations required by a
    trait signature even when never called directly; enum
    variants/struct fields that exist only for a derive macro's benefit
    (`clap` subcommand dispatch, `serde` (de)serialization) even when never
    referenced by name in ordinary Rust code; anything already documented
-   elsewhere as deliberately-kept compatibility scaffolding (tetron's own
-   `d1_wire_compat_audit` — `src/control.rs`'s `DeviceCert`/`PairMsg`/
-   `CertRefresh`/`Unpaired` — is the standing example: real, deliberate,
-   not a new finding, do not re-flag it every sweep).
+   elsewhere as deliberately-kept compatibility scaffolding.
 4. For each confirmed candidate, get real provenance instead of guessing —
    `git log --follow -S<symbol> -- <file>` finds when it was introduced;
    diffing forward from there toward the commit that removed its last
