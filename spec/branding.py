@@ -416,6 +416,75 @@ class NightlyWorkflowManualOnly(Requirement):
     req_id = "CI-003"
 
 
+class CiWorkflowWorkspaceCoverage(Requirement):
+    """REQUIREMENT-ID: CI-004
+
+    Found 2026-08-08 during the `reconcile.py` 16-check audit — the exact bug
+    already found and fixed in `reconcile.py` itself (`PATHBLEED-STATUS-003`
+    added `--workspace` to `check_clippy`/`check_tests`), except live in
+    `.github/workflows/ci.yml`, uncorrected. `ci.yml`'s `check` job ran
+    `cargo clippy --all-targets -- -D warnings` and `cargo test --locked`
+    without `--workspace`, so both only covered the root `tetron` package —
+    `tetron-proto` had zero lint and zero test coverage in CI, on every PR.
+    Confirmed empirically, not by analogy: `cargo test --locked` (CI's exact
+    prior command) listed zero `tetron-proto` tests; `cargo test -p
+    tetron-proto` listed a full real suite (`ipc::tests::*`, 11+ tests).
+    `nightly.yml` has no compensating workspace-wide test/clippy step either
+    (it is release-build focused).
+
+    Fix: add `--workspace` to the `Clippy` and `Test` steps' `run:` lines in
+    `ci.yml`'s `check` job, mirroring `reconcile.py`'s own
+    `check_clippy`/`check_tests`. The `Check` step (`cargo check --all-targets
+    --locked`) is deliberately left as-is — `reconcile.py`'s own `check_build`
+    doesn't carry `--workspace` either (PATHBLEED-STATUS-003 only touched
+    clippy/tests), so this keeps `ci.yml` in exact parity with the gate it
+    mirrors rather than silently widening scope beyond what was audited.
+
+    ENFORCEMENT: none — YAML workflow file, same rationale as CI-001..CI-003.
+    Verified by reading the diff and, once run, that `tetron-proto`'s tests
+    and lints actually execute on a PR.
+    """
+    req_id = "CI-004"
+
+
+class ReconcilePyRunsInCi(Requirement):
+    """REQUIREMENT-ID: CI-005
+
+    Found 2026-08-08 during the same audit as CI-004 — `reconcile.py` is the
+    per-commit spec-conformance gate (sixteen checks, must exit 0), but it
+    only ever ran locally, opt-in. Not hypothetical: a contributor explicitly
+    skipped it for the entire session that produced external PR #12 (see
+    `DO-NOT-COMMIT/TODO_DETAILS.md#pr12-dht-leak-claim-verify`), and nothing
+    caught that. No individual `check_*` function matters if the gate itself
+    can be silently skipped — the largest blind spot of the sixteen checks,
+    bigger than any one check's token list.
+
+    Fix: add a `Reconcile` step running `python3 reconcile.py` to `ci.yml`'s
+    `check` job, after the `Test` step (so `check_build`/`check_clippy`/
+    `check_tests` re-run against the same already-fetched/cached toolchain
+    and dependency tree). Also add a `cargo-audit` install step (via
+    `taiki-e/install-action@v2`, a prebuilt-binary installer — no need to
+    compile `cargo-audit` from source on every run) before it, since
+    `check_cargo_audit` reports `installed: False` — a hard failure under
+    this gate — if the binary is absent.
+
+    Deliberately NOT adding flags to `reconcile.py` to skip the build/clippy/
+    test work the earlier CI steps already did: `Swatinem/rust-cache` already
+    shares its cache across the job's steps (`shared-key: "ci"`), so the
+    re-run is incremental, not a second full build from scratch. Adding a
+    skip-flag mechanism to avoid a cost the cache already absorbs is
+    complexity without payoff — bundled with CI-004 into the same commit
+    since both touch the same job for the same audit finding (per
+    `docs/tetron-workflow.md` step 9's bundling exception).
+
+    ENFORCEMENT: none — YAML workflow file, same rationale as CI-001..CI-004.
+    Verified by reading the diff and, once run, that a PR with a genuine
+    `reconcile.py` failure (e.g. a reintroduced banned dependency) actually
+    fails CI instead of merging clean.
+    """
+    req_id = "CI-005"
+
+
 class SecurityPolicyIdentityAndReportingFix(Requirement):
     """REQUIREMENT-ID: RENAME-013
 
