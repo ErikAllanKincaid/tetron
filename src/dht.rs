@@ -142,6 +142,13 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, u64
 // Publish / resolve
 // ---------------------------------------------------------------------------
 
+/// Total bound on a single pkarr publish, so a blackholed discovery relay
+/// fails fast with a diagnosable error instead of wedging the caller's
+/// polling loop forever — `spawn_network_publisher`/`spawn_lazy_publisher`
+/// `.await` this call directly, with no timeout of their own around it
+/// (DHT-ERRCAUSE-002).
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub async fn publish_network(
     client: &PkarrRelayClient,
     key: &SecretKey,
@@ -150,10 +157,15 @@ pub async fn publish_network(
     seed_peers: &[EndpointId],
 ) -> Result<()> {
     let packet = encode_network_record(key, blob_hash, generation, seed_peers)?;
-    client
-        .publish(&packet)
+    let server = effective_pkarr_url();
+    tokio::time::timeout(PUBLISH_TIMEOUT, client.publish(&packet))
         .await
-        .map_err(|e| anyhow::anyhow!("failed to publish network record: {e}"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "timed out after {PUBLISH_TIMEOUT:?} publishing network record via {server}"
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("failed to publish network record via {server}: {e}"))
 }
 
 /// Total bound on a single pkarr resolve, so a blackholed discovery relay

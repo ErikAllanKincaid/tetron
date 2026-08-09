@@ -10,7 +10,7 @@ use iroh::{
     address_lookup::{PkarrPublisher, PkarrResolver},
     endpoint::Connection,
     endpoint::presets,
-    endpoint::{Builder, QuicTransportConfig},
+    endpoint::{Builder, QuicTransportConfig, VarInt},
 };
 
 use crate::config::ServerOverride;
@@ -161,6 +161,11 @@ fn quic_transport_config() -> QuicTransportConfig {
         // Keep GSO on (default) explicitly so a future change can't silently
         // regress it.
         .enable_segmentation_offload(true)
+        // Tighten iroh/quinn's 30s default down to 10s (HARDEN-007). The true
+        // idle timeout is min(ours, peer's) per RFC 9000, so this bounds every
+        // connection from our side alone — faster cleanup of scanner/probe
+        // connections that complete a handshake then go silent.
+        .max_idle_timeout(Some(VarInt::from_u32(10_000).into()))
         .build()
 }
 
