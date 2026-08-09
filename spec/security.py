@@ -252,6 +252,51 @@ class RateLimitHardening(Requirement):
 
 
 # --------------------------------------------------------------------------
+# HARDEN-007: tighten the QUIC idle timeout for accepted connections
+# --------------------------------------------------------------------------
+
+class QuicIdleTimeoutTightened(Requirement):
+    """REQUIREMENT-ID: HARDEN-007
+
+    `src/transport.rs`'s `quic_transport_config()` builds the single
+    `QuicTransportConfig` shared by the whole iroh `Endpoint` (both dial and
+    accept sides) without ever setting `max_idle_timeout`, so it carries
+    iroh/quinn's own 30s default. Per RFC 9000, the true per-connection idle
+    timeout is `min(ours, peer's)` — tightening our own side to 10s bounds
+    every connection this node is party to, including ones a misbehaving or
+    silent peer never closes cleanly, without needing the peer's
+    cooperation.
+
+    Found 2026-08-07 during external PR #12's DHT-leak claim verification
+    (`DO-NOT-COMMIT/ANALYSIS_external-PR12-dht-leak-claim_2026-08-07.md`,
+    "Recommendation" item 2) — PR #12's own framing (a leak-fix for stalled
+    scanner handshakes accumulating in `accept.rs`'s per-connection
+    `tokio::spawn`) doesn't hold: Step 0 confirmed the 30s default already
+    bounds every incoming handshake today, so nothing was ever unbounded.
+    This is legitimate, modest hardening on its own merits — faster cleanup
+    of scanner/probe connections that complete a handshake then go silent —
+    independent of, and not fixing, that refuted claim. Not urgent.
+
+    Fix: `quic_transport_config()` adds
+    `.max_idle_timeout(Some(VarInt::from_u32(10_000).into()))` (10s, as
+    milliseconds — `VarInt::from_u32` is infallible, so this needs no
+    `Result`-ifying of the function's signature, unlike the
+    `Duration::try_into()` form shown in iroh's own doc example). No other
+    knob in `quic_transport_config()` changes.
+
+    Verified by `cargo build`/`clippy`/testsuite (a live two-host mesh
+    connection outliving an idle period, plus a stalled/incomplete
+    handshake actually getting torn down within the new bound) — not a new
+    unit test, this is a single builder-chain config value with no branching
+    logic of its own to isolate.
+
+    Independent of `DHT-ERRCAUSE-002` (same PR #12 analysis, different file,
+    `src/dht.rs`, no shared state). May land in either order.
+    """
+    req_id = "HARDEN-007"
+
+
+# --------------------------------------------------------------------------
 # AUTHZ-001: AdminList/InviteList must be open to any local user, not
 # operator-gated
 # --------------------------------------------------------------------------
