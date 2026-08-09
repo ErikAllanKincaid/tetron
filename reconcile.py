@@ -2,7 +2,7 @@
 # reconcile.py -- run from ~/code/tetron
 # Usage: python3 reconcile.py
 #
-# Checks the automatable constraints (CON-001..CON-013, CON-014, CON-M01, CON-M03, CON-M04)
+# Checks the automatable constraints (CON-001..CON-014, CON-M01, CON-M03, CON-M04)
 # from spec/constraints.py. It does NOT check the Requirement classes
 # (SUBNET-*/RENAME-*/MINIMAL-*); those are structural/design requirements
 # verified by reading the diff and code directly.
