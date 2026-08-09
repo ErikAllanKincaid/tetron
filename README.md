@@ -17,27 +17,52 @@ It's a standalone P2P mesh VPN: every device gets a stable, identity-derived add
 
 Both are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
 
+**Want more?** This README covers getting started. For detailed walkthroughs, troubleshooting, and less-common scenarios (custom subnets, Tor transport, multi-machine deployment scripts), see **[docs/HOWTO.md](docs/HOWTO.md)**. For the ideas tetron is built on -- iroh, QUIC, WireGuard -- see **[docs/BACKGROUND.md](docs/BACKGROUND.md)**.
+
+---
+
 ### TL;DR
 
+#### Install the entire suite on a computer with a display.
+
+Install suite.
+
 ```bash
-sudo tetron install                               # start the node (installs the service)
-tetron create --network-name home --hostname alice # you are the coordinator; output includes an invite key
-# next: tetron join <invite-key>                  # <- copy this from the output, run it on the next machine
-
-sudo tetron install                               # on a second machine:
-tetron join <invite-key> --hostname bob           # paste the invite key from step 1's output
-
-tetron status                                     # either machine: mesh IPs, hostnames, traffic
-ping 10.88.x.y                                    # reach the other node by its mesh IP
+curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
 ```
 
-`--network-name`/`--hostname` are optional (random name / machine hostname if omitted); `create`/`join` also take `--subnet <cidr>` and `--tor` — see [How to quickstart](#how-to-quickstart) below.
+##### Then use the webui, opens from systray.
 
-[![License: MPL 2.0](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE)
-![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
-![Fork of: rayfish](https://img.shields.io/badge/fork%20of-rayfish-blue.svg)
+<img title="" src="images/systray1.png" alt="systray" width="166">
 
-**Want more?** This README covers getting started. For detailed walkthroughs, troubleshooting, and less-common scenarios (custom subnets, Tor transport, multi-machine deployment scripts), see **[docs/HOWTO.md](docs/HOWTO.md)**. For the ideas tetron is built on -- iroh, QUIC, WireGuard -- see **[docs/BACKGROUND.md](docs/BACKGROUND.md)**.
+#### Create a network
+
+<img src="images/webui1.png" alt="Create" width="200">
+
+#### Mint an invite.
+
+Admin => mint invite
+<img title="" src="images/webui2.png" alt="Mint invite" width="400">
+
+##### Send it to whoever you want to join the network.
+
+### On second machine:
+
+Install suite.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
+```
+
+##### Join the network
+
+<img title="" src="images/webui3.png" alt="Join" width="270">
+
+The other machines on the network will show up. 
+
+#### Open a terminal and try to reach the other node by its mesh IP.
+
+`ping 10.88.x.y `
 
 ---
 
@@ -269,3 +294,5 @@ Developed with [Specification-driven development](https://en.wikipedia.org/wiki/
 ## License
 
 Tetron is licensed under the **Mozilla Public License 2.0** (`LICENSE`), the same as upstream. The mesh-VPN design, is it's work; see the [changelog](CHANGELOG.md) for what this fork changes. 
+
+[![License MPL 20](https://img.shields.io/badge/license-MPL%202.0-brightgreen.svg)](LICENSE) ![Status experimental](https://img.shields.io/badge/status-experimental-orange.svg) ![Fork of rayfish](https://img.shields.io/badge/fork%20of-rayfish-blue.svg)
