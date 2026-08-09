@@ -66,6 +66,22 @@ def check_relay_preset() -> dict:
     return {"value": "rayfish" if '"rayfish" => Ok(preset.to_string())' in text else "MISSING"}
 
 
+# ---------------------------------------------------------------------------
+# SUNSET CANDIDATE CLUSTER, tracked at DO-NOT-COMMIT/TODO_DETAILS.md
+# #migration-era-tooling -- check_host_identity/check_build_tooling_identity/
+# check_report_identity/check_cli_reference_identity/
+# check_test_harness_identity/check_test_subnet_identity (CON-007..012,
+# contiguous below) PLUS check_crate_identity (CON-M03, further down,
+# marked at its own definition) all detect leftover `rayfish` rename-residue
+# tokens from the pitopi->rayfish->torpedo->tetron migration. Kept as of
+# the 2026-08-08 audit (near-zero cost, no confirmed false negatives), but
+# this whole cluster's reason to exist ends with the migration itself --
+# revisit for deletion once the identity leak_count/unexpected_count
+# fields have been 0 for several releases running. check_relay_preset
+# (CON-001, above) and check_product_identity (CON-M04, further down) are
+# NOT part of this cluster -- they guard live features/invariants, not
+# rename residue, and should stay permanently.
+# ---------------------------------------------------------------------------
 def check_host_identity() -> dict:
     """CON-007: none of the collision-prone rayfish host-artifact / user-identifier
     tokens may remain anywhere under src/. This is a curated token set (NOT a bare
@@ -301,6 +317,10 @@ def check_dependency_absence() -> dict:
     return {"unexpected_count": len(unexpected), "unexpected": unexpected}
 
 
+# Part of the migration-era sunset cluster marked above check_host_identity
+# (DO-NOT-COMMIT/TODO_DETAILS.md #migration-era-tooling) -- CON-M03, same
+# rayfish-rename-residue rationale as CON-007..012, not contiguous with
+# them only because CON-014/CON-M01 sit in between.
 def check_crate_identity() -> dict:
     """CON-M03: After RENAME-M01, the bare `rayfish` token must not appear in
     .rs files outside the deliberately kept places: src/config.rs (relay preset,

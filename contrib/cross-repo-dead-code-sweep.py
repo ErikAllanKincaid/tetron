@@ -8,6 +8,17 @@
 # addon-repo layout. Lives in contrib/, same as this repo's other
 # addon-aware tooling (install-tetron-suite.sh).
 #
+# SUNSET CANDIDATE, tracked at DO-NOT-COMMIT/TODO_DETAILS.md
+# #migration-era-tooling -- built 2026-08-09 specifically to catch orphans
+# left behind by the pitopi->rayfish->torpedo->tetron rename and its
+# MINIMAL-*/TREE-SHAKE-* cleanup passes. A from-scratch codebase with no
+# rename/mass-removal history behind it should rarely produce this class
+# of dead code, so this script's whole reason to exist goes away once
+# that migration's cleanup is done. Removal trigger: a clean run (all
+# three real sibling repos present) reports zero candidates on two
+# consecutive release cuts -- delete this file at that point, no
+# replacement needed.
+#
 # Usage (from ~/code/tetron):
 #   python3 contrib/cross-repo-dead-code-sweep.py
 #   python3 contrib/cross-repo-dead-code-sweep.py --consumer ../tetron-mobile --consumer ../tetron-webui

@@ -96,6 +96,18 @@ class CargoAuditClean(Constraint):
     enforcement_logic = "{{ cargo_audit.installed and cargo_audit.count == 0 }}"
 
 
+# ---------------------------------------------------------------------------
+# SUNSET CANDIDATE CLUSTER, tracked at DO-NOT-COMMIT/TODO_DETAILS.md
+# #migration-era-tooling -- CON-007..012 below (contiguous) plus CON-M03
+# (further down, marked at its own class) all detect leftover `rayfish`
+# rename-residue tokens from the pitopi->rayfish->torpedo->tetron
+# migration. Kept as of the 2026-08-08 audit (near-zero cost, no confirmed
+# false negatives), but this whole cluster's reason to exist ends with the
+# migration itself -- revisit for deletion once these have fired zero for
+# several releases running. CON-001 (above) and CON-M04 (further down) are
+# NOT part of this cluster -- they guard live features/invariants, not
+# rename residue, and should stay permanently.
+# ---------------------------------------------------------------------------
 class NoResidualHostIdentityLeak(Constraint):
     """CONSTRAINT-ID: CON-007
 
@@ -289,6 +301,9 @@ class WireCompatWithFullTorpedo(Constraint):
     enforcement_logic = "true"  # RETIRED -- D1 severed by RENAME-M02
 
 
+# Part of the migration-era sunset cluster marked above NoResidualHostIdentityLeak
+# (DO-NOT-COMMIT/TODO_DETAILS.md #migration-era-tooling) -- same
+# rayfish-rename-residue rationale as CON-007..012.
 class CrateIdentityGate(Constraint):
     """CONSTRAINT-ID: CON-M03
 
