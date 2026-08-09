@@ -970,6 +970,151 @@ class SplitMembershipTestModule(Requirement):
     req_id = "MODULARIZE-002"
 
 
+class SplitConfigModule(Requirement):
+    """REQUIREMENT-ID: MODULARIZE-003
+
+    Split `src/config.rs` (1,876 lines, zero section banners despite four
+    distinct concerns) into a `src/config/` submodule tree, per the detailed
+    symbol→module mapping at
+    `DO-NOT-COMMIT/PROPOSAL_modularize-config_2026-08-09.md` (written because
+    the earlier sweep proposal, `DO-NOT-COMMIT/PROPOSAL_codebase-
+    modularization-sweep_2026-08-05.md` §3b/§7, identified this as a genuine
+    split candidate but explicitly left the mapping itself as an open
+    question).
+
+    - **`config/schema.rs`**: on-disk types with zero I/O — `MemberEntry`,
+      `ApprovedConfigEntry`, `NetworkConfig`, `ServerOverride` (+ its
+      `impl`), `RateLimitConfig`, `DropMonitorConfig`, `AppConfig`, the
+      `secret_key_hex`/`option_secret_key_hex` serde helper modules, and
+      `upsert_network`/`remove_network` — the last two are a placement
+      refinement versus the 2026-08-05 proposal, which bucketed them into
+      storage by line-proximity even though neither touches disk (both are
+      pure `AppConfig.networks` `Vec` mutation).
+    - **`config/overrides.rs`**: relay/discovery resolution + `config set`/
+      `config get` dispatch, kept as one file (not further split) since the
+      dispatch match arms call the resolvers directly — `RELAY_PRESET_
+      RAYFISH`/`DISCOVERY_PRESET_RAYFISH`, `validate_http_url`,
+      `resolve_url_entry`, `relay_urls`, `discovery_urls`,
+      `resolve_upstreams`, `parse_entries`, `config_set`, `set_drop_
+      monitor_key`, `set_ratelimit_key`, `parse_ratelimit_value`,
+      `parse_bool_value`, `parse_log_level_value`, `parse_duration`,
+      `render_override`, `config_get`.
+    - **`config/storage.rs`**: filesystem/persistence — `LEGACY_FILE`/
+      `SETTINGS_FILE`/`NETWORKS_SUBDIR`, the private `Settings` DTO (a
+      second placement refinement: it's `settings.toml`'s serialization
+      shape specifically, consumed only by the storage functions, not a
+      broadly-referenced public schema type despite sitting next to
+      `AppConfig` in the original file), `tetron_gid`, `set_owner`,
+      `ensure_dir`, `config_dir`, `validate_net_name`, `write_file`,
+      `write_atomic`, `restrict_perms`, `migrate_location`,
+      `migrate_legacy`, `load`/`load_in`, `save_settings`/`save_settings_in`,
+      `save_network`/`save_network_in`, `load_network`/`load_network_in`,
+      `delete_network`/`delete_network_in`, and the thin `load()`/
+      `save_settings()` wrappers `node_subnet`, `selfcapture_mitigation_
+      enabled`, `log_level`, `set_node_subnet`.
+    - **`config.rs`** becomes a re-export shim (`mod schema; mod overrides;
+      mod storage; pub use schema::*; pub use overrides::*; pub use
+      storage::*;`), same pattern already proven twice in this codebase —
+      `GroupMode` (`MODULARIZE-001`) and the pre-existing `pub use
+      tetron_proto::TransportMode` already in this exact file. Two items
+      need narrower re-exports to preserve their existing visibility:
+      `pub(crate) use storage::CONFIG_ENV_LOCK;` (referenced at
+      `crate::config::CONFIG_ENV_LOCK` by `src/logdir.rs` and
+      `src/daemon/mod.rs`) and `pub(crate) use overrides::parse_duration;`
+      (referenced at `crate::config::parse_duration` by
+      `src/daemon/mesh/invite_handler.rs`). 99 references to `config::…`
+      across 21 files outside `config.rs` itself depend on the shim keeping
+      every path resolvable unchanged.
+
+    **Three `reconcile.py` checks break unless fixed in this same commit** —
+    found during scoping, not by the 2026-08-05 sweep proposal, since all
+    three hardcode `Path("src/config.rs")` instead of whole-tree-scanning
+    like most of the other checks do:
+
+    1. `check_relay_preset` (`CON-001`) greps `src/config.rs` for the
+       literal `'"rayfish" => Ok(preset.to_string())'`, which moves to
+       `overrides.rs` — unpatched, reports `"value": "MISSING"` and
+       `CON-001` fails.
+    2. `check_product_identity` (`CON-M04`) greps `src/config.rs` for
+       `"/etc/tetron"` (from `config_dir()`), which moves to `storage.rs` —
+       unpatched, `config_dir_ok` becomes `False` and `CON-M04` fails.
+    3. `check_crate_identity` (`CON-M03`) explicitly *skips* `src/config.rs`
+       from its `rayfish`-leak scan, since that file deliberately contains
+       the allowed relay-preset tokens. Once those tokens move to
+       `overrides.rs`, the skip no longer covers them — this check would
+       start **false-positively** flagging a leak that isn't one, the
+       opposite failure mode from the other two.
+
+    Fix: update the hardcoded path(s) in all three `check_*` functions to
+    the new file(s) (`check_crate_identity`'s skip-list needs both
+    `config/overrides.rs` and the `config.rs` shim added, not a
+    single-path swap).
+
+    **Drive-by fix, same function being moved anyway:** `config_dir()`'s
+    doc comment claims macOS uses `~/.config/tetron` — that's the Linux
+    XDG-style path, not what this function actually does. The code itself
+    is correct (`dirs::config_dir()` resolves to `~/Library/Application
+    Support` on macOS, joined with `tetron`; under a root LaunchDaemon `~`
+    is `/var/root`, landing at `/var/root/Library/Application
+    Support/tetron`, matching `AGENTS.md`'s documented path exactly) — only
+    the comment is stale.
+
+    No wire/serialization format change: verified every struct's
+    `#[serde(...)]` attributes reference field names, never a module path.
+
+    Depends on nothing (`MODULARIZE-001`/`002` are a different file,
+    disjoint symbol set). `MODULARIZE-004` (the test-module split) assumes
+    this requirement's module layout already exists — and, discovered
+    during implementation (see `MODULARIZE-004`'s own docstring), cannot
+    land as a later, separate commit the way `MODULARIZE-002` did for
+    `membership.rs`: several storage functions are deliberately private
+    test-seam variants, invisible from this shim even via glob re-export,
+    so there is no compiling intermediate state with the old test module
+    still here. Both requirements land in one commit.
+    """
+    req_id = "MODULARIZE-003"
+
+
+class SplitConfigTestModule(Requirement):
+    """REQUIREMENT-ID: MODULARIZE-004
+
+    Split `config.rs`'s single flat `mod tests` block (630 of the file's
+    1,876 pre-`MODULARIZE-003` lines, ~30 `#[test]` fns, no section
+    banners) to match the module layout `MODULARIZE-003` establishes: each
+    test moves to whichever of `config/schema.rs`, `config/overrides.rs`,
+    `config/storage.rs` exercises the function it tests, colocated with
+    that code, matching this repo's TDD convention (`docs/tetron-
+    workflow.md` step 5) and the exact precedent `MODULARIZE-002` already
+    set for `membership.rs`'s own test split.
+
+    Behavior-free: no test is added, removed, or changed in what it
+    asserts, only which file it lives in.
+
+    **Discovered during implementation, correcting the original plan: this
+    cannot be a second, later commit — it must land in the same commit as
+    `MODULARIZE-003`.** Unlike `membership.rs`'s split (`MODULARIZE-001`),
+    where every extracted item was already `pub`, several of `config.rs`'s
+    storage functions are deliberately private test-seam variants
+    (`load_in`, `save_settings_in`, `save_network_in`, `load_network_in`,
+    `delete_network_in`, `migrate_legacy`, plus the `LEGACY_FILE` const) —
+    private to `config::storage` by design, for dependency injection in
+    tests. Rust's privacy model is "visible in the defining module and its
+    descendants"; `config` (the shim) is an *ancestor* of `config::storage`,
+    not a descendant, so these items are invisible from `config.rs` even
+    via `pub use storage::*` — there is no working intermediate state where
+    `MODULARIZE-003` lands with the old flat test module still in
+    `config.rs` and `MODULARIZE-004` moves it later, the way
+    `MODULARIZE-002` did for `membership.rs`. Two requirements, one commit,
+    per `docs/tetron-workflow.md` step 9's bundling exception ("too
+    entangled to review separately") — discovered here, not assumed at
+    scoping time.
+
+    Depends on MODULARIZE-003 (assumes its module layout already exists);
+    lands in the same commit as it.
+    """
+    req_id = "MODULARIZE-004"
+
+
 # --------------------------------------------------------------------------
 # Core-mesh pure-logic extraction (PURE-LOGIC-*)
 #

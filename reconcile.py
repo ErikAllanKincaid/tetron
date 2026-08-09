@@ -61,7 +61,9 @@ def check_hardcoded_cgnat(
 
 
 def check_relay_preset() -> dict:
-    p = Path("src/config.rs")
+    # MODULARIZE-003 moved resolve_url_entry (and this literal) out of the
+    # config.rs shim into config/overrides.rs.
+    p = Path("src/config/overrides.rs")
     text = p.read_text() if p.exists() else ""
     return {"value": "rayfish" if '"rayfish" => Ok(preset.to_string())' in text else "MISSING"}
 
@@ -323,11 +325,12 @@ def check_dependency_absence() -> dict:
 # them only because CON-014/CON-M01 sit in between.
 def check_crate_identity() -> dict:
     """CON-M03: After RENAME-M01, the bare `rayfish` token must not appear in
-    .rs files outside the deliberately kept places: src/config.rs (relay preset,
-    CON-001) and src/main.rs help text documenting the relay preset keyword."""
+    .rs files outside the deliberately kept places: src/config/overrides.rs
+    (relay preset, CON-001 -- MODULARIZE-003 moved this out of the config.rs
+    shim) and src/main.rs help text documenting the relay preset keyword."""
     leaks = 0
     for p in list(Path("src").rglob("*.rs")) + (list(Path("benches").rglob("*.rs")) if Path("benches").is_dir() else []):
-        if str(p) == "src/config.rs":
+        if str(p) == "src/config/overrides.rs":
             continue
         text = p.read_text()
         if "rayfish" not in text:
@@ -385,7 +388,9 @@ def check_product_identity() -> dict:
     config dir references /etc/tetron."""
     cargo = Path("Cargo.toml").read_text()
     transport = Path("src/transport.rs").read_text()
-    config = Path("src/config.rs").read_text()
+    # MODULARIZE-003 moved config_dir() out of the config.rs shim into
+    # config/storage.rs.
+    config = Path("src/config/storage.rs").read_text()
     # Binary name: look for [[bin]] section with name = "tetron"
     # Match '[[bin]]\nname = "tetron"' or same on adjacent lines
     binary_ok = False
