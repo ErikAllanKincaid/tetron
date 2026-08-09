@@ -109,28 +109,19 @@ default, even when several were designed together in the same sitting
 shipped this way) — bundle only when a reviewer explicitly decides the
 requirements are too entangled to review separately.
 
-**`.github/PULL_REQUEST_TEMPLATE.md` is deliberately minimal, 2026-08-09.**
-Only two sections: "What this does" (commit subjects + bodies — the
-`Why` used to be a separate heading, cut because it was the same commit
-content split across two headings for no reason) and "Manual
-verification beyond CI" (live/hardware/testsuite checks CI can't do —
-always states either what was done or that nothing beyond CI was).
-Dropped entirely, not shrunk: the checklist ("title is conventional",
-"cargo build/test/clippy pass", docs/CHANGELOG/ALPN reminders) —
-`cargo build/test/clippy` duplicates `ci.yml`'s unfiltered
-`pull_request` trigger (already enforced before anyone could check a
-box), and the rest duplicates this step and step 10, which should catch
-those *before* a PR exists, not re-ask at PR time. `contrib/pr-body.py`
-fills both remaining sections in from the branch's own commits.
-**Default output is a ready-to-open GitHub compare URL** (`?quick_pull=1
-&title=...&body=...` — a documented GitHub feature, pre-fills the "Open a
-pull request" form on page load, no paste step) with the title
-auto-filled too when the branch is a single commit. `--text` prints the
-raw markdown instead, for the rare case the URL is too long (script warns
-and falls back to this automatically past ~7000 chars) or something about
-it misbehaves. GitHub PRs are opened through the web UI in this workflow,
-not `gh`; the script only ever prints text/a URL, never invokes `gh` or
-makes a network call of its own.
+**`.github/PULL_REQUEST_TEMPLATE.md` is one word, `tetron`, 2026-08-09.**
+Everything before this — a full What/Why/checklist template, then a
+trimmed two-section version, then a script (`contrib/pr-body.py`) to
+auto-fill it and print a pre-filled GitHub URL — was tried and abandoned
+in the same session. The URL approach assumed a local browser; it broke
+the moment the actual working setup turned out to be SSH'd in from a
+different machine with no display to open a link on, and hand-copying a
+several-hundred-character URL out of a wrapping terminal isn't usable
+either. USER's call: not worth further engineering — "just make the
+template say tetron, this is a waste of time." Commit messages already
+carry the real description (steps 2-6 ask for that); GitHub's PR page
+shows the commit log natively. Reopen this only if a genuinely different
+mechanism comes up, not a variant of URL-generation.
 
 ## 10. Docs
 
