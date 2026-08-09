@@ -159,14 +159,27 @@ release before being found — see
 discovery and `TODO_DETAILS.md#certfloor-dead-code-cleanup` for the
 follow-up, the worked example this procedure is written from.
 
+**Deliberately not automated in `reconcile.py`/CI.** This check is
+addon-aware by nature — it has to grep `tetron-mobile`/`tetron-webui`/
+`tetron-systray` to mean anything. `reconcile.py` and `ci.yml` are core's
+own per-commit gate; they must not require sibling repos to exist on disk,
+and core has no business depending on knowledge of its downstream
+consumers' repo layout just to validate itself (the dependency direction
+is the other way around — addons depend on core, not the reverse).
+Scoped 2026-08-09: keep this manual, run-by-hand step, but automate its
+mechanical half (steps 1-2 below) as a script in `contrib/` — the same
+place this repo's other addon-aware tooling already lives
+(`install-tetron-suite.sh`), never in the core gate.
+
 **Method:**
 
 1. Enumerate every top-level `pub fn`/`pub struct`/`pub enum`/`pub const`/
-   `pub static` in the library crate(s) — for tetron, `src/*.rs` +
-   `src/**/*.rs` (excluding `src/main.rs`/`src/cli/**`, which are the
-   binary's own dispatch surface, not library API — but do check whether
-   items *defined* in the lib and *used* by the binary have real callers
-   there) plus `tetron-proto/src/**/*.rs`.
+   `pub static`, plus `pub fn` methods inside inherent (non-trait) `impl`
+   blocks, in the library crate(s) — for tetron, `src/*.rs` + `src/**/*.rs`
+   (excluding `src/main.rs`/`src/cli/**`, which are the binary's own
+   dispatch surface, not library API — but do check whether items *defined*
+   in the lib and *used* by the binary have real callers there) plus
+   `tetron-proto/src/**/*.rs`.
 2. For each item, grep for usage — never the definition line itself, and
    never a `#[cfg(test)]` block referencing it (a test exercising dead code
    is not a real caller, it just proves the dead code still compiles) —
@@ -174,6 +187,20 @@ follow-up, the worked example this procedure is written from.
    every downstream repo that depends on it (for tetron: `tetron-mobile`,
    `tetron-webui`, `tetron-systray`). Zero hits outside the item's own
    definition and its own tests marks it a dead-code candidate.
+
+   **Steps 1-2 are automated:** `python3
+   contrib/cross-repo-dead-code-sweep.py` (run from `~/code/tetron`, with
+   `tetron-mobile`/`tetron-webui`/`tetron-systray` checked out as siblings —
+   `--consumer <path>` overrides the default sibling-directory guess, and a
+   missing consumer repo is reported as INCONCLUSIVE rather than silently
+   treated as "no usage found"). It does not attempt steps 3-4 — its output
+   is candidates to review, not confirmed findings, and it says so in its
+   own output. `#cross-repo-dead-code-sweep-script` in
+   `DO-NOT-COMMIT/TODO_DETAILS.md` has the worked example: a clean run
+   against this repo's actual siblings reproduced both previously-known
+   loose ends from the `_tetron_certgen` cleanup (`APP_NAME` in
+   `src/lib.rs`, `remove_by_network` in `src/peers.rs`) with no other
+   false positives.
 3. Exclude known-legitimate categories before flagging anything, so the
    output stays trustworthy: trait-method implementations required by a
    trait signature even when never called directly; enum

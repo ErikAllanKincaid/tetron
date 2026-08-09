@@ -96,6 +96,18 @@ class CargoAuditClean(Constraint):
     enforcement_logic = "{{ cargo_audit.installed and cargo_audit.count == 0 }}"
 
 
+# ---------------------------------------------------------------------------
+# SUNSET CANDIDATE CLUSTER, tracked at DO-NOT-COMMIT/TODO_DETAILS.md
+# #migration-era-tooling -- CON-007..012 below (contiguous) plus CON-M03
+# (further down, marked at its own class) all detect leftover `rayfish`
+# rename-residue tokens from the pitopi->rayfish->torpedo->tetron
+# migration. Kept as of the 2026-08-08 audit (near-zero cost, no confirmed
+# false negatives), but this whole cluster's reason to exist ends with the
+# migration itself -- revisit for deletion once these have fired zero for
+# several releases running. CON-001 (above) and CON-M04 (further down) are
+# NOT part of this cluster -- they guard live features/invariants, not
+# rename residue, and should stay permanently.
+# ---------------------------------------------------------------------------
 class NoResidualHostIdentityLeak(Constraint):
     """CONSTRAINT-ID: CON-007
 
@@ -212,6 +224,30 @@ class NoResidualTestCgnatLeak(Constraint):
     enforcement_logic = "{{ test_subnet_identity.unexpected_count == 0 }}"
 
 
+class NoDeadCiWorkflowReferences(Constraint):
+    """CONSTRAINT-ID: CON-014
+
+    Added 2026-08-08 as a direct result of the 2026-08-08 `reconcile.py`
+    16-check audit — none of the existing checks could have caught the dead
+    `android:` job (`.github/workflows/release.yml`/`nightly.yml`, referencing
+    the removed `-p ray-mobile` workspace member and `android/app/src/main/
+    java` directory, dead since MINIMAL-016) before it was found by hand
+    during a dead-code sweep, two dedicated sweeps and a tagged release later
+    (see CI-002's 2026-08-07 addendum). This is the reusable, cheap,
+    scriptable half of the audit's angle-2 findings — unlike the cross-repo
+    dead-pub-surface check (too slow/heavy for a per-commit gate, left as a
+    manual `docs/tetron-workflow.md` §12 step), this one only ever greps
+    `.github/workflows/*.yml` `run:` blocks for `-p`/`--package <crate>` and
+    `cd <path>` references, then confirms each resolves against `cargo
+    metadata`'s real workspace members / an existing filesystem path.
+
+    ENFORCEMENT (reconcile.py): ci_workflow_references.unexpected_count
+    equals 0.
+    """
+    constraint_id = "CON-014"
+    enforcement_logic = "{{ ci_workflow_references.unexpected_count == 0 }}"
+
+
 # --------------------------------------------------------------------------
 # Constraints: tetron gates (CON-M*)
 # --------------------------------------------------------------------------
@@ -265,6 +301,9 @@ class WireCompatWithFullTorpedo(Constraint):
     enforcement_logic = "true"  # RETIRED -- D1 severed by RENAME-M02
 
 
+# Part of the migration-era sunset cluster marked above NoResidualHostIdentityLeak
+# (DO-NOT-COMMIT/TODO_DETAILS.md #migration-era-tooling) -- same
+# rayfish-rename-residue rationale as CON-007..012.
 class CrateIdentityGate(Constraint):
     """CONSTRAINT-ID: CON-M03
 

@@ -37,7 +37,7 @@ between requirements, and testsuite/docs/cross-repo follow-up:
 4. **Implement** — make the tests pass.
 5. **Commit** — conventional subject, no authorship trailers of any kind; present the message to the user.
 - **`spec/`** — modular Python specification package; each requirement/constraint is a Python class in a domain module (`core.py`, `addressing.py`, `branding.py`, `membership.py`, `cli.py`, `security.py`, `constraints.py`). The ID is the first line of the docstring (e.g. `SUBNET-001`, `CON-007`). `Requirement` subclasses are structural/design; `Constraint` subclasses carry Jinja expressions for automated verification.
-- **`reconcile.py`** — the per-commit gate. `python3 reconcile.py` must exit `0`; it runs sixteen checks and prints a JSON context.
+- **`reconcile.py`** — the per-commit gate. `python3 reconcile.py` must exit `0`; it runs seventeen checks and prints a JSON context.
 - **libspec** — `libspec diff` previews spec changes. There is no `build` command.
 
 **The loop for a change:** amend/add the requirement class in the right `spec/` module → implement → `python3 reconcile.py` until green → commit.
