@@ -15,6 +15,8 @@ repository = "https://github.com/ErikAllanKincaid/tetron"
 
 [dependencies]
 anyhow = "1"
+blake3 = "1"
+bs58 = "0.5.1"
 bytes = "1"
 derive_more = { version = "2", features = ["is_variant", "display"] }
 futures = "0.3"
@@ -23,3 +25,6 @@ rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+
+[dev-dependencies]
+rand = "0.10"

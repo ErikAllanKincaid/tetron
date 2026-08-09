@@ -474,6 +474,74 @@ class InviteExpiryDefault(Requirement):
 
 
 # --------------------------------------------------------------------------
+# INVITE-010: invite codec functions relocated into tetron-proto
+# --------------------------------------------------------------------------
+
+class InviteCodecIntoTetronProto(Requirement):
+    """REQUIREMENT-ID: INVITE-010
+
+    Move `encode_invite_code`/`decode_invite_code`/`is_bare_room_id` (+ the
+    `PAYLOAD_LEN`/`CHECKSUM_LEN`/`ENCODED_LEN` consts) from `src/invite.rs`
+    into `tetron-proto`. Cross-crate relocation, not a same-crate module
+    split — deliberately not folded into the `MODULARIZE-*` series (`spec/
+    core.py`) despite landing in the same branch/review pass as
+    `MODULARIZE-003`/`004`, since it touches a different file with a
+    disjoint symbol set and a different reason (duplication across repos,
+    not intra-file bundling). Scoped in `DO-NOT-COMMIT/PROPOSAL_
+    codebase-modularization-sweep_2026-08-05.md` §3d-bis.
+
+    These are pure functions — bs58 decode + blake3 checksum verify, only
+    depending on `iroh::EndpointId`/`anyhow`, both already `tetron-proto`
+    deps (`bs58`/`blake3` need adding, both already in the workspace
+    transitively). Driver: `tetron-webui` hand-copies `decode_invite`
+    instead of importing it (its own code comment: "that function lives in
+    a binary crate not meant to be imported") — `INVITE-CHECKSUM-001`
+    already proved this drifts, webui's copy went stale against a real core
+    format change. `tetron-systray` had the same duplication but no longer
+    does (`chore/remove-invite-mint-and-join` deleted its copy), so this is
+    now solely for `tetron-webui`'s benefit — noted explicitly since a core
+    change made to support one addon needs that stated, not assumed to
+    clear the bar on its own (see `TODO_DETAILS.md
+    #invite-codec-into-tetron-proto` for the full writeup).
+
+    **Not breaking:** `src/invite.rs` keeps `pub use tetron_proto::invite::
+    {decode_invite_code, encode_invite_code, is_bare_room_id};` — same
+    re-export-shim pattern this file's own `InviteEntry`/`ReusableKey`
+    consolidation (`MODULARIZE-001`) and `membership.rs`'s `GroupMode`
+    already prove safe. `tetron-mobile` calls these via
+    `tetron::invite::…` (it embeds the full `tetron` crate directly, per
+    `MOBILE-*`), so this path must keep resolving without a mobile-side
+    change — zero-touch, picked up on its next `rev` bump like any other
+    core change.
+
+    **No security risk:** same algorithm, same validation, no new secret
+    exposure — `tetron-webui` already handles the plaintext invite
+    string/secret today via its own copy. If anything, one shared
+    implementation removes the risk of the two copies' checksum/length
+    validation silently diverging again, the exact bug class `INVITE-
+    CHECKSUM-001` already surfaced once.
+
+    **No ALPN/wire-version bump needed** — not a wire-format change,
+    purely where the source lives.
+
+    **Downstream, separate later work per `docs/tetron-workflow.md` step
+    11** (not bundled into this branch): `tetron-mobile` is zero-touch via
+    the re-export. `tetron-webui` gets a follow-up PR in that repo to
+    delete its hand-copy (`src/api.rs`'s `decode_invite` + its own
+    duplicate test module) and call `tetron_proto::invite::
+    decode_invite_code` instead — not urgent, webui's current copy is
+    correct today, just duplicated. `tetron-systray` — no implication,
+    already removed.
+
+    Independent of `MODULARIZE-003`/`004` (different file, disjoint symbol
+    set) — no ordering constraint, bundled into the same branch only
+    because both are behavior-free relocations landing in the same review
+    pass.
+    """
+    req_id = "INVITE-010"
+
+
+# --------------------------------------------------------------------------
 # INVITE-CHECKSUM-001: invite codes carry a blake3 checksum (upstream
 # ba15684 `feat(invite)`, ported from the 2026-08-05 upstream review)
 # --------------------------------------------------------------------------
