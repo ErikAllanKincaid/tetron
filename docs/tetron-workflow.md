@@ -132,6 +132,19 @@ it misbehaves. GitHub PRs are opened through the web UI in this workflow,
 not `gh`; the script only ever prints text/a URL, never invokes `gh` or
 makes a network call of its own.
 
+**Running `contrib/pr-body.py` is the agent's job, not USER's — mandatory
+before reporting a branch ready, 2026-08-09.** The whole point of the
+script was undermined if USER still had to be the one to run it — "I do
+not want to have to run some script to make a PR." Whoever finishes a
+branch runs `contrib/pr-body.py --base main` and hands USER the printed
+URL directly (or the `--text` fallback output) as part of the normal
+"branch X, commit Y, ready for you" handoff — never just the commit
+SHA/branch name alone. Being tried as the default fix; if it doesn't hold
+up in practice, the fallback is a GitHub Action that auto-fills the PR
+body server-side on `pull_request: opened` (via the REST API and the
+workflow's own `GITHUB_TOKEN` — not `gh`, no local step for USER either
+way), not reverting to "USER runs the script."
+
 ## 10. Docs
 
 Update whichever of `AGENTS.md`, `docs/CLI_REFERENCE.md`,
