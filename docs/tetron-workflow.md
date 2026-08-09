@@ -9,10 +9,11 @@
 > development process, portable to any repo using the same libspec +
 > reconcile.py-style methodology, not just this one. Tetron-specific
 > facts (the `KEEP-ON-PURPOSE` list, specific requirement IDs, incident
-> narratives, "why we chose X" decision history) belong in `AGENTS.md`
-> or `DO-NOT-COMMIT/TODO_DETAILS.md`/`TODO-Done.md`, not here — link to
-> them instead of restating them. If you're adding a tetron-specific
-> paragraph to this file, it probably belongs in one of those instead.
+> narratives, "why we chose X" decision history) belong in `AGENTS.md`,
+> not here. If you're adding a tetron-specific paragraph to this file,
+> it probably belongs there instead — and never in a gitignored/local
+> file either, since this file is committed and must stand on its own
+> for anyone who clones the repo.
 
 ## Checklist
 
@@ -106,8 +107,7 @@ entangled to review separately.
 
 `.github/PULL_REQUEST_TEMPLATE.md` is intentionally minimal — commit
 messages already carry the real description (steps 2-6 ask for that);
-GitHub's PR page shows the commit log natively. See `DO-NOT-COMMIT/
-TODO-Done.md` for what was tried before landing here, if relevant.
+GitHub's PR page shows the commit log natively.
 
 ## 10. Docs
 
@@ -123,8 +123,8 @@ with no user-visible effect.
 If a change touches a shared wire type (most commonly `tetron-proto`) or
 otherwise affects `tetron-webui`/`tetron-systray`/`tetron-testsuite`/
 `tetron-mobile`, note the required follow-up (typically a `Cargo.toml`
-bump, sometimes UI work) in that repo's own `DO-NOT-COMMIT/TODO.md` —
-never assume it auto-follows just because the change is additive. Per the
+bump, sometimes UI work) in that repo's own tracking — never assume it
+auto-follows just because the change is additive. Per the
 standing priority order (core, then addons, then integration), this
 follow-up is separate, later work, not bundled into the branch that
 changed core.
