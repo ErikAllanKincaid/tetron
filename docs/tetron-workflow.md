@@ -4,16 +4,6 @@
 > "Spec-first workflow (libspec + reconcile.py)". This file is the fuller,
 > step-by-step reference — read it before starting a non-trivial change,
 > not just when something goes wrong.
->
-> **Kept intentionally generic** — this is a reusable spec-first
-> development process, portable to any repo using the same libspec +
-> reconcile.py-style methodology, not just this one. Tetron-specific
-> facts (the `KEEP-ON-PURPOSE` list, specific requirement IDs, incident
-> narratives, "why we chose X" decision history) belong in `AGENTS.md`,
-> not here. If you're adding a tetron-specific paragraph to this file,
-> it probably belongs there instead — and never in a gitignored/local
-> file either, since this file is committed and must stand on its own
-> for anyone who clones the repo.
 
 ## Checklist
 
@@ -128,58 +118,3 @@ auto-follows just because the change is additive. Per the
 standing priority order (core, then addons, then integration), this
 follow-up is separate, later work, not bundled into the branch that
 changed core.
-
-## 12. Cross-repo dead-code sweep
-
-Not a per-commit step like `reconcile.py` — run this before cutting a
-release, and after any feature removal, not on every branch. Applies to
-any crate with a public library surface consumed by more than one
-downstream repo: rustc's `dead_code` lint only fires on private items,
-so a `pub` item with zero real external callers is invisible to a normal
-build/lint pass — only cross-repo grepping settles "reachable from a
-real consumer" versus "just never cleaned up." (This repo hit exactly
-that gap once — see `TODO_DETAILS.md#certfloor-dead-code-cleanup` for
-the worked example, not repeated here.)
-
-**Deliberately not automated in `reconcile.py`/CI**, in any repo this
-method is used in: this check is addon-aware by nature (it has to grep
-sibling repos to mean anything), and a per-commit gate must not require
-sibling repos to exist on disk — the dependency direction is consumers
-depend on the library, not the reverse. Steps 1-2 below are still
-automatable as a standalone script, just never wired into the gate
-itself. (This repo's copy: `contrib/cross-repo-dead-code-sweep.py`.)
-
-**Method:**
-
-1. Enumerate every top-level `pub fn`/`pub struct`/`pub enum`/`pub const`/
-   `pub static`, plus `pub fn` methods inside inherent (non-trait) `impl`
-   blocks, in the library crate(s) — excluding the binary's own dispatch
-   surface (but do check whether items *defined* in the lib and *used* by
-   the binary have real callers there too).
-2. For each item, grep for usage — never the definition line itself, and
-   never a `#[cfg(test)]` block referencing it (a test exercising dead code
-   is not a real caller, it just proves the dead code still compiles) —
-   across every consumer: the rest of this repo, and the full checkout of
-   every downstream repo that depends on it. Zero hits outside the item's
-   own definition and its own tests marks it a dead-code candidate.
-3. Exclude known-legitimate categories before flagging anything, so the
-   output stays trustworthy: trait-method implementations required by a
-   trait signature even when never called directly; enum
-   variants/struct fields that exist only for a derive macro's benefit
-   (`clap` subcommand dispatch, `serde` (de)serialization) even when never
-   referenced by name in ordinary Rust code; anything already documented
-   elsewhere as deliberately-kept compatibility scaffolding.
-4. For each confirmed candidate, get real provenance instead of guessing —
-   `git log --follow -S<symbol> -- <file>` finds when it was introduced;
-   diffing forward from there toward the commit that removed its last
-   caller (usually a feature-removal commit) confirms *why* it went dead,
-   not just *that* it did. This matters for scoping the eventual fix
-   correctly — deleting a whole orphaned cluster cleanly, rather than just
-   the one symbol that happened to get grepped first.
-5. Complementary automated check, not a replacement for steps 1-4:
-   `cargo-udeps`/`cargo-machete` if installed, for unused *dependencies*
-   rather than unused *code* — same spirit, different axis, and cheap to
-   run alongside.
-6. Report confirmed-dead items separately from anything merely
-   plausible-but-unverified — don't let a "probably dead" guess sit next to
-   a grep-confirmed finding with the same weight.

@@ -18,10 +18,6 @@ The binary is **`tetron`**. The Cargo **package/library is `tetron`** (`[package
 
 Tetron has a growing list of addons. ../tetron-mobile/ ../tetron-relay/ ../tetron-systray/ ../tetron-testsuite/ ../tetron-webui/ etc.  Each has it's own README.md and workflow.
 
-## KEEP-ON-PURPOSE — do NOT rename these
-
-**Relay/discovery presets** — the `"rayfish"` config keyword and its preset URLs (`relay.iroh.rayfish.xyz`, `dns.iroh.rayfish.xyz`). This is an optional extra relay. We may remove this when we get the `tetron-relay`  
-
 **Author attribution:** `Cargo.toml`/`tetron-proto/Cargo.toml`'s `authors` is `["Dario", "ErikAllanKincaid"]` — Security reports go through GitHub private reporting (`SECURITY.md`), not email.
 
 ## Spec-first workflow (libspec + reconcile.py)
