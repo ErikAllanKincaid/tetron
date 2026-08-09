@@ -39,10 +39,7 @@ module by what code the requirement actually touches, not by an abstract
 theme.
 
 Before writing a new requirement, check whether an existing one already
-covers — or explicitly forbids — the same territory. (This repo
-specifically: `AGENTS.md`'s `KEEP-ON-PURPOSE` list and `spec/core.py`'s
-`MINIMAL-*` removal requirements — a new requirement that quietly
-reintroduces what one of those removed needs to say so explicitly.)
+covers — or explicitly forbids — the same territory.
 
 ## 3. Dependency-ordering constraints
 
