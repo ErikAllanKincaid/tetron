@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **`contrib/install-tetron-suite.sh` now installs any missing component by default instead of silently skipping it.** A bare run (no component names passed) previously only upgraded components already present and skipped anything not yet installed, requiring the component's name to be passed explicitly to get a fresh install — surprising on a first-time host, where a plain `curl ... | bash` reported every component as "not installed, skipping" and installed nothing. It now installs or upgrades all four (`core`/`webui`/`systray`/`backup`) by default; passing explicit component names still restricts which ones a run touches. `core`'s existing sudo/confirmation gate (`--yes-core`, needed non-interactively since it briefly disconnects every peer on the host) is unchanged.
+- **`contrib/install-tetron-suite.sh` now selects the musl `core` build when it matters, instead of always fetching glibc.** It previously had no musl asset selection at all, so it couldn't install onto Alpine (no glibc present, the binary wouldn't even run) and silently replaced an existing static/musl `core` install with a dynamic glibc one on upgrade, with no warning that linkage changed. It now auto-selects the musl asset when the host is detected as Alpine (`/etc/os-release`) or when the already-installed binary is itself static, and adds a `--musl` flag to force it explicitly. `webui`/`systray`/`backup` are unaffected — no musl variant exists for them.
 
 ### Internal
 

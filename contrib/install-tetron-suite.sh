@@ -15,6 +15,13 @@
 #                non-interactive/scripted run; installing/upgrading core
 #                needs sudo and briefly disconnects every peer on this
 #                host while the daemon restarts)
+#   --musl       force the statically-linked musl `core` build regardless
+#                of host detection (core only -- webui/systray/backup have
+#                no musl variant). Auto-selected without this flag when
+#                the host is Alpine (`/etc/os-release`), or when the
+#                already-installed `tetron` binary is itself static, so an
+#                existing musl install upgrades in place instead of
+#                silently flipping to glibc.
 #   component names (core/webui/systray/backup) restrict which components
 #   this run touches -- default is all four, freshly installed or
 #   upgraded as needed. It is called "install", not "upgrade" -- a
@@ -50,17 +57,19 @@ require_cmd curl install
 
 CHECK_ONLY=0
 YES_CORE=0
+MUSL_OVERRIDE=0
 COMPONENTS=()
 
 for arg in "$@"; do
 	case "$arg" in
 	--check) CHECK_ONLY=1 ;;
 	--yes-core) YES_CORE=1 ;;
+	--musl) MUSL_OVERRIDE=1 ;;
 	core | webui | systray | backup)
 		COMPONENTS+=("$arg")
 		;;
 	-h | --help)
-		sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
@@ -82,6 +91,50 @@ aarch64 | arm64) plat_arch=aarch64 ;;
 *) fatal "unsupported architecture: $arch" ;;
 esac
 PLATFORM="${plat_os}-${plat_arch}"
+
+# Alpine ships musl only -- no glibc at all, so the plain asset can't even
+# run there. `/etc/os-release` is the standard, reliable source for this
+# (avoids guessing from `ldd` output, which varies across musl distros and
+# is sometimes absent entirely).
+host_is_alpine() {
+	[ -r /etc/os-release ] || return 1
+	(
+		. /etc/os-release
+		case "${ID:-} ${ID_LIKE:-}" in
+		*alpine*) exit 0 ;;
+		*) exit 1 ;;
+		esac
+	)
+}
+
+# True if the binary already at $1 is statically linked -- lets an
+# existing musl install upgrade in place instead of silently flipping to
+# glibc (found live 2026-08-08: `rpi5-test` had a manually-installed
+# static musl `core`, and a plain upgrade through this script replaced it
+# with a dynamic glibc binary with no warning that linkage changed).
+dest_is_static() {
+	local dest="$1"
+	[ -x "$dest" ] || return 1
+	if command -v ldd >/dev/null 2>&1; then
+		ldd "$dest" 2>&1 | grep -q "not a dynamic executable"
+	else
+		command -v file >/dev/null 2>&1 && file "$dest" 2>/dev/null | grep -q "statically linked"
+	fi
+}
+
+# Non-empty (the reason, for logging) when `core` should fetch the musl
+# asset instead of the plain glibc one. Only `core` has a musl variant --
+# webui/systray/backup do not, so callers must gate this to comp=core.
+musl_reason() {
+	local dest="$1"
+	if [ "$MUSL_OVERRIDE" -eq 1 ]; then
+		echo "--musl requested"
+	elif host_is_alpine; then
+		echo "Alpine host"
+	elif dest_is_static "$dest"; then
+		echo "existing install is statically linked"
+	fi
+}
 
 # --- per-component config ---
 component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; backup) echo tetron-backup.sh ;; esac; }
@@ -148,10 +201,8 @@ confirm_core() {
 }
 
 install_component() {
-	local comp="$1" dest="$2" bin repo asset tmpdir sudo_prefix
-	bin="$(component_binary "$comp")"
+	local comp="$1" dest="$2" asset="$3" repo tmpdir sudo_prefix
 	repo="$(component_repo "$comp")"
-	asset="${bin}-${PLATFORM}"
 	sudo_prefix=""
 	[ "$(component_needs_sudo "$comp")" -eq 1 ] && sudo_prefix="sudo"
 
@@ -233,6 +284,15 @@ for comp in "${COMPONENTS[@]}"; do
 		continue
 	}
 
+	asset="$(component_binary "$comp")-${PLATFORM}"
+	if [ "$comp" = "core" ]; then
+		reason="$(musl_reason "$dest")"
+		if [ -n "$reason" ]; then
+			asset="${asset}-musl"
+			log_info "$comp: selecting musl asset ($reason)"
+		fi
+	fi
+
 	status="$comp: installed=${current:-none} latest=$latest"
 	if [ -n "$current" ] && [ "$current" = "$latest" ]; then
 		log_pass "$status (up to date)"
@@ -246,7 +306,7 @@ for comp in "${COMPONENTS[@]}"; do
 		confirm_core || continue
 	fi
 
-	install_component "$comp" "$dest" || any_failed=1
+	install_component "$comp" "$dest" "$asset" || any_failed=1
 done
 
 exit "$any_failed"
