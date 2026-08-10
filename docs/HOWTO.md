@@ -536,7 +536,7 @@ Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on L
 ```bash
 # 1. install-tetron-suite.sh component (root-owned, /usr/local/bin)
 curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh -o install-tetron-suite.sh
-bash install-tetron-suite.sh --yes-core backup
+bash install-tetron-suite.sh --install-backup
 
 # 2. webui: Add-ons > Config Backup popup serves the script itself
 

@@ -7,25 +7,50 @@
 # this repo first is not required.
 #
 # Usage:
-#   ./install-tetron-suite.sh [--check] [--yes-core] [core] [webui] [systray] [backup]
+#   ./install-tetron-suite.sh [--check] [--yes-core] [--musl]
+#       [--core-only | --install-webui] [--install-systray] [--install-backup] [--install-all]
 #
-#   --check      report installed vs. latest versions only, change nothing
-#   --yes-core   allow the core `tetron` component to be installed/upgraded
-#                without an interactive confirmation prompt (needed for a
-#                non-interactive/scripted run; installing/upgrading core
-#                needs sudo and briefly disconnects every peer on this
-#                host while the daemon restarts)
-#   --musl       force the statically-linked musl `core` build regardless
-#                of host detection (core only -- webui/systray/backup have
-#                no musl variant). Auto-selected without this flag when
-#                the host is Alpine (`/etc/os-release`), or when the
-#                already-installed `tetron` binary is itself static, so an
-#                existing musl install upgrades in place instead of
-#                silently flipping to glibc.
-#   component names (core/webui/systray/backup) restrict which components
-#   this run touches -- default is all four, freshly installed or
-#   upgraded as needed. It is called "install", not "upgrade" -- a
-#   component missing on this host is installed, not silently skipped.
+#   --check           report installed vs. latest versions only, change nothing
+#   --yes-core        allow `core` (and `backup`) to be upgraded without an
+#                      interactive confirmation prompt (needed for a
+#                      non-interactive/scripted upgrade; upgrading core
+#                      needs sudo and briefly disconnects every peer on
+#                      this host while the daemon restarts). Not needed
+#                      for a *fresh* install of core/backup -- nothing is
+#                      running yet, so there is nothing to disrupt.
+#   --musl            force the statically-linked musl `core` build regardless
+#                      of host detection (core only -- webui/systray/backup have
+#                      no musl variant). Auto-selected without this flag when
+#                      the host is Alpine (`/etc/os-release`), or when the
+#                      already-installed `tetron` binary is itself static, so an
+#                      existing musl install upgrades in place instead of
+#                      silently flipping to glibc.
+#   --core-only        install/upgrade core only, no addons. Errors if
+#                      combined with any --install-* flag below.
+#   --install-webui    include webui (core is always included).
+#   --install-systray  include systray (core is always included).
+#   --install-backup   include backup (core is always included). Unlike
+#                      webui/systray, backup is never in the default set --
+#                      opt-in only, via this flag or the interactive picker.
+#   --install-all      core + webui + systray + backup.
+#
+#   With none of the above selection flags, the script picks components
+#   itself. Prompts (below) read from /dev/tty, not stdin, so the
+#   README's `curl | bash` one-liner still prompts normally when a human
+#   is running it at a real terminal -- stdin there is the piped script,
+#   not the keyboard, but /dev/tty reaches the controlling terminal
+#   directly regardless (same trick rustup/Homebrew's installers use):
+#     - no controlling terminal at all (cron, CI, a container run without
+#       -it): behaves as --core-only, since there is nothing to prompt.
+#     - a controlling terminal is reachable: detects a display
+#       ($DISPLAY/$WAYLAND_DISPLAY) and prints the resulting default
+#       (core alone if headless; core+webui+systray with a display), then
+#       asks "Use defaults? [Y/n]" -- enter accepts it, "n" drops into a
+#       yes/no prompt per addon (each still pre-filled with the same
+#       display-aware default).
+#
+#   It is called "install", not "upgrade" -- a selected component missing
+#   on this host is installed, not silently skipped.
 #
 #   backup is a script, not a versioned binary: it fetches
 #   contrib/tetron-backup.sh from the tetron repo's main branch (no
@@ -58,24 +83,104 @@ require_cmd curl install
 CHECK_ONLY=0
 YES_CORE=0
 MUSL_OVERRIDE=0
-COMPONENTS=()
+CORE_ONLY=0
+INSTALL_WEBUI=0
+INSTALL_SYSTRAY=0
+INSTALL_BACKUP=0
+INSTALL_ALL=0
+SELECTION_FLAG_GIVEN=0
 
 for arg in "$@"; do
 	case "$arg" in
 	--check) CHECK_ONLY=1 ;;
 	--yes-core) YES_CORE=1 ;;
 	--musl) MUSL_OVERRIDE=1 ;;
-	core | webui | systray | backup)
-		COMPONENTS+=("$arg")
-		;;
+	--core-only) CORE_ONLY=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-webui) INSTALL_WEBUI=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-systray) INSTALL_SYSTRAY=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-backup) INSTALL_BACKUP=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-all) INSTALL_ALL=1; SELECTION_FLAG_GIVEN=1 ;;
 	-h | --help)
-		sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
 	esac
 done
-[ "${#COMPONENTS[@]}" -eq 0 ] && COMPONENTS=(core webui systray backup)
+
+[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
+	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-backup/--install-all"
+
+# host_has_display: true if a display server is reachable -- systray can
+# never function without one, and webui defaults follow it too (a remote
+# port-forward to webui is possible but rare, not worth defaulting on).
+host_has_display() {
+	[ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+}
+
+# have_tty: true if a controlling terminal is reachable via /dev/tty --
+# deliberately independent of stdin (`[ -t 0 ]`), which is always false
+# under `curl ... | bash` even when a human is sitting at a real terminal
+# running it (stdin there is the piped script itself). /dev/tty reaches
+# the controlling terminal directly regardless of stdin redirection, the
+# same trick rustup/Homebrew's installers use to stay interactive when
+# piped. `:` reads nothing -- this only tests that the open succeeds.
+# Genuinely fails (no controlling terminal at all) in cron/CI/containers
+# without a pty, which is the correct signal for non-interactive.
+have_tty() {
+	{ : < /dev/tty; } 2>/dev/null
+}
+
+COMPONENTS=(core)
+if [ "$INSTALL_ALL" -eq 1 ]; then
+	COMPONENTS=(core webui systray backup)
+elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
+	[ "$CORE_ONLY" -eq 1 ] || {
+		[ "$INSTALL_WEBUI" -eq 1 ] && COMPONENTS+=(webui)
+		[ "$INSTALL_SYSTRAY" -eq 1 ] && COMPONENTS+=(systray)
+		[ "$INSTALL_BACKUP" -eq 1 ] && COMPONENTS+=(backup)
+	}
+elif [ "$CHECK_ONLY" -eq 1 ]; then
+	# Read-only status check: use the display-aware default set with no
+	# prompt at all -- there is nothing to confirm before just reporting.
+	host_has_display && COMPONENTS=(core webui systray)
+elif ! have_tty; then
+	# No controlling terminal at all (cron, CI, a container run without
+	# -it) -- nothing to prompt on. Default to core-only and tell the
+	# user how to get addons instead of guessing.
+	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
+else
+	if host_has_display; then
+		DEFAULT_COMPONENTS=(core webui systray)
+		log_info "display detected"
+	else
+		DEFAULT_COMPONENTS=(core)
+		log_info "no display detected (headless)"
+	fi
+	log_info "default install: ${DEFAULT_COMPONENTS[*]}"
+	reply=""
+	read -r -p "Use defaults? [Y/n] " reply < /dev/tty
+	if [ -z "$reply" ] || [[ "$reply" =~ ^[Yy]$ ]]; then
+		COMPONENTS=("${DEFAULT_COMPONENTS[@]}")
+	else
+		ask_addon() {
+			local name="$1" default_yes="$2" reply prompt
+			prompt="[y/N]"
+			[ "$default_yes" -eq 1 ] && prompt="[Y/n]"
+			read -r -p "Install $name? $prompt " reply < /dev/tty
+			if [ "$default_yes" -eq 1 ]; then
+				[[ "$reply" =~ ^[Nn]$ ]] && return 1 || return 0
+			else
+				[[ "$reply" =~ ^[Yy]$ ]]
+			fi
+		}
+		webui_default=0; systray_default=0
+		host_has_display && { webui_default=1; systray_default=1; }
+		ask_addon webui "$webui_default" && COMPONENTS+=(webui)
+		ask_addon systray "$systray_default" && COMPONENTS+=(systray)
+		ask_addon backup 0 && COMPONENTS+=(backup)
+	fi
+fi
 
 # --- platform detection, same suffixes tetron-webui's addons.rs::asset_suffix() uses ---
 os="$(uname -s)"
@@ -189,14 +294,25 @@ verify_checksum() {
 	fi
 }
 
-confirm_core() {
+# $1 = component name (for messaging), $2 = 1 if this is an upgrade of an
+# already-installed copy, 0 for a fresh install. Only an upgrade of `core`
+# actually disrupts anything (drops live peers while the daemon restarts)
+# -- a fresh install has nothing running yet, so it proceeds without
+# --yes-core even when piped (no TTY).
+confirm_sudo_install() {
+	local comp="$1" is_upgrade="$2" reply
 	[ "$YES_CORE" -eq 1 ] && return 0
-	if [ ! -t 0 ]; then
-		log_warn "core needs --yes-core to install/upgrade non-interactively -- skipping core"
+	if [ "$is_upgrade" -eq 0 ]; then
+		have_tty || return 0
+		read -r -p "Install $comp now? This needs sudo. [Y/n] " reply < /dev/tty
+		[[ "$reply" =~ ^[Nn]$ ]] && return 1
+		return 0
+	fi
+	if ! have_tty; then
+		log_warn "$comp needs --yes-core to upgrade non-interactively -- skipping $comp"
 		return 1
 	fi
-	local reply
-	read -r -p "Install/upgrade core tetron now? This needs sudo and briefly disconnects every peer on this host. [y/N] " reply
+	read -r -p "Upgrade $comp now? This needs sudo and briefly disconnects every peer on this host. [y/N] " reply < /dev/tty
 	[[ "$reply" =~ ^[Yy]$ ]]
 }
 
@@ -271,7 +387,7 @@ for comp in "${COMPONENTS[@]}"; do
 		else
 			log_info "$comp: not installed"
 			[ "$CHECK_ONLY" -eq 1 ] && continue
-			confirm_core || continue
+			confirm_sudo_install "$comp" 0 || continue
 			install_backup "$comp" "$dest" || any_failed=1
 		fi
 		continue
@@ -303,7 +419,9 @@ for comp in "${COMPONENTS[@]}"; do
 	[ "$CHECK_ONLY" -eq 1 ] && continue
 
 	if [ "$(component_needs_sudo "$comp")" -eq 1 ]; then
-		confirm_core || continue
+		is_upgrade=0
+		[ -n "$current" ] && is_upgrade=1
+		confirm_sudo_install "$comp" "$is_upgrade" || continue
 	fi
 
 	install_component "$comp" "$dest" "$asset" || any_failed=1

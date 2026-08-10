@@ -343,6 +343,16 @@ class AdminInviteListOpenToAnyUser(Requirement):
 class AddonSuiteInstallScript(Requirement):
     """REQUIREMENT-ID: ADDONS-SUITE-001
 
+    **SUPERSEDED by ADDONS-SUITE-002.** The "decided" outcome below (no
+    script, `--help` epilog only) held only briefly: `contrib/install-
+    tetron-suite.sh` was rebuilt and committed after this requirement was
+    written, gained `--check`/`--yes-core`/`--musl`/a `backup` component
+    along the way without a matching spec update, and is now the
+    documented, primary install path in `README.md`'s TL;DR. Kept verbatim
+    below for the rejected-alternatives reasoning (still valid -- no
+    `tetron` subcommand, no fetch-and-run coupling in core), which
+    ADDONS-SUITE-002 does not repeat.
+
     Discussed at length 2026-07-24: should tetron itself gain a command (or
     ship a companion script) to discover/install its optional add-ons
     (`tetron-webui`, `tetron-systray`)? Landed on the least-invasive of
@@ -419,6 +429,109 @@ class AddonSuiteInstallScript(Requirement):
     exist, not being the source of truth for where to find them.
     """
     req_id = "ADDONS-SUITE-001"
+
+
+# --------------------------------------------------------------------------
+# ADDONS-SUITE-002: interactive default-or-pick addon gate, TTY-aware, for
+# contrib/install-tetron-suite.sh
+# --------------------------------------------------------------------------
+
+class InstallSuiteAddonSelectionGate(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-002
+
+    `contrib/install-tetron-suite.sh` (see ADDONS-SUITE-001 for why this
+    script, rather than a `tetron` subcommand, is the install surface at
+    all) unconditionally installed all four components (`core`, `webui`,
+    `systray`, `backup`) with no way to opt out short of listing component
+    names positionally, and had no concept of headless hosts or non-
+    interactive invocation. Two concrete problems, both found working
+    through this: (1) `tetron-systray` cannot function without a display
+    at all, yet was installed unconditionally on headless machines; (2)
+    the README's own documented one-liner (`curl -fsSL .../install-tetron-
+    suite.sh | bash`) pipes the script over stdin, so `[ -t 0 ]` is false
+    and `confirm_core()`'s existing safety gate silently skipped `core`
+    (and `backup`) with only a stderr warning, unless `--yes-core` was
+    also passed -- the documented quickstart did not actually install
+    `core` as written.
+
+    **Selection logic, in priority order:**
+
+    1. **Any explicit flag wins, non-interactively.** `--core-only`,
+       `--install-webui`, `--install-systray`, `--install-backup`,
+       `--install-all` select components directly with no prompts.
+       `core` is implicit in every `--install-*` flag (it is the
+       daemon the addons talk to) -- only `--core-only` excludes the
+       addons. `--core-only` combined with any `--install-*` is a usage
+       error (contradictory intent). `--install-all` is `core` + every
+       addon, `backup` included.
+    2. **No flags, `--check`:** a read-only status report has nothing to
+       confirm before running, so it skips the prompt entirely and uses
+       the same display-aware default set tier 4 would compute (`core`
+       alone if headless, `core, webui, systray` with a display) --
+       `backup` still excluded, same as everywhere else.
+    3. **No flags, no `--check`, no controlling terminal reachable**
+       (piped install with nothing to prompt on at all -- see the
+       `/dev/tty` note below for what "reachable" means here): behave as
+       `--core-only`, printing one line telling the user how to get
+       addons via flags instead of guessing.
+    4. **No flags, no `--check`, a controlling terminal is reachable**
+       (interactive default -- this is also what a normal `curl | bash`
+       run hits, not tier 3, see below): detect a display via
+       `$DISPLAY`/`$WAYLAND_DISPLAY`. Print the detection result and the
+       resulting default component set (`core` alone if headless; `core,
+       webui, systray` with a display -- `backup` is never in the
+       default set at any tier, it is opt-in only via flag or the
+       picker below), then a single gate: `Use defaults? [Y/n]`.
+       Enter/`y` installs exactly the printed default, no further
+       questions -- the common case costs one keystroke. `n` drops into
+       a per-component `[y/n]` prompt for `webui`/`systray`/`backup`,
+       each still pre-filled with the same display-aware default so the
+       user only has to touch what they want to flip from the default
+       (`backup` always defaults to `N` here too). `core` itself is not
+       prompted in the picker -- it is the mandatory base the addons run
+       against.
+
+    Rationale for `backup` defaulting off unconditionally (confirmed with
+    USER): unlike `webui`/`systray`, whose default hinges only on display
+    presence, `backup` is a rare, admin-only case not tied to display at
+    all -- opt-in via `--install-backup` or the picker, never a default.
+
+    **Fresh-install exception to `confirm_core`'s TTY gate:** the
+    non-interactive default (tier 3 above) would otherwise be
+    self-defeating for `core` specifically, since `confirm_core()`
+    already refuses to touch `core` without a TTY or `--yes-core` --
+    exactly the piped case tier 3 targets. Resolved by making that gate
+    conditional on whether this is an **upgrade** (something already
+    installed at `dest`) rather than a fresh install: an upgrade
+    genuinely disconnects live peers and still requires `--yes-core` or
+    an interactive confirmation; a fresh install has no peers to disrupt
+    and proceeds under the piped default without needing `--yes-core`.
+    This makes the README's documented one-liner actually install `core`
+    on a new machine, while preserving the original safety property for
+    the case it was actually protecting against. Renamed to
+    `confirm_sudo_install()` in the same change, since it now also gates
+    `backup`'s sudo install with correct per-component messaging (it
+    previously said "core tetron" even when confirming `backup`).
+
+    **TTY detection reads `/dev/tty`, not stdin:** `[ -t 0 ]` is false
+    under `curl | bash` even when a human is running it at a real
+    terminal -- stdin there is the piped script itself, not the keyboard.
+    `/dev/tty` reaches the controlling terminal directly regardless of
+    stdin redirection (the same technique rustup's and Homebrew's
+    installers use), so tier 4's prompts -- and `confirm_sudo_install`'s
+    -- read from `/dev/tty` explicitly (`have_tty()`: `{ : < /dev/tty; }
+    2>/dev/null`). This is what makes the README's own `curl | bash`
+    one-liner show the real picker instead of always silently defaulting
+    to core-only: only a genuinely absent controlling terminal (cron, CI,
+    a container run without `-it`) falls through to tier 3.
+
+    Deliberately unaffected by this requirement: `--musl`, `--yes-core`
+    itself, checksum verification, and the `relay`/`testsuite` addons are
+    out of scope entirely -- neither is fetched by this script (`tetron-
+    relay`/`tetron-testsuite` have their own bringup, not part of the
+    "suite").
+    """
+    req_id = "ADDONS-SUITE-002"
 
 
 # --------------------------------------------------------------------------
