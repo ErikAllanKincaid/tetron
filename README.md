@@ -88,7 +88,7 @@ sudo install tetron-webui /usr/local/bin/tetron-webui
 tetron-webui install
 ```
 
-To install or upgrade tetron, `tetron-webui`, and `tetron-systray` together instead of running the steps above by hand, fetch and run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) -- it checks each against its own latest release and only touches the ones that are missing or behind (`--check` reports without changing anything).
+To install or upgrade tetron, `tetron-webui`, and `tetron-systray` together instead of running the steps above by hand, fetch and run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) -- it checks each against its own latest release and only touches the ones that are missing or behind (`--check` reports without changing anything). Run at a real terminal (including piped, as in the TL;DR above -- it reads its prompts from `/dev/tty`, not stdin) it asks a `webui`/`systray` picker with sensible display-aware defaults; with no terminal attached at all (cron, CI, a container run without `-it`) it defaults to core only. Skip prompts entirely with `--core-only` / `--install-webui` / `--install-systray` / `--install-backup` / `--install-all`.
 
 ```bash
 # Create a network. Output includes your mesh IP and invite key.
