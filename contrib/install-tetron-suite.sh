@@ -244,8 +244,24 @@ musl_reason() {
 # --- per-component config ---
 component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; backup) echo tetron-backup.sh ;; esac; }
 component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
-component_default_dir() { case "$1" in core) echo /usr/local/bin ;; backup) echo /usr/local/bin ;; *) echo "$HOME/.local/bin" ;; esac; }
-component_needs_sudo() { case "$1" in core) echo 1 ;; backup) echo 1 ;; *) echo 0 ;; esac; }
+# All four components install to the same root-owned /usr/local/bin and
+# need sudo -- webui/systray run as per-user services (systemd --user /
+# launchd LaunchAgent) with no elevated runtime privilege of their own,
+# but /usr/local/bin is the one location reliably on $PATH out of the box
+# on every supported OS/shell, and the sudo prompt is already unavoidable
+# for core, so splitting addons off into a separate unprivileged directory
+# only trades a $PATH problem for a sudo prompt that costs nothing extra.
+component_default_dir() { echo /usr/local/bin; }
+component_needs_sudo() { echo 1; }
+
+# Placing the binary in root-owned /usr/local/bin always needs sudo, but
+# registering the service is a different privilege question: `core`
+# registers a real root-owned systemd *system* service, but webui/systray
+# register a `systemd --user` unit (or launchd LaunchAgent) that must run
+# as the plain invoking user -- running it under sudo points `systemctl
+# --user` at root's own (nonexistent, session-less) user manager instead
+# of the invoking user's, which fails with a D-Bus/XDG_RUNTIME_DIR error.
+component_service_needs_sudo() { case "$1" in core) echo 1 ;; *) echo 0 ;; esac; }
 
 # Prefer wherever the binary is actually already installed (PATH) over the
 # default dir, so an install in a nonstandard location is upgraded in
@@ -298,13 +314,16 @@ verify_checksum() {
 # already-installed copy, 0 for a fresh install. Only an upgrade of `core`
 # actually disrupts anything (drops live peers while the daemon restarts)
 # -- a fresh install has nothing running yet, so it proceeds without
-# --yes-core even when piped (no TTY).
+# --yes-core even when piped (no TTY). webui/systray/backup upgrades are
+# not disruptive either (restarting a per-user service has no VPN/peer
+# impact), so they get the same no-drama treatment as a fresh install
+# rather than core's --yes-core gate.
 confirm_sudo_install() {
 	local comp="$1" is_upgrade="$2" reply
 	[ "$YES_CORE" -eq 1 ] && return 0
-	if [ "$is_upgrade" -eq 0 ]; then
+	if [ "$is_upgrade" -eq 0 ] || [ "$comp" != "core" ]; then
 		have_tty || return 0
-		read -r -p "Install $comp now? This needs sudo. [Y/n] " reply < /dev/tty
+		read -r -p "$([ "$is_upgrade" -eq 1 ] && echo Upgrade || echo Install) $comp now? This needs sudo. [Y/n] " reply < /dev/tty
 		[[ "$reply" =~ ^[Nn]$ ]] && return 1
 		return 0
 	fi
@@ -317,10 +336,12 @@ confirm_sudo_install() {
 }
 
 install_component() {
-	local comp="$1" dest="$2" asset="$3" repo tmpdir sudo_prefix
+	local comp="$1" dest="$2" asset="$3" repo tmpdir sudo_prefix service_sudo_prefix
 	repo="$(component_repo "$comp")"
 	sudo_prefix=""
 	[ "$(component_needs_sudo "$comp")" -eq 1 ] && sudo_prefix="sudo"
+	service_sudo_prefix=""
+	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="sudo"
 
 	tmpdir="$(mktemp -d)"
 	trap 'rm -rf "$tmpdir"' RETURN
@@ -339,7 +360,7 @@ install_component() {
 		|| fatal "$comp: failed to install binary to $dest"
 
 	log_info "$comp: running '$dest install' to register/restart its service..."
-	$sudo_prefix "$dest" install \
+	$service_sudo_prefix "$dest" install \
 		|| fatal "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"
 
 	log_pass "$comp: installed/upgraded successfully"
