@@ -80,12 +80,18 @@ chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 sudo tetron install
 
-# Install the Web UI. Other addons can be installed using the UI.
+# Install the Web UI.
 curl -Lo tetron-webui https://github.com/ErikAllanKincaid/tetron-webui/releases/latest/download/tetron-webui-linux-x86_64
 chmod +x tetron-webui
 sudo install tetron-webui /usr/local/bin/tetron-webui
 # sets up + starts a per-user service, no sudo needed for this step
 tetron-webui install
+
+# Addons (systray, etc.) install the same way -- swap the binary name/repo below:
+curl -Lo tetron-systray https://github.com/ErikAllanKincaid/tetron-systray/releases/latest/download/tetron-systray-linux-x86_64
+chmod +x tetron-systray
+sudo install tetron-systray /usr/local/bin/tetron-systray
+tetron-systray install
 ```
 
 To install or upgrade tetron, `tetron-webui`, and `tetron-systray` together instead of running the steps above by hand, fetch and run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) -- it checks each against its own latest release and only touches the ones that are missing or behind (`--check` reports without changing anything). Run at a real terminal (including piped, as in the TL;DR above -- it reads its prompts from `/dev/tty`, not stdin) it asks a `webui`/`systray` picker with sensible display-aware defaults; with no terminal attached at all (cron, CI, a container run without `-it`) it defaults to core only. Skip prompts entirely with `--core-only` / `--install-webui` / `--install-systray` / `--install-backup` / `--install-all`.
