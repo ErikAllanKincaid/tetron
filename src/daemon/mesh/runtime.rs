@@ -348,6 +348,7 @@ impl MeshManager {
             disconnect_tx,
             cancel,
             &ctx,
+            subnet,
         )
         .await;
 

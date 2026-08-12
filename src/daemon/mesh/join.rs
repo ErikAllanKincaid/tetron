@@ -207,6 +207,7 @@ pub(crate) async fn join_mesh_shared(
         remote_id,
         remote_ip,
         network_name,
+        network_subnet,
     );
     // Dial the rest of the roster in the background (DIAL-001). The
     // coordinator link is already registered above, so the network is usable
@@ -225,6 +226,7 @@ pub(crate) async fn join_mesh_shared(
         worker_ctx.clone(),
         disconnect_tx.clone(),
         token.clone(),
+        network_subnet,
     );
 
     let live_state = build_member_state(
@@ -409,6 +411,8 @@ fn register_mesh_peer(
     peer_id: EndpointId,
     peer_ip: Ipv4Addr,
     network_name: &str,
+    // This network's own overlay subnet (PATH-DIAG-007).
+    network_subnet: crate::membership::Subnet,
 ) {
     let peer_ipv6 = derive_ipv6(&peer_id, &ctx.network_key);
     peers.add(peer_ip, peer_ipv6, conn.clone(), peer_id, network_name);
@@ -418,6 +422,7 @@ fn register_mesh_peer(
         peer_ip,
         peer_ipv6,
         network_name.to_string(),
+        network_subnet,
         ctx.forward_ctx(disconnect_tx.clone(), token.clone()),
     );
 }
@@ -449,6 +454,8 @@ fn spawn_roster_peer_dials(
     ctx: MeshCtx,
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
+    // This network's own overlay subnet (PATH-DIAG-007).
+    network_subnet: crate::membership::Subnet,
 ) {
     tokio::spawn(async move {
         use futures::StreamExt;
@@ -504,6 +511,7 @@ fn spawn_roster_peer_dials(
                             member.identity,
                             member.ip,
                             network_name,
+                            network_subnet,
                         );
                         tracing::info!(peer_ip = %member.ip, "connected to mesh peer");
                     }
@@ -1011,6 +1019,9 @@ pub(crate) fn spawn_reconnect_loop(
                                 peer_ip,
                                 peer_ipv6,
                                 net_name,
+                                // PATH-DIAG-007: this network's subnet, for
+                                // self-candidate detection.
+                                live_state.read().unwrap().subnet,
                                 forward::ForwardCtx {
                                     tun_tx,
                                     disconnect_tx,

@@ -1529,6 +1529,8 @@ impl MeshManager {
         disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
         cancel: CancellationToken,
         ctx: &MeshCtx,
+        // This network's own overlay subnet (PATH-DIAG-007).
+        subnet: crate::membership::Subnet,
     ) {
         use futures::StreamExt;
         // Announce the current name (a pending rename or the confirmed one),
@@ -1583,6 +1585,7 @@ impl MeshManager {
                             m.ip,
                             derive_ipv6(&m.identity, &net_pubkey),
                             network_name.to_string(),
+                            subnet,
                             forward::ForwardCtx {
                                 tun_tx,
                                 disconnect_tx,

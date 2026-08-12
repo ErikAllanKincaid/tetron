@@ -119,6 +119,28 @@ fn path_flap_decision(
     (new_count <= threshold, window_start, new_count)
 }
 
+/// Whether a path-event candidate address is provably self-referential
+/// (PATH-DIAG-007): its IP falls inside a network's own overlay subnet, so
+/// it can never be a real external transport candidate -- root-caused to
+/// `netwatch`'s interface enumeration having no `tun`-device exclusion (see
+/// the requirement's own docstring for the full trace). `false` for a relay
+/// or custom transport address (never an overlay IP) and for a v6 IP
+/// candidate: this network's v6 range isn't a simple CIDR check like v4's
+/// (`addressing::ipv6_in_network` needs the network's own public key, not
+/// just its subnet), out of scope here -- the concrete finding motivating
+/// this was v4.
+fn is_self_candidate(
+    addr: &iroh::TransportAddr,
+    subnet: crate::membership::Subnet,
+) -> bool {
+    match addr {
+        iroh::TransportAddr::Ip(std::net::SocketAddr::V4(v4)) => {
+            crate::addressing::ip_in_subnet(*v4.ip(), subnet)
+        }
+        _ => false,
+    }
+}
+
 /// Application close code a peer sends when it deliberately leaves a network
 /// (`tetron leave`). Distinguishes an intentional departure from a transient drop
 /// (timeout/reset), so only deliberate leaves prune the canonical member list.
@@ -397,12 +419,17 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
 /// Spawns a task that reads QUIC datagrams from a single peer connection and
 /// forwards them to the TUN writer via `tun_tx`. On connection loss, sends a
 /// [`DisconnectEvent`] and exits.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_peer_reader(
     conn: Connection,
     peer_id: EndpointId,
     peer_ip: Ipv4Addr,
     peer_ipv6: Ipv6Addr,
     network: String,
+    // This network's own overlay subnet (PATH-DIAG-007), passed through to
+    // `log_path_events` to detect a self-referential candidate -- not used
+    // by the reader itself.
+    subnet: crate::membership::Subnet,
     ctx: ForwardCtx,
 ) -> JoinHandle<()> {
     let ForwardCtx {
@@ -422,7 +449,8 @@ pub fn spawn_peer_reader(
     // on its own once the connection closes, nothing here needs to observe
     // or cancel it.
     tokio::spawn(
-        log_path_events(conn.clone(), peer_id, network.clone()).instrument(span.clone()),
+        log_path_events(conn.clone(), peer_id, network.clone(), subnet)
+            .instrument(span.clone()),
     );
     let reader = async move {
         // FRAG-002: per-connection IPv6 reassembly state. Lives for the
@@ -533,7 +561,12 @@ pub fn spawn_peer_reader(
 /// in-memory `TestNetwork`/`TestTransport`) as a dev-dependency — not done
 /// here since it would add a new dependency feature combination and a new
 /// test pattern for this codebase, disproportionate to this single item.
-async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String) {
+async fn log_path_events(
+    conn: Connection,
+    peer_id: EndpointId,
+    network: String,
+    subnet: crate::membership::Subnet,
+) {
     use futures::StreamExt;
     // PATH-DIAG-006: per-peer flap-debounce state. A fresh task per
     // connection lifetime, so this is a plain local -- no shared/global
@@ -565,16 +598,36 @@ async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String)
     while let Some(event) = events.next().await {
         match event {
             iroh::endpoint::PathEvent::Opened { remote_addr, .. } => {
-                tracing::debug!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path opened");
+                // PATH-DIAG-007: a self-referential candidate (this network's
+                // own overlay subnet) can never be a real transport
+                // candidate -- quieter than an ordinary (already debug!)
+                // path, since it is pointless at any verbosity above trace.
+                if is_self_candidate(&remote_addr, subnet) {
+                    tracing::trace!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path opened (self-candidate, ignored)");
+                } else {
+                    tracing::debug!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path opened");
+                }
             }
             iroh::endpoint::PathEvent::Closed { remote_addr, last_stats, .. } => {
-                tracing::debug!(
-                    peer = %peer_id.fmt_short(), net = %network, %remote_addr,
-                    tx_bytes = last_stats.udp_tx.bytes, rx_bytes = last_stats.udp_rx.bytes,
-                    "path closed"
-                );
+                if is_self_candidate(&remote_addr, subnet) {
+                    tracing::trace!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path closed (self-candidate, ignored)");
+                } else {
+                    tracing::debug!(
+                        peer = %peer_id.fmt_short(), net = %network, %remote_addr,
+                        tx_bytes = last_stats.udp_tx.bytes, rx_bytes = last_stats.udp_rx.bytes,
+                        "path closed"
+                    );
+                }
             }
             iroh::endpoint::PathEvent::Selected { remote_addr, .. } => {
+                // A self-candidate should never actually reach Selected (it
+                // can't validate), but if it somehow did, force it quiet --
+                // never legitimate at any frequency, so PATH-DIAG-006's
+                // window/threshold (meant for genuine ties) does not apply.
+                if is_self_candidate(&remote_addr, subnet) {
+                    tracing::trace!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path selected (self-candidate, ignored)");
+                    continue;
+                }
                 let (log_at_info, new_window_start, new_count) = path_flap_decision(
                     std::time::Instant::now(),
                     flap_window_start,
@@ -699,6 +752,52 @@ mod tests {
             assert!(log_at_info);
             assert_eq!(count, 1);
             assert_eq!(new_window_start, now);
+        }
+    }
+
+    // PATH-DIAG-007: `is_self_candidate` pure-logic tests.
+    mod is_self_candidate_tests {
+        use super::*;
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+        const SUBNET: crate::membership::Subnet = (Ipv4Addr::new(10, 88, 0, 0), 24);
+
+        #[test]
+        fn ip_inside_own_subnet_is_self_candidate() {
+            let addr = iroh::TransportAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(10, 88, 0, 113),
+                53307,
+            )));
+            assert!(is_self_candidate(&addr, SUBNET));
+        }
+
+        #[test]
+        fn ip_outside_own_subnet_is_not_self_candidate() {
+            let addr = iroh::TransportAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(192, 168, 1, 132),
+                53307,
+            )));
+            assert!(!is_self_candidate(&addr, SUBNET));
+        }
+
+        #[test]
+        fn relay_address_is_never_a_self_candidate() {
+            let addr = iroh::TransportAddr::Relay(
+                "https://relay.example.com/".parse().unwrap(),
+            );
+            assert!(!is_self_candidate(&addr, SUBNET));
+        }
+
+        #[test]
+        fn ipv6_candidate_is_never_a_self_candidate() {
+            // Out of scope per is_self_candidate's own doc comment -- v6
+            // self-candidate detection would need the network's public key,
+            // not just its v4 subnet.
+            let addr = iroh::TransportAddr::Ip(SocketAddr::new(
+                std::net::Ipv6Addr::LOCALHOST.into(),
+                53307,
+            ));
+            assert!(!is_self_candidate(&addr, SUBNET));
         }
     }
 
