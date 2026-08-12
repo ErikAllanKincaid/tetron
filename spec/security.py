@@ -1215,3 +1215,167 @@ class ViaDetailReasonField(Requirement):
     question for review, not decided here.
     """
     req_id = "PATH-DIAG-004"
+
+
+# --------------------------------------------------------------------------
+# PATH-DIAG-005..007: path-event log-noise mitigation. Distinct motivation
+# from PATH-DIAG-001/002/004 above (those expose candidate/classification
+# data via `--json`; these contain log *volume*, a live-log problem, not a
+# status-display one) -- found live 2026-08-12 investigating a real,
+# still-open flapping connection (`rpi5-test`, TODO_DETAILS.md
+# #path-candidate-flapping). Dependency order: PATH-DIAG-005 must land
+# first (it consolidates two independent subscribers into the one place
+# -006/-007 both build on); -006 and -007 have no dependency on each other
+# and can land in either order.
+# --------------------------------------------------------------------------
+
+class DeduplicatePathEventLogging(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-005
+
+    Found live 2026-08-12: `spawn_path_logger` (`src/lib.rs`) and
+    `log_path_events` (`src/forward.rs`, `PATH-DIAG-001`) both
+    independently subscribe to the same `Connection::path_events()` stream
+    for the same connection -- every path transition is logged twice, in
+    two different formats. Traced via call-site grep: `spawn_path_logger`
+    is called explicitly from `accept.rs` (twice), `join.rs`, and
+    `create_join.rs`; every one of those same connections is *also*
+    registered via `register_mesh_peer`/`spawn_peer_reader`
+    (`src/forward.rs`), which spawns `log_path_events` on the identical
+    `conn.clone()` per `PATH-DIAG-001`'s own placement decision ("a small
+    `log_path_events` task spawned once from within `spawn_peer_reader`
+    itself... not at any of its seven external call sites"). The two
+    loggers also disagree on level: `spawn_path_logger` logs `Opened`/
+    `Closed`/`Selected` all at `info!`; `log_path_events` already logs
+    `Opened`/`Closed` at `debug!` and only `Selected` at `info!` --
+    `log_path_events` is the correctly-designed one, `spawn_path_logger`
+    is the redundant, over-verbose one.
+
+    Matters beyond tidiness: every multi-homed real user (laptop wifi +
+    ethernet, phone wifi + cellular) generates some baseline path churn,
+    and `spawn_path_logger`'s blanket `info!` level puts every one of
+    those `Opened`/`Closed` transitions into the default production log
+    stream (`info`, per `LOG-003`) for no reason -- the exact class of
+    high-frequency, low-value-at-default-verbosity event `LOG-003` already
+    keeps out via `trace!` for the five per-packet forwarding events.
+
+    **Fix:** remove `spawn_path_logger` and its four call sites entirely.
+    Its one behavior not already covered by `log_path_events` -- an
+    initial one-time dump of paths already open at subscribe time (with
+    `rtt`/`is_selected`) -- is folded into `log_path_events` itself, at
+    `debug!` (consistent with `Opened`/`Closed`'s existing level, since
+    it's the same class of low-value-at-scale diagnostic, not a lifecycle
+    milestone). One subscriber per connection afterward, not two.
+    """
+    req_id = "PATH-DIAG-005"
+
+
+class DebounceRepeatedPathSelection(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-006
+
+    Depends on `PATH-DIAG-005` landing first (one consolidated event
+    consumer to attach this logic to, rather than duplicating it in two
+    places).
+
+    Found live 2026-08-12: a real, still-open connection (`rpi5-test`,
+    `TODO_DETAILS.md` #path-candidate-flapping) genuinely oscillates
+    `Selected` between two of the *peer's* own local interfaces (its
+    LAN address confirmed as `192.168.1.43`, not this machine's -- the
+    original bug writeup's "presumably two local interfaces on this
+    machine" guess was wrong) roughly every 20-50s, with no teardown in
+    between. This is legitimate iroh/noq multipath tie-breaking behavior
+    on two genuinely close-quality paths -- tetron has no control over
+    the underlying selection algorithm (`spawn_path_logger`/
+    `log_path_events` are both pure passive observers of iroh's own
+    `PathEvent` stream, confirmed via grep: neither `is_selected()` nor
+    `PathEvent::Selected` is read anywhere in `src/forward.rs` for an
+    actual forwarding decision) -- so the only available mitigation is
+    log volume, not behavior change. Expected to be common in the wild,
+    not specific to this one test peer: any real user with two
+    similar-quality paths (not just this repo's own rpi5-test hardware)
+    will produce the same pattern.
+
+    **Fix:** a configurable per-peer rate limit on `Selected` logging,
+    matching the existing `tetron config set` pattern (`log-level`,
+    `nuke-proposal-ttl`) rather than a hardcoded threshold. Two new
+    settings:
+    - `path-flap-threshold` (count, default TBD at implementation --
+      small, e.g. single digits)
+    - `path-flap-window` (duration, default TBD at implementation --
+      tens of seconds, matching the observed real cadence)
+
+    Within `log_path_events`'s own per-connection task (already a fresh
+    task per connection lifetime -- no new shared/global state needed,
+    the counter is a local variable in that task's own loop): track
+    `(window_start, count_in_window)`. On each `Selected` event, if
+    `now - window_start` exceeds the window, reset (`window_start = now`,
+    `count = 1`) and log at `info!` (a fresh window's first transition is
+    always shown -- a genuine, rare interface change for an ordinary user
+    must not be silently dropped). Otherwise increment; log at `info!`
+    while `count <= threshold`, `debug!` once it exceeds -- so a settling
+    connection's first few real flips are visible, and only sustained
+    churn within one peer's own window gets quieted.
+
+    The counting/level decision is a pure function of
+    `(now, window_start, count, threshold, window)` -> `(log_at_info,
+    new_window_start, new_count)`, extracted and unit-tested directly
+    (`PURE-LOGIC-001` pattern) -- unlike `PATH-DIAG-001`'s own
+    already-documented constraint (iroh's `#[non_exhaustive]` `PathEvent`
+    cannot be constructed by tetron's test code), this decision logic
+    itself never touches a `PathEvent`, only plain timestamps/counts, so
+    it is fully testable without a live connection.
+    """
+    req_id = "PATH-DIAG-006"
+
+
+class SuppressSelfCandidatePathEvents(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-007
+
+    Depends on `PATH-DIAG-005` landing first (same reason as
+    `PATH-DIAG-006`: one consolidated event consumer).
+
+    Found live 2026-08-12, root-caused by reading the vendored dependency
+    source rather than assumed: the same `rpi5-test` connection's path
+    events also included a *third* address, `10.77.0.113` -- confirmed via
+    `tetron status` to be `rpi5-test`'s own tetron overlay IP, not a real
+    external candidate. Distinct in kind from `PATH-DIAG-006`'s case:
+    these never reach `Selected` at all -- `Opened` immediately followed
+    by `Closed` within under a millisecond, since the address can never
+    be validated as reachable. `PATH-DIAG-006`'s rate limiter would not
+    catch this (it only throttles `Selected`), so this needs its own
+    check.
+
+    **Root cause, traced into the vendored dependency, not guessed:**
+    `netwatch-0.19.1`'s `LocalAddresses::new()` (the code iroh's endpoint
+    uses to discover this node's own advertisable direct addresses)
+    enumerates every "up", non-loopback interface via
+    `netdev::interface::get_interfaces()` with no filtering by interface
+    name or type at all (`netwatch-0.19.1/src/ip.rs:37-48`) -- a `tun`
+    device looks identical to a real NIC to this code. Every tetron node
+    therefore unknowingly advertises its own tetron overlay IP as a raw
+    NAT-traversal candidate to every peer. Checked `iroh::Endpoint`'s
+    public builder for an exclusion hook: `addr_filter()`/`AddrFilter`
+    exists, but its doc comment scopes it to `AddressLookupServices` (the
+    DNS/pkarr discovery-record publish pipeline) -- a different code path
+    from `local_direct_addrs`/`DirectAddr`
+    (`socket/remote_map/remote_state.rs`), the one that actually feeds
+    live multipath candidate negotiation. No public API found to exclude
+    an interface from that path. This is upstream territory (affects any
+    TUN-based application built on iroh, not tetron-specific) -- worth a
+    future issue against `n0-computer/iroh` or `n0-computer/netwatch`,
+    not attempted here.
+
+    **Fix, scoped to what tetron can control without upstream changes:**
+    tetron already knows every network's own overlay subnet
+    (`NetworkState.subnet`, threaded to `log_path_events` as a new
+    parameter via `spawn_peer_reader`). Any `PathEvent`'s `remote_addr`
+    whose IP falls inside that subnet (`addressing::ip_in_subnet`) is
+    provably a self-referential candidate -- log it at `debug!`
+    unconditionally (not subject to `PATH-DIAG-006`'s window/threshold,
+    since it is never legitimate at any frequency, unlike a real
+    `Selected` flip). Suppresses the *log noise* only; does not and
+    cannot (absent the upstream API gap above) prevent iroh from
+    attempting/opening the candidate itself -- that half is out of scope
+    for this requirement, flagged as a candidate follow-up if the
+    upstream gap ever closes.
+    """
+    req_id = "PATH-DIAG-007"

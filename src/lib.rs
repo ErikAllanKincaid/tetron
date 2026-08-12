@@ -11,44 +11,6 @@
 
 pub const APP_NAME: &str = "tetron";
 
-use futures::StreamExt;
-use iroh::endpoint::{Connection as IrohConnection, PathEvent};
-
-/// Logs iroh path events (opened, closed, selected) for a peer connection.
-pub(crate) fn spawn_path_logger(conn: IrohConnection, label: String) {
-    let paths = conn.paths();
-    for path in paths.iter() {
-        tracing::info!(
-            peer = %label,
-            addr = ?path.remote_addr(),
-            rtt = ?path.rtt(),
-            selected = path.is_selected(),
-            "existing path"
-        );
-    }
-
-    tokio::spawn(async move {
-        let mut events = conn.path_events();
-        while let Some(event) = events.next().await {
-            match event {
-                PathEvent::Opened { remote_addr, .. } => {
-                    tracing::info!(peer = %label, addr = ?remote_addr, "path opened");
-                }
-                PathEvent::Closed { remote_addr, .. } => {
-                    tracing::info!(peer = %label, addr = ?remote_addr, "path closed");
-                }
-                PathEvent::Selected { remote_addr, .. } => {
-                    tracing::info!(peer = %label, addr = ?remote_addr, "path selected");
-                }
-                PathEvent::Lagged { missed, .. } => {
-                    tracing::warn!(peer = %label, missed, "path events lagged");
-                }
-                _ => {}
-            }
-        }
-    });
-}
-
 pub mod addressing;
 pub mod config;
 pub mod control;

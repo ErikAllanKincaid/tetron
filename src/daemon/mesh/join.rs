@@ -198,7 +198,6 @@ pub(crate) async fn join_mesh_shared(
         .find(|m| m.identity == remote_id)
         .map(|m| m.ip)
         .unwrap_or_else(|| identity.derive_ip(&remote_id));
-    crate::spawn_path_logger(initial_conn.clone(), remote_id.fmt_short().to_string());
     register_mesh_peer(
         &peers,
         &worker_ctx,

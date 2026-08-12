@@ -483,6 +483,8 @@ pub fn spawn_peer_reader(
 
 /// Logs each path-lifecycle transition (opened / closed / selected / lagged)
 /// for one peer connection at `debug`/`info`/`warn`, per `PATH-DIAG-001`.
+/// The sole subscriber to `conn.path_events()` since `PATH-DIAG-005` removed
+/// the duplicate `spawn_path_logger`.
 ///
 /// Not unit-tested: iroh's `PathEvent` is `#[non_exhaustive]` at both the
 /// enum and every struct-variant level, so tetron's own test code cannot
@@ -499,6 +501,17 @@ pub fn spawn_peer_reader(
 /// test pattern for this codebase, disproportionate to this single item.
 async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String) {
     use futures::StreamExt;
+    // PATH-DIAG-005: one-time dump of paths already open at subscribe time,
+    // folded in from the removed (duplicate) `spawn_path_logger`. `debug!`,
+    // matching `Opened`/`Closed`'s own level below -- same class of
+    // low-value-at-scale diagnostic, not a lifecycle milestone.
+    for path in conn.paths().iter() {
+        tracing::debug!(
+            peer = %peer_id.fmt_short(), net = %network,
+            addr = ?path.remote_addr(), rtt = ?path.rtt(), selected = path.is_selected(),
+            "existing path"
+        );
+    }
     let mut events = conn.path_events();
     while let Some(event) = events.next().await {
         match event {
