@@ -82,6 +82,8 @@ testsuite coverage, and testsuite is not a substitute for it.
 Any change to tetron core requires a `tetron-testsuite` pass to verify no
 regression — the heavier, VM-based, cross-network check that `reconcile.py`
 does not attempt. Not required for addon-only, nor documentation changes.
+If `libvirtd` isn't active on the chosen `TESTSUITE_PHYSICAL_HOST`, it's
+fine to just start it.
 
 ## 9. Commit
 
