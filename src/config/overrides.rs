@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
-use super::schema::{AppConfig, DropMonitorConfig, RateLimitConfig, ServerOverride};
+use super::schema::{AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ServerOverride};
 
 /// Preset URL for the rayfish-operated iroh transport relay.
 pub const RELAY_PRESET_RAYFISH: &str = "http://relay.iroh.rayfish.xyz:3340";
@@ -129,6 +129,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         drop_key if drop_key.starts_with("drop-monitor.") => {
             set_drop_monitor_key(&mut cfg.drop_monitor, drop_key, &entries, reset)?;
         }
+        flap_key if flap_key.starts_with("path-flap.") => {
+            set_path_flap_key(&mut cfg.path_flap, flap_key, &entries, reset)?;
+        }
         "nuke-proposal-ttl" => {
             cfg.nuke_proposal_ttl = if reset {
                 None
@@ -210,7 +213,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
             "unknown config key: {other} (expected relay, discovery-dns, subnet, \
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
              invite-default-expiry, selfcapture-mitigation, log-level, \
-             drop-monitor.<window|threshold|cooldown>, or \
+             drop-monitor.<window|threshold|cooldown>, \
+             path-flap.<threshold|window>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -246,6 +250,36 @@ fn set_drop_monitor_key(
         "threshold" => dm.threshold = Some(parse_ratelimit_value(raw)?),
         "cooldown" => dm.cooldown_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown drop-monitor config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `path-flap.<key>` entry (PATH-DIAG-006). `reset`
+/// (empty value or "n0") clears the field back to `None` (compiled default).
+fn set_path_flap_key(
+    pf: &mut PathFlapConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key.strip_prefix("path-flap.").expect("checked by caller");
+    if reset {
+        match sub {
+            "threshold" => pf.threshold = None,
+            "window" => pf.window_secs = None,
+            other => anyhow::bail!("unknown path-flap config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "path-flap.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "threshold" => pf.threshold = Some(parse_ratelimit_value(raw)?),
+        "window" => pf.window_secs = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown path-flap config key: {other}"),
     }
     Ok(())
 }
@@ -390,6 +424,14 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("path-flap.") {
+            let val = match sub {
+                "threshold" => render_opt(cfg.path_flap.threshold),
+                "window" => render_opt(cfg.path_flap.window_secs),
+                other => anyhow::bail!("unknown path-flap config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if k == "nuke-proposal-ttl" {
             return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
         }
@@ -427,7 +469,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                 "unknown config key: {other} (expected relay, discovery-dns, subnet, \
                  nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
                  invite-default-expiry, selfcapture-mitigation, log-level, \
-                 drop-monitor.<window|threshold|cooldown>, or \
+                 drop-monitor.<window|threshold|cooldown>, \
+                 path-flap.<threshold|window>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -449,6 +492,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("drop-monitor.window")?,
             row("drop-monitor.threshold")?,
             row("drop-monitor.cooldown")?,
+            row("path-flap.threshold")?,
+            row("path-flap.window")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -535,6 +580,29 @@ mod tests {
             replace: true,
         };
         assert_eq!(resolve_upstreams(&rep, captured.clone()), vec![one]);
+    }
+
+    #[test]
+    fn config_set_get_path_flap() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1, "<default>");
+        assert_eq!(config_get(&cfg, Some("path-flap.window")).unwrap()[0].1, "<default>");
+
+        config_set(&mut cfg, "path-flap.threshold", "5", false).unwrap();
+        assert_eq!(cfg.path_flap.threshold, Some(5));
+        assert_eq!(config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1, "5");
+
+        config_set(&mut cfg, "path-flap.window", "90", false).unwrap();
+        assert_eq!(cfg.path_flap.window_secs, Some(90));
+        assert_eq!(config_get(&cfg, Some("path-flap.window")).unwrap()[0].1, "90");
+
+        // Empty resets to default (None).
+        config_set(&mut cfg, "path-flap.threshold", "", false).unwrap();
+        assert_eq!(cfg.path_flap.threshold, None);
+
+        // Unknown sub-key and non-numeric value are both rejected.
+        assert!(config_set(&mut cfg, "path-flap.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "path-flap.threshold", "not-a-number", false).is_err());
     }
 
     #[test]

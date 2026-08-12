@@ -212,6 +212,24 @@ pub struct DropMonitorConfig {
     pub cooldown_secs: Option<u64>,
 }
 
+/// Per-peer path-selection flap-logging policy (PATH-DIAG-006). Each field
+/// `None` means "use the compiled default". Set via `tetron config set
+/// path-flap.<key> <value>`; an empty value resets that one key. Does not
+/// change iroh's own path-selection behavior (out of tetron's control) --
+/// only how aggressively repeated `Selected` transitions for the same peer
+/// get logged at `info` vs. quieted to `debug`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PathFlapConfig {
+    /// `Selected` transitions for one peer within one window before further
+    /// ones in that same window are quieted to `debug`. Default 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    /// Seconds per window before the count resets and the next transition is
+    /// shown at `info` again. Default 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -250,6 +268,9 @@ pub struct AppConfig {
     /// Proactive drop-rate monitor overrides (LOG-002). See [`DropMonitorConfig`].
     #[serde(default)]
     pub drop_monitor: DropMonitorConfig,
+    /// Path-selection flap-logging overrides (PATH-DIAG-006). See [`PathFlapConfig`].
+    #[serde(default)]
+    pub path_flap: PathFlapConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).

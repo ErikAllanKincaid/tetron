@@ -26,6 +26,14 @@ use crate::stats::{DropReason, ForwardMetrics};
 /// of oversized datagrams from a malicious or buggy peer.
 const MAX_PEER_DATAGRAM: usize = 1500;
 
+/// Compiled default for `path-flap.threshold` (PATH-DIAG-006): `Selected`
+/// transitions for one peer within one window before further ones in that
+/// same window are quieted to `debug`.
+const PATH_FLAP_THRESHOLD: u32 = 3;
+
+/// Compiled default for `path-flap.window` (PATH-DIAG-006), in seconds.
+const PATH_FLAP_WINDOW_SECS: u64 = 60;
+
 /// Size of the TUN read pool. One allocation is amortized across the ~50
 /// datagrams that fit in a chunk: each packet is sliced off with a zero-copy
 /// `split_to(n).freeze()`, and a fresh chunk is only allocated once the current
@@ -83,6 +91,32 @@ pub(crate) fn evaluate_inbound(
         return InboundDecision::DropSpoof;
     }
     InboundDecision::Accept
+}
+
+/// Decides whether one peer's `Selected` path-event transition should log at
+/// `info` (PATH-DIAG-006). Pure function of a sliding per-peer window count,
+/// unlike the iroh-`PathEvent`-consuming code around it (see
+/// `log_path_events`'s own doc comment) -- takes only plain
+/// timestamps/counts, so it is directly unit-testable without a live
+/// connection. A fresh window's first transition always logs at `info` (a
+/// genuine, rare interface change for an ordinary user must not be
+/// silently dropped); further transitions within the same window log at
+/// `info` while `count <= threshold`, `debug` once exceeded -- so a
+/// settling connection's first few real flips stay visible, and only
+/// sustained churn within one window gets quieted. Returns
+/// `(log_at_info, new_window_start, new_count)`.
+fn path_flap_decision(
+    now: std::time::Instant,
+    window_start: std::time::Instant,
+    count: u32,
+    threshold: u32,
+    window: std::time::Duration,
+) -> (bool, std::time::Instant, u32) {
+    if now.duration_since(window_start) >= window {
+        return (true, now, 1);
+    }
+    let new_count = count + 1;
+    (new_count <= threshold, window_start, new_count)
 }
 
 /// Application close code a peer sends when it deliberately leaves a network
@@ -501,6 +535,21 @@ pub fn spawn_peer_reader(
 /// test pattern for this codebase, disproportionate to this single item.
 async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String) {
     use futures::StreamExt;
+    // PATH-DIAG-006: per-peer flap-debounce state. A fresh task per
+    // connection lifetime, so this is a plain local -- no shared/global
+    // state needed. Config read once at subscribe time (not per-event);
+    // `tetron config set path-flap.<key>` takes effect on the next
+    // connection, not live mid-connection, matching this codebase's usual
+    // "config resolved at the point a task starts" pattern (e.g.
+    // `init_drop_monitor`).
+    let cfg = crate::config::load().unwrap_or_default();
+    let flap_threshold = cfg.path_flap.threshold.unwrap_or(PATH_FLAP_THRESHOLD);
+    let flap_window = std::time::Duration::from_secs(
+        cfg.path_flap.window_secs.unwrap_or(PATH_FLAP_WINDOW_SECS),
+    );
+    let mut flap_window_start = std::time::Instant::now();
+    let mut flap_count: u32 = 0;
+
     // PATH-DIAG-005: one-time dump of paths already open at subscribe time,
     // folded in from the removed (duplicate) `spawn_path_logger`. `debug!`,
     // matching `Opened`/`Closed`'s own level below -- same class of
@@ -526,7 +575,23 @@ async fn log_path_events(conn: Connection, peer_id: EndpointId, network: String)
                 );
             }
             iroh::endpoint::PathEvent::Selected { remote_addr, .. } => {
-                tracing::info!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path selected");
+                let (log_at_info, new_window_start, new_count) = path_flap_decision(
+                    std::time::Instant::now(),
+                    flap_window_start,
+                    flap_count,
+                    flap_threshold,
+                    flap_window,
+                );
+                flap_window_start = new_window_start;
+                flap_count = new_count;
+                if log_at_info {
+                    tracing::info!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path selected");
+                } else {
+                    tracing::debug!(
+                        peer = %peer_id.fmt_short(), net = %network, %remote_addr,
+                        count_in_window = flap_count, "path selected (flap-quieted)"
+                    );
+                }
             }
             iroh::endpoint::PathEvent::Lagged { missed, .. } => {
                 tracing::warn!(
@@ -572,6 +637,70 @@ pub fn spawn_tun_writer<W: crate::tun::TunWrite>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // PATH-DIAG-006: `path_flap_decision` pure-logic tests.
+    mod path_flap_decision_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn first_selection_in_fresh_window_logs_at_info() {
+            let now = Instant::now();
+            let (log_at_info, _, count) =
+                path_flap_decision(now, now, 0, 3, Duration::from_secs(60));
+            assert!(log_at_info);
+            assert_eq!(count, 1);
+        }
+
+        #[test]
+        fn stays_at_info_up_to_and_including_threshold() {
+            let window_start = Instant::now();
+            let window = Duration::from_secs(60);
+            let now = window_start + Duration::from_secs(1);
+            // Third transition in the window (count goes 0 -> 1 -> 2 -> 3),
+            // threshold 3: still shown.
+            let (log_at_info, _, count) = path_flap_decision(now, window_start, 2, 3, window);
+            assert!(log_at_info);
+            assert_eq!(count, 3);
+        }
+
+        #[test]
+        fn exceeds_threshold_quiets_to_debug() {
+            let window_start = Instant::now();
+            let window = Duration::from_secs(60);
+            let now = window_start + Duration::from_secs(1);
+            // Fourth transition in the window, threshold 3: quieted.
+            let (log_at_info, _, count) = path_flap_decision(now, window_start, 3, 3, window);
+            assert!(!log_at_info);
+            assert_eq!(count, 4);
+        }
+
+        #[test]
+        fn window_elapsed_resets_and_logs_at_info_regardless_of_prior_count() {
+            let window_start = Instant::now();
+            let window = Duration::from_secs(60);
+            // Well past the window, with a prior count far over threshold.
+            let now = window_start + Duration::from_secs(61);
+            let (log_at_info, new_window_start, count) =
+                path_flap_decision(now, window_start, 50, 3, window);
+            assert!(log_at_info);
+            assert_eq!(count, 1);
+            assert_eq!(new_window_start, now);
+        }
+
+        #[test]
+        fn window_boundary_is_inclusive_of_reset() {
+            let window_start = Instant::now();
+            let window = Duration::from_secs(60);
+            // Exactly at the window boundary: treated as elapsed (>=).
+            let now = window_start + window;
+            let (log_at_info, new_window_start, count) =
+                path_flap_decision(now, window_start, 10, 3, window);
+            assert!(log_at_info);
+            assert_eq!(count, 1);
+            assert_eq!(new_window_start, now);
+        }
+    }
 
     #[derive(Default)]
     struct FakeTunWriter {
