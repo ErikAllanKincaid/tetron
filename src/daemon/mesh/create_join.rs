@@ -45,6 +45,11 @@ struct EstablishedMesh {
     cancel: CancellationToken,
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The joiner's authoritative IP (MULTISEG-009) -- from the handshake's
+    /// roster-resolved value on a fresh join, `JoinContext.my_ip` unchanged
+    /// on a reconnect. `finalize_join` uses this, not `JoinContext.my_ip`,
+    /// for everything after admission.
+    my_ip: Ipv4Addr,
 }
 
 /// Tear down a failed dial attempt: cancel the token and abort every spawned
@@ -1000,7 +1005,7 @@ impl MeshManager {
                 )
                 .await
             {
-                Ok(JoinResult::Joined(state, reconverge_notify)) => {
+                Ok(JoinResult::Joined(state, reconverge_notify, my_ip)) => {
                     // Deliver the resources to the reconnect loop (which blocks
                     // on the receivers until now; forward readers — and thus
                     // disconnect events — are spawned inside join_mesh_shared,
@@ -1015,6 +1020,7 @@ impl MeshManager {
                         cancel,
                         disconnect_tx,
                         tasks,
+                        my_ip,
                     }));
                 }
                 Ok(JoinResult::Pending) => {
@@ -1119,7 +1125,11 @@ impl MeshManager {
                     )
                     .await
                 {
-                    Ok(JoinResult::Joined(state, reconverge_notify)) => {
+                    // The reconnect path's `my_ip` (third field) is always
+                    // `ctx.my_ip` unchanged (MULTISEG-009's fix only applies
+                    // to the fresh-join collision path) -- ignored here,
+                    // `ctx.my_ip` is used directly below.
+                    Ok(JoinResult::Joined(state, reconverge_notify, _my_ip)) => {
                         joined_state = Some((state, reconverge_notify));
                     }
                     Ok(JoinResult::Pending) => {
@@ -1187,6 +1197,7 @@ impl MeshManager {
             cancel,
             disconnect_tx,
             tasks,
+            my_ip: ctx.my_ip,
         }))
     }
 
@@ -1277,11 +1288,11 @@ impl MeshManager {
             cancel,
             disconnect_tx,
             mut tasks,
+            my_ip,
         } = mesh;
         let JoinContext {
             display_name,
             alpn,
-            my_ip,
             net_pubkey,
             transport,
             network_subnet,
