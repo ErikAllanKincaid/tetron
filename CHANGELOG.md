@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A join that collides with an existing member's IP no longer fails outright** (`MULTISEG-009`): the coordinator already resolves the collision correctly and admits the joiner at the next free address, but the joiner discarded that answer and rejected its own successful admission because its own pre-dial guess didn't match. Concurrent joins to the same network (two people redeeming a shared invite around the same moment, or automated test/CI infrastructure joining back-to-back) can trigger this; the joiner now adopts its real assigned IP from the coordinator's response instead of bailing.
+
 ### Changed
 
 - **`dht::publish_network` now times out after 15s instead of hanging indefinitely** (`DHT-ERRCAUSE-002`): a blackholed discovery relay could previously wedge a network's publisher loop forever on a single unresponsive HTTP call, since nothing else in that loop ever ran until it returned. It now fails with a clear "timed out after 15s publishing network record via ..." error and the loop continues on its normal schedule, matching the existing 15s bound already in place for resolves (`DHT-ERRCAUSE-001`).
