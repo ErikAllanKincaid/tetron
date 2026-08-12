@@ -29,7 +29,6 @@ impl CoordinatorAcceptState {
         peer_ip: Ipv4Addr,
     ) {
         tracing::info!(ip = %peer_ip, "known member reconnecting");
-        crate::spawn_path_logger(conn.clone(), remote_id.fmt_short().to_string());
         let peer_ipv6 = derive_ipv6(&remote_id, &self.ctx.network_key);
         self.ctx.peers.add(
             peer_ip,
@@ -382,7 +381,6 @@ impl CoordinatorAcceptState {
         peer_ip: Ipv4Addr,
     ) {
         let peer_ipv6 = derive_ipv6(&remote_id, &self.ctx.network_key);
-        crate::spawn_path_logger(conn.clone(), remote_id.fmt_short().to_string());
         self.ctx.peers.add(
             peer_ip,
             peer_ipv6,

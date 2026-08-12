@@ -1570,10 +1570,6 @@ impl MeshManager {
                             )
                             .await;
                         }
-                        crate::spawn_path_logger(
-                            peer_conn.clone(),
-                            m.identity.fmt_short().to_string(),
-                        );
                         peers.add(
                             m.ip,
                             derive_ipv6(&m.identity, &net_pubkey),
