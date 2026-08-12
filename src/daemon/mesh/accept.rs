@@ -41,6 +41,8 @@ impl CoordinatorAcceptState {
         let disconnect_tx = self.disconnect_tx.clone();
         let network = self.network_name.clone();
         let ctx = self.ctx.clone();
+        // PATH-DIAG-007: this network's subnet, for self-candidate detection.
+        let subnet = self.state.read().unwrap().subnet;
         tokio::spawn(async move {
             send_member_sync(&conn).await;
             spawn_coordinator_control_reader(
@@ -57,6 +59,7 @@ impl CoordinatorAcceptState {
                 peer_ip,
                 peer_ipv6,
                 network,
+                subnet,
                 ctx.forward_ctx(disconnect_tx, token),
             );
         });
@@ -402,6 +405,7 @@ impl CoordinatorAcceptState {
             peer_ip,
             peer_ipv6,
             self.network_name.clone(),
+            self.state.read().unwrap().subnet,
             self.ctx
                 .forward_ctx(self.disconnect_tx.clone(), self.token.clone()),
         );
@@ -435,6 +439,7 @@ impl MemberAcceptState {
             ip,
             peer_ipv6,
             self.network_name.clone(),
+            self.state.read().unwrap().subnet,
             self.ctx
                 .forward_ctx(self.disconnect_tx.clone(), self.token.clone()),
         );
