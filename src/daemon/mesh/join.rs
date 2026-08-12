@@ -11,9 +11,11 @@ use crate::config::TransportMode;
 
 /// Result of the initial join handshake against the coordinator.
 pub(crate) enum JoinResult {
-    /// Admitted (open network, valid invite, or pre-approved): live network state
-    /// and the reconverge-notify handle created inside `join_mesh_shared`.
-    Joined(SharedNetworkState, Arc<tokio::sync::Notify>),
+    /// Admitted (open network, valid invite, or pre-approved): live network state,
+    /// the reconverge-notify handle created inside `join_mesh_shared`, and the
+    /// joiner's authoritative IP (MULTISEG-009) -- the roster-resolved value on a
+    /// fresh join, the unchanged pre-dial value on a reconnect.
+    Joined(SharedNetworkState, Arc<tokio::sync::Notify>, Ipv4Addr),
     /// Queued for live approval on a closed network; the caller should retry.
     Pending,
 }
@@ -30,6 +32,12 @@ enum HandshakeOutcome {
     Admitted {
         members: Vec<crate::membership::Member>,
         approved: Vec<ApprovedEntry>,
+        /// The joiner's authoritative IP (MULTISEG-009): on a fresh join,
+        /// resolved from the joiner's own entry in `members` rather than
+        /// trusting the pre-dial guess passed in; on a reconnect, the same
+        /// guess passed through unchanged (no collision resolution happens
+        /// on that path).
+        my_ip: Ipv4Addr,
     },
     Pending,
 }
@@ -132,7 +140,7 @@ pub(crate) async fn join_mesh_shared(
     } = params;
     let my_identity = identity.local_identity();
 
-    let (members, approved) = match perform_join_handshake(
+    let (members, approved, my_ip) = match perform_join_handshake(
         &initial_conn,
         ep,
         network_name,
@@ -147,7 +155,11 @@ pub(crate) async fn join_mesh_shared(
     )
     .await?
     {
-        HandshakeOutcome::Admitted { members, approved } => (members, approved),
+        HandshakeOutcome::Admitted {
+            members,
+            approved,
+            my_ip,
+        } => (members, approved, my_ip),
         HandshakeOutcome::Pending => return Ok(JoinResult::Pending),
     };
 
@@ -263,7 +275,7 @@ pub(crate) async fn join_mesh_shared(
         global_gate.clone(),
     );
 
-    Ok(JoinResult::Joined(live_state, reconverge_notify))
+    Ok(JoinResult::Joined(live_state, reconverge_notify, my_ip))
 }
 
 /// The hostname this node should announce to peers for `network_name`: its
@@ -553,10 +565,17 @@ async fn perform_join_handshake(
         match msg {
             ControlMsg::Welcome { members, approved } => {
                 tracing::info!(network = %network_name, "welcomed to network");
-                if let Some(existing) = welcome_ip_collision(&members, my_ip, my_identity) {
-                    anyhow::bail!("IP collision: {my_ip} is already assigned to {existing}");
-                }
-                Ok(HandshakeOutcome::Admitted { members, approved })
+                let my_ip = match resolve_welcome_self_ip(&members, my_ip, my_identity) {
+                    Ok(ip) => ip,
+                    Err(existing) => {
+                        anyhow::bail!("IP collision: {my_ip} is already assigned to {existing}")
+                    }
+                };
+                Ok(HandshakeOutcome::Admitted {
+                    members,
+                    approved,
+                    my_ip,
+                })
             }
             ControlMsg::JoinPending => {
                 tracing::info!(network = %network_name, "join pending operator approval");
@@ -608,7 +627,11 @@ async fn perform_join_handshake(
             ControlMsg::JoinDenied { reason } => anyhow::bail!("join denied: {reason}"),
             other => anyhow::bail!("expected Welcome or MemberSync, got {other:?}"),
         };
-        Ok(HandshakeOutcome::Admitted { members, approved })
+        Ok(HandshakeOutcome::Admitted {
+            members,
+            approved,
+            my_ip,
+        })
     }
 }
 

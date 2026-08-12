@@ -1268,6 +1268,87 @@ class MemberJoinNetworkStateSubnetFixed(Requirement):
     req_id = "MULTISEG-008"
 
 
+# --------------------------------------------------------------------------
+# MULTISEG-009: join-side collision false-positive -- same root-cause class
+# as MULTISEG-007 (a locally-derived `my_ip` guess disagreeing with the
+# roster), this time on the *collision* check rather than the anti-spoof
+# check. Found live via two concurrent tetron-testsuite OOM-repro runs.
+# --------------------------------------------------------------------------
+
+class WelcomeAdoptsAuthoritativeSelfIp(Requirement):
+    """REQUIREMENT-ID: MULTISEG-009
+
+    Found live 2026-08-11: two separate `tetron-testsuite` OOM-repro test
+    runs (`oom-repro-t3-churn.sh`'s node4, `oom-repro-t4-soak.sh`'s node1)
+    joined the real `testing-delete-me` network within about a minute of
+    each other. The second join failed outright:
+    ```
+    ! join failed
+      no coordinator admitted the join (tried 2): IP collision: 10.77.0.101
+      is already assigned to 1635d23e9f405688140605d84ef89334763ed7bb84468bef82d0d7938184ea3c
+    ```
+    against both of that network's coordinators identically, even though
+    `src/addressing.rs::assign_ip`'s collision-index rotation exists
+    specifically to resolve this exact case (its own doc comment: "two
+    different identities hashed to the same virtual IP").
+
+    **Root cause, traced end to end, not assumed:** the coordinator side
+    was already correct. `accept.rs::validate_admission` calls `assign_ip`
+    authoritatively and explicitly ignores the joiner-suggested IP
+    (`admit_peer`'s `_suggested_ip` parameter, underscore-prefixed, unused
+    — its own doc comment: "the lowest free collision index (not the
+    peer-suggested address)"). So a coordinator admitting a colliding
+    identity correctly bumps it to the next free index and puts that
+    bumped IP in the `Welcome.members` roster it sends back.
+
+    The bug was entirely client-side, in `join.rs::perform_join_handshake`'s
+    `initial` branch (line ~555): `my_ip` is computed once, locally, before
+    ever contacting a coordinator (`create_join.rs`'s index-0
+    `derive_ip`, blind to the roster, same pre-dial-guess pattern
+    `MULTISEG-007` already fixed for `remote_ip`). On `Welcome`,
+    `select.rs::welcome_ip_collision` checked whether *that stale guess*
+    belonged to a different identity in the fresh roster and bailed if so
+    — discarding the fact that `Welcome.members` already contained the
+    joiner's own correctly-resolved (possibly bumped-index) entry, sitting
+    right there unused. The coordinator had already solved the collision;
+    the client just never read its own answer out of the response.
+
+    **Fix:** on `Welcome`, look up the joiner's own entry in `members` by
+    identity first. If present, its `ip` is the authoritative `my_ip` —
+    adopt it instead of bailing; `welcome_ip_collision` (kept, renamed
+    conceptually to a defensive check) now only fires if that lookup is
+    absent (a genuine anomaly: the coordinator claims to have admitted us
+    but our own identity isn't in the roster it sent) or if the adopted IP
+    is *still* held by someone else after the lookup (should not happen by
+    `assign_ip`'s construction, but not assumed). No retry, no second
+    round-trip against another coordinator — the already-successful
+    admission is used as-is. `HandshakeOutcome::Admitted`/`JoinResult`
+    thread the adopted IP back up to `join_network_inner`
+    (create_join.rs), which now uses it (not the stale pre-dial guess) for
+    `persist_join_config`, `spawn_roster_peer_dials`,
+    `spawn_reconverge_worker`, `NetworkHandle.my_ip`, TUN creation, and the
+    `Joined` IPC response — all of which, pre-fix, would have silently
+    kept using the wrong (never-collided-in-the-first-place, so never
+    triggered the bail, but also never the *bumped* address) value on the
+    non-colliding path too, since the local guess and the roster value
+    only ever agreed by coincidence at index 0.
+
+    **Not in scope, tracked separately:** `dial_fresh_join`'s
+    coordinator-retry loop reuses the same `GroupBlob` snapshot (`data`)
+    across every coordinator attempt in `order` — real staleness for
+    other rejection reasons (e.g. a revoked invite), but not the cause of
+    this bug, since the fix above means a colliding join now succeeds on
+    the first coordinator that admits it rather than needing a second
+    attempt at all.
+
+    Found: 2026-08-11/12, `tetron-testsuite` OOM-repro session
+    (`DO-NOT-COMMIT/RESULTS_session-2026-08-11_oom-repro-and-connection-stability.md`
+    bug #5 / `DO-NOT-COMMIT/TODO_DETAILS.md#concurrent-join-ip-collision`),
+    live against the real `testing-delete-me` network, not synthetic.
+    """
+    req_id = "MULTISEG-009"
+
+
 class SubnetDriftOnRestart(Requirement):
     """REQUIREMENT-ID: SUBNET-DRIFT-001
 

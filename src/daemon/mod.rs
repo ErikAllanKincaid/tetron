@@ -1786,6 +1786,55 @@ mod welcome_ip_collision_tests {
         let members = vec![mk(other, other_ip)];
         assert_eq!(welcome_ip_collision(&members, ip, mine), None);
     }
+
+    // MULTISEG-009: `resolve_welcome_self_ip` must prefer the roster's own
+    // entry for `my_identity` over the joiner's pre-dial guess.
+    #[test]
+    fn adopts_bumped_ip_from_roster_on_collision() {
+        let mine = test_id(1);
+        let other = test_id(2);
+        let guessed_ip = crate::membership::derive_ip(&mine, default_subnet());
+        // `other` already holds the guessed (index-0) IP; the coordinator
+        // resolved the collision and assigned `mine` a bumped-index IP,
+        // reflected in the roster it sent back in `Welcome`.
+        let bumped_ip = crate::membership::derive_ip_with_index(&mine, 1, default_subnet());
+        let members = vec![mk(other, guessed_ip), mk(mine, bumped_ip)];
+        assert_eq!(
+            resolve_welcome_self_ip(&members, guessed_ip, mine),
+            Ok(bumped_ip)
+        );
+    }
+
+    #[test]
+    fn no_collision_keeps_the_guess() {
+        let mine = test_id(1);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        let members = vec![mk(mine, ip)];
+        assert_eq!(resolve_welcome_self_ip(&members, ip, mine), Ok(ip));
+    }
+
+    #[test]
+    fn defensive_fallback_when_self_entry_missing_and_guess_collides() {
+        let mine = test_id(1);
+        let other = test_id(2);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        // Anomalous: roster has no entry for `mine` at all (should not
+        // happen -- `Welcome` implies admission), but the guess collides
+        // with someone else. Must still surface as an error, not silently
+        // adopt the guess.
+        let members = vec![mk(other, ip)];
+        assert_eq!(resolve_welcome_self_ip(&members, ip, mine), Err(other));
+    }
+
+    #[test]
+    fn defensive_fallback_when_self_entry_missing_and_no_collision() {
+        let mine = test_id(1);
+        let ip = crate::membership::derive_ip(&mine, default_subnet());
+        // Anomalous: no self entry, but the guess doesn't collide either --
+        // falls back to the guess.
+        let members: Vec<Member> = vec![];
+        assert_eq!(resolve_welcome_self_ip(&members, ip, mine), Ok(ip));
+    }
 }
 
 #[cfg(test)]

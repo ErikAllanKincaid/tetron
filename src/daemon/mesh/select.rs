@@ -308,6 +308,32 @@ pub(crate) fn welcome_ip_collision(
         .map(|m| m.identity)
 }
 
+/// Resolve the authoritative `my_ip` from a just-received `Welcome` roster
+/// (MULTISEG-009, PURE-LOGIC-001). The coordinator's admission path
+/// (`accept.rs::validate_admission`) already calls `assign_ip` and ignores
+/// the joiner's own pre-dial guess, so `members` already carries the
+/// joiner's real, collision-resolved IP under its own identity -- prefer
+/// that over the guess instead of comparing the guess against the roster
+/// and bailing on a mismatch. Falls back to [`welcome_ip_collision`]'s
+/// guess-vs-roster check only when the roster has no entry for
+/// `my_identity` at all (should not happen: `Welcome` is only sent after
+/// the coordinator has already added the joiner to its own roster).
+/// `Err` carries the still-colliding identity, for the caller's error
+/// message.
+pub(crate) fn resolve_welcome_self_ip(
+    members: &[Member],
+    my_ip: Ipv4Addr,
+    my_identity: EndpointId,
+) -> Result<Ipv4Addr, EndpointId> {
+    if let Some(mine) = members.iter().find(|m| m.identity == my_identity) {
+        return Ok(mine.ip);
+    }
+    match welcome_ip_collision(members, my_ip, my_identity) {
+        Some(existing) => Err(existing),
+        None => Ok(my_ip),
+    }
+}
+
 /// Doubles `current` for the next reconnect attempt, capped at `max`
 /// (exponential backoff, PURE-LOGIC-001). Extracted from
 /// `join.rs::spawn_reconnect_loop`'s per-peer retry loop for direct unit
