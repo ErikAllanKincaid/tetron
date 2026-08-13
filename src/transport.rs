@@ -10,7 +10,7 @@ use iroh::{
     address_lookup::{PkarrPublisher, PkarrResolver},
     endpoint::Connection,
     endpoint::presets,
-    endpoint::{Builder, QuicTransportConfig, VarInt},
+    endpoint::{Builder, QuicTransportConfig},
 };
 
 use crate::config::ServerOverride;
@@ -161,11 +161,16 @@ fn quic_transport_config() -> QuicTransportConfig {
         // Keep GSO on (default) explicitly so a future change can't silently
         // regress it.
         .enable_segmentation_offload(true)
-        // Tighten iroh/quinn's 30s default down to 10s (HARDEN-007). The true
-        // idle timeout is min(ours, peer's) per RFC 9000, so this bounds every
-        // connection from our side alone — faster cleanup of scanner/probe
-        // connections that complete a handshake then go silent.
-        .max_idle_timeout(Some(VarInt::from_u32(10_000).into()))
+        // No max_idle_timeout override: stays at iroh/quinn's own 30s default
+        // (CONN-STABILITY-001, reverting HARDEN-007's 10s tightening). A
+        // relay-tunneled connection between two admitted mesh peers has no
+        // reliable activity within a 10s window on its own — the relay
+        // protocol's own ping/pong heartbeat runs on a ~15s+jitter cadence,
+        // so a 10s ceiling guarantees the connection dies before that
+        // heartbeat ever gets a chance to fire even once. 30s gives it room
+        // to engage and then sustains the connection indefinitely
+        // (empirically confirmed: 0 reconnects over 250s at 30s vs. 14
+        // reconnects in 180s at 10s, identical relay-forced-idle setup).
         .build()
 }
 

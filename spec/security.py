@@ -297,6 +297,106 @@ class QuicIdleTimeoutTightened(Requirement):
 
 
 # --------------------------------------------------------------------------
+# CONN-STABILITY-001: reverts HARDEN-007's global idle-timeout tightening --
+# found to cause a severe, continuous regression on relay-tunneled
+# connections between already-admitted, trusted mesh peers. Full
+# investigation trail: `DO-NOT-COMMIT/ANALYSIS_idle-timeout-reconnect-churn_2026-08-11.md`,
+# `DO-NOT-COMMIT/PLAN_connection-stability-idle-timeout_2026-08-11.md`,
+# `DO-NOT-COMMIT/TODO_DETAILS.md` #6.
+# --------------------------------------------------------------------------
+
+class QuicIdleTimeoutRevertedToUpstreamDefault(Requirement):
+    """REQUIREMENT-ID: CONN-STABILITY-001
+
+    Reverts `HARDEN-007`: `quic_transport_config()`'s `max_idle_timeout`
+    goes back to iroh/quinn's own 30s default (the explicit `.max_idle_timeout(...)`
+    override removed entirely, not just changed to a different value --
+    letting the builder's own default carry it, so a future upstream
+    default change is inherited automatically rather than silently
+    diverging from it again).
+
+    **Why HARDEN-007's benefit was already thin.** Its own docstring
+    concedes the claim it was originally framed to fix (PR #12's
+    unbounded-handshake-accumulation concern) was refuted before it even
+    landed -- *"Step 0 confirmed the 30s default already bounds every
+    incoming handshake today, so nothing was ever unbounded."* What
+    shipped was a fallback justification: faster cleanup (10s vs 30s) of
+    scanner/probe connections that complete a handshake then go silent --
+    explicitly *"Not urgent"* in its own text. And even that benefit only
+    ever applied to the accept-side, pre-admission case: an already-admitted,
+    trusted mesh peer isn't a scanner, so tightening its timeout carried
+    the same code's benefit to zero of its own connections, while `.transport_config()`
+    being one shared config for both dial and accept sides meant every
+    connection paid the resulting cost regardless (`PLAN_connection-stability-idle-timeout_2026-08-11.md`'s
+    Experiment B (2.2) had proposed narrowing the scope instead of a full
+    revert -- superseded by this decision once the plain revert was
+    empirically confirmed sufficient on its own, see below).
+
+    **The cost, found live 2026-08-11/12 during OOM-reproduction testing,
+    confirmed root-caused, not just observed.** A relay-forced idle
+    connection between two admitted mesh peers cycled disconnect/reconnect
+    continuously -- 425 events over an 83-minute production-condition run
+    when first found; reproduced deterministically in a controlled 2-VM
+    test (14 reconnects in a 180s idle window, ~10.2-10.4s apart,
+    `error=timed out`). Traced to a genuine, specific mechanism, not
+    vaguely attributed:
+
+    1. The relay protocol (`iroh-relay-1.0.3`, vendored source) runs its
+       own application-level ping/pong heartbeat, entirely independent of
+       QUIC's own idle timer: `PING_INTERVAL = 15s` (+ random jitter,
+       `protos/relay.rs:36`, `server/client.rs:339`), `PING_TIMEOUT = 5s`
+       default (`ping_tracker.rs`). Both client and server sides correctly
+       implement it (confirmed by reading `iroh::socket::transports::relay::actor`,
+       not assumed) -- receiving a ping/pong frame counts as connection
+       activity, which resets an idle timer.
+    2. `HARDEN-007`'s 10s value is *shorter* than this heartbeat's own
+       ~15s+jitter interval. A relay-tunneled connection therefore always
+       dies before the relay's own keepalive mechanism ever gets a chance
+       to fire even once -- a pure race between two independently-chosen
+       constants, not a deeper protocol bug. This also explains why an
+       earlier experiment (adding an explicit client-side
+       `keep_alive_interval`, branch `experiment/conn-stability-keepalive`,
+       kept for reference) made *zero* observed difference: the missing
+       ingredient was never local keepalive at all, it was simply enough
+       time for the relay's own already-correct heartbeat to engage.
+    3. A genuinely idle DIRECT connection (no relay) does not show this
+       churn (zero teardowns over 30 real minutes against real fleet
+       peers) -- consistent with direct connections more often carrying
+       *some* incidental traffic within a 10s window, unlike a relay hop
+       whose only native keepalive-equivalent runs on a longer cadence.
+
+    **Fix choice empirically confirmed, not assumed.** Reverting to 30s
+    was tested directly against the identical relay-forced-idle setup
+    that produced the churn: 0 reconnects over a 250s window (vs. 14 in
+    180s at 10s) -- the connection lived well past the relay's own first
+    heartbeat and was sustained by it indefinitely afterward. This settles
+    the open question of whether reverting fully fixes the bug or merely
+    slows it: it fixes it, at least for the relay protocol's own
+    ~15s-cadence heartbeat providing sufficient cover once given the room
+    to run.
+
+    **Standing regression coverage (mandated by this investigation's own
+    charter, not optional):** two new `tetron-testsuite` tests,
+    `idle-connection-stability.sh` (direct path) and
+    `idle-connection-stability-relay.sh` (relay-forced, reusing
+    `lib/network_faults.sh`'s `force_relay_only`), each holding a joined
+    connection genuinely idle for a duration comfortably longer than 30s
+    and asserting zero reconnect events. Both added to `run-list.txt` as
+    standing, routine gates (not manual/exploratory like the OOM-repro
+    suite) -- confirmed to FAIL against the pre-fix 10s timeout before
+    this fix landed, per this repo's own "a regression test that has
+    never been observed to fail is not proven to test anything" standard.
+
+    USER's own stated priority motivating this whole investigation,
+    quoted directly: *"Connection and stability are the number one
+    concern for a VPN. If anything we should improve over the upstream,
+    not regress."* This reverts a regression back to upstream's own
+    baseline; not itself a further improvement past it.
+    """
+    req_id = "CONN-STABILITY-001"
+
+
+# --------------------------------------------------------------------------
 # AUTHZ-001: AdminList/InviteList must be open to any local user, not
 # operator-gated
 # --------------------------------------------------------------------------
