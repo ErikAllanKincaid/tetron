@@ -56,6 +56,18 @@ pub(crate) async fn ipc_create(
             initial_invite_key,
             subnet,
         } => {
+            if json_enabled() {
+                print_json(&created_json(
+                    &network,
+                    &network_key,
+                    my_ip,
+                    my_ipv6,
+                    &warning,
+                    &initial_invite_key,
+                    &subnet,
+                ));
+                return Ok(());
+            }
             let key_str = network_key.to_string();
             let short = if key_str.len() > 12 {
                 format!("{}…{}", &key_str[..4], &key_str[key_str.len() - 4..])
@@ -103,6 +115,28 @@ pub(crate) async fn ipc_create(
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
+}
+
+/// Builds the `--json` payload for a successful `tetron create` (CREATE-JSON-001).
+/// `network_key` is emitted as the full key, never the pretty-print's truncated form.
+fn created_json(
+    network: &str,
+    network_key: &iroh::EndpointId,
+    my_ip: std::net::Ipv4Addr,
+    my_ipv6: Option<std::net::Ipv6Addr>,
+    warning: &Option<String>,
+    initial_invite_key: &Option<String>,
+    subnet: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "network": network,
+        "network_key": network_key.to_string(),
+        "my_ip": my_ip.to_string(),
+        "my_ipv6": my_ipv6.map(|a| a.to_string()),
+        "warning": warning,
+        "initial_invite_key": initial_invite_key,
+        "subnet": subnet,
+    })
 }
 
 pub(crate) async fn ipc_join(
@@ -255,4 +289,49 @@ pub(crate) async fn ipc_leave(network: &str, force: bool) -> Result<()> {
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn created_json_emits_full_key_and_all_fields() {
+        let key = iroh::SecretKey::generate().public();
+        let value = created_json(
+            "spooky-otter-lake",
+            &key,
+            "10.88.0.2".parse().unwrap(),
+            Some("fd00::2".parse().unwrap()),
+            &Some("relay-only".to_string()),
+            &Some("invite-abc".to_string()),
+            "10.88.0.0/24",
+        );
+        assert_eq!(value["network"], "spooky-otter-lake");
+        // Full key, not the pretty-print's truncated "abcd…wxyz" form.
+        assert_eq!(value["network_key"], key.to_string());
+        assert!(value["network_key"].as_str().unwrap().len() > 12);
+        assert_eq!(value["my_ip"], "10.88.0.2");
+        assert_eq!(value["my_ipv6"], "fd00::2");
+        assert_eq!(value["warning"], "relay-only");
+        assert_eq!(value["initial_invite_key"], "invite-abc");
+        assert_eq!(value["subnet"], "10.88.0.0/24");
+    }
+
+    #[test]
+    fn created_json_nulls_absent_optional_fields() {
+        let key = iroh::SecretKey::generate().public();
+        let value = created_json(
+            "net",
+            &key,
+            "10.88.0.2".parse().unwrap(),
+            None,
+            &None,
+            &None,
+            "10.88.0.0/24",
+        );
+        assert!(value["my_ipv6"].is_null());
+        assert!(value["warning"].is_null());
+        assert!(value["initial_invite_key"].is_null());
+    }
 }
