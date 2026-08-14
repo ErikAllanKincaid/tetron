@@ -254,6 +254,25 @@ pub struct ReconnectLogConfig {
     pub window_secs: Option<u64>,
 }
 
+/// Generic per-callsite console log rate-limit policy (LOG-006). Each field
+/// `None` means "use the compiled default". Set via `tetron config set
+/// log-ratelimit.<key> <value>`; an empty value resets that one key. Applies
+/// uniformly to every console (journal) log line by its callsite, not just
+/// one hand-picked line -- unlike [`PathFlapConfig`]/[`ReconnectLogConfig`],
+/// which stay as domain-aware, per-peer overrides this generic limiter does
+/// not replace.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LogRatelimitConfig {
+    /// Events at one callsite within one window before further ones in that
+    /// same window are suppressed. Default 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    /// Seconds per window before the count resets and the next event at that
+    /// callsite is shown again. Default 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -298,6 +317,10 @@ pub struct AppConfig {
     /// Reconnect-loop logging overrides (LOG-005). See [`ReconnectLogConfig`].
     #[serde(default)]
     pub reconnect_log: ReconnectLogConfig,
+    /// Generic per-callsite console log rate-limit overrides (LOG-006). See
+    /// [`LogRatelimitConfig`].
+    #[serde(default)]
+    pub log_ratelimit: LogRatelimitConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).

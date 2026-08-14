@@ -411,6 +411,94 @@ class ReconnectAndPathIdleLogNoiseReduction(Requirement):
     req_id = "LOG-005"
 
 
+class GenericCallsiteLogRateLimiter(Requirement):
+    """REQUIREMENT-ID: LOG-006
+
+    Raised by USER 2026-08-14, immediately after `LOG-005` landed: reading
+    live `journalctl -u tetron` on `aorus` turned up a *third*, distinct
+    noisy line -- `iroh::net_report::report`'s `warn!("IPv4 address
+    detected by QAD varies by destination")`
+    (`iroh-1.0.3/src/net_report/report.rs:95`), firing unconditionally on
+    every net_report probe cycle (~every 26-30s) once this host's NAT
+    mapping is observed to vary by destination -- a persistent network
+    characteristic, not a transient event, so it re-warns forever once
+    true. Same shape as `PATH-DIAG-006` and `LOG-005`'s reconnect-log
+    half: an unconditional per-event log on a fixed cadence for a static
+    condition. Different in one way that matters: it originates in `iroh`
+    itself (a plain crates.io dependency, not yet vendored, unlike
+    `noq-proto`), so a `LOG-005`-style vendor-and-patch would mean a
+    *fourth* vendored crate and a *third* incident-driven bespoke fix for
+    what is structurally the same problem each time.
+
+    Compared against `sudo journalctl -u tailscaled` the same day: not
+    silent (2000 lines / ~2.5 days on this machine), but 95 of those 2000
+    lines were `[RATELIMIT] format("...") (N dropped)` -- a generic,
+    format-string-keyed limiter that catches any message repeating too
+    fast and coalesces the repeats, so a newly-noisy line gets throttled
+    automatically instead of needing its own incident + patch.
+
+    **Scope (deliberately narrow -- a v1 mechanism, not a final
+    architecture; wider scope is an explicit later decision, not
+    foreclosed by this requirement):**
+
+    1. **Keyed by `tracing::Metadata::callsite()`**, not by formatted
+       message string (Tailscale's own approach). A `tracing` event's
+       callsite `Identifier` is `'static` and unique per macro invocation
+       site, already known at compile time -- cheaper than hashing a
+       formatted string per event, and the right granularity: the QAD
+       warning and `LOG-005`'s old `MultipathNotNegotiated` warning are
+       each exactly one callsite regardless of what interpolated values
+       they carry.
+    2. **Pure decision function**, same signature shape as
+       `path_flap_decision` (`PATH-DIAG-006`) and `reconnect_log_decision`
+       (`LOG-005`): `(now, window_start, count, threshold, window) ->
+       (allow, new_window_start, new_count)`. Unit-tested identically
+       (`PURE-LOGIC-001` pattern).
+    3. **A new library module, `src/log_ratelimit.rs`** (mirrors
+       `src/log_reload.rs`'s precedent: a small module holding
+       process-global state via `OnceLock`, one instance per process).
+       State: `RwLock<HashMap<tracing::callsite::Identifier, (Instant,
+       u32)>>` -- plain std, no new dependency; cardinality is bounded by
+       the binary's fixed number of tracing call sites (compile-time
+       constant), not runtime-growing, so no LRU/eviction is needed
+       (unlike Tailscale's bounded cache, which has to evict because its
+       keys are runtime-formatted strings).
+    4. **Implemented as a `tracing_subscriber::layer::Filter`**, applied
+       to `console_layer` only via `.with_filter()`
+       (`init_tracing()`, `src/main.rs:426`) -- composes with `LOG-003`'s
+       existing per-layer filter architecture without touching
+       `global_filter` or `LOG-004`'s reload `Handle`. The file log's own
+       `log-level` knob already governs its verbosity independently; this
+       requirement does not extend rate-limiting there.
+    5. **One global config pair**: `log-ratelimit.threshold` /
+       `log-ratelimit.window` (defaults TBD at implementation, matching
+       the `path-flap`/`reconnect-log` shape and `config
+       set`/`get`/`unset` plumbing exactly), not per-callsite overrides.
+    6. **Lazy suppressed-count flush**: the next allowed event at a given
+       callsite is annotated with how many prior events at that callsite
+       were suppressed since the last shown one -- no background
+       ticker/task, so no new spawned work and no periodic wakeup cost.
+    7. **Proof of value, no additional vendoring**: the `iroh` QAD warning
+       is resolved by this mechanism directly -- `iroh` is NOT vendored
+       for this requirement. The generic limiter is what makes that
+       possible without a fourth vendored crate.
+
+    **Explicitly out of scope for this requirement** (a later, separate
+    decision if ever pursued):
+    - Does **not** replace `path_flap_decision` or `reconnect_log_decision`
+      -- both stay as domain-aware, per-peer overrides with semantics
+      (e.g. "always show a fresh window's first attempt") a generic
+      per-callsite limiter cannot express.
+    - No per-callsite config overrides, only the one global pair.
+    - No file-layer coverage.
+    - No level-based gating -- applies uniformly to whatever reaches
+      `console_layer` (i.e. `info` and above, per `LOG-003`'s
+      unconditional console filter).
+    """
+
+    req_id = "LOG-006"
+
+
 class RemovePeriodicStatsLogger(Requirement):
     """REQUIREMENT-ID: LOG-001
 
