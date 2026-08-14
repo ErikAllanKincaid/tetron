@@ -412,6 +412,66 @@ class Ipv6Fragmentation(Requirement):
 
 
 # --------------------------------------------------------------------------
+# FRAG-003: backpressure check missing from the fragmentation send paths
+# --------------------------------------------------------------------------
+
+class FragmentationBackpressure(Requirement):
+    """REQUIREMENT-ID: FRAG-003
+
+    Found 2026-08-14 during the OOM-leak investigation's cross-machine
+    `tetron status --json` comparison: xps-17-9720 fragments IPv4 packets
+    at a per-packet rate ~13.7x aorus's, and is also the machine showing
+    the fastest, most consistently accelerating RSS growth in that
+    investigation. Reading `forward.rs`'s send paths directly (not
+    assumed) turned up a real asymmetry present unchanged since
+    `FRAG-001`'s very first commit, one month prior: the standard
+    (non-fragmented) send path checks
+    `route.conn.datagram_send_buffer_space() < n` before calling
+    `send_datagram`, deliberately dropping the *new* packet (drop-newest)
+    rather than letting iroh's own queue evict an older one -- but
+    neither the `FRAG-001` IPv4 fragmentation branch nor the `FRAG-002`
+    IPv6 fragmentation branch has any equivalent check. Under exactly the
+    congestion conditions that make fragmentation more likely in the
+    first place (a shrunk `max_datagram_size`), fragments bypass the
+    deliberate backpressure policy entirely and fall straight through to
+    `send_datagram`.
+
+    Traffic-volume correlation alone was investigated and explicitly
+    ruled insufficient as an explanation on its own (USER, 2026-08-14:
+    "Traffic should not lead to memory-leak anyway") -- a well-behaved
+    forwarding path should not leak regardless of how much legitimate
+    traffic flows through it. This requirement is not a claim that the
+    missing check *is* the dominant driver of that investigation's
+    observed growth; it is a real, independently-found correctness gap
+    in tetron's own code, in exactly the send path a real machine
+    exercises disproportionately, worth closing on its own merits.
+
+    **Fix**: both fragmentation branches now check
+    `datagram_send_buffer_space()` before sending each fragment, exactly
+    as the standard path already does. Unlike the standard path (one
+    packet, one check), a fragment set is only useful to the receiver if
+    *every* fragment arrives -- IPv4's kernel reassembly and `FRAG-002`'s
+    own `Ipv6Reassembler` both discard an incomplete set once its GC
+    timeout elapses, so a fragment sent into a set that will never
+    complete is wasted bandwidth and buffer space, not partial progress.
+    So the check runs per-fragment inside the send loop: the first
+    fragment that doesn't fit stops the loop entirely (`break`, not
+    `continue`) rather than skipping just that one fragment and
+    attempting the rest -- and records exactly one `Backpressure` drop
+    for the whole abandoned packet, not one per already-unsent fragment,
+    matching how the standard path records one drop per packet rather
+    than per byte.
+
+    Neither fragmentation *behavior* (which packets get fragmented, how)
+    nor reconnect/multipath logic changes -- this is a send-side
+    admission check only, identical in kind to what `FRAG-001`'s own
+    standard path has always had.
+    """
+
+    req_id = "FRAG-003"
+
+
+# --------------------------------------------------------------------------
 # IPV4-MIN-IHL-001: reject IPv4 headers shorter than five words (upstream
 # 6d008d5 `fix(firewall)`, ported from the 2026-08-05 upstream review)
 # --------------------------------------------------------------------------
