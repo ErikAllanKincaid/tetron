@@ -30,6 +30,11 @@ members = ["tetron-proto"]
 # previously coredumped on daemon startup.
 [patch.crates-io]
 noq-udp = { path = "vendor/noq-udp-1.1.0" }
+# LOG-005: local patch demoting a `warn!` that fires continuously on any
+# connection where multipath was never negotiated (the common case) down
+# to `debug!` -- was drowning out real signal in the journal. See
+# vendor/noq-proto-1.1.0/PATCH.md.
+noq-proto = { path = "vendor/noq-proto-1.1.0" }
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add

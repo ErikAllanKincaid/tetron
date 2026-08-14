@@ -230,6 +230,30 @@ pub struct PathFlapConfig {
     pub window_secs: Option<u64>,
 }
 
+/// Per-peer reconnect-loop logging policy (LOG-005). Each field `None` means
+/// "use the compiled default". Set via `tetron config set reconnect-log.<key>
+/// <value>`; an empty value resets that one key. Does not change reconnect
+/// *behavior* (backoff timing, retry logic) -- only how aggressively the
+/// "reconnecting in ... secs=N" line for one persistently-unreachable peer
+/// gets logged at `info` vs. quieted to `debug`. Same shape as
+/// [`PathFlapConfig`]/`PATH-DIAG-006`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReconnectLogConfig {
+    /// Reconnect attempts for one peer within one window before further ones
+    /// in that same window are quieted to `debug`. Default 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    /// Seconds per window before the count resets and the next attempt is
+    /// shown at `info` again. Default 300 (5m) -- longer than path-flap's 60s
+    /// default since reconnect backoff itself already spaces attempts out to
+    /// 30s at steady state (`BACKOFF_MAX`), so a 60s window would barely ever
+    /// debounce anything; 300s reduces steady-state "still down" noise from
+    /// once per 30s to once per 5m while still periodically confirming the
+    /// peer is still being retried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -271,6 +295,9 @@ pub struct AppConfig {
     /// Path-selection flap-logging overrides (PATH-DIAG-006). See [`PathFlapConfig`].
     #[serde(default)]
     pub path_flap: PathFlapConfig,
+    /// Reconnect-loop logging overrides (LOG-005). See [`ReconnectLogConfig`].
+    #[serde(default)]
+    pub reconnect_log: ReconnectLogConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
