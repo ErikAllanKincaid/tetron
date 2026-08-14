@@ -941,6 +941,23 @@ impl MeshManager {
 
     /// Persist the operator UID so that user can run mutating `tetron` commands
     /// without root. Authorization (root-only) is enforced in `check_authorized`.
+    /// Live-reload the running file-log filter (LOG-004). `level` was
+    /// already validated by the CLI (`config::config_set`'s
+    /// `parse_log_level_value`) before `settings.toml` was written, so this
+    /// only needs to report whether the *reload itself* succeeded -- e.g.
+    /// this specific process never had a reloadable filter registered (a
+    /// daemon predating LOG-004, in a mixed-version rolling upgrade).
+    pub(crate) fn set_log_level(&self, level: &str) -> IpcMessage {
+        match crate::log_reload::reload_log_level(level) {
+            Ok(()) => IpcMessage::Ok {
+                message: format!("log level live-reloaded to {level}"),
+            },
+            Err(e) => IpcMessage::Error {
+                message: format!("failed to live-reload log level: {e:#}"),
+            },
+        }
+    }
+
     pub(crate) fn set_operator(&self, uid: u32) -> IpcMessage {
         let mut app_config = match config::load() {
             Ok(c) => c,
@@ -1052,6 +1069,7 @@ impl MeshManager {
                 }
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
+            IpcMessage::SetLogLevel { level } => self.set_log_level(&level),
             IpcMessage::AdminAdd { network, peer } => self.admin_add(&network, &peer).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
             IpcMessage::InviteCreate { network, expires } => {

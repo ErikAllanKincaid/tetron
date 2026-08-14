@@ -284,6 +284,66 @@ class ConfigurableLogLevelAndConsoleFileDecoupling(Requirement):
     req_id = "LOG-003"
 
 
+class LogLevelLiveReload(Requirement):
+    """REQUIREMENT-ID: LOG-004
+
+    Raised by USER 2026-08-13, mid a real OOM investigation: wanted to bump
+    a live, in-use machine's file-log level to `debug` for richer diagnostic
+    detail, without a `sudo tetron restart` interrupting its actual in-use
+    mesh connections. `LOG-003`'s `log-level` config key was read exactly
+    once, at `init_tracing()` (`src/main.rs`) startup, to build the file
+    layer's `EnvFilter` (`"info,tetron={level}"`) -- `tetron config set
+    log-level <level>` was a pure client-side file write with no IPC call to
+    the running daemon anywhere in that path, so a running daemon had no way
+    to learn the config file changed short of being restarted.
+
+    **Fix, using machinery already available (`tracing-subscriber`'s
+    `reload` module needs only the already-enabled `registry` feature, no
+    new dependency):**
+
+    1. `init_tracing()` wraps the file layer's `EnvFilter` in a
+       `tracing_subscriber::reload::Layer`, and hands the returned `Handle`
+       to a new small library module (`log_reload`, `src/log_reload.rs`) via
+       a `OnceLock` -- process-global state, the same shape `LogGuard` and
+       the panic hook already use for tracing/process-lifetime concerns,
+       since there is exactly one subscriber per process. `console_layer`
+       (`LOG-003` part 3's decoupled, unconditionally-`"info"` filter) is
+       untouched -- only the file layer's filter is reloadable.
+    2. A new IPC request, `IpcMessage::SetLogLevel { level }`
+       (`tetron-proto`): the CLI still writes `settings.toml` itself first
+       (unchanged from `LOG-003`, so the value survives a future restart
+       regardless), then additionally tries to notify the already-running
+       daemon. The daemon's handler (`MeshManager::set_log_level`) calls
+       `log_reload::reload_log_level(&level)`, which rebuilds the exact
+       same `"info,tetron={level}"` filter `init_tracing()` computes at
+       startup and swaps it in live via `handle.reload(..)`.
+    3. `tetron config set/unset log-level` prints one of two messages
+       depending on whether the live notification actually reached a
+       running daemon: "applied immediately, no restart needed" on success,
+       or the original "run `sudo tetron restart`" wording if the daemon
+       isn't running (or the IPC call otherwise fails) -- the file write
+       itself always succeeds either way, so a not-yet-started daemon still
+       picks up the value normally at its next boot.
+
+    Authorization is unchanged: `SetLogLevel` is not added to
+    `check_authorized`'s open-read bucket (`Status`/`Sync`/list commands),
+    so it needs root or the configured operator UID, same as every other
+    mutating command -- consistent with `settings.toml` already being
+    root-owned, which already required sudo to reach this code path at all.
+
+    Out of scope: an explicit `RUST_LOG` set for this process's lifetime
+    (the raw, ecosystem-standard override `LOG-003` part 3 preserves as the
+    top of the resolution order) is superseded by a live reload if one
+    occurs -- `reload_log_level` always applies the computed
+    `"info,tetron={level}"` filter unconditionally, matching what
+    `init_tracing()` itself falls back to whenever `RUST_LOG` is unset. A
+    live reload is itself an explicit runtime request to change the level,
+    so overriding a startup-time `RUST_LOG` this way is intended, not a gap.
+    """
+
+    req_id = "LOG-004"
+
+
 class RemovePeriodicStatsLogger(Requirement):
     """REQUIREMENT-ID: LOG-001
 

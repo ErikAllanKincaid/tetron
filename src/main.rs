@@ -352,6 +352,13 @@ fn init_tracing(to_file: bool) -> LogGuard {
     let global_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
         |_| tracing_subscriber::EnvFilter::new(format!("info,tetron={}", config::log_level())),
     );
+    // LOG-004: wrap the ceiling filter in a reload layer so a running daemon
+    // can pick up `tetron config set log-level` without a restart. The
+    // handle is registered process-globally (tetron::log_reload) since
+    // there is exactly one subscriber per process, same as `LogGuard`/the
+    // panic hook below.
+    let (global_filter, reload_handle) = tracing_subscriber::reload::Layer::new(global_filter);
+    tetron::log_reload::set_handle(reload_handle);
 
     // Console layer — human text on stdout. Unconditionally `info`, and does
     // NOT consult `RUST_LOG` or the `log-level` config key at all (LOG-003):
@@ -569,7 +576,7 @@ async fn main() -> Result<()> {
         }
         Command::Invite { network, action } => ipc_invite(&network, action).await,
         Command::Admin { network, action } => ipc_admin(&network, action).await,
-        Command::Config { action } => cmd_config(action, cli.json),
+        Command::Config { action } => cmd_config(action, cli.json).await,
         Command::SetOperator { user } => cmd_set_operator(&user).await,
         Command::Version => {
             println!("tetron {FULL_VERSION}");
@@ -586,7 +593,7 @@ async fn main() -> Result<()> {
 /// `settings.toml` directly; relay/discovery/subnet all take effect on the next
 /// daemon restart. On Linux the config tree is root-owned, so a write naturally
 /// requires sudo.
-fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
+async fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
     match action.unwrap_or(ConfigAction::Get { key: None }) {
         ConfigAction::Get { key } => {
             // SUBNET-014: settings.toml is 0600 root:root (it holds
@@ -630,18 +637,59 @@ fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             let mut cfg = config::load()?;
             config::config_set(&mut cfg, &key, &value, replace)?;
             config::save_settings(&cfg)?;
-            println!("Set {key}. Run 'sudo tetron restart' for changes to take effect.");
+            if key == "log-level" {
+                announce_log_level_change("Set", &key).await;
+            } else {
+                println!("Set {key}. Run 'sudo tetron restart' for changes to take effect.");
+            }
         }
         ConfigAction::Unset { key } => {
             let mut cfg = config::load()?;
             config::config_set(&mut cfg, &key, "", false)?;
             config::save_settings(&cfg)?;
-            println!(
-                "Reset {key} to default. Run 'sudo tetron restart' for changes to take effect."
-            );
+            if key == "log-level" {
+                announce_log_level_change("Reset", &key).await;
+            } else {
+                println!(
+                    "Reset {key} to default. Run 'sudo tetron restart' for changes to take effect."
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// After `settings.toml` already carries the new `log-level` value, tries to
+/// notify the already-running daemon so it takes effect immediately
+/// (LOG-004) instead of waiting for the next restart. `verb` is "Set" or
+/// "Reset", matching the two call sites' existing wording.
+async fn announce_log_level_change(verb: &str, key: &str) {
+    match try_live_reload_log_level().await {
+        Ok(()) => println!(
+            "{verb} {key}. Applied immediately to the running daemon (no restart needed)."
+        ),
+        Err(_) => {
+            println!("{verb} {key}. Run 'sudo tetron restart' for changes to take effect.")
+        }
+    }
+}
+
+/// Sends the freshly-saved `log-level` value to the running daemon over IPC.
+/// Reads it back via `config::log_level()` (not the raw CLI arg) so an
+/// unset correctly resolves to the compiled default ("info") without a
+/// separate codepath. Any failure (daemon not running, IPC error, or the
+/// daemon rejecting the reload) is `Err` -- the caller falls back to the
+/// restart-required message either way, since the file write already
+/// succeeded regardless of whether a live daemon picked it up too.
+async fn try_live_reload_log_level() -> Result<()> {
+    let level = config::log_level();
+    let mut stream = ipc::connect().await?;
+    ipc::send(&mut stream, ipc::IpcMessage::SetLogLevel { level }).await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::Ok { .. } => Ok(()),
+        ipc::IpcMessage::Error { message } => anyhow::bail!(message),
+        other => anyhow::bail!("unexpected response: {:?}", other),
+    }
 }
 
 /// Resolve a username to its UID, falling back to parsing a numeric UID.

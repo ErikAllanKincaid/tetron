@@ -132,6 +132,14 @@ pub enum IpcMessage {
     SetOperator {
         uid: u32,
     },
+    /// Live-reload the running daemon's file-log level without a restart
+    /// (LOG-004). Sent by `tetron config set/unset log-level` after it has
+    /// already written the new value to `settings.toml` -- this message only
+    /// asks the *currently running* process to pick it up immediately;
+    /// `level` is one of trace/debug/info/warn/error.
+    SetLogLevel {
+        level: String,
+    },
     /// Coordinator-only: grant the per-network secret key to a member, making it
     /// a co-coordinator (can publish / suggest firewall rules).
     AdminAdd {
