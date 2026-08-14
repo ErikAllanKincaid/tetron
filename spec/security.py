@@ -635,6 +635,53 @@ class InstallSuiteAddonSelectionGate(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-003: tetron-hosts added as a fifth, opt-in-only component
+# --------------------------------------------------------------------------
+
+class InstallSuiteHostsComponent(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-003
+
+    Adds `tetron-hosts` (a new addon: syncs peer hostnames into
+    `/etc/hosts` as `<hostname>.<network>`, see the `tetron-hosts` repo's
+    own README for the full design) to `install-tetron-suite.sh` as a
+    fifth component, alongside `core`/`webui`/`systray`/`backup`. Follows
+    `ADDONS-SUITE-002`'s existing selection logic exactly (`--install-hosts`
+    flag, `component_binary`/`component_repo` table entries, generic
+    release-binary install path -- not `backup`'s special raw-script path)
+    with one deliberate deviation from that requirement's tier-4 defaults:
+
+    **`hosts` defaults to `N` in the interactive picker, unconditionally,
+    same treatment as `backup` and for a related reason.** Unlike
+    `webui`/`systray` (whose per-user services carry no elevated runtime
+    privilege), `hosts` registers a **root-level system-wide scheduled
+    service** (`component_service_needs_sudo` returns `1` for `hosts`,
+    same tier as `core`, since writing `/etc/hosts` needs root regardless
+    of who invokes it) -- not something to silently add to everyone's
+    default install the moment this component exists. `--install-all`
+    does include it (`core webui systray hosts backup`), matching
+    `backup`'s own precedent of being opt-in-only in the picker but
+    included when the caller explicitly asks for everything.
+
+    **`tetron-hosts install`'s own further interactive wizard** (which
+    networks to sync into `/etc/hosts`, whether to schedule automatic
+    runs, at what interval) runs automatically as this script's normal
+    last step for any component (`install_component`'s existing `"$dest"
+    install` call, unchanged) -- no new plumbing needed here, since that
+    wizard already reads from `/dev/tty` the same way this script's own
+    prompts do, so it composes correctly under the same `curl | bash`
+    conditions `ADDONS-SUITE-002` already handles.
+
+    Unlike `relay`/`testsuite` (still explicitly out of scope per
+    `ADDONS-SUITE-002`, each with its own separate bringup), `hosts` is a
+    genuine "suite" component -- distributed as a normal versioned
+    release binary this script tracks and upgrades like every other
+    component, not a standalone-bringup addon.
+    """
+
+    req_id = "ADDONS-SUITE-003"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
