@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`tetron config set/unset log-level` now live-reloads a running daemon instead of always requiring `sudo tetron restart`** (`LOG-004`): the file-log filter is swapped in on the already-running process the moment the CLI writes the new value, with no interruption to active mesh connections. Falls back to the original "run `sudo tetron restart`" message if no daemon is reachable to notify (the config file write itself always succeeds regardless, so it still applies at the daemon's next start either way). Every other `config set` key is unchanged and still needs a restart.
+
 ### Fixed
 
 - **`tetron create --json` now actually emits JSON** (`CREATE-JSON-001`): the flag was previously accepted but silently ignored, always falling back to the styled human-readable output — every other command in this family (`status --json`, `invite create --json`) already honored it. Emits `{network, network_key, my_ip, my_ipv6, warning, initial_invite_key, subnet}`; `network_key` is the full key (not the pretty-print's truncated form), and `warning`/`initial_invite_key` are nullable fields instead of a separate printed line.
