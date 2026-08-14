@@ -344,6 +344,73 @@ class LogLevelLiveReload(Requirement):
     req_id = "LOG-004"
 
 
+class ReconnectAndPathIdleLogNoiseReduction(Requirement):
+    """REQUIREMENT-ID: LOG-005
+
+    Raised by USER 2026-08-14, reading live `journalctl` output from
+    `xps-17-9720` during the OOM investigation: "Pretty much constant log
+    spam. BAD." Two distinct offenders, both hitting the *console/journal*
+    (unconditionally `info`-and-above per `LOG-003` part 3, so neither
+    `log-level` nor `RUST_LOG` could quiet them):
+
+    **1. `WARN ... failed closing path err=MultipathNotNegotiated`.**
+    Traced into the vendored dependency, not guessed: `noq-proto`
+    (upstream `https://github.com/n0-computer/noq`, resolved at 1.1.0 in
+    `Cargo.lock`)'s connection actor fires this on every `PathTimer::
+    PathIdle` tick for *any* connection where multipath was never
+    negotiated -- i.e. the common case, not an anomaly. `close_path_inner`
+    is a multipath-specific API; calling it from the idle-timer handler on
+    a plain single-path connection always fails the same way, live-verified
+    unrelated to actual connection health (fires equally on healthy
+    Direct-connected peers and doomed reconnect attempts). Fixed the same
+    way `noq-udp` was already patched (`vendor/noq-udp-1.1.0/PATCH.md`
+    precedent): vendor `noq-proto` at the exact `Cargo.lock`-resolved
+    version (`vendor/noq-proto-1.1.0/`, `[patch.crates-io]` in
+    `Cargo.toml`), demote that one `warn!` to `debug!`
+    (`vendor/noq-proto-1.1.0/PATCH.md` documents the patch). This is a
+    log-level demotion only, not a root-cause fix -- the underlying
+    `close_path_inner` misuse on non-multipath connections is upstream
+    territory, out of scope here.
+
+    **2. `INFO ... reconnecting in peer=... secs=30`.** A persistently
+    unreachable peer re-logs this at `info` on every backoff iteration
+    (steady state: every `BACKOFF_MAX` = 30s), functionally identical in
+    shape to `PATH-DIAG-006`'s already-solved `Selected`-flap problem --
+    sustained churn against one target with no new information after the
+    first few attempts. Fixed with the same debounce shape, applied to
+    `spawn_reconnect_loop`'s per-peer reconnect task
+    (`src/daemon/mesh/join.rs`) instead of `log_path_events`:
+
+    - New config keys `reconnect-log.threshold` (default 3) and
+      `reconnect-log.window` (default 300s -- longer than `path-flap`'s
+      60s default, since reconnect backoff already spaces attempts to 30s
+      at steady state, so a 60s window would barely ever debounce
+      anything; 300s cuts steady-state "still down" noise from once per
+      30s to once per 5m while still periodically reconfirming the peer
+      is still being retried), same `ReconnectLogConfig` shape as
+      `PathFlapConfig`, plumbed through `schema.rs`/`overrides.rs`/
+      `storage.rs` identically.
+    - `reconnect_log_decision(now, window_start, count, threshold,
+      window) -> (log_at_info, new_window_start, new_count)`: a pure
+      function, unit-tested directly (`PURE-LOGIC-001` pattern),
+      structurally identical to `path_flap_decision` -- a fresh window's
+      first attempt always logs at `info` (a peer that just started
+      failing must not be silently dropped), further attempts within the
+      window log at `info` while `count <= threshold`, `debug` once
+      exceeded.
+    - State (`window_start`, `count`) is local to each per-peer reconnect
+      task (already freshly spawned per disconnect event -- no shared/
+      global state needed), config resolved once at task-start, matching
+      `log_path_events`'s own "config resolved at the point a task starts"
+      precedent.
+
+    Neither fix changes reconnect *behavior* (backoff timing, retry
+    logic, multipath negotiation) -- both are logging-only.
+    """
+
+    req_id = "LOG-005"
+
+
 class RemovePeriodicStatsLogger(Requirement):
     """REQUIREMENT-ID: LOG-001
 

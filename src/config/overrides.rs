@@ -8,7 +8,10 @@
 use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
-use super::schema::{AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ServerOverride};
+use super::schema::{
+    AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectLogConfig,
+    ServerOverride,
+};
 
 /// Preset URL for the rayfish-operated iroh transport relay.
 pub const RELAY_PRESET_RAYFISH: &str = "http://relay.iroh.rayfish.xyz:3340";
@@ -132,6 +135,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         flap_key if flap_key.starts_with("path-flap.") => {
             set_path_flap_key(&mut cfg.path_flap, flap_key, &entries, reset)?;
         }
+        reconnect_key if reconnect_key.starts_with("reconnect-log.") => {
+            set_reconnect_log_key(&mut cfg.reconnect_log, reconnect_key, &entries, reset)?;
+        }
         "nuke-proposal-ttl" => {
             cfg.nuke_proposal_ttl = if reset {
                 None
@@ -214,7 +220,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
              invite-default-expiry, selfcapture-mitigation, log-level, \
              drop-monitor.<window|threshold|cooldown>, \
-             path-flap.<threshold|window>, or \
+             path-flap.<threshold|window>, \
+             reconnect-log.<threshold|window>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -280,6 +287,36 @@ fn set_path_flap_key(
         "threshold" => pf.threshold = Some(parse_ratelimit_value(raw)?),
         "window" => pf.window_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown path-flap config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `reconnect-log.<key>` entry (LOG-005). `reset` (empty
+/// value or "n0") clears the field back to `None` (compiled default).
+fn set_reconnect_log_key(
+    rl: &mut ReconnectLogConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key.strip_prefix("reconnect-log.").expect("checked by caller");
+    if reset {
+        match sub {
+            "threshold" => rl.threshold = None,
+            "window" => rl.window_secs = None,
+            other => anyhow::bail!("unknown reconnect-log config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "reconnect-log.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "threshold" => rl.threshold = Some(parse_ratelimit_value(raw)?),
+        "window" => rl.window_secs = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown reconnect-log config key: {other}"),
     }
     Ok(())
 }
@@ -432,6 +469,14 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("reconnect-log.") {
+            let val = match sub {
+                "threshold" => render_opt(cfg.reconnect_log.threshold),
+                "window" => render_opt(cfg.reconnect_log.window_secs),
+                other => anyhow::bail!("unknown reconnect-log config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if k == "nuke-proposal-ttl" {
             return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
         }
@@ -470,7 +515,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                  nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
                  invite-default-expiry, selfcapture-mitigation, log-level, \
                  drop-monitor.<window|threshold|cooldown>, \
-                 path-flap.<threshold|window>, or \
+                 path-flap.<threshold|window>, \
+                 reconnect-log.<threshold|window>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -494,6 +540,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("drop-monitor.cooldown")?,
             row("path-flap.threshold")?,
             row("path-flap.window")?,
+            row("reconnect-log.threshold")?,
+            row("reconnect-log.window")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -603,6 +651,29 @@ mod tests {
         // Unknown sub-key and non-numeric value are both rejected.
         assert!(config_set(&mut cfg, "path-flap.bogus", "1", false).is_err());
         assert!(config_set(&mut cfg, "path-flap.threshold", "not-a-number", false).is_err());
+    }
+
+    #[test]
+    fn config_set_get_reconnect_log() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1, "<default>");
+        assert_eq!(config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1, "<default>");
+
+        config_set(&mut cfg, "reconnect-log.threshold", "5", false).unwrap();
+        assert_eq!(cfg.reconnect_log.threshold, Some(5));
+        assert_eq!(config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1, "5");
+
+        config_set(&mut cfg, "reconnect-log.window", "120", false).unwrap();
+        assert_eq!(cfg.reconnect_log.window_secs, Some(120));
+        assert_eq!(config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1, "120");
+
+        // Empty resets to default (None).
+        config_set(&mut cfg, "reconnect-log.threshold", "", false).unwrap();
+        assert_eq!(cfg.reconnect_log.threshold, None);
+
+        // Unknown sub-key and non-numeric value are both rejected.
+        assert!(config_set(&mut cfg, "reconnect-log.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "reconnect-log.threshold", "not-a-number", false).is_err());
     }
 
     #[test]

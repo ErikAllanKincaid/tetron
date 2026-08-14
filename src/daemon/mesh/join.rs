@@ -9,6 +9,43 @@
 use super::super::*;
 use crate::config::TransportMode;
 
+/// Compiled default for `reconnect-log.threshold` (LOG-005): reconnect
+/// attempts for one peer within one window before further ones in that same
+/// window are quieted to `debug`.
+const RECONNECT_LOG_THRESHOLD: u32 = 3;
+
+/// Compiled default for `reconnect-log.window` (LOG-005), in seconds. Longer
+/// than `PATH_FLAP_WINDOW_SECS`'s 60s: reconnect backoff already spaces
+/// attempts to 30s at steady state (`BACKOFF_MAX`), so a 60s window would
+/// barely ever debounce anything -- 300s cuts steady-state "still down"
+/// noise from once per 30s to once per 5m while still periodically
+/// reconfirming the peer is still being retried.
+const RECONNECT_LOG_WINDOW_SECS: u64 = 300;
+
+/// Decides whether one peer's next reconnect attempt should log at `info`
+/// (LOG-005). Pure function of a sliding per-peer window count, exactly
+/// mirroring `forward.rs`'s `path_flap_decision` (`PATH-DIAG-006`) -- same
+/// shape, same reasoning: a fresh window's first attempt always logs at
+/// `info` (a peer that just started failing must not be silently dropped),
+/// further attempts within the same window log at `info` while
+/// `count <= threshold`, `debug` once exceeded, so sustained "still down"
+/// churn against one persistently-unreachable peer gets quieted without
+/// ever going permanently silent. Returns `(log_at_info, new_window_start,
+/// new_count)`.
+fn reconnect_log_decision(
+    now: std::time::Instant,
+    window_start: std::time::Instant,
+    count: u32,
+    threshold: u32,
+    window: std::time::Duration,
+) -> (bool, std::time::Instant, u32) {
+    if now.duration_since(window_start) >= window {
+        return (true, now, 1);
+    }
+    let new_count = count + 1;
+    (new_count <= threshold, window_start, new_count)
+}
+
 /// Result of the initial join handshake against the coordinator.
 pub(crate) enum JoinResult {
     /// Admitted (open network, valid invite, or pre-approved): live network state,
@@ -958,11 +995,44 @@ pub(crate) fn spawn_reconnect_loop(
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
                 let net_name = network_name.clone();
+                // LOG-005: per-peer reconnect-log debounce state. A fresh task
+                // per disconnect, so this is a plain local -- no shared/global
+                // state needed. Config read once at task-start (not per-attempt),
+                // matching `path_flap_decision`'s own "config resolved at the
+                // point a task starts" precedent (PATH-DIAG-006).
+                let cfg = crate::config::load().unwrap_or_default();
+                let reconnect_log_threshold = cfg
+                    .reconnect_log
+                    .threshold
+                    .unwrap_or(RECONNECT_LOG_THRESHOLD);
+                let reconnect_log_window = std::time::Duration::from_secs(
+                    cfg.reconnect_log
+                        .window_secs
+                        .unwrap_or(RECONNECT_LOG_WINDOW_SECS),
+                );
+                let mut reconnect_log_window_start = std::time::Instant::now();
+                let mut reconnect_log_count: u32 = 0;
                 loop {
                     if token.is_cancelled() {
                         return;
                     }
-                    tracing::info!(peer = %peer_id.fmt_short(), secs = backoff.as_secs(), "reconnecting in");
+                    let (log_at_info, new_window_start, new_count) = reconnect_log_decision(
+                        std::time::Instant::now(),
+                        reconnect_log_window_start,
+                        reconnect_log_count,
+                        reconnect_log_threshold,
+                        reconnect_log_window,
+                    );
+                    reconnect_log_window_start = new_window_start;
+                    reconnect_log_count = new_count;
+                    if log_at_info {
+                        tracing::info!(peer = %peer_id.fmt_short(), secs = backoff.as_secs(), "reconnecting in");
+                    } else {
+                        tracing::debug!(
+                            peer = %peer_id.fmt_short(), secs = backoff.as_secs(),
+                            count_in_window = reconnect_log_count, "reconnecting in (debounced)"
+                        );
+                    }
                     tokio::select! {
                         _ = token.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
@@ -1040,4 +1110,68 @@ pub(crate) fn spawn_reconnect_loop(
         }
     };
     tokio::spawn(reconnect_loop.instrument(span))
+}
+
+#[cfg(test)]
+mod reconnect_log_decision_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn first_attempt_in_fresh_window_logs_at_info() {
+        let now = Instant::now();
+        let (log_at_info, _, count) =
+            reconnect_log_decision(now, now, 0, 3, Duration::from_secs(300));
+        assert!(log_at_info);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn stays_at_info_up_to_and_including_threshold() {
+        let window_start = Instant::now();
+        let window = Duration::from_secs(300);
+        let now = window_start + Duration::from_secs(1);
+        // Third attempt in the window (count goes 0 -> 1 -> 2 -> 3),
+        // threshold 3: still shown.
+        let (log_at_info, _, count) = reconnect_log_decision(now, window_start, 2, 3, window);
+        assert!(log_at_info);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn exceeds_threshold_quiets_to_debug() {
+        let window_start = Instant::now();
+        let window = Duration::from_secs(300);
+        let now = window_start + Duration::from_secs(1);
+        // Fourth attempt in the window, threshold 3: quieted.
+        let (log_at_info, _, count) = reconnect_log_decision(now, window_start, 3, 3, window);
+        assert!(!log_at_info);
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn window_elapsed_resets_and_logs_at_info_regardless_of_prior_count() {
+        let window_start = Instant::now();
+        let window = Duration::from_secs(300);
+        // Well past the window, with a prior count far over threshold.
+        let now = window_start + Duration::from_secs(301);
+        let (log_at_info, new_window_start, count) =
+            reconnect_log_decision(now, window_start, 50, 3, window);
+        assert!(log_at_info);
+        assert_eq!(count, 1);
+        assert_eq!(new_window_start, now);
+    }
+
+    #[test]
+    fn window_boundary_is_inclusive_of_reset() {
+        let window_start = Instant::now();
+        let window = Duration::from_secs(300);
+        // Exactly at the window boundary: treated as elapsed (>=).
+        let now = window_start + window;
+        let (log_at_info, new_window_start, count) =
+            reconnect_log_decision(now, window_start, 10, 3, window);
+        assert!(log_at_info);
+        assert_eq!(count, 1);
+        assert_eq!(new_window_start, now);
+    }
 }
