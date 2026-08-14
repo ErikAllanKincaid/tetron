@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`tetron config set/unset log-level` now live-reloads a running daemon instead of always requiring `sudo tetron restart`** (`LOG-004`): the file-log filter is swapped in on the already-running process the moment the CLI writes the new value, with no interruption to active mesh connections. Falls back to the original "run `sudo tetron restart`" message if no daemon is reachable to notify (the config file write itself always succeeds regardless, so it still applies at the daemon's next start either way). Every other `config set` key is unchanged and still needs a restart.
+- **Generic console log rate limiter** (`LOG-006`): any console/journal line that starts repeating too fast at one call site — a dependency's own `warn!`/`info!` we don't control, or one with no purpose-built debounce written for it — is now automatically throttled after a configurable number of repeats within a window (`tetron config set log-ratelimit.threshold` / `log-ratelimit.window`, defaults 5 events / 60s), with the suppressed count surfaced the next time that line is shown again. Applies to console/journal output only; does not replace the existing per-peer `path-flap`/`reconnect-log` debouncing, which stays as-is underneath it.
 
 ### Fixed
 

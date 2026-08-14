@@ -21,6 +21,7 @@ pub mod hostname;
 pub mod identity;
 pub mod invite;
 pub mod ipc;
+pub mod log_ratelimit;
 pub mod log_reload;
 pub mod logdir;
 pub mod membership;
