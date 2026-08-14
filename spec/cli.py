@@ -1262,3 +1262,44 @@ class JsonMemberCountExcludesSelf(Requirement):
     predicate).
     """
     req_id = "STATUS-005"
+
+
+class CreateAcceptsJsonFlag(Requirement):
+    """REQUIREMENT-ID: CREATE-JSON-001
+
+    Found 2026-08-13 while preparing `tetron-testsuite`'s `oom-repro-t4-soak.sh`
+    dedicated-coordinator support: a same-version in-topology node runs
+    `tetron create` itself instead of relying on a shared install, and the
+    script assumed `tetron create --json | jq .network_key` would work, the
+    same way `tetron status --json` / `tetron invite create --json` already
+    behave. `ipc_create` (`src/cli/network.rs`) accepted the global `--json`
+    flag (it is `global = true` on `Cli`, so clap never rejects it) but never
+    called `json_enabled()` in its response-handling match arm -- it always
+    ran the `println!`-based human-readable path. `status.rs`/`invite.rs`
+    both check `json_enabled()` correctly; `create` was the one command in
+    this family that silently ignored it. Worked around in the test harness
+    at the time by reading the freshly created network back via `tetron
+    status --json` instead.
+
+    **Fix:** `ipc_create`'s `Created` handler now branches on `json_enabled()`
+    exactly like `InviteAction::Create`'s handler in `src/cli/invite.rs`
+    does, before falling through to the existing pretty-print. `IpcMessage::
+    Created` (`tetron-proto/src/ipc.rs`) already carries every field needed
+    with no new plumbing: `network`, `network_key`, `my_ip`, `my_ipv6`,
+    `warning`, `initial_invite_key`, `subnet`. All seven are emitted as a
+    flat JSON object:
+
+    - `network_key` as the **full** key (`network_key.to_string()`), not the
+      truncated `short` display form the pretty-print uses -- the field a
+      script actually needs for a follow-up `kick`/`invite`.
+    - `network`, `my_ip`, `my_ipv6`, `subnet` -- direct mirrors of the IPC
+      response.
+    - `warning` -- in text mode this only ever surfaces as a separate `  ⚠
+      {w}` line; under `--json` it carries through as a nullable field
+      instead of silently disappearing.
+    - `initial_invite_key` -- nullable, present only when the coordinator
+      auto-mints one at creation time (same semantics as the text output's
+      conditional invite-key branch).
+    """
+
+    req_id = "CREATE-JSON-001"
