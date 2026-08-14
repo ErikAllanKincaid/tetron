@@ -371,7 +371,33 @@ fn init_tracing(to_file: bool) -> LogGuard {
     // specifically) -- so nothing is lost, just tail the file for `trace` detail.
     let console_filter = tracing_subscriber::EnvFilter::new("info");
 
-    let console_layer = tracing_subscriber::fmt::layer().with_filter(console_filter);
+    // LOG-006: a generic, callsite-keyed rate limiter sits between the
+    // console's own level filter and the fmt layer, so a newly-noisy line
+    // (a dependency's own warn!/info! we don't control, or one we haven't
+    // written a domain-aware debounce for yet -- see PATH-DIAG-006's
+    // path_flap_decision / LOG-005's reconnect_log_decision) is throttled
+    // automatically instead of needing a fresh incident-driven fix each
+    // time. Config resolved once here at startup, same as `log-level`
+    // above -- a running daemon picks up a changed threshold/window on its
+    // next restart, not live (unlike `log-level`'s LOG-004 reload path).
+    let ratelimit_cfg = config::load()
+        .ok()
+        .map(|c| c.log_ratelimit)
+        .unwrap_or_default();
+    let ratelimit_filter = tetron::log_ratelimit::RateLimitFilter::new(
+        ratelimit_cfg
+            .threshold
+            .unwrap_or(tetron::log_ratelimit::RATELIMIT_THRESHOLD),
+        std::time::Duration::from_secs(
+            ratelimit_cfg
+                .window_secs
+                .unwrap_or(tetron::log_ratelimit::RATELIMIT_WINDOW_SECS),
+        ),
+    );
+
+    let console_layer = tracing_subscriber::fmt::layer()
+        .with_filter(console_filter)
+        .with_filter(ratelimit_filter);
 
     // File layer — daemon only, human text with ANSI stripped, rotated daily.
     let (file_layer, appender_guard) = if to_file {

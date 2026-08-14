@@ -9,8 +9,9 @@ use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
-    ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride, StatusCacheConfig,
+    AppConfig, DropMonitorConfig, LogRatelimitConfig, PathFlapConfig, RateLimitConfig,
+    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
+    StatusCacheConfig,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -138,6 +139,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         reconnect_key if reconnect_key.starts_with("reconnect-log.") => {
             set_reconnect_log_key(&mut cfg.reconnect_log, reconnect_key, &entries, reset)?;
         }
+        ratelimit_log_key if ratelimit_log_key.starts_with("log-ratelimit.") => {
+            set_log_ratelimit_key(&mut cfg.log_ratelimit, ratelimit_log_key, &entries, reset)?;
+        }
         cold_key if cold_key.starts_with("reconnect-cold.") => {
             set_reconnect_cold_key(&mut cfg.reconnect_cold, cold_key, &entries, reset)?;
         }
@@ -228,6 +232,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              drop-monitor.<window|threshold|cooldown>, \
              path-flap.<threshold|window>, \
              reconnect-log.<threshold|window>, \
+             log-ratelimit.<threshold|window>, \
              reconnect-cold.<threshold|backoff>, \
              reconnect-frozen.<threshold|backoff>, status-cache.interval, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
@@ -329,6 +334,38 @@ fn set_reconnect_log_key(
         "threshold" => rl.threshold = Some(parse_ratelimit_value(raw)?),
         "window" => rl.window_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown reconnect-log config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `log-ratelimit.<key>` entry (LOG-006). `reset` (empty
+/// value or "n0") clears the field back to `None` (compiled default).
+fn set_log_ratelimit_key(
+    lr: &mut LogRatelimitConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key
+        .strip_prefix("log-ratelimit.")
+        .expect("checked by caller");
+    if reset {
+        match sub {
+            "threshold" => lr.threshold = None,
+            "window" => lr.window_secs = None,
+            other => anyhow::bail!("unknown log-ratelimit config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "log-ratelimit.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "threshold" => lr.threshold = Some(parse_ratelimit_value(raw)?),
+        "window" => lr.window_secs = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown log-ratelimit config key: {other}"),
     }
     Ok(())
 }
@@ -584,6 +621,14 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("log-ratelimit.") {
+            let val = match sub {
+                "threshold" => render_opt(cfg.log_ratelimit.threshold),
+                "window" => render_opt(cfg.log_ratelimit.window_secs),
+                other => anyhow::bail!("unknown log-ratelimit config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if let Some(sub) = k.strip_prefix("reconnect-cold.") {
             let val = match sub {
                 "threshold" => render_opt(cfg.reconnect_cold.threshold),
@@ -647,6 +692,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                  drop-monitor.<window|threshold|cooldown>, \
                  path-flap.<threshold|window>, \
                  reconnect-log.<threshold|window>, \
+                 log-ratelimit.<threshold|window>, \
                  reconnect-cold.<threshold|backoff>, \
                  reconnect-frozen.<threshold|backoff>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
@@ -674,6 +720,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("path-flap.window")?,
             row("reconnect-log.threshold")?,
             row("reconnect-log.window")?,
+            row("log-ratelimit.threshold")?,
+            row("log-ratelimit.window")?,
             row("reconnect-cold.threshold")?,
             row("reconnect-cold.backoff")?,
             row("reconnect-frozen.threshold")?,
@@ -834,6 +882,41 @@ mod tests {
         // Unknown sub-key and non-numeric value are both rejected.
         assert!(config_set(&mut cfg, "reconnect-log.bogus", "1", false).is_err());
         assert!(config_set(&mut cfg, "reconnect-log.threshold", "not-a-number", false).is_err());
+    }
+
+    #[test]
+    fn config_set_get_log_ratelimit() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            config_get(&cfg, Some("log-ratelimit.threshold")).unwrap()[0].1,
+            "<default>"
+        );
+        assert_eq!(
+            config_get(&cfg, Some("log-ratelimit.window")).unwrap()[0].1,
+            "<default>"
+        );
+
+        config_set(&mut cfg, "log-ratelimit.threshold", "5", false).unwrap();
+        assert_eq!(cfg.log_ratelimit.threshold, Some(5));
+        assert_eq!(
+            config_get(&cfg, Some("log-ratelimit.threshold")).unwrap()[0].1,
+            "5"
+        );
+
+        config_set(&mut cfg, "log-ratelimit.window", "120", false).unwrap();
+        assert_eq!(cfg.log_ratelimit.window_secs, Some(120));
+        assert_eq!(
+            config_get(&cfg, Some("log-ratelimit.window")).unwrap()[0].1,
+            "120"
+        );
+
+        // Empty resets to default (None).
+        config_set(&mut cfg, "log-ratelimit.threshold", "", false).unwrap();
+        assert_eq!(cfg.log_ratelimit.threshold, None);
+
+        // Unknown sub-key and non-numeric value are both rejected.
+        assert!(config_set(&mut cfg, "log-ratelimit.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "log-ratelimit.threshold", "not-a-number", false).is_err());
     }
 
     // CONVERGE-011: reconnect-cold.<threshold|backoff> knobs.
