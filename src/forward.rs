@@ -346,7 +346,23 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 "fragmenting oversized IP packet",
                             );
                             stats.record_fragmented_ipv4();
+                            // FRAG-003: same drop-newest backpressure policy as the
+                            // standard (unfragmented) path above, but per-fragment: a
+                            // fragment set is only useful to the receiver if every
+                            // fragment arrives, so once the send buffer can't fit one,
+                            // stop entirely rather than sending the rest of a set that
+                            // can now never complete.
                             for frag in &fragments {
+                                if route.conn.datagram_send_buffer_space() < frag.len() {
+                                    tracing::trace!(
+                                        dst = %info.dst_ip,
+                                        space = route.conn.datagram_send_buffer_space(),
+                                        frag_len = frag.len(),
+                                        "datagram send buffer full; dropping remaining fragments",
+                                    );
+                                    stats.record_drop(DropReason::Backpressure);
+                                    break;
+                                }
                                 match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
                                     Ok(()) => stats.record_tx(frag.len()),
                                     Err(e) => {
@@ -382,7 +398,20 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 "fragmenting oversized IPv6 packet (tetron-internal envelope)",
                             );
                             stats.record_fragmented_ipv6();
+                            // FRAG-003: same drop-newest backpressure policy as the
+                            // standard (unfragmented) path above, but per-fragment --
+                            // see the identical comment on the IPv4 branch above.
                             for frag in &fragments {
+                                if route.conn.datagram_send_buffer_space() < frag.len() {
+                                    tracing::trace!(
+                                        dst = %info.dst_ip,
+                                        space = route.conn.datagram_send_buffer_space(),
+                                        frag_len = frag.len(),
+                                        "datagram send buffer full; dropping remaining fragments",
+                                    );
+                                    stats.record_drop(DropReason::Backpressure);
+                                    break;
+                                }
                                 match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
                                     Ok(()) => stats.record_tx(frag.len()),
                                     Err(e) => {
