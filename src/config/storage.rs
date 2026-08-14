@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
-    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
-    StatusCacheConfig,
+    AppConfig, DropMonitorConfig, LogRatelimitConfig, NetworkConfig, PathFlapConfig,
+    RateLimitConfig, ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig,
+    ServerOverride, StatusCacheConfig,
 };
 
 // ---- Storage layout -------------------------------------------------------
@@ -69,6 +69,8 @@ struct Settings {
     reconnect_frozen: ReconnectFrozenConfig,
     #[serde(default)]
     status_cache: StatusCacheConfig,
+    #[serde(default)]
+    log_ratelimit: LogRatelimitConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,6 +478,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             reconnect_cold: ReconnectColdConfig::default(),
             reconnect_frozen: ReconnectFrozenConfig::default(),
             status_cache: StatusCacheConfig::default(),
+            log_ratelimit: LogRatelimitConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -523,6 +526,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         reconnect_cold: settings.reconnect_cold,
         reconnect_frozen: settings.reconnect_frozen,
         status_cache: settings.status_cache,
+        log_ratelimit: settings.log_ratelimit,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -594,6 +598,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         reconnect_cold: config.reconnect_cold.clone(),
         reconnect_frozen: config.reconnect_frozen.clone(),
         status_cache: config.status_cache.clone(),
+        log_ratelimit: config.log_ratelimit.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,
