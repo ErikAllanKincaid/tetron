@@ -1910,6 +1910,43 @@ mod reconnect_tests {
             ReconnectDecision::Reconnect
         );
     }
+
+    // CONVERGE-010: the dial task's pre-attempt roster re-check.
+
+    #[test]
+    fn peer_still_in_roster_keeps_dialing() {
+        assert_eq!(
+            dial_retry_decision(true, false),
+            DialRetryDecision::KeepDialing
+        );
+    }
+
+    #[test]
+    fn peer_dropped_from_roster_abandons_dialing() {
+        assert_eq!(
+            dial_retry_decision(false, false),
+            DialRetryDecision::AbandonPeerGone
+        );
+    }
+
+    #[test]
+    fn pruned_entry_abandons_dialing_even_if_still_listed() {
+        // A pruned_peers entry can land before the roster copy this task
+        // reads reflects the removal; the one-shot suppression entry alone
+        // must stop the dialing.
+        assert_eq!(
+            dial_retry_decision(true, true),
+            DialRetryDecision::AbandonPeerGone
+        );
+    }
+
+    #[test]
+    fn pruned_and_unlisted_abandons_dialing() {
+        assert_eq!(
+            dial_retry_decision(false, true),
+            DialRetryDecision::AbandonPeerGone
+        );
+    }
 }
 
 #[cfg(test)]

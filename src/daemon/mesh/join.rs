@@ -991,6 +991,7 @@ pub(crate) fn spawn_reconnect_loop(
             let reconverge_notify = reconverge_notify.clone();
             let live_state = live_state.clone();
             let global_gate = global_gate.clone();
+            let pruned_peers = pruned_peers.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -1038,6 +1039,28 @@ pub(crate) fn spawn_reconnect_loop(
                         _ = tokio::time::sleep(backoff) => {}
                     }
                     backoff = next_backoff(backoff, BACKOFF_MAX);
+
+                    // CONVERGE-010: re-check roster authority before every
+                    // attempt. The outer disconnect handler's checks only run
+                    // on a new disconnect event, which an offline peer never
+                    // produces -- without this, a kick can never stop an
+                    // already-spinning dial task, and the task would even
+                    // re-register a kicked peer that later comes back online.
+                    // Consuming the `pruned_peers` entry here has the same
+                    // one-shot semantics as the outer handler's consumption.
+                    let in_roster = live_state.read().unwrap().members.get(&peer_id).is_some();
+                    let was_pruned = pruned_peers
+                        .remove(&(net_name.clone(), peer_id))
+                        .is_some();
+                    if dial_retry_decision(in_roster, was_pruned)
+                        == DialRetryDecision::AbandonPeerGone
+                    {
+                        tracing::info!(
+                            peer = %peer_id.fmt_short(), ip = %peer_ip,
+                            "peer no longer in roster, stopping reconnect attempts"
+                        );
+                        return;
+                    }
 
                     match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
                         Ok(conn) => {
