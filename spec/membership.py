@@ -1497,6 +1497,73 @@ class ColdPeerBackoffEscalation(Requirement):
     req_id = "CONVERGE-011"
 
 
+class CoordinatorReconnectLoop(Requirement):
+    """REQUIREMENT-ID: CONVERGE-012
+
+    A coordinator has no ongoing outbound reconnect mechanism at all
+    (`FINDINGS_CoordinatorHasNoOutboundReconnectLoop_2026-08-15.md`,
+    `DO-NOT-COMMIT/oom-leak-investigation/`). `spawn_reconnect_loop`
+    (`join.rs`, CONVERGE-010/011's roster-recheck and backoff escalation)
+    is spawned only from the member/join path (`join_mesh_shared`). A
+    coordinator's own dial mechanism, `dial_all_members` (`create_join.rs`),
+    is one-shot: it dials each roster member once at daemon/network restore
+    and, on failure, only `debug!`-logs -- no retry, no backoff, nothing.
+    Confirmed via `accept.rs` that a coordinator's own *mid-session*
+    disconnects dead-end identically (`spawn_peer_cleanup`,
+    `coordinator.rs`, feeds `disconnect_tx` into cleanup-only logic: remove
+    the dead route, stamp `last_seen`, republish the blob -- never a
+    redial).
+
+    Net effect, confirmed via a real coordinator's journal history
+    (xps-17-9720): promoting a member to co-coordinator, then ever
+    restarting the daemon (a deploy, a crash, a routine `sudo tetron
+    restart`), silently and permanently deletes that node's ability to
+    redial any member it cannot immediately reach at that restart, for the
+    rest of that process's life -- the persisted role is `coordinator`
+    from then on, so `join_mesh_shared`'s member-only reconnect loop never
+    spawns again, on any future restart, regardless of build.
+
+    Fix: give `spawn_peer_cleanup` (`coordinator.rs`) a second job
+    alongside its existing cleanup -- when a disconnect event survives the
+    same roster-authority gate the member path already uses
+    (`reconnect_decision`, `select.rs`, unchanged, reused as-is), spawn a
+    per-peer redial task (`spawn_coordinator_dial_retry`, new,
+    `coordinator.rs`) that reuses CONVERGE-010/011's pure decision
+    functions verbatim (`dial_retry_decision`, `backoff_cap`,
+    `next_backoff`) -- roster-authority and cold/frozen-escalation
+    behavior are therefore identical to the member path regardless of
+    which role initiated the dial. Simpler than the member-side task in
+    one respect: a coordinator already holds `state: SharedNetworkState`
+    directly at spawn time (no `live_state_rx`/`reconverge_notify_rx`
+    oneshot handshake needed -- that exists on the member path only
+    because `join_mesh_shared` produces that state asynchronously).
+    `dial_all_members`'s own two failure branches (`Ok(Err(e))`,
+    `Err(_elapsed)`) now seed the same mechanism via a synthetic
+    `DisconnectEvent` (`conn_stable_id: None`), mirroring the member
+    path's existing cold-restore kick-start (`create_join.rs`'s
+    `seed_from_blob` branch) instead of inventing a second code path for
+    "never connected" vs. "was connected, then dropped."
+
+    Depends on CONVERGE-013 landing first: `backoff_cap`'s signature grows
+    a third tier there, and this requirement's redial task is written
+    against the three-tier signature directly rather than the two-tier
+    one it would otherwise have to be updated again immediately after.
+
+    Verification: reuses already-unit-tested pure functions, so no new
+    pure-logic unit test is needed for the decision behavior itself (same
+    reasoning CONVERGE-010/011 already documented). Live verification
+    needs a coordinator with a genuinely unreachable member --
+    `tetron-testsuite`'s `coordinator-reconnect.sh` exercises this
+    directly.
+
+    Found: 2026-08-15, `FINDINGS_CoordinatorHasNoOutboundReconnectLoop_
+    2026-08-15.md`, during the OOM-leak investigation's CONVERGE-010/011
+    live-verification attempt on xps-17-9720.
+    """
+
+    req_id = "CONVERGE-012"
+
+
 class ColdCadenceFrozenTier(Requirement):
     """REQUIREMENT-ID: CONVERGE-013
 

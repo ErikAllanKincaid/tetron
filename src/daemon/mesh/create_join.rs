@@ -136,6 +136,10 @@ impl MeshManager {
         poller_notify: &Arc<tokio::sync::Notify>,
         cancel: &CancellationToken,
         ctx: &MeshCtx,
+        // CONVERGE-012: this network's own address, needed by
+        // `spawn_coordinator_dial_retry`'s `MeshHello` on redial -- every
+        // other value it needs already comes from `self`/`ctx`/`state`.
+        my_ip: Ipv4Addr,
     ) -> (
         Vec<tokio::task::JoinHandle<()>>,
         mpsc::Sender<forward::DisconnectEvent>,
@@ -185,6 +189,11 @@ impl MeshManager {
                 blob_store: self.blob_store.clone(),
                 dht_notify: Some(dht_notify.clone()),
                 network_name: name.to_string(),
+                endpoint: self.endpoint.clone(),
+                ctx: ctx.clone(),
+                my_identity: self.identity.local_identity(),
+                my_ip,
+                disconnect_tx: disconnect_tx.clone(),
             }),
         ));
 
@@ -521,6 +530,7 @@ impl MeshManager {
             &poller_notify,
             &cancel,
             &ctx,
+            my_ip,
         );
 
         // Insert the handle first so register_coordinator_handler can update the role.
@@ -1606,6 +1616,7 @@ impl MeshManager {
                             error = %e,
                             "could not dial member yet; reconnect loop will retry"
                         );
+                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey).await;
                     }
                     Err(_elapsed) => {
                         tracing::debug!(
@@ -1614,10 +1625,36 @@ impl MeshManager {
                             timeout_secs = DIAL_TIMEOUT.as_secs(),
                             "dial timed out; reconnect loop will retry"
                         );
+                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey).await;
                     }
                 }
             });
         }
         while dials.next().await.is_some() {}
     }
+}
+
+/// CONVERGE-012: `dial_all_members`'s two failure branches seed
+/// `spawn_peer_cleanup`'s coordinator-reconnect handling via a synthetic
+/// `DisconnectEvent` (`conn_stable_id: None`), the exact same technique
+/// the member path already uses for its own cold-restore kick-start
+/// (`create_join.rs`'s `seed_from_blob` branch) -- "never connected" and
+/// "was connected, then dropped" both funnel into the one mechanism
+/// instead of needing a second code path.
+async fn seed_coordinator_reconnect(
+    disconnect_tx: &mpsc::Sender<forward::DisconnectEvent>,
+    m: &Member,
+    network_name: &str,
+    net_pubkey: &EndpointId,
+) {
+    let _ = disconnect_tx
+        .send(forward::DisconnectEvent {
+            endpoint_id: m.identity,
+            ip: m.ip,
+            ipv6: derive_ipv6(&m.identity, net_pubkey),
+            network: network_name.to_string(),
+            reason: forward::CloseReason::Other,
+            conn_stable_id: None,
+        })
+        .await;
 }

@@ -274,6 +274,7 @@ impl MeshManager {
             &poller_notify,
             &cancel,
             &ctx,
+            my_ip,
         );
 
         self.register_coordinator_handler(
