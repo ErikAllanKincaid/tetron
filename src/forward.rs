@@ -249,6 +249,9 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
     stats: Arc<ForwardMetrics>,
 ) -> Result<()> {
     let mut pool = BytesMut::with_capacity(TX_POOL_CHUNK);
+    // FRAG-006: one long-lived fragmenter for this loop, so a fragmented
+    // packet costs the same amortized zero allocations as an unfragmented one.
+    let mut fragmenter = packet::Fragmenter::new();
     loop {
         // Ensure a full MTU of contiguous spare capacity before reading (a short
         // buffer would truncate the packet). `reserve` reuses the current chunk
@@ -339,7 +342,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             // will reassemble the fragments.
             match pkt.first().map(|b| b >> 4) {
                 Some(4) => {
-                    match packet::fragment_ipv4(&pkt, max_dgram) {
+                    match fragmenter.fragment_ipv4(&pkt, max_dgram) {
                         Some(fragments) => {
                             tracing::debug!(
                                 dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
@@ -352,7 +355,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                             // fragment arrives, so once the send buffer can't fit one,
                             // stop entirely rather than sending the rest of a set that
                             // can now never complete.
-                            for frag in &fragments {
+                            for frag in fragments {
                                 if route.conn.datagram_send_buffer_space() < frag.len() {
                                     tracing::trace!(
                                         dst = %info.dst_ip,
@@ -363,7 +366,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                     stats.record_drop(DropReason::Backpressure);
                                     break;
                                 }
-                                match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
+                                match route.conn.send_datagram(frag.clone()) {
                                     Ok(()) => stats.record_tx(frag.len()),
                                     Err(e) => {
                                         tracing::debug!(
@@ -391,7 +394,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                     // extension header -- see `packet::fragment_ipv6` and
                     // `Ipv6Fragmentation` in spec/addressing.py.
                     let id = NEXT_FRAG6_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    match packet::fragment_ipv6(&pkt, id, max_dgram) {
+                    match fragmenter.fragment_ipv6(&pkt, id, max_dgram) {
                         Some(fragments) => {
                             tracing::debug!(
                                 dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
@@ -401,7 +404,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                             // FRAG-003: same drop-newest backpressure policy as the
                             // standard (unfragmented) path above, but per-fragment --
                             // see the identical comment on the IPv4 branch above.
-                            for frag in &fragments {
+                            for frag in fragments {
                                 if route.conn.datagram_send_buffer_space() < frag.len() {
                                     tracing::trace!(
                                         dst = %info.dst_ip,
@@ -412,7 +415,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                     stats.record_drop(DropReason::Backpressure);
                                     break;
                                 }
-                                match route.conn.send_datagram(Bytes::copy_from_slice(frag)) {
+                                match route.conn.send_datagram(frag.clone()) {
                                     Ok(()) => stats.record_tx(frag.len()),
                                     Err(e) => {
                                         tracing::debug!(

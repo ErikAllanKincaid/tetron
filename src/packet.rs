@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
+use bytes::{Bytes, BytesMut};
+
 #[derive(Clone, Copy)]
 pub struct PacketInfo {
     pub src_ip: IpAddr,
@@ -177,18 +179,24 @@ fn extract_icmp(protocol: u8, packet: &[u8], header_len: usize) -> (u8, u16) {
 /// inherits the input's More-Fragments flag rather than unconditionally
 /// clearing it.
 ///
-/// Returns `None` when the packet needs no fragmentation (already <= `max_size`),
-/// has IP options (IHL > 5, which this implementation doesn't support),
-/// `max_size` is too small for even a single fragment header + 8 payload bytes,
-/// or an absolute offset would not fit the header's 13-bit Fragment Offset
-/// field.
-pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
+/// Appends each fragment to `out`, sliced out of `pool` (FRAG-006). Returns
+/// `false`, having appended nothing, when the packet needs no fragmentation
+/// (already <= `max_size`), has IP options (IHL > 5, which this implementation
+/// doesn't support), `max_size` is too small for even a single fragment header
+/// plus 8 payload bytes, or an absolute offset would not fit the header's
+/// 13-bit Fragment Offset field. Callers go through [`Fragmenter`].
+fn fragment_ipv4_into(
+    packet: &[u8],
+    max_size: usize,
+    pool: &mut BytesMut,
+    out: &mut Vec<Bytes>,
+) -> bool {
     const HEADER_LEN: usize = 20; // no IP options
     if packet.len() <= max_size {
-        return None;
+        return false;
     }
     if packet.len() < HEADER_LEN {
-        return None;
+        return false;
     }
     // FRAG-005: `max_size` comes from `Connection::max_datagram_size()`, which
     // noq derives partly from the *remote* peer's advertised
@@ -198,11 +206,11 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     // non-final fragment's payload to be a multiple of 8 bytes, so anything
     // smaller cannot produce a legal fragment set anyway.
     if max_size < HEADER_LEN + 8 {
-        return None;
+        return false;
     }
     let ihl = (packet[0] & 0x0F) as usize;
     if ihl * 4 != HEADER_LEN {
-        return None; // IP options not supported
+        return false; // IP options not supported
     }
 
     // F-04: verify the original header checksum before trusting any of its
@@ -217,7 +225,7 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     hdr[10] = 0;
     hdr[11] = 0;
     if ip_checksum(&hdr) != stored_csum {
-        return None; // corrupt header — refuse to fragment
+        return false; // corrupt header — refuse to fragment
     }
 
     let payload_len = packet.len() - HEADER_LEN;
@@ -243,10 +251,9 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     // bytes); refuse it rather than truncate the offset silently.
     const MAX_FRAG_OFFSET_BYTES: usize = 0x1FFF * 8;
     if base_offset + payload_len.saturating_sub(1) > MAX_FRAG_OFFSET_BYTES {
-        return None;
+        return false;
     }
 
-    let mut fragments = Vec::new();
     let mut offset = 0usize;
 
     while offset < payload_len {
@@ -257,19 +264,19 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
         let mf: u8 = if is_last { base_mf } else { 1 };
         let frag_offset = ((base_offset + offset) / 8) as u16;
 
-        let mut frag = Vec::with_capacity(HEADER_LEN + frag_payload_len);
-
-        // Copy the IP header (unchanged for most fields)
-        frag.extend_from_slice(&packet[..HEADER_LEN]);
+        // FRAG-006: build the 20-byte header on the stack, then write header
+        // and payload straight into the pool -- no per-fragment allocation.
+        let mut hdr = [0u8; HEADER_LEN];
+        hdr.copy_from_slice(&packet[..HEADER_LEN]);
 
         // Total Length (bytes 2-3)
         let total_len = (HEADER_LEN + frag_payload_len) as u16;
-        frag[2] = (total_len >> 8) as u8;
-        frag[3] = total_len as u8;
+        hdr[2] = (total_len >> 8) as u8;
+        hdr[3] = total_len as u8;
 
         // Identification (bytes 4-5) — copy from original
-        frag[4] = id_hi;
-        frag[5] = id_lo;
+        hdr[4] = id_hi;
+        hdr[5] = id_lo;
 
         // Flags + Fragment Offset (bytes 6-7). Byte 6 in wire format:
         //   bit 7 = Reserved (0)
@@ -277,25 +284,26 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
         //   bit 5 = MF (More Fragments)
         //   bits 4-0 = Fragment Offset bits 12-8
         // Byte 7 = Fragment Offset bits 7-0
-        frag[6] = df | (mf << 5) | ((frag_offset >> 8) as u8 & 0x1F);
-        frag[7] = (frag_offset & 0xFF) as u8;
+        hdr[6] = df | (mf << 5) | ((frag_offset >> 8) as u8 & 0x1F);
+        hdr[7] = (frag_offset & 0xFF) as u8;
 
         // Clear header checksum and recompute
-        frag[10] = 0;
-        frag[11] = 0;
-        let csum = ip_checksum(&frag[..HEADER_LEN]);
-        frag[10] = (csum >> 8) as u8;
-        frag[11] = csum as u8;
+        hdr[10] = 0;
+        hdr[11] = 0;
+        let csum = ip_checksum(&hdr);
+        hdr[10] = (csum >> 8) as u8;
+        hdr[11] = csum as u8;
 
-        // Copy the payload portion for this fragment
         let start = HEADER_LEN + offset;
-        frag.extend_from_slice(&packet[start..start + frag_payload_len]);
+        reserve_for(pool, HEADER_LEN + frag_payload_len);
+        pool.extend_from_slice(&hdr);
+        pool.extend_from_slice(&packet[start..start + frag_payload_len]);
+        out.push(pool.split_to(HEADER_LEN + frag_payload_len).freeze());
 
-        fragments.push(frag);
         offset += frag_payload_len;
     }
 
-    Some(fragments)
+    true
 }
 
 /// Marker byte for a tetron-internal IPv6 fragment envelope (see
@@ -330,44 +338,123 @@ const MAX_REASSEMBLED_IPV6_PACKET: usize = 1280;
 /// counter) so concurrent or overlapping fragment sets can't be confused
 /// with each other by the receiver.
 ///
-/// Returns `None` when the packet already fits in `max_size` (no
-/// fragmentation needed), `max_size` leaves no room for the envelope
-/// header plus at least one payload byte, or the packet is longer than the
-/// envelope's 2-byte offset field can address (FRAG-005).
-pub fn fragment_ipv6(packet: &[u8], id: u32, max_size: usize) -> Option<Vec<Vec<u8>>> {
+/// Appends each envelope to `out`, sliced out of `pool` (FRAG-006). Returns
+/// `false`, having appended nothing, when the packet already fits in
+/// `max_size` (no fragmentation needed), `max_size` leaves no room for the
+/// envelope header plus at least one payload byte, or the packet is longer
+/// than the envelope's 2-byte offset field can address (FRAG-005). Callers go
+/// through [`Fragmenter`].
+fn fragment_ipv6_into(
+    packet: &[u8],
+    id: u32,
+    max_size: usize,
+    pool: &mut BytesMut,
+    out: &mut Vec<Bytes>,
+) -> bool {
     if packet.len() <= max_size {
-        return None;
+        return false;
     }
     if max_size <= FRAG6_HEADER_LEN {
-        return None;
+        return false;
     }
     // FRAG-005: the envelope addresses payload bytes with a 2-byte offset, so a
     // packet longer than that can express cannot be fragmented without
     // truncating the offset. Unreachable from the TUN (`tun::TUN_MTU` is 1280),
     // but the cast below must not be the thing enforcing it.
     if packet.len() > u16::MAX as usize {
-        return None;
+        return false;
     }
     let max_payload = max_size - FRAG6_HEADER_LEN;
-    let mut fragments = Vec::new();
     let mut offset = 0usize;
 
     while offset < packet.len() {
         let frag_len = max_payload.min(packet.len() - offset);
         let more: u8 = if offset + frag_len < packet.len() { 1 } else { 0 };
 
-        let mut frag = Vec::with_capacity(FRAG6_HEADER_LEN + frag_len);
-        frag.push(FRAG6_MAGIC);
-        frag.extend_from_slice(&id.to_be_bytes());
-        frag.extend_from_slice(&(offset as u16).to_be_bytes());
-        frag.push(more);
-        frag.extend_from_slice(&packet[offset..offset + frag_len]);
+        // FRAG-006: envelope header on the stack, then straight into the pool.
+        let mut hdr = [0u8; FRAG6_HEADER_LEN];
+        hdr[0] = FRAG6_MAGIC;
+        hdr[1..5].copy_from_slice(&id.to_be_bytes());
+        hdr[5..7].copy_from_slice(&(offset as u16).to_be_bytes());
+        hdr[7] = more;
 
-        fragments.push(frag);
+        reserve_for(pool, FRAG6_HEADER_LEN + frag_len);
+        pool.extend_from_slice(&hdr);
+        pool.extend_from_slice(&packet[offset..offset + frag_len]);
+        out.push(pool.split_to(FRAG6_HEADER_LEN + frag_len).freeze());
+
         offset += frag_len;
     }
 
-    Some(fragments)
+    true
+}
+
+/// Pool chunk for [`Fragmenter`], mirroring `forward::TX_POOL_CHUNK`: one
+/// allocation is amortized across many fragments, each of which is sliced out
+/// with a zero-copy `split_to(n).freeze()`.
+const FRAG_POOL_CHUNK: usize = 64 * 1024;
+
+/// Ensure `pool` has `n` bytes of contiguous spare capacity without
+/// reallocating mid-fragment. `reserve` reuses the current chunk until it is
+/// exhausted, then allocates a fresh one; fragments already sliced off keep the
+/// old chunk alive until the datagrams referencing them are sent.
+fn reserve_for(pool: &mut BytesMut, n: usize) {
+    if pool.capacity() < n {
+        pool.reserve(FRAG_POOL_CHUNK.max(n));
+    }
+}
+
+/// Reusable scratch space for the fragmentation send path (FRAG-006).
+///
+/// The unfragmented send path in `forward::run_mesh` allocates nothing per
+/// packet: TUN reads land in a pooled `BytesMut` and each packet is sliced out
+/// as an owned `Bytes` sharing that chunk. The fragmenters used to abandon
+/// that, building a `Vec<Vec<u8>>` (one allocation per fragment) that the
+/// caller then copied again into `Bytes`. One instance of this lives in the TUN
+/// read loop, so a fragmented packet costs the same amortized zero allocations
+/// as an unfragmented one.
+///
+/// Not `Sync`-shared: like the TX pool it belongs to a single task.
+pub struct Fragmenter {
+    pool: BytesMut,
+    out: Vec<Bytes>,
+}
+
+impl Fragmenter {
+    pub fn new() -> Self {
+        Self {
+            pool: BytesMut::with_capacity(FRAG_POOL_CHUNK),
+            out: Vec::new(),
+        }
+    }
+
+    /// Split an oversized IPv4 packet. See [`fragment_ipv4_into`] for the
+    /// fragmentation rules; returns `None` in exactly the cases documented
+    /// there, and otherwise the fragment set, valid until the next call.
+    pub fn fragment_ipv4(&mut self, packet: &[u8], max_size: usize) -> Option<&[Bytes]> {
+        self.out.clear();
+        fragment_ipv4_into(packet, max_size, &mut self.pool, &mut self.out)
+            .then_some(self.out.as_slice())
+    }
+
+    /// Split an oversized IPv6 packet into tetron-internal envelopes. See
+    /// [`fragment_ipv6_into`] for the envelope format and the `None` cases.
+    pub fn fragment_ipv6(
+        &mut self,
+        packet: &[u8],
+        id: u32,
+        max_size: usize,
+    ) -> Option<&[Bytes]> {
+        self.out.clear();
+        fragment_ipv6_into(packet, id, max_size, &mut self.pool, &mut self.out)
+            .then_some(self.out.as_slice())
+    }
+}
+
+impl Default for Fragmenter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Outcome of feeding one raw peer datagram to [`Ipv6Reassembler::accept`].
@@ -530,6 +617,23 @@ fn ip_checksum(data: &[u8]) -> u16 {
 mod tests {
     use super::*;
 
+    /// Test-side wrappers over [`Fragmenter`] (FRAG-006): each call gets a
+    /// fresh fragmenter and an owned copy of the result, so a test can hold
+    /// several fragment sets at once and compare them. Production keeps one
+    /// long-lived `Fragmenter` per TUN read loop instead, which is what makes
+    /// the pool amortize.
+    fn frag4(packet: &[u8], max_size: usize) -> Option<Vec<Bytes>> {
+        Fragmenter::new()
+            .fragment_ipv4(packet, max_size)
+            .map(<[Bytes]>::to_vec)
+    }
+
+    fn frag6(packet: &[u8], id: u32, max_size: usize) -> Option<Vec<Bytes>> {
+        Fragmenter::new()
+            .fragment_ipv6(packet, id, max_size)
+            .map(<[Bytes]>::to_vec)
+    }
+
     #[test]
     fn parse_valid_ipv4() {
         let mut packet = vec![0u8; 24];
@@ -627,12 +731,12 @@ mod tests {
     fn frag_no_fragmentation_needed() {
         // 60-byte packet fits in a 1200-byte max
         let pkt = make_ipv4(40, 0x1234, false);
-        assert!(fragment_ipv4(&pkt, 1200).is_none());
+        assert!(frag4(&pkt, 1200).is_none());
     }
 
     #[test]
     fn frag_malformed_too_short() {
-        assert!(fragment_ipv4(&[0x45, 0x00, 0x00, 0x14], 100).is_none());
+        assert!(frag4(&[0x45, 0x00, 0x00, 0x14], 100).is_none());
     }
 
     #[test]
@@ -642,7 +746,7 @@ mod tests {
         // checksum for each fragment.
         let mut pkt = make_ipv4(1208, 0x1234, false);
         pkt[10] ^= 0xFF; // flip the stored checksum's high byte
-        assert!(fragment_ipv4(&pkt, 1200).is_none());
+        assert!(frag4(&pkt, 1200).is_none());
     }
 
     #[test]
@@ -656,7 +760,7 @@ mod tests {
         // dropped with "cannot fragment ... (options or malformed)".
         let pkt = make_ipv4(1208, 0x1234, false);
         assert!(
-            fragment_ipv4(&pkt, 1200).is_some(),
+            frag4(&pkt, 1200).is_some(),
             "a valid, untouched header must fragment successfully, not be treated as corrupt"
         );
     }
@@ -684,21 +788,21 @@ mod tests {
         // IHL=6 → header_len=24 (has options)
         let mut pkt = make_ipv4(100, 0x1234, false);
         pkt[0] = 0x46;
-        assert!(fragment_ipv4(&pkt, 100).is_none());
+        assert!(frag4(&pkt, 100).is_none());
     }
 
     #[test]
     fn frag_max_size_too_small() {
         let pkt = make_ipv4(100, 0x1234, false);
         // max_size=20 → max_payload=0 → None
-        assert!(fragment_ipv4(&pkt, 27).is_none());
+        assert!(frag4(&pkt, 27).is_none());
     }
 
     #[test]
     fn frag_single_fragment_boundary() {
         // payload 200 bytes, max_size=1200 → 200+20=220 ≤ 1200 → no fragmentation
         let pkt = make_ipv4(200, 0x1234, false);
-        assert!(fragment_ipv4(&pkt, 1200).is_none());
+        assert!(frag4(&pkt, 1200).is_none());
     }
 
     #[test]
@@ -710,7 +814,7 @@ mod tests {
         // Fragment 1: 20 + 1176 = 1196 bytes, offset=0, MF=1
         // Fragment 2: 20 + (1208-1176=32) = 52 bytes, offset=1176/8=147, MF=0
         let pkt = make_ipv4(1208, 0xABCD, false);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
 
         // Fragment 1
@@ -757,7 +861,7 @@ mod tests {
     fn frag_preserves_df_flag() {
         // DF=1, payload 1208, max 1200 → should preserve DF=1 in fragments
         let pkt = make_ipv4(1208, 0x42, true);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
         assert!(frags[0][6] & 0x40 != 0, "DF preserved in frag 1");
         assert!(frags[1][6] & 0x40 != 0, "DF preserved in frag 2");
@@ -771,7 +875,7 @@ mod tests {
         // frag 2: offset=147, payload=1176 (total=1196)
         // frag 3: offset=294, payload=648 (total=668)
         let pkt = make_ipv4(3000, 0x99, false);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 3);
         // All three share the ID
         assert_eq!(frags[0][4], 0x00);
@@ -808,7 +912,7 @@ mod tests {
     fn frag_checksum_correct() {
         // Verify that each fragment's IP checksum is valid
         let pkt = make_ipv4(1208, 0x1234, false);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         for (i, frag) in frags.iter().enumerate() {
             let stored = u16::from_be_bytes([frag[10], frag[11]]);
             let mut hdr = frag[..20].to_vec();
@@ -829,7 +933,7 @@ mod tests {
         // where it sits in the original datagram, or claiming the datagram
         // ends here.
         let pkt = make_ipv4_fragment(1208, 1480, true);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
         // max_payload = (1200 - 20) & !7 = 1176, so the split lands at
         // 1480 + 1176 = 2656.
@@ -850,7 +954,7 @@ mod tests {
         // Same, but this is the datagram's final fragment (MF clear). Only
         // the last sub-fragment may clear MF; the earlier ones must set it.
         let pkt = make_ipv4_fragment(1208, 1480, false);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
         assert_eq!(frag_fields(&frags[0]), (1480, true));
         assert_eq!(frag_fields(&frags[1]), (2656, false));
@@ -859,7 +963,7 @@ mod tests {
     #[test]
     fn refrag_three_pieces_offsets_are_absolute_throughout() {
         let pkt = make_ipv4_fragment(3000, 800, true);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frags.len(), 3);
         assert_eq!(frag_fields(&frags[0]), (800, true));
         assert_eq!(frag_fields(&frags[1]), (800 + 1176, true));
@@ -871,7 +975,7 @@ mod tests {
         // FRAG-001's own case: input offset 0, MF clear. The absolute-offset
         // arithmetic must be a no-op for it.
         let pkt = make_ipv4(1208, 0x1234, false);
-        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        let frags = frag4(&pkt, 1200).expect("should fragment");
         assert_eq!(frag_fields(&frags[0]), (0, true));
         assert_eq!(frag_fields(&frags[1]), (1176, false));
     }
@@ -882,7 +986,7 @@ mod tests {
         // datagram may exceed 65535 bytes), but the absolute offset must
         // never be allowed to silently truncate into the 13-bit field.
         let pkt = make_ipv4_fragment(1208, 65528, true);
-        assert!(fragment_ipv4(&pkt, 1200).is_none());
+        assert!(frag4(&pkt, 1200).is_none());
     }
 
     // ── FRAG-005: bounds guards on peer-influenced inputs ────────────────
@@ -896,7 +1000,7 @@ mod tests {
         let pkt = make_ipv4(100, 0x1234, false);
         for max_size in [0usize, 1, 10, 19, 20, 27] {
             assert!(
-                fragment_ipv4(&pkt, max_size).is_none(),
+                frag4(&pkt, max_size).is_none(),
                 "max_size {max_size} must be refused, not underflow"
             );
         }
@@ -907,7 +1011,7 @@ mod tests {
         // The boundary the guard must not overshoot: 20-byte header plus the
         // 8-byte minimum payload an RFC 791 non-final fragment can carry.
         let pkt = make_ipv4(100, 0x1234, false);
-        let frags = fragment_ipv4(&pkt, 28).expect("28 bytes is workable");
+        let frags = frag4(&pkt, 28).expect("28 bytes is workable");
         assert!(frags.iter().all(|f| f.len() <= 28));
         assert_eq!(frags.len(), 100 / 8 + usize::from(100 % 8 != 0));
     }
@@ -918,14 +1022,14 @@ mod tests {
         // u16::MAX cannot be addressed by it. Unreachable from the TUN
         // (TUN_MTU is 1280), but the cast must not truncate silently.
         let pkt = make_ipv6(u16::MAX as usize);
-        assert!(fragment_ipv6(&pkt, 1, 1200).is_none());
+        assert!(frag6(&pkt, 1, 1200).is_none());
     }
 
     #[test]
     fn frag6_packet_at_the_offset_limit_still_fragments() {
         let pkt = make_ipv6(u16::MAX as usize - 40);
         assert_eq!(pkt.len(), u16::MAX as usize);
-        assert!(fragment_ipv6(&pkt, 1, 1200).is_some());
+        assert!(frag6(&pkt, 1, 1200).is_some());
     }
 
     // ── IPv6 fragmentation tests (FRAG-002) ──────────────────────────────
@@ -943,20 +1047,20 @@ mod tests {
     #[test]
     fn frag6_no_fragmentation_needed() {
         let pkt = make_ipv6(40);
-        assert!(fragment_ipv6(&pkt, 1, 1200).is_none());
+        assert!(frag6(&pkt, 1, 1200).is_none());
     }
 
     #[test]
     fn frag6_max_size_too_small() {
         let pkt = make_ipv6(1240);
-        assert!(fragment_ipv6(&pkt, 1, FRAG6_HEADER_LEN).is_none());
+        assert!(frag6(&pkt, 1, FRAG6_HEADER_LEN).is_none());
     }
 
     #[test]
     fn frag6_splits_into_two_and_reassembles() {
         // 1280-byte packet (TUN_MTU), max_dgram=1200 -- the real-world case.
         let pkt = make_ipv6(1240);
-        let frags = fragment_ipv6(&pkt, 42, 1200).expect("should fragment");
+        let frags = frag6(&pkt, 42, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
         for f in &frags {
             assert!(f.len() <= 1200);
@@ -978,7 +1082,7 @@ mod tests {
     #[test]
     fn frag6_reassembles_out_of_order() {
         let pkt = make_ipv6(1240);
-        let frags = fragment_ipv6(&pkt, 7, 1200).expect("should fragment");
+        let frags = frag6(&pkt, 7, 1200).expect("should fragment");
         assert_eq!(frags.len(), 2);
 
         let mut r = Ipv6Reassembler::new();
@@ -994,7 +1098,7 @@ mod tests {
         // 1250-byte packet (under the 1280 TUN_MTU ceiling), small max_dgram
         // forces 3 fragments: 492 + 492 + 266.
         let pkt = make_ipv6(1210);
-        let frags = fragment_ipv6(&pkt, 99, 500).expect("should fragment");
+        let frags = frag6(&pkt, 99, 500).expect("should fragment");
         assert_eq!(frags.len(), 3);
 
         let mut r = Ipv6Reassembler::new();
@@ -1036,10 +1140,10 @@ mod tests {
     fn frag6_stale_entry_gc_prevents_unbounded_growth() {
         let mut r = Ipv6Reassembler::new();
         let pkt = make_ipv6(1240);
-        let frags = fragment_ipv6(&pkt, 1, 1200).expect("should fragment");
+        let frags = frag6(&pkt, 1, 1200).expect("should fragment");
         // Only send the first fragment of many distinct ids, never completing any.
         for id in 0..(MAX_REASSEMBLY_ENTRIES as u32 + 5) {
-            let mut f = frags[0].clone();
+            let mut f = frags[0].to_vec();
             f[1..5].copy_from_slice(&id.to_be_bytes());
             assert_eq!(r.accept(&f), Ipv6FragmentOutcome::Waiting);
         }

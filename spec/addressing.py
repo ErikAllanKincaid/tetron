@@ -627,6 +627,56 @@ class FragmentationInputBounds(Requirement):
 
 
 # --------------------------------------------------------------------------
+# FRAG-006: the fragment send path allocates per fragment
+# --------------------------------------------------------------------------
+
+class FragmentationAllocatesPerFragment(Requirement):
+    """REQUIREMENT-ID: FRAG-006
+
+    Found 2026-08-15 in the same audit as `FRAG-004`. `forward::run_mesh`
+    reads TUN packets into a pooled `BytesMut` and slices each one out
+    with a zero-copy `split_to(n).freeze()`, so the ordinary send path
+    performs no per-packet allocation at all (`TX_POOL_CHUNK`, amortized
+    across roughly fifty packets). The fragmentation branches abandon
+    that: `fragment_ipv4`/`fragment_ipv6` build a `Vec<Vec<u8>>` (one heap
+    allocation per fragment, plus one for the outer vector), and the send
+    loop then calls `Bytes::copy_from_slice(frag)` on each one (a second
+    allocation plus a full copy per fragment). A fragmented packet
+    therefore costs about four allocations and two copies where an
+    unfragmented one costs zero.
+
+    This lands on exactly the machines that fragment most. `FRAG-003`
+    recorded that xps-17-9720 fragments IPv4 packets at roughly 13.7x
+    aorus's per-packet rate and is also the fastest-growing RSS in the
+    OOM-leak investigation; whatever that investigation concludes, the
+    node doing the most fragmenting is also the only one paying a
+    per-packet allocation cost on its data path, which is worth removing
+    on its own merits.
+
+    **Fix**: both fragmenters write into a caller-supplied pooled
+    `BytesMut` and return `Vec<Bytes>` slices of it, mirroring how the
+    unfragmented path already slices the TUN read pool -- so a fragmented
+    packet costs the same amortized zero allocations as an unfragmented
+    one, and the `Bytes::copy_from_slice` calls in `forward.rs` disappear.
+    The outer `Vec<Bytes>` is reused across iterations of the send loop
+    rather than reallocated per packet.
+
+    Verified with `benches/forward.rs` (Criterion, already covering the
+    1280-byte TUN-MTU packet size) extended with a fragmenting case, since
+    a performance requirement with no measurement is not verifiable.
+
+    Independent of `FRAG-004` and `FRAG-005` in the sense that none of the
+    three needs another's state, but this one should land *after*
+    `FRAG-004` if both are taken: `FRAG-004` changes how each fragment's
+    header fields are computed and this changes where those bytes are
+    written, so doing them in the other order means writing the fragment
+    builder twice.
+    """
+
+    req_id = "FRAG-006"
+
+
+# --------------------------------------------------------------------------
 # IPV4-MIN-IHL-001: reject IPv4 headers shorter than five words (upstream
 # 6d008d5 `fix(firewall)`, ported from the 2026-08-05 upstream review)
 # --------------------------------------------------------------------------
