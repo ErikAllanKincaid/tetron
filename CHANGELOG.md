@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-15
+
 ### Added
 
 - **`tetron status --json` now reports each network path's own MTU** (`MTU-DIAG-002`): every entry in a peer's `paths[]` list gains `current_mtu`, plus `black_holes_detected` and `sent_plpmtud_probes`/`lost_plpmtud_probes`. This explains a number that was previously unexplainable: a connection's datagram ceiling is the *smallest* MTU among all of its available paths, not the one carrying traffic, so a peer connected over a perfectly good 1414-byte direct path can still report a 1162-byte ceiling — and fragment every large packet accordingly — because some unselected fallback path is smaller or is still working out its own MTU. Now you can see which path is responsible and whether its MTU discovery is converging or thrashing. Diagnostic only; nothing about path selection or packet handling changes, and the plain-text output is untouched.
@@ -756,7 +758,9 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.2...v0.9.3
 [0.9.1]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.8.2...v0.9.0
