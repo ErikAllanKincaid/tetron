@@ -481,6 +481,31 @@ class FragmentationBackpressure(Requirement):
     nor reconnect/multipath logic changes -- this is a send-side
     admission check only, identical in kind to what `FRAG-001`'s own
     standard path has always had.
+
+    Follow-up (2026-08-15, found while reading the same send paths for
+    `FRAG-004`): the per-fragment check above stops the loop at the first
+    fragment that does not fit, but every fragment *before* that one has
+    already been handed to `send_datagram` and will be delivered. The
+    receiver therefore gets a fragment set that can never complete, and
+    holds it for its reassembly timeout (30s for the Linux IPv4 path;
+    `REASSEMBLY_TIMEOUT`, 5s, for `FRAG-002`'s own `Ipv6Reassembler`)
+    before discarding it -- the exact waste this requirement's reasoning
+    identified, still paid, just one fragment later. Amended to an
+    all-or-nothing admission check: sum the wire size of the whole
+    fragment set and compare it against `datagram_send_buffer_space()`
+    once, before sending any fragment, so a set that cannot complete is
+    never started. The per-fragment check inside the loop is kept as a
+    cheap guard against the space shrinking mid-loop (another peer's
+    traffic shares the connection's buffer), but in the ordinary case it
+    no longer fires.
+
+    Drop accounting is deliberately *unchanged* by this amendment: still
+    exactly one `Backpressure` drop for the whole abandoned packet, never
+    one per fragment. `stats` is packet-oriented throughout --
+    `fragmented_ipv4`/`fragmented_ipv6` likewise count once per original
+    packet, not once per wire fragment -- and a per-fragment drop count
+    would make the reason breakdown in `tetron status` incomparable
+    between a fragmenting and a non-fragmenting node.
     """
 
     req_id = "FRAG-003"

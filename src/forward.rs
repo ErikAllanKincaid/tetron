@@ -349,34 +349,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 "fragmenting oversized IP packet",
                             );
                             stats.record_fragmented_ipv4();
-                            // FRAG-003: same drop-newest backpressure policy as the
-                            // standard (unfragmented) path above, but per-fragment: a
-                            // fragment set is only useful to the receiver if every
-                            // fragment arrives, so once the send buffer can't fit one,
-                            // stop entirely rather than sending the rest of a set that
-                            // can now never complete.
-                            for frag in fragments {
-                                if route.conn.datagram_send_buffer_space() < frag.len() {
-                                    tracing::trace!(
-                                        dst = %info.dst_ip,
-                                        space = route.conn.datagram_send_buffer_space(),
-                                        frag_len = frag.len(),
-                                        "datagram send buffer full; dropping remaining fragments",
-                                    );
-                                    stats.record_drop(DropReason::Backpressure);
-                                    break;
-                                }
-                                match route.conn.send_datagram(frag.clone()) {
-                                    Ok(()) => stats.record_tx(frag.len()),
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            dst = %info.dst_ip, error = %e, frag_len = frag.len(),
-                                            "fragment send failed",
-                                        );
-                                        stats.record_drop(DropReason::SendFailure);
-                                    }
-                                }
-                            }
+                            send_fragment_set(&route.conn, fragments, &stats, info.dst_ip);
                         }
                         None => {
                             tracing::warn!(
@@ -401,31 +374,7 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                                 "fragmenting oversized IPv6 packet (tetron-internal envelope)",
                             );
                             stats.record_fragmented_ipv6();
-                            // FRAG-003: same drop-newest backpressure policy as the
-                            // standard (unfragmented) path above, but per-fragment --
-                            // see the identical comment on the IPv4 branch above.
-                            for frag in fragments {
-                                if route.conn.datagram_send_buffer_space() < frag.len() {
-                                    tracing::trace!(
-                                        dst = %info.dst_ip,
-                                        space = route.conn.datagram_send_buffer_space(),
-                                        frag_len = frag.len(),
-                                        "datagram send buffer full; dropping remaining fragments",
-                                    );
-                                    stats.record_drop(DropReason::Backpressure);
-                                    break;
-                                }
-                                match route.conn.send_datagram(frag.clone()) {
-                                    Ok(()) => stats.record_tx(frag.len()),
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            dst = %info.dst_ip, error = %e, frag_len = frag.len(),
-                                            "IPv6 fragment send failed",
-                                        );
-                                        stats.record_drop(DropReason::SendFailure);
-                                    }
-                                }
-                            }
+                            send_fragment_set(&route.conn, fragments, &stats, info.dst_ip);
                         }
                         None => {
                             tracing::warn!(
@@ -443,6 +392,77 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
                     );
                     stats.record_drop(DropReason::SendFailure);
                 }
+            }
+        }
+    }
+}
+
+/// Wire bytes a fragment set will occupy in the connection's datagram send
+/// buffer: every fragment, not just the first (FRAG-003). Split out from
+/// [`send_fragment_set`] so the admission arithmetic is unit-testable without a
+/// live `Connection`, which tetron's own test code cannot construct — the same
+/// reason [`path_flap_decision`] is a separate pure function.
+fn fragment_set_wire_len(fragments: &[Bytes]) -> usize {
+    fragments.iter().map(Bytes::len).sum()
+}
+
+/// Sends one fragment set as individual QUIC datagrams, applying the same
+/// drop-newest backpressure policy the standard (unfragmented) path uses
+/// (FRAG-003), but for the set as a whole.
+///
+/// A fragment set is only useful to the receiver if *every* fragment arrives:
+/// IPv4's kernel reassembly and [`packet::Ipv6Reassembler`] alike discard an
+/// incomplete set once their timeout elapses, so a partially-sent set is not
+/// partial progress, it is wasted bandwidth plus reassembly buffer held on the
+/// far side until it expires. The whole set's wire size is therefore checked
+/// against the connection's remaining send-buffer space *before* the first
+/// fragment goes out, and a set that does not fit is abandoned in full.
+///
+/// One `Backpressure` drop is recorded for the abandoned packet, never one per
+/// fragment: `stats` counts packets throughout (`fragmented_ipv4`/`_ipv6`
+/// likewise increment once per original packet), and a per-fragment count would
+/// make the `tetron status` drop breakdown incomparable between a fragmenting
+/// and a non-fragmenting node.
+fn send_fragment_set(
+    conn: &Connection,
+    fragments: &[Bytes],
+    stats: &ForwardMetrics,
+    dst: IpAddr,
+) {
+    let total = fragment_set_wire_len(fragments);
+    if conn.datagram_send_buffer_space() < total {
+        tracing::trace!(
+            %dst,
+            space = conn.datagram_send_buffer_space(),
+            set_len = total,
+            nfrags = fragments.len(),
+            "datagram send buffer cannot fit the whole fragment set; dropping the packet",
+        );
+        stats.record_drop(DropReason::Backpressure);
+        return;
+    }
+    for frag in fragments {
+        // The space checked above can still shrink mid-loop: other peers share
+        // this connection's buffer. Cheap to re-check, and in the ordinary case
+        // it never fires.
+        if conn.datagram_send_buffer_space() < frag.len() {
+            tracing::trace!(
+                %dst,
+                space = conn.datagram_send_buffer_space(),
+                frag_len = frag.len(),
+                "datagram send buffer filled mid-set; dropping remaining fragments",
+            );
+            stats.record_drop(DropReason::Backpressure);
+            return;
+        }
+        match conn.send_datagram(frag.clone()) {
+            Ok(()) => stats.record_tx(frag.len()),
+            Err(e) => {
+                tracing::debug!(
+                    %dst, error = %e, frag_len = frag.len(),
+                    "fragment send failed",
+                );
+                stats.record_drop(DropReason::SendFailure);
             }
         }
     }
@@ -830,6 +850,43 @@ mod tests {
                 53307,
             ));
             assert!(!is_self_candidate(&addr, SUBNET));
+        }
+    }
+
+    // FRAG-003: the all-or-nothing admission arithmetic.
+    mod fragment_set_admission_tests {
+        use super::*;
+
+        /// The real-world shape: a 1280-byte TUN packet against a 1162-byte
+        /// datagram ceiling splits into 1160 + 140 bytes of wire.
+        fn two_fragment_set() -> Vec<Bytes> {
+            vec![Bytes::from(vec![0u8; 1160]), Bytes::from(vec![0u8; 140])]
+        }
+
+        #[test]
+        fn wire_len_counts_every_fragment_not_just_the_first() {
+            let set = two_fragment_set();
+            assert_eq!(fragment_set_wire_len(&set), 1300);
+            // The pre-FRAG-003-amendment check looked only at the first
+            // fragment, which is what let a set start that could not finish.
+            assert!(fragment_set_wire_len(&set) > set[0].len());
+        }
+
+        #[test]
+        fn a_set_that_fits_only_its_first_fragment_is_refused_whole() {
+            let set = two_fragment_set();
+            // Space enough for fragment one but not the set: previously this
+            // sent fragment one and then abandoned the rest, leaving the
+            // receiver holding an incompletable set until its reassembly
+            // timeout.
+            let space = 1200;
+            assert!(space >= set[0].len());
+            assert!(space < fragment_set_wire_len(&set));
+        }
+
+        #[test]
+        fn an_empty_set_occupies_nothing() {
+            assert_eq!(fragment_set_wire_len(&[]), 0);
         }
     }
 
