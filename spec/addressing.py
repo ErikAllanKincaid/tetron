@@ -333,6 +333,21 @@ class Ipv4Fragmentation(Requirement):
     same MTU condition, now logs `fragmenting oversized IP packet ...
     nfrags=2` instead of the drop warning, and the 20MB transfer's checksum
     still matches with zero warnings logged.
+
+    Follow-up (`FRAG-004`, 2026-08-15): the "each fragment carries the
+    original IP header with updated Total Length, More-Fragments flag,
+    Fragment Offset" wording above is correct only for an *unfragmented*
+    input packet. `FRAG-004` amends it for the case where the packet read
+    off the TUN is already an IP fragment itself, which this requirement
+    never considered. `FRAG-005` and `FRAG-006` further amend the same
+    function's input validation and allocation behavior respectively.
+    Fragmenting a packet whose DF flag is set stays deliberate and
+    unchanged: tetron is the encapsulating tunnel here, not a router on
+    the path, and the host stack's own path MTU (the TUN's 1280) is not
+    what forced the split -- the peer connection's `max_datagram_size`
+    is, which the host cannot see or act on. The fragments therefore
+    carry DF set, which no receiving stack tetron targets consults during
+    reassembly.
     """
     req_id = "FRAG-001"
 
@@ -469,6 +484,90 @@ class FragmentationBackpressure(Requirement):
     """
 
     req_id = "FRAG-003"
+
+
+# --------------------------------------------------------------------------
+# FRAG-004: re-fragmenting an already-fragmented IPv4 packet
+# --------------------------------------------------------------------------
+
+class Ipv4RefragmentationPreservesOffset(Requirement):
+    """REQUIREMENT-ID: FRAG-004
+
+    Found 2026-08-15 by reading `packet::fragment_ipv4` directly during an
+    MTU/fragmentation audit, then confirmed against the real function with
+    a throwaway probe. `FRAG-001` assumed the packet it reads off the TUN
+    is a whole, unfragmented IP datagram. That assumption is wrong: the
+    TUN's MTU is 1280 (`tun::TUN_MTU`), so the host kernel itself
+    fragments anything larger before tetron ever sees it, and each of
+    those fragments arrives at `forward::run_mesh` as an ordinary IPv4
+    packet carrying a non-zero Fragment Offset, a set More-Fragments flag,
+    or both. Whenever the peer connection's `max_datagram_size` is below
+    1280 -- the ordinary case on a relay path, and on *every* path for the
+    first few round trips, since noq's default `initial_mtu` is 1200 --
+    such a fragment is oversized and gets re-fragmented.
+
+    `fragment_ipv4` overwrote both fragmentation fields unconditionally:
+    the Fragment Offset was recomputed from its own loop position starting
+    at zero, and More-Fragments was set from that loop position alone
+    (cleared on the last sub-fragment). Only the DF flag was carried over
+    from the input header. So re-fragmenting a middle fragment produced
+    sub-fragments claiming byte positions that belong to the *first*
+    fragment of the datagram, and a cleared More-Fragments flag declaring
+    an end to a datagram that had not ended. Measured on the real function
+    (input: a middle fragment at byte offset 1480 with MF=1, `max_size`
+    1200) the two sub-fragments came out at byte offsets 0 and 1176 with
+    MF true then false, where 1480 and 2656 with MF true on both is
+    correct.
+
+    Consequence, and why it stayed hidden: the receiving kernel either
+    drops the whole datagram (two fragments both claiming to be last) or
+    reassembles corrupt bytes, and tetron records no drop of any kind for
+    it -- so nothing surfaces in `tetron status`, in the `MTU-DIAG-001`
+    drop breakdown, or in the logs. `fragmented_ipv4` counts up exactly as
+    it does for a correct split. The traffic that triggers it is UDP or
+    ICMP larger than the TUN MTU (`ping -s 2000`, a large DNS answer over
+    UDP, an `iperf3 -u` run at its 1460-byte default payload); bulk TCP
+    never triggers it, because TCP sizes its own segments to the 1280 MTU
+    and so never hands the kernel anything to pre-fragment. That is why
+    `FRAG-001`'s and `FRAG-002`'s live verification (a 20MB scp, and SSH
+    sessions) could pass end-to-end with correct checksums while this was
+    broken the whole time.
+
+    **Fix**: `fragment_ipv4` reads the input header's Fragment Offset and
+    More-Fragments flag, and:
+
+    - adds the input's byte offset to each sub-fragment's own offset, so
+      sub-fragment offsets are absolute within the original datagram
+      rather than relative to the fragment being split;
+    - ORs the input's More-Fragments flag into the last sub-fragment's,
+      so a split middle fragment keeps MF set and only a split *last*
+      fragment clears it;
+    - refuses the packet outright (`None`, the existing "cannot fragment"
+      path) when an absolute offset would not fit the header's 13-bit
+      Fragment Offset field, i.e. when it would exceed 65528 bytes. Only
+      reachable from an input header that is already illegal, since no
+      IPv4 datagram may exceed 65535 bytes total, but the addition is
+      this requirement's own arithmetic and silently truncating it would
+      reintroduce exactly the class of corruption being fixed.
+
+    Both are no-ops for the unfragmented input `FRAG-001` described (input
+    offset 0, input MF clear), so that requirement's stated behavior is
+    preserved exactly for the case it actually covered.
+
+    Note the asymmetry with `FRAG-002`: the IPv6 path was never exposed to
+    this, because its tetron-internal envelope wraps the packet opaquely
+    and never rewrites IP header fields. A kernel-produced IPv6 fragment
+    (Fragment extension header, next-header 44) passes through the
+    envelope untouched and is reassembled by the receiving kernel from its
+    own unmodified extension header.
+
+    Depends on nothing; `FRAG-005` and `FRAG-006` touch the same function
+    but neither depends on this one, so the three may land in any order.
+    Ordered first here only so it can be cherry-picked alone if a release
+    is needed before the other two are ready.
+    """
+
+    req_id = "FRAG-004"
 
 
 # --------------------------------------------------------------------------

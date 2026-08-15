@@ -168,9 +168,20 @@ fn extract_icmp(protocol: u8, packet: &[u8], header_len: usize) -> (u8, u16) {
 /// payload across multiple QUIC datagrams. The receiving OS kernel reassembles
 /// the fragments.
 ///
+/// The input packet may itself already be a fragment (FRAG-004): the host
+/// kernel splits anything larger than the TUN's own 1280-byte MTU before
+/// tetron ever sees it, so each piece arrives here as an ordinary IPv4 packet
+/// carrying a non-zero Fragment Offset, a set More-Fragments flag, or both.
+/// Sub-fragment offsets are therefore absolute within the *original* datagram
+/// (input offset + position within this piece), and the last sub-fragment
+/// inherits the input's More-Fragments flag rather than unconditionally
+/// clearing it.
+///
 /// Returns `None` when the packet needs no fragmentation (already <= `max_size`),
-/// has IP options (IHL > 5, which this implementation doesn't support), or
-/// `max_size` is too small for even a single fragment header + 8 payload bytes.
+/// has IP options (IHL > 5, which this implementation doesn't support),
+/// `max_size` is too small for even a single fragment header + 8 payload bytes,
+/// or an absolute offset would not fit the header's 13-bit Fragment Offset
+/// field.
 pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     const HEADER_LEN: usize = 20; // no IP options
     if packet.len() <= max_size {
@@ -212,6 +223,20 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     // Preserve the Don't Fragment flag so the fragment set carries the original
     // intent (though we must fragment anyway — the tunnel encapsulates).
     let df = packet[6] & 0x40;
+    // FRAG-004: where this packet already sits inside a larger datagram, and
+    // whether that datagram continues past it. Both are zero/clear for an
+    // unfragmented packet, making the arithmetic below a no-op for it.
+    let base_offset = ((((packet[6] as u16) & 0x1F) << 8) | packet[7] as u16) as usize * 8;
+    let base_mf: u8 = (packet[6] >> 5) & 1;
+
+    // Largest byte offset the 13-bit Fragment Offset field can express. An
+    // input already sitting so far into its datagram that this packet's own
+    // bytes cannot be addressed is malformed (no IPv4 datagram exceeds 65535
+    // bytes); refuse it rather than truncate the offset silently.
+    const MAX_FRAG_OFFSET_BYTES: usize = 0x1FFF * 8;
+    if base_offset + payload_len.saturating_sub(1) > MAX_FRAG_OFFSET_BYTES {
+        return None;
+    }
 
     let mut fragments = Vec::new();
     let mut offset = 0usize;
@@ -219,8 +244,10 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     while offset < payload_len {
         let frag_payload_len = max_payload.min(payload_len - offset);
         let is_last = offset + frag_payload_len >= payload_len;
-        let mf: u8 = if is_last { 0 } else { 1 };
-        let frag_offset = (offset / 8) as u16;
+        // Only the final sub-fragment may clear More-Fragments, and even then
+        // only if the input packet was itself the end of its datagram.
+        let mf: u8 = if is_last { base_mf } else { 1 };
+        let frag_offset = ((base_offset + offset) / 8) as u16;
 
         let mut frag = Vec::with_capacity(HEADER_LEN + frag_payload_len);
 
@@ -557,6 +584,29 @@ mod tests {
         p
     }
 
+    /// Build an IPv4 packet that is *itself* already a fragment: its header
+    /// carries `frag_off_bytes` (a byte offset, must be a multiple of 8) and
+    /// the given More-Fragments flag, exactly as the host kernel emits when
+    /// it splits a datagram larger than the 1280-byte TUN MTU (FRAG-004).
+    fn make_ipv4_fragment(payload_len: usize, frag_off_bytes: usize, mf: bool) -> Vec<u8> {
+        let mut p = make_ipv4(payload_len, 0xABCD, false);
+        let off = (frag_off_bytes / 8) as u16;
+        p[6] = (u8::from(mf) << 5) | ((off >> 8) as u8 & 0x1F);
+        p[7] = (off & 0xFF) as u8;
+        p[10] = 0;
+        p[11] = 0;
+        let csum = ip_checksum(&p[..20]);
+        p[10] = (csum >> 8) as u8;
+        p[11] = csum as u8;
+        p
+    }
+
+    /// `(byte offset, More-Fragments)` read back out of a built fragment.
+    fn frag_fields(frag: &[u8]) -> (usize, bool) {
+        let off = ((frag[6] as u16 & 0x1F) << 8) | frag[7] as u16;
+        (off as usize * 8, frag[6] & 0x20 != 0)
+    }
+
     #[test]
     fn frag_no_fragmentation_needed() {
         // 60-byte packet fits in a 1200-byte max
@@ -751,6 +801,72 @@ mod tests {
             let computed = ip_checksum(&hdr);
             assert_eq!(stored, computed, "frag {i} checksum mismatch");
         }
+    }
+
+    // ── FRAG-004: re-fragmenting an already-fragmented packet ────────────
+
+    #[test]
+    fn refrag_middle_fragment_keeps_absolute_offsets_and_mf() {
+        // The host kernel already split a datagram at the 1280-byte TUN MTU;
+        // this is a *middle* piece of it (byte offset 1480, MF set). tetron
+        // must re-split it for a 1200-byte datagram ceiling without losing
+        // where it sits in the original datagram, or claiming the datagram
+        // ends here.
+        let pkt = make_ipv4_fragment(1208, 1480, true);
+        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        assert_eq!(frags.len(), 2);
+        // max_payload = (1200 - 20) & !7 = 1176, so the split lands at
+        // 1480 + 1176 = 2656.
+        assert_eq!(frag_fields(&frags[0]), (1480, true));
+        assert_eq!(
+            frag_fields(&frags[1]),
+            (2656, true),
+            "a split middle fragment must keep MF set -- the original datagram \
+             does not end at this fragment"
+        );
+        // The payload bytes themselves must still be a straight split.
+        assert_eq!(&frags[0][20..], &pkt[20..20 + 1176]);
+        assert_eq!(&frags[1][20..], &pkt[20 + 1176..]);
+    }
+
+    #[test]
+    fn refrag_last_fragment_clears_mf_only_on_its_own_last_piece() {
+        // Same, but this is the datagram's final fragment (MF clear). Only
+        // the last sub-fragment may clear MF; the earlier ones must set it.
+        let pkt = make_ipv4_fragment(1208, 1480, false);
+        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        assert_eq!(frags.len(), 2);
+        assert_eq!(frag_fields(&frags[0]), (1480, true));
+        assert_eq!(frag_fields(&frags[1]), (2656, false));
+    }
+
+    #[test]
+    fn refrag_three_pieces_offsets_are_absolute_throughout() {
+        let pkt = make_ipv4_fragment(3000, 800, true);
+        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        assert_eq!(frags.len(), 3);
+        assert_eq!(frag_fields(&frags[0]), (800, true));
+        assert_eq!(frag_fields(&frags[1]), (800 + 1176, true));
+        assert_eq!(frag_fields(&frags[2]), (800 + 2352, true));
+    }
+
+    #[test]
+    fn refrag_unfragmented_input_is_unchanged_by_frag_004() {
+        // FRAG-001's own case: input offset 0, MF clear. The absolute-offset
+        // arithmetic must be a no-op for it.
+        let pkt = make_ipv4(1208, 0x1234, false);
+        let frags = fragment_ipv4(&pkt, 1200).expect("should fragment");
+        assert_eq!(frag_fields(&frags[0]), (0, true));
+        assert_eq!(frag_fields(&frags[1]), (1176, false));
+    }
+
+    #[test]
+    fn refrag_offset_beyond_13_bit_field_is_refused() {
+        // Only reachable from an already-illegal input header (no IPv4
+        // datagram may exceed 65535 bytes), but the absolute offset must
+        // never be allowed to silently truncate into the 13-bit field.
+        let pkt = make_ipv4_fragment(1208, 65528, true);
+        assert!(fragment_ipv4(&pkt, 1200).is_none());
     }
 
     // ── IPv6 fragmentation tests (FRAG-002) ──────────────────────────────
