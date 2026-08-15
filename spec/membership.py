@@ -1382,6 +1382,61 @@ class PrunedPeersPeriodicGc(Requirement):
     req_id = "CONVERGE-009"
 
 
+class ReconnectRetryLoopRechecksRoster(Requirement):
+    """REQUIREMENT-ID: CONVERGE-010
+
+    The per-peer dial task `spawn_reconnect_loop` spawns
+    (`join.rs`, the `tokio::spawn`ed backoff-retry loop) checked exactly two
+    things per iteration: the cancellation token and the backoff timer. The
+    roster-authority checks (`pruned_peers`, `CloseReason`) all live in the
+    outer disconnect-event handler and run only when a *new*
+    `DisconnectEvent` arrives -- which an offline peer never produces. So
+    once a task was spinning against an unreachable peer, no roster
+    mutation could ever stop it:
+
+    - `tetron kick` (or any reconverge that drops the peer) inserts the
+      one-shot `pruned_peers` suppression entry, but nothing consumes it --
+      the task keeps dialing the kicked peer every `BACKOFF_MAX` (30s) for
+      the life of the daemon. Confirmed live 2026-08-13/14 on xps-17-9720:
+      kicking its stale roster peers left the reconnect/warning rate
+      unchanged, which this bug fully predicts (the kick experiment in
+      `DO-NOT-COMMIT/oom-leak-investigation/` was invalidated by exactly
+      this -- see `FINDINGS_ReconnectTasksIgnoreRoster_KickTestInvalid_
+      RetransmitLead_2026-08-14.md`).
+    - Cold restore seeds one such task per roster member
+      (`create_join.rs`, the synthetic `conn_stable_id: None` kick), so a
+      daemon whose roster contains long-offline peers carries a permanent
+      population of doomed dial loops from startup. Each doomed attempt is
+      a real QUIC handshake with fresh per-connection/per-path state in
+      iroh/noq -- the standing churn source the OOM investigation's
+      allocation-site evidence keeps pointing at.
+    - A kicked peer that later comes back online would be re-registered
+      into the data plane by the stale task's now-successful dial
+      (`peers.add`), even though the signed roster says it is gone --
+      a roster-authority violation, the exact class CONVERGE-007 exists
+      to prevent.
+
+    Fix: the dial task re-checks roster authority before every attempt,
+    after the backoff sleep and before dialing. Pure decision function
+    `dial_retry_decision(in_roster, was_pruned_locally)` (`select.rs`,
+    PURE-LOGIC-001 pattern, unit-tested like `reconnect_decision`):
+    abandon the peer if it is no longer in this network's roster (the task
+    already holds `live_state`, kept current by reconverge) or if a
+    `pruned_peers` entry for `(network, peer)` exists (consumed here, the
+    same one-shot semantics as the outer handler). Consuming the entry in
+    the retry loop also shrinks CONVERGE-009's leak surface: an entry
+    stranded by an offline peer's missing disconnect event is now
+    consumed by that peer's own spinning task instead of leaking until the
+    periodic sweep. Behavior for peers still in the roster is unchanged:
+    the loop dials them on the same backoff forever, which is its job --
+    an unreachable-but-still-listed member must keep being retried.
+
+    Found: 2026-08-15, reading `join.rs` directly during the OOM-leak
+    investigation's code pass.
+    """
+    req_id = "CONVERGE-010"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 

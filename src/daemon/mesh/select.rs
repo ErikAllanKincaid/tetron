@@ -381,3 +381,34 @@ pub(crate) fn reconnect_decision(
     }
     ReconnectDecision::Reconnect
 }
+
+/// Outcome of the pre-attempt roster re-check in the per-peer dial task
+/// (CONVERGE-010, PURE-LOGIC-001). `reconnect_decision` above only runs when
+/// a new disconnect event arrives, which an offline peer never produces --
+/// this is the check the already-spinning retry loop runs itself, before
+/// every dial, so a roster mutation can stop it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DialRetryDecision {
+    /// Peer is still in the roster: dial it (and keep retrying on the
+    /// existing backoff -- an unreachable but still-listed member must keep
+    /// being retried).
+    KeepDialing,
+    /// Peer is no longer roster-authorized (kicked or departed while this
+    /// task was spinning): stop dialing for good.
+    AbandonPeerGone,
+}
+
+/// `in_roster` is whether the peer is currently in this network's verified
+/// roster (`live_state`, kept current by reconverge). `was_pruned_locally`
+/// is whether a one-shot `pruned_peers` entry for `(network, peer)` existed
+/// (and has already been consumed by the caller) -- it can land before the
+/// roster copy reflects the removal, so either signal alone abandons.
+pub(crate) fn dial_retry_decision(
+    in_roster: bool,
+    was_pruned_locally: bool,
+) -> DialRetryDecision {
+    if !in_roster || was_pruned_locally {
+        return DialRetryDecision::AbandonPeerGone;
+    }
+    DialRetryDecision::KeepDialing
+}
