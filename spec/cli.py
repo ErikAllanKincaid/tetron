@@ -1264,6 +1264,60 @@ class JsonMemberCountExcludesSelf(Requirement):
     req_id = "STATUS-005"
 
 
+class StatusShowsLastSeenForOfflinePeers(Requirement):
+    """REQUIREMENT-ID: STATUS-006
+
+    Observability counterpart to CONVERGE-011 (spec/membership.py): a
+    "zombie" roster entry -- a peer that left the mesh without `tetron
+    leave` and was never kicked -- was indistinguishable in `tetron status`
+    from a peer that went offline five minutes ago. Both rendered as a bare
+    `offline` in the `via` column, so the one piece of information a human
+    needs to decide "this one is gone, kick it" was never surfaced, even
+    though the daemon already had it: `Member.last_seen` (Unix seconds,
+    stamped by a coordinator at admit and on observed disconnect,
+    CONVERGE-007's cleanup path) is carried in the signed blob and
+    replicates to every member via reconverge -- but nothing anywhere read
+    it. Stale members are exactly the standing reconnect-churn source the
+    OOM investigation implicated, so leaving them invisible had a real
+    operational cost, not just a cosmetic one.
+
+    Fix:
+
+    - `tetron-proto`'s `PeerStatus` gains `last_seen: Option<u64>`
+      (`#[serde(default)]`, the same additive-field compat pattern as
+      `is_coordinator`/`max_datagram_size`; IPC frames are
+      `rmp_serde::to_vec_named` maps, so older clients ignore the unknown
+      field and newer clients decode older daemons as `None`). Populated in
+      `diagnostics.rs::network_status` straight from the roster entry.
+      Being a `tetron-proto` change, the sibling addon repos
+      (`tetron-webui`, `tetron-systray`) get their standard
+      wire-change check as follow-up.
+    - `tetron status` human output: an offline peer's `via` cell becomes
+      `offline <age>` (e.g. `offline 32d`), rendered by pure, unit-tested
+      helpers (`format_age`: minutes below an hour, hours below two days,
+      days above; `offline_cell`). A peer with no stamp renders plain
+      `offline` -- `None` means no coordinator ever observed this peer
+      disconnect (e.g. an entry created before stamping existed), and
+      printing a fake age would be worse than printing nothing. Connected
+      peers are unchanged -- no new column, so the table stays exactly as
+      wide as before for the common all-online case.
+    - `--json` carries the raw `last_seen` Unix seconds via the struct
+      field; consumers do their own age math.
+
+    Honest caveat, documented rather than papered over: `last_seen` is
+    stamped only when a coordinator is online to observe the disconnect. A
+    peer that died while no coordinator was up keeps its previous stamp
+    (admit time at worst), so the age shown is "as observed by the
+    network's admins," a lower bound on how current the value is -- fine
+    for the zombie-spotting purpose (a zombie's stamp is *old* under any
+    reading), misleading only if read as a precise liveness probe, which
+    the plain-text rendering's coarse units already discourage.
+
+    Found: 2026-08-15, same review discussion as CONVERGE-011.
+    """
+    req_id = "STATUS-006"
+
+
 class CreateAcceptsJsonFlag(Requirement):
     """REQUIREMENT-ID: CREATE-JSON-001
 

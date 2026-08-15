@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectLogConfig,
-    ServerOverride,
+    AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
+    ReconnectLogConfig, ServerOverride,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -138,6 +138,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         reconnect_key if reconnect_key.starts_with("reconnect-log.") => {
             set_reconnect_log_key(&mut cfg.reconnect_log, reconnect_key, &entries, reset)?;
         }
+        cold_key if cold_key.starts_with("reconnect-cold.") => {
+            set_reconnect_cold_key(&mut cfg.reconnect_cold, cold_key, &entries, reset)?;
+        }
         "nuke-proposal-ttl" => {
             cfg.nuke_proposal_ttl = if reset {
                 None
@@ -221,7 +224,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              invite-default-expiry, selfcapture-mitigation, log-level, \
              drop-monitor.<window|threshold|cooldown>, \
              path-flap.<threshold|window>, \
-             reconnect-log.<threshold|window>, or \
+             reconnect-log.<threshold|window>, \
+             reconnect-cold.<threshold|backoff>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -317,6 +321,36 @@ fn set_reconnect_log_key(
         "threshold" => rl.threshold = Some(parse_ratelimit_value(raw)?),
         "window" => rl.window_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown reconnect-log config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `reconnect-cold.<key>` entry (CONVERGE-011). `reset`
+/// (empty value or "0") clears the field back to `None` (compiled default).
+fn set_reconnect_cold_key(
+    rc: &mut ReconnectColdConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key.strip_prefix("reconnect-cold.").expect("checked by caller");
+    if reset {
+        match sub {
+            "threshold" => rc.threshold = None,
+            "backoff" => rc.backoff_secs = None,
+            other => anyhow::bail!("unknown reconnect-cold config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "reconnect-cold.{sub} takes a single numeric value"
+    );
+    let raw = &entries[0];
+    match sub {
+        "threshold" => rc.threshold = Some(parse_ratelimit_value(raw)?),
+        "backoff" => rc.backoff_secs = Some(parse_ratelimit_value(raw)?),
+        other => anyhow::bail!("unknown reconnect-cold config key: {other}"),
     }
     Ok(())
 }
@@ -477,6 +511,14 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("reconnect-cold.") {
+            let val = match sub {
+                "threshold" => render_opt(cfg.reconnect_cold.threshold),
+                "backoff" => render_opt(cfg.reconnect_cold.backoff_secs),
+                other => anyhow::bail!("unknown reconnect-cold config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if k == "nuke-proposal-ttl" {
             return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
         }
@@ -516,7 +558,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
                  invite-default-expiry, selfcapture-mitigation, log-level, \
                  drop-monitor.<window|threshold|cooldown>, \
                  path-flap.<threshold|window>, \
-                 reconnect-log.<threshold|window>, or \
+                 reconnect-log.<threshold|window>, \
+                 reconnect-cold.<threshold|backoff>, or \
                  ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
                  global-refill-per-sec|global-strike-limit>)"
             ),
@@ -542,6 +585,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("path-flap.window")?,
             row("reconnect-log.threshold")?,
             row("reconnect-log.window")?,
+            row("reconnect-cold.threshold")?,
+            row("reconnect-cold.backoff")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -674,6 +719,30 @@ mod tests {
         // Unknown sub-key and non-numeric value are both rejected.
         assert!(config_set(&mut cfg, "reconnect-log.bogus", "1", false).is_err());
         assert!(config_set(&mut cfg, "reconnect-log.threshold", "not-a-number", false).is_err());
+    }
+
+    // CONVERGE-011: reconnect-cold.<threshold|backoff> knobs.
+    #[test]
+    fn config_set_get_reconnect_cold() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1, "<default>");
+        assert_eq!(config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1, "<default>");
+
+        config_set(&mut cfg, "reconnect-cold.threshold", "20", false).unwrap();
+        assert_eq!(cfg.reconnect_cold.threshold, Some(20));
+        assert_eq!(config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1, "20");
+
+        config_set(&mut cfg, "reconnect-cold.backoff", "1800", false).unwrap();
+        assert_eq!(cfg.reconnect_cold.backoff_secs, Some(1800));
+        assert_eq!(config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1, "1800");
+
+        // Empty resets to default (None).
+        config_set(&mut cfg, "reconnect-cold.threshold", "", false).unwrap();
+        assert_eq!(cfg.reconnect_cold.threshold, None);
+
+        // Unknown sub-key and non-numeric value are both rejected.
+        assert!(config_set(&mut cfg, "reconnect-cold.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "reconnect-cold.backoff", "not-a-number", false).is_err());
     }
 
     #[test]

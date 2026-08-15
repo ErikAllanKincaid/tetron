@@ -342,6 +342,26 @@ pub(crate) fn next_backoff(current: std::time::Duration, max: std::time::Duratio
     (current * 2).min(max)
 }
 
+/// The backoff cap in effect for the next reconnect attempt (CONVERGE-011,
+/// PURE-LOGIC-001): the warm cap (`BACKOFF_MAX`, 30s) until
+/// `cold_threshold` consecutive attempts have failed, the cold cap after.
+/// `next_backoff`'s doubling then climbs naturally toward whichever cap is
+/// in effect, so escalation has no cliff. A still-listed but long-offline
+/// roster member ("zombie") is retried forever either way -- this bounds
+/// the outbound dial churn against it, not membership.
+pub(crate) fn backoff_cap(
+    failed_attempts: u32,
+    cold_threshold: u32,
+    warm_max: std::time::Duration,
+    cold_max: std::time::Duration,
+) -> std::time::Duration {
+    if failed_attempts >= cold_threshold {
+        cold_max
+    } else {
+        warm_max
+    }
+}
+
 /// Outcome of one disconnect event in the per-peer reconnect loop
 /// (PURE-LOGIC-001): whether to redial the peer, or one of three reasons
 /// not to. Extracted from `join.rs::spawn_reconnect_loop`.

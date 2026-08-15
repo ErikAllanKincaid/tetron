@@ -106,6 +106,18 @@ pub type DaemonState = MeshManager;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
+/// Compiled default for `reconnect-cold.threshold` (CONVERGE-011):
+/// consecutive failed dial attempts against one peer before the backoff cap
+/// escalates from [`BACKOFF_MAX`] to [`BACKOFF_COLD_MAX`]. 10 attempts is
+/// roughly 4.5 minutes of trying (1+2+4+8+16+30*5).
+const BACKOFF_COLD_THRESHOLD: u32 = 10;
+
+/// Compiled default for `reconnect-cold.backoff` (CONVERGE-011), the cold
+/// backoff cap. A returning peer dials us from its own side immediately, so
+/// this bounds outbound dial churn against long-gone roster entries
+/// ("zombies"), not reconnection latency.
+const BACKOFF_COLD_MAX: Duration = Duration::from_secs(600);
+
 /// Shared handles for one network's accept handlers and background tasks.
 /// Every field is a cheap `Clone` — an `Arc`-backed handle, a channel sender,
 /// or a small wrapper — so the whole bundle is cloned by value instead of
@@ -1946,6 +1958,39 @@ mod reconnect_tests {
             dial_retry_decision(false, true),
             DialRetryDecision::AbandonPeerGone
         );
+    }
+
+    // CONVERGE-011: cold-peer backoff cap escalation.
+
+    #[test]
+    fn backoff_cap_is_warm_below_threshold() {
+        let warm = Duration::from_secs(30);
+        let cold = Duration::from_secs(600);
+        assert_eq!(backoff_cap(0, 10, warm, cold), warm);
+        assert_eq!(backoff_cap(9, 10, warm, cold), warm);
+    }
+
+    #[test]
+    fn backoff_cap_escalates_at_threshold() {
+        let warm = Duration::from_secs(30);
+        let cold = Duration::from_secs(600);
+        assert_eq!(backoff_cap(10, 10, warm, cold), cold);
+        assert_eq!(backoff_cap(1000, 10, warm, cold), cold);
+    }
+
+    #[test]
+    fn doubling_climbs_to_cold_cap_without_cliff() {
+        // After escalation, next_backoff keeps doubling from wherever the
+        // warm phase left off (30s) toward the cold cap: 60, 120, 240,
+        // 480, 600, 600, ...
+        let cold = Duration::from_secs(600);
+        let mut b = Duration::from_secs(30);
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            b = next_backoff(b, cold);
+            seen.push(b.as_secs());
+        }
+        assert_eq!(seen, vec![60, 120, 240, 480, 600, 600]);
     }
 }
 

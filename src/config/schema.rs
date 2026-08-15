@@ -254,6 +254,24 @@ pub struct ReconnectLogConfig {
     pub window_secs: Option<u64>,
 }
 
+/// Cold-peer reconnect backoff escalation (CONVERGE-011). `None` means "use
+/// the compiled default". Set via `tetron config set reconnect-cold.<key>
+/// <value>`; unset (or set to 0/empty) to return to the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReconnectColdConfig {
+    /// Consecutive failed dial attempts against one peer before the backoff
+    /// cap escalates from the warm 30s (`BACKOFF_MAX`) to the cold cap
+    /// below. Default 10 (roughly 4.5 minutes of trying).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    /// The cold backoff cap in seconds, once escalated. Default 600 (10m).
+    /// A returning peer dials us from its own side immediately, so this
+    /// cadence bounds outbound retry churn against long-gone peers, not
+    /// reconnection latency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -298,6 +316,10 @@ pub struct AppConfig {
     /// Reconnect-loop logging overrides (LOG-005). See [`ReconnectLogConfig`].
     #[serde(default)]
     pub reconnect_log: ReconnectLogConfig,
+    /// Cold-peer reconnect backoff overrides (CONVERGE-011). See
+    /// [`ReconnectColdConfig`].
+    #[serde(default)]
+    pub reconnect_cold: ReconnectColdConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
