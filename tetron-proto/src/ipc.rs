@@ -458,6 +458,31 @@ pub struct PathCandidateInfo {
     /// proving the path works.
     pub has_activity: bool,
     pub rtt_ms: Option<f64>,
+    /// `MTU-DIAG-002`: this path's own `PathStats::current_mtu`, the
+    /// largest UDP payload it currently supports. The connection's
+    /// `ConnectionInfo::max_datagram_size` is derived from the *minimum*
+    /// of these across every available path, not from the selected one, so
+    /// without this field a low ceiling cannot be attributed to the path
+    /// causing it. `#[serde(default)]` so an older daemon's response still
+    /// decodes.
+    #[serde(default)]
+    pub current_mtu: Option<u16>,
+    /// `MTU-DIAG-002`: how many times this path's MTU estimate had to be
+    /// walked back down (`PathStats::black_holes_detected`). Separates "MTU
+    /// discovery is still climbing" from "it climbed and got punished",
+    /// which are indistinguishable from the ceiling alone.
+    #[serde(default)]
+    pub black_holes_detected: Option<u64>,
+    /// `MTU-DIAG-002`: MTU-discovery probes sent on this path
+    /// (`PathStats::sent_plpmtud_probes`).
+    #[serde(default)]
+    pub sent_plpmtud_probes: Option<u64>,
+    /// `MTU-DIAG-002`: MTU-discovery probes lost on this path
+    /// (`PathStats::lost_plpmtud_probes`). A high ratio against
+    /// `sent_plpmtud_probes` means discovery is thrashing rather than
+    /// converging.
+    #[serde(default)]
+    pub lost_plpmtud_probes: Option<u64>,
 }
 
 /// Per-`DropReason` drop counters (MTU-DIAG-001), surfaced daemon-wide via
@@ -826,6 +851,10 @@ mod tests {
                                 in_subnet: true,
                                 has_activity: true,
                                 rtt_ms: Some(5.0),
+                                current_mtu: Some(1414),
+                                black_holes_detected: Some(0),
+                                sent_plpmtud_probes: Some(7),
+                                lost_plpmtud_probes: Some(1),
                             },
                             PathCandidateInfo {
                                 conn_type: ConnType::Relay,
@@ -835,6 +864,10 @@ mod tests {
                                 in_subnet: true,
                                 has_activity: false,
                                 rtt_ms: Some(40.0),
+                                current_mtu: Some(1162),
+                                black_holes_detected: Some(2),
+                                sent_plpmtud_probes: Some(3),
+                                lost_plpmtud_probes: Some(3),
                             },
                         ],
                     }),
@@ -892,6 +925,19 @@ mod tests {
                 assert_eq!(paths[1].conn_type, ConnType::Relay);
                 assert!(!paths[1].is_selected);
                 assert!(!paths[1].has_activity);
+                // MTU-DIAG-002: the per-path numbers that explain the
+                // connection ceiling. Note the fixture's shape is the real
+                // case this requirement exists for -- the *unselected* relay
+                // path (1162) is smaller than the selected direct one
+                // (1414), and noq derives the connection's
+                // max_datagram_size from the minimum across all paths, which
+                // is why the ConnectionInfo above reports 1162 while traffic
+                // rides a path that could carry 1414.
+                assert_eq!(paths[0].current_mtu, Some(1414));
+                assert_eq!(paths[1].current_mtu, Some(1162));
+                assert_eq!(paths[1].black_holes_detected, Some(2));
+                assert_eq!(paths[1].sent_plpmtud_probes, Some(3));
+                assert_eq!(paths[1].lost_plpmtud_probes, Some(3));
                 assert_eq!(drops.fragmentation_failed, 5);
                 assert_eq!(fragmented_ipv4, 3);
                 assert_eq!(fragmented_ipv6, 1);
@@ -935,5 +981,39 @@ mod tests {
         assert_eq!(decoded.max_datagram_size, None);
         assert!(decoded.paths.is_empty());
         assert_eq!(decoded.via_detail, None);
+    }
+
+    /// MTU-DIAG-002: same shape one level down. A `PathCandidateInfo` from a
+    /// daemon that predates the per-path MTU fields must still decode, with
+    /// the new fields absent rather than the whole status response failing
+    /// -- the fleet runs mixed versions during a rollout, which is exactly
+    /// when these diagnostics are wanted.
+    #[test]
+    fn test_path_candidate_mtu_fields_default_on_old_payload() {
+        #[derive(Serialize)]
+        struct OldPathCandidateInfo {
+            conn_type: ConnType,
+            remote_addr: String,
+            is_selected: bool,
+            in_subnet: bool,
+            has_activity: bool,
+            rtt_ms: Option<f64>,
+        }
+        let old = OldPathCandidateInfo {
+            conn_type: ConnType::Direct,
+            remote_addr: "1.2.3.4:43737".to_string(),
+            is_selected: true,
+            in_subnet: true,
+            has_activity: true,
+            rtt_ms: Some(5.0),
+        };
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let decoded: PathCandidateInfo = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.conn_type, ConnType::Direct);
+        assert!(decoded.is_selected);
+        assert_eq!(decoded.current_mtu, None);
+        assert_eq!(decoded.black_holes_detected, None);
+        assert_eq!(decoded.sent_plpmtud_probes, None);
+        assert_eq!(decoded.lost_plpmtud_probes, None);
     }
 }

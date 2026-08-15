@@ -243,7 +243,13 @@ impl MeshManager {
                 let addr = p.remote_addr();
                 let (ct, in_subnet) =
                     classify_candidate_addr(addr, managed_subnets, managed_network_keys);
-                let has_activity = p.stats().udp_rx.bytes > 0;
+                // MTU-DIAG-002: one `stats()` call, read for everything it
+                // already carries. `has_activity` needed it anyway
+                // (PATHBLEED-STATUS-002); the MTU/probe fields below are
+                // siblings of `udp_rx` on the same materialized struct, so
+                // surfacing them costs nothing at runtime.
+                let stats = p.stats();
+                let has_activity = stats.udp_rx.bytes > 0;
                 ipc::PathCandidateInfo {
                     conn_type: ct,
                     remote_addr: addr.to_string(),
@@ -251,6 +257,10 @@ impl MeshManager {
                     in_subnet,
                     has_activity,
                     rtt_ms: Some(p.rtt().as_secs_f64() * 1000.0),
+                    current_mtu: Some(stats.current_mtu),
+                    black_holes_detected: Some(stats.black_holes_detected),
+                    sent_plpmtud_probes: Some(stats.sent_plpmtud_probes),
+                    lost_plpmtud_probes: Some(stats.lost_plpmtud_probes),
                 }
             })
             .collect();

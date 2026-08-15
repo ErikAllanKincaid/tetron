@@ -1947,6 +1947,78 @@ class MtuFragmentationDiagnostics(Requirement):
 
 
 # --------------------------------------------------------------------------
+# MTU-DIAG-002: per-path MTU, so a low ceiling is attributable
+# --------------------------------------------------------------------------
+
+class PerPathMtuDiagnostics(Requirement):
+    """REQUIREMENT-ID: MTU-DIAG-002
+
+    `MTU-DIAG-001` surfaced the *connection's* datagram ceiling
+    (`ConnectionInfo.max_datagram_size`), which is what
+    `forward::run_mesh` compares each packet against to decide whether to
+    fragment. That number alone cannot explain itself: noq computes it as
+    the **minimum `current_mtu` across every available path**, not the
+    selected one (`Datagrams::max_size`: "When multipath is enabled, this
+    is calculated using the smallest MTU across all available paths"). So
+    a connection whose selected path comfortably carries 1414 bytes can
+    report a ceiling of 1162 because some *other*, unselected path in the
+    set is smaller or has not finished its own MTU discovery -- and
+    nothing tetron surfaces today says which path, or why.
+
+    Found 2026-08-15, measuring whether `FRAG-004`'s regime (a ceiling
+    below the 1280-byte TUN MTU) is common enough to act on. Two identical
+    VM runs disagreed wildly -- 39% versus 0.4% of connection time below
+    1280 -- and the real `testing-delete-me` fleet showed every connection
+    at 1414 including a pure-relay one, disproving the initial guess that
+    relay paths are inherently small. The remaining hypothesis, that a
+    newly added path starts at noq's `initial_mtu` (1200, a 1162 ceiling)
+    and drags the whole connection down until its own discovery converges,
+    is not testable from anything tetron currently reports. That is the
+    gap this closes: without it, every conclusion about the fragmentation
+    regime is inferred from a connection-level aggregate rather than
+    observed per path.
+
+    **What is added** -- `ipc::PathCandidateInfo` (already one entry per
+    candidate path, `PATH-DIAG-002`) gains, all `#[serde(default)]` so an
+    older daemon's response still decodes:
+
+    - `current_mtu: Option<u16>` -- `PathStats::current_mtu`, "largest UDP
+      payload size the path currently supports". The per-path number whose
+      minimum becomes the connection ceiling.
+    - `black_holes_detected: Option<u64>` -- `PathStats`, how many times
+      this path's MTU estimate had to be walked back down. Distinguishes
+      "discovery is still climbing" from "discovery climbed and got
+      punished", which look identical from the ceiling alone.
+    - `sent_plpmtud_probes` / `lost_plpmtud_probes: Option<u64>` --
+      `PathStats`, whether discovery is converging or thrashing.
+
+    **Cost: none.** `diagnostics::gather_conn_info` already calls
+    `p.stats()` on every path to compute `has_activity`
+    (`PATHBLEED-STATUS-002`); every field above is a sibling of
+    `udp_rx.bytes` on that same already-materialized `PathStats`. This is
+    the same "stop discarding what was already computed" shape as
+    `PATH-DIAG-002` itself.
+
+    `--json` only, no plain-text change, matching `MTU-DIAG-001`'s and
+    `STATUS-002`'s precedent that per-peer/per-path connection detail
+    lives in `--json` rather than cluttering the aligned table.
+
+    **Diagnostic only.** No behavior change of any kind: nothing about
+    which packets fragment, which path is selected, or how
+    `max_datagram_size` is computed. Explicitly *not* an attempt to size
+    datagrams against the selected path instead of the safe minimum --
+    that would be a real failover-semantics change belonging in the QUIC
+    layer's own design (a datagram sized for a 1414-byte direct path is
+    undeliverable, and unfragmentable at the QUIC layer, if the connection
+    fails over to a 1162-byte path before it goes out), and it stays
+    upstream's call. This requirement exists so that decision can be made
+    from measurements rather than from a model.
+    """
+
+    req_id = "MTU-DIAG-002"
+
+
+# --------------------------------------------------------------------------
 # Subnet collision prevention (SUBNET-COLLISION-*)
 # --------------------------------------------------------------------------
 
