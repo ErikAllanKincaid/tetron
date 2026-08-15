@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::schema::{
     AppConfig, DropMonitorConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
-    ReconnectColdConfig, ReconnectLogConfig, ServerOverride,
+    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
 };
 
 // ---- Storage layout -------------------------------------------------------
@@ -64,6 +64,8 @@ struct Settings {
     reconnect_log: ReconnectLogConfig,
     #[serde(default)]
     reconnect_cold: ReconnectColdConfig,
+    #[serde(default)]
+    reconnect_frozen: ReconnectFrozenConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,6 +328,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             path_flap: PathFlapConfig::default(),
             reconnect_log: ReconnectLogConfig::default(),
             reconnect_cold: ReconnectColdConfig::default(),
+            reconnect_frozen: ReconnectFrozenConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -371,6 +374,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         path_flap: settings.path_flap,
         reconnect_log: settings.reconnect_log,
         reconnect_cold: settings.reconnect_cold,
+        reconnect_frozen: settings.reconnect_frozen,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -440,6 +444,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         path_flap: config.path_flap.clone(),
         reconnect_log: config.reconnect_log.clone(),
         reconnect_cold: config.reconnect_cold.clone(),
+        reconnect_frozen: config.reconnect_frozen.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,

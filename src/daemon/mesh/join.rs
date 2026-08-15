@@ -1022,6 +1022,17 @@ pub(crate) fn spawn_reconnect_loop(
                 let cold_max = std::time::Duration::from_secs(
                     cfg.reconnect_cold.backoff_secs.unwrap_or(BACKOFF_COLD_MAX.as_secs()),
                 );
+                // CONVERGE-013: a third, frozen tier above cold -- same
+                // config-at-task-start pattern.
+                let frozen_threshold = cfg
+                    .reconnect_frozen
+                    .threshold
+                    .unwrap_or(BACKOFF_FROZEN_THRESHOLD);
+                let frozen_max = std::time::Duration::from_secs(
+                    cfg.reconnect_frozen
+                        .backoff_secs
+                        .unwrap_or(BACKOFF_FROZEN_MAX.as_secs()),
+                );
                 let mut failed_attempts: u32 = 0;
                 loop {
                     if token.is_cancelled() {
@@ -1048,12 +1059,20 @@ pub(crate) fn spawn_reconnect_loop(
                         _ = token.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
                     }
-                    // CONVERGE-011: the cap escalates once this peer has
-                    // failed `cold_threshold` consecutive attempts; the
-                    // doubling then climbs toward the cold cap, no cliff.
+                    // CONVERGE-011/013: the cap escalates once this peer has
+                    // failed `cold_threshold` consecutive attempts, then again
+                    // at `frozen_threshold`; the doubling then climbs toward
+                    // whichever cap is in effect, no cliff at either step.
                     backoff = next_backoff(
                         backoff,
-                        backoff_cap(failed_attempts, cold_threshold, BACKOFF_MAX, cold_max),
+                        backoff_cap(
+                            failed_attempts,
+                            cold_threshold,
+                            frozen_threshold,
+                            BACKOFF_MAX,
+                            cold_max,
+                            frozen_max,
+                        ),
                     );
 
                     // CONVERGE-010: re-check roster authority before every

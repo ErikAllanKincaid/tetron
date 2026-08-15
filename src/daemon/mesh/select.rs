@@ -343,19 +343,36 @@ pub(crate) fn next_backoff(current: std::time::Duration, max: std::time::Duratio
 }
 
 /// The backoff cap in effect for the next reconnect attempt (CONVERGE-011,
-/// PURE-LOGIC-001): the warm cap (`BACKOFF_MAX`, 30s) until
-/// `cold_threshold` consecutive attempts have failed, the cold cap after.
-/// `next_backoff`'s doubling then climbs naturally toward whichever cap is
-/// in effect, so escalation has no cliff. A still-listed but long-offline
-/// roster member ("zombie") is retried forever either way -- this bounds
-/// the outbound dial churn against it, not membership.
+/// CONVERGE-013, PURE-LOGIC-001): the warm cap (`BACKOFF_MAX`, 30s) until
+/// `cold_threshold` consecutive attempts have failed, the cold cap after
+/// that, and the frozen cap once `frozen_threshold` is reached (a third,
+/// even slower floor -- CONVERGE-013 -- for a peer that has been retried at
+/// the cold cadence for a long time, roughly a day by the compiled
+/// defaults). `next_backoff`'s doubling then climbs naturally toward
+/// whichever cap is in effect, so escalation has no cliff at any tier. A
+/// still-listed but long-offline roster member ("zombie") is retried
+/// forever either way -- this bounds the outbound dial churn against it,
+/// not membership: the frozen tier is a floor, deliberately not a full
+/// stop, since a hard stop on one side risks a mutual deadlock against a
+/// peer that stays running but network-partitioned longer than any cutoff
+/// (see CONVERGE-013's docstring).
+///
+/// Checked from most- to least-escalated: a degenerate config where
+/// `frozen_threshold <= cold_threshold` reaches the frozen cap directly
+/// once `frozen_threshold` attempts have failed, without ever observing
+/// the cold cap in between -- there is no meaningful "correct" behavior to
+/// preserve for that misconfiguration, so the simplest check order wins.
 pub(crate) fn backoff_cap(
     failed_attempts: u32,
     cold_threshold: u32,
+    frozen_threshold: u32,
     warm_max: std::time::Duration,
     cold_max: std::time::Duration,
+    frozen_max: std::time::Duration,
 ) -> std::time::Duration {
-    if failed_attempts >= cold_threshold {
+    if failed_attempts >= frozen_threshold {
+        frozen_max
+    } else if failed_attempts >= cold_threshold {
         cold_max
     } else {
         warm_max

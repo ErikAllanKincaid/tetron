@@ -272,6 +272,27 @@ pub struct ReconnectColdConfig {
     pub backoff_secs: Option<u64>,
 }
 
+/// Frozen-tier reconnect backoff escalation (CONVERGE-013), above cold: a
+/// floor for a peer that has stayed cold for a long time (roughly a day by
+/// default), not a full stop -- see `backoff_cap`'s spec docstring for why
+/// a hard stop was rejected. `None` means "use the compiled default". Set
+/// via `tetron config set reconnect-frozen.<key> <value>`; unset (or set
+/// to 0/empty) to return to the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReconnectFrozenConfig {
+    /// Consecutive failed dial attempts against one peer before the backoff
+    /// cap escalates a second time, from the cold cap to the frozen cap
+    /// below. Default 154 (roughly 24h of continuous retrying).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+    /// The frozen backoff cap in seconds, once escalated. Default 86400
+    /// (24h). A returning peer dials us from its own side immediately, so
+    /// this cadence bounds standing outbound dial churn against a
+    /// long-unreachable peer, not reconnection latency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -320,6 +341,10 @@ pub struct AppConfig {
     /// [`ReconnectColdConfig`].
     #[serde(default)]
     pub reconnect_cold: ReconnectColdConfig,
+    /// Frozen-tier reconnect backoff overrides (CONVERGE-013), above cold.
+    /// See [`ReconnectFrozenConfig`].
+    #[serde(default)]
+    pub reconnect_frozen: ReconnectFrozenConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).

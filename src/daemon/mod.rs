@@ -118,6 +118,23 @@ const BACKOFF_COLD_THRESHOLD: u32 = 10;
 /// ("zombies"), not reconnection latency.
 const BACKOFF_COLD_MAX: Duration = Duration::from_secs(600);
 
+/// Compiled default for `reconnect-frozen.threshold` (CONVERGE-013):
+/// consecutive failed dial attempts before the backoff cap escalates a
+/// second time, from [`BACKOFF_COLD_MAX`] to [`BACKOFF_FROZEN_MAX`]. 154
+/// attempts is roughly 24h of continuous retrying: [`BACKOFF_COLD_THRESHOLD`]
+/// (10) warm attempts (~4.5 minutes) plus 144 more at the 600s cold
+/// cadence (144 * 600s = 86400s = 24h).
+const BACKOFF_FROZEN_THRESHOLD: u32 = 154;
+
+/// Compiled default for `reconnect-frozen.backoff` (CONVERGE-013), the
+/// frozen backoff cap -- a floor, not a stop (see CONVERGE-013's spec
+/// docstring for why a hard stop was rejected). Same reasoning as
+/// [`BACKOFF_COLD_MAX`]: a returning peer dials us from its own side
+/// immediately, so this bounds standing outbound dial churn against a
+/// peer that has been unreachable for about a day, not reconnection
+/// latency.
+const BACKOFF_FROZEN_MAX: Duration = Duration::from_secs(86400);
+
 /// Shared handles for one network's accept handlers and background tasks.
 /// Every field is a cheap `Clone` — an `Arc`-backed handle, a channel sender,
 /// or a small wrapper — so the whole bundle is cloned by value instead of
@@ -1961,22 +1978,36 @@ mod reconnect_tests {
     }
 
     // CONVERGE-011: cold-peer backoff cap escalation.
+    // CONVERGE-013: a third, frozen tier above cold -- same shape, one more
+    // threshold/cap pair.
 
     #[test]
     fn backoff_cap_is_warm_below_threshold() {
         let warm = Duration::from_secs(30);
         let cold = Duration::from_secs(600);
-        assert_eq!(backoff_cap(0, 10, warm, cold), warm);
-        assert_eq!(backoff_cap(9, 10, warm, cold), warm);
+        let frozen = Duration::from_secs(86400);
+        assert_eq!(backoff_cap(0, 10, 154, warm, cold, frozen), warm);
+        assert_eq!(backoff_cap(9, 10, 154, warm, cold, frozen), warm);
     }
 
     #[test]
     fn backoff_cap_escalates_at_threshold() {
         let warm = Duration::from_secs(30);
         let cold = Duration::from_secs(600);
-        assert_eq!(backoff_cap(10, 10, warm, cold), cold);
-        assert_eq!(backoff_cap(1000, 10, warm, cold), cold);
+        let frozen = Duration::from_secs(86400);
+        assert_eq!(backoff_cap(10, 10, 154, warm, cold, frozen), cold);
+        assert_eq!(backoff_cap(153, 10, 154, warm, cold, frozen), cold);
     }
+
+    #[test]
+    fn backoff_cap_escalates_to_frozen_at_threshold() {
+        let warm = Duration::from_secs(30);
+        let cold = Duration::from_secs(600);
+        let frozen = Duration::from_secs(86400);
+        assert_eq!(backoff_cap(154, 10, 154, warm, cold, frozen), frozen);
+        assert_eq!(backoff_cap(1_000_000, 10, 154, warm, cold, frozen), frozen);
+    }
+
 
     #[test]
     fn doubling_climbs_to_cold_cap_without_cliff() {

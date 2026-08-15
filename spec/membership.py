@@ -1497,6 +1497,64 @@ class ColdPeerBackoffEscalation(Requirement):
     req_id = "CONVERGE-011"
 
 
+class ColdCadenceFrozenTier(Requirement):
+    """REQUIREMENT-ID: CONVERGE-013
+
+    CONVERGE-011 bounded outbound dial *rate* against a "zombie" roster
+    member (still listed, unreachable indefinitely) but left retry
+    *duration* unbounded by design -- `backoff_cap`'s own doc comment
+    concedes it plainly: "a still-listed but long-offline roster member is
+    retried forever either way -- this bounds the outbound dial churn
+    against it, not membership." That is a deliberate, correct reading of
+    CONVERGE-007 (membership is never inferred from unreachability), but
+    conflates two separable properties: remembering a peer is still a
+    member (must never expire) and actively spending a live task + dial
+    attempt on it at a fixed floor forever (does not need to be as
+    frequent as 600s to satisfy the first property).
+
+    A hard stop (cancel the task entirely once cold long enough) was
+    considered and rejected: `spawn_reconnect_loop`'s per-peer task
+    already exits cleanly the moment the peer reconnects *inbound*
+    (`peers_for_network_with_conn` check before every dial, `join.rs`),
+    and a genuinely-offline machine coming back almost always means its
+    own daemon restarts, which redials everyone at the warm cadence from
+    its side regardless of how cold the far side had gotten -- so one
+    side fully giving up is safe in the overwhelmingly common case. The
+    remaining case -- a peer that stays running but network-partitioned
+    longer than any cutoff, while the far side already gave up, and
+    neither ever restarts -- would deadlock the pair forever with a hard
+    stop. A floor avoids that failure mode entirely at negligible cost.
+
+    Fix: extend `backoff_cap` (`select.rs`, PURE-LOGIC-001) with a third
+    tier -- `frozen_threshold`/`frozen_max`, same shape as the existing
+    `cold_threshold`/`cold_max` pair, escalating in the same no-cliff
+    doubling-climbs-toward-whichever-cap-is-in-effect manner CONVERGE-011
+    already established. Compiled defaults: `BACKOFF_FROZEN_THRESHOLD`
+    (154 consecutive failed attempts: the 10 warm attempts CONVERGE-011
+    already counts, plus 144 more at the 600s cold cadence, totaling
+    roughly 24h of continuous retrying) escalates to `BACKOFF_FROZEN_MAX`
+    (86400s = 24h). Both configurable (`tetron config set
+    reconnect-frozen.<threshold|backoff>`), same plumbing family as
+    `reconnect-cold.*`/`reconnect-log.*`, config read once at task start
+    per the codebase's usual pattern. Applies to both the member-side loop
+    (`join.rs`) and CONVERGE-012's coordinator-side loop identically,
+    since both call the same `backoff_cap`.
+
+    No dependency the other direction: this requirement does not need
+    CONVERGE-012 to exist first, and could land alone. CONVERGE-012
+    depends on this one (see its own docstring) purely so its redial task
+    is written once, against the final three-tier signature.
+
+    Found: 2026-08-15, design discussion following the
+    `FINDINGS_CoordinatorHasNoOutboundReconnectLoop_2026-08-15.md`/
+    `ANALYSIS_ConnectionLifecycleTrace_ThinRetransmitsRuledOut_2026-08-15.md`
+    review -- USER: "peers NOT present cause memory growth... can we set
+    an upper bound."
+    """
+
+    req_id = "CONVERGE-013"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 
