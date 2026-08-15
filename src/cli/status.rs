@@ -8,6 +8,35 @@ pub(crate) fn format_bytes(b: u64) -> String {
     bytesize::ByteSize(b).to_string()
 }
 
+/// Coarse human age for a duration in seconds (STATUS-006): minutes below an
+/// hour, hours below two days, days above. Deliberately coarse -- the value
+/// it renders (`Member::last_seen`) is a lower bound on recency (stamped
+/// only when an admin observes the disconnect), so precision would imply an
+/// accuracy the data does not have.
+pub(crate) fn format_age(secs: u64) -> String {
+    const HOUR: u64 = 3600;
+    const DAY: u64 = 24 * HOUR;
+    if secs < HOUR {
+        format!("{}m", secs / 60)
+    } else if secs < 2 * DAY {
+        format!("{}h", secs / HOUR)
+    } else {
+        format!("{}d", secs / DAY)
+    }
+}
+
+/// The `via` cell for a peer with no live connection (STATUS-006):
+/// `offline <age>` when the roster carries a `last_seen` stamp, plain
+/// `offline` when it never got one (printing a fake age would be worse than
+/// printing nothing). A stamp in the future (clock skew between admins)
+/// clamps to `0m` rather than underflowing.
+pub(crate) fn offline_cell(last_seen: Option<u64>, now: u64) -> String {
+    match last_seen {
+        Some(ts) => format!("offline {}", format_age(now.saturating_sub(ts))),
+        None => "offline".to_string(),
+    }
+}
+
 /// Render a plain error block to stderr:
 /// ```text
 ///   ! <title>
@@ -334,12 +363,15 @@ fn print_network(net: &ipc::NetworkStatus) {
         let host = peer.hostname.clone().unwrap_or_else(|| peer.ip.to_string());
         let via = match &peer.connection {
             Some(ci) => match ci.conn_type {
-                ipc::ConnType::Direct => "direct",
-                ipc::ConnType::Relay => "relay",
-                ipc::ConnType::Tor => "tor",
-                ipc::ConnType::Unknown => "?",
+                ipc::ConnType::Direct => "direct".to_string(),
+                ipc::ConnType::Relay => "relay".to_string(),
+                ipc::ConnType::Tor => "tor".to_string(),
+                ipc::ConnType::Unknown => "?".to_string(),
             },
-            None => "offline",
+            // STATUS-006: how long this peer has been gone, so a
+            // months-stale roster entry ("zombie") is distinguishable from
+            // a peer that dropped five minutes ago.
+            None => offline_cell(peer.last_seen, crate::membership::now_secs()),
         };
         rows.push(vec![
             (if peer.is_coordinator {
@@ -418,4 +450,49 @@ pub(crate) async fn ipc_sync(network: Option<String>) -> Result<()> {
         other => eprintln!("Unexpected response: {:?}", other),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod status_age_tests {
+    use super::*;
+
+    // STATUS-006: `format_age`/`offline_cell` pure-logic tests.
+
+    #[test]
+    fn age_renders_minutes_below_an_hour() {
+        assert_eq!(format_age(0), "0m");
+        assert_eq!(format_age(59), "0m");
+        assert_eq!(format_age(60), "1m");
+        assert_eq!(format_age(3599), "59m");
+    }
+
+    #[test]
+    fn age_renders_hours_below_two_days() {
+        assert_eq!(format_age(3600), "1h");
+        assert_eq!(format_age(24 * 3600), "24h");
+        assert_eq!(format_age(2 * 24 * 3600 - 1), "47h");
+    }
+
+    #[test]
+    fn age_renders_days_from_two_days_up() {
+        assert_eq!(format_age(2 * 24 * 3600), "2d");
+        assert_eq!(format_age(32 * 24 * 3600), "32d");
+    }
+
+    #[test]
+    fn offline_cell_includes_age_when_stamped() {
+        let now = 100_000_000;
+        assert_eq!(offline_cell(Some(now - 32 * 24 * 3600), now), "offline 32d");
+        assert_eq!(offline_cell(Some(now - 300), now), "offline 5m");
+    }
+
+    #[test]
+    fn offline_cell_is_plain_when_never_stamped() {
+        assert_eq!(offline_cell(None, 1_000_000), "offline");
+    }
+
+    #[test]
+    fn future_stamp_clamps_to_zero_not_underflow() {
+        assert_eq!(offline_cell(Some(2_000_000), 1_000_000), "offline 0m");
+    }
 }

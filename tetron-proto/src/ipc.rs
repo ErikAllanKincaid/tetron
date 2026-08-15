@@ -367,6 +367,14 @@ pub struct PeerStatus {
     /// response still decodes (defaults to `false`, i.e. "member").
     #[serde(default)]
     pub is_coordinator: bool,
+    /// Unix seconds this peer was last observed by a network admin
+    /// (STATUS-006): stamped at admit and on observed disconnect, carried in
+    /// the signed roster blob. `None` = never stamped. A lower bound on
+    /// recency, not a liveness probe -- a peer that died while no admin was
+    /// online keeps its previous stamp. `#[serde(default)]` so an older
+    /// daemon's response still decodes.
+    #[serde(default)]
+    pub last_seen: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -831,6 +839,7 @@ mod tests {
                         ],
                     }),
                     is_coordinator: false,
+                    last_seen: None,
                 }],
                 nuke_proposals: vec![],
                 tun_name: "tun0".to_string(),
