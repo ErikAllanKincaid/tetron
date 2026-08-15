@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`tetron status` now shows how long an offline peer has been gone** (`STATUS-006`): an offline peer's `via` cell reads e.g. `offline 32d` instead of a bare `offline`, so a roster entry whose machine left months ago without `tetron leave` (and was never kicked) is finally distinguishable from a peer that dropped five minutes ago — spot it, then `tetron kick` it. The age comes from the roster's admin-stamped `last_seen` (carried in the signed network record, so every member sees the same value); a peer that never got a stamp still shows plain `offline` rather than a made-up age, and the value is a lower bound — it only updates when an admin is online to observe the disconnect. `--json` carries the raw `last_seen` Unix seconds per peer.
 - **`tetron config set/unset log-level` now live-reloads a running daemon instead of always requiring `sudo tetron restart`** (`LOG-004`): the file-log filter is swapped in on the already-running process the moment the CLI writes the new value, with no interruption to active mesh connections. Falls back to the original "run `sudo tetron restart`" message if no daemon is reachable to notify (the config file write itself always succeeds regardless, so it still applies at the daemon's next start either way). Every other `config set` key is unchanged and still needs a restart.
 
 ### Fixed

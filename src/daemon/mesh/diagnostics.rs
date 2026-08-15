@@ -174,6 +174,10 @@ impl MeshManager {
                     hostname: m.hostname.clone(),
                     connection,
                     is_coordinator: m.is_coordinator,
+                    // STATUS-006: roster-stamped, so an offline peer's age
+                    // ("zombie" spotting) survives daemon restarts and
+                    // replicates to every member via the signed blob.
+                    last_seen: m.last_seen,
                 }
             })
             .collect();
