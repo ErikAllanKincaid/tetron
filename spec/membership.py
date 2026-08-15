@@ -1437,6 +1437,66 @@ class ReconnectRetryLoopRechecksRoster(Requirement):
     req_id = "CONVERGE-010"
 
 
+class ColdPeerBackoffEscalation(Requirement):
+    """REQUIREMENT-ID: CONVERGE-011
+
+    Follow-up to CONVERGE-010, motivated by the "zombie" case it deliberately
+    does not touch: a peer that vanished without `tetron leave` and was never
+    kicked stays in the signed roster forever, and the daemon cannot
+    distinguish it from a laptop that is off for a month -- CONVERGE-007's
+    principle forbids inferring roster changes from unreachability, so the
+    dial task correctly keeps retrying a still-listed member indefinitely.
+    But it retried at the warm steady-state cadence (`BACKOFF_MAX`, 30s)
+    forever, so every zombie cost one full outbound dial attempt -- a real
+    QUIC handshake with fresh per-connection/per-path state in iroh/noq, the
+    exact churn the OOM investigation's allocation-site evidence keeps
+    pointing at -- every 30 seconds for the daemon's lifetime.
+
+    Fix, in two parts, both in the same retry loop CONVERGE-010 gated:
+
+    1. **Cold escalation**: after `reconnect-cold.threshold` consecutive
+       failed attempts (compiled default 10, roughly 4.5 minutes of trying),
+       the backoff cap escalates from `BACKOFF_MAX` (30s) to
+       `reconnect-cold.backoff` seconds (compiled default 600 = 10 minutes).
+       The existing doubling then climbs naturally toward the new cap
+       (30->60->120->240->480->600), no cliff. Pure decision function
+       `backoff_cap(failed_attempts, cold_threshold, warm_max, cold_max)`
+       (`select.rs`, PURE-LOGIC-001, unit-tested). Both knobs are
+       configurable (`tetron config set reconnect-cold.<threshold|backoff>`,
+       same plumbing family as `reconnect-log.*`), config read once at task
+       start per the codebase's usual pattern. The cost to a genuinely
+       returning peer is near zero: a peer coming back online dials *us*
+       immediately from its own reconnect/cold-restore machinery, so
+       reconnection latency is set by its outbound dial, not our retry
+       cadence.
+
+    2. **Live-route guard**: before dialing, the task now also exits if a
+       live connection for `(peer, network)` is already registered in the
+       `PeerTable` -- i.e. the peer came back and dialed us inbound while
+       this task was sleeping. Without this, a cold task waking up to a
+       long-cadence dial would clobber a healthy hours-old inbound
+       connection with a redundant outbound one (`peers.add` overwrite, a
+       one-time reconnect blip). This was technically already possible at
+       the 30s cadence, but cold cadences widen the window enough to make
+       it worth closing properly. If that connection later drops, its own
+       disconnect event spawns a fresh (warm) task, so exiting here loses
+       nothing.
+
+    Roster authority is unchanged: membership is never mutated or inferred
+    from unreachability, a still-listed member is retried forever (just
+    colder), and CONVERGE-010's per-attempt roster/pruned check still runs
+    at whatever cadence the loop is on -- a kick lands within one cold
+    interval at worst. Observability counterpart: STATUS-006 (spec/cli.py)
+    surfaces roster-stamped `last_seen` age for offline peers in
+    `tetron status`, so a human can spot the zombies this requirement can
+    only slow down, and issue the kick that CONVERGE-010 makes effective.
+
+    Found: 2026-08-15, direct follow-up to the CONVERGE-010 review
+    discussion of stale roster entries ("zombies").
+    """
+    req_id = "CONVERGE-011"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 

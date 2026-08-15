@@ -1013,6 +1013,16 @@ pub(crate) fn spawn_reconnect_loop(
                 );
                 let mut reconnect_log_window_start = std::time::Instant::now();
                 let mut reconnect_log_count: u32 = 0;
+                // CONVERGE-011: cold-peer escalation knobs, same
+                // config-at-task-start pattern as the log debounce above.
+                let cold_threshold = cfg
+                    .reconnect_cold
+                    .threshold
+                    .unwrap_or(BACKOFF_COLD_THRESHOLD);
+                let cold_max = std::time::Duration::from_secs(
+                    cfg.reconnect_cold.backoff_secs.unwrap_or(BACKOFF_COLD_MAX.as_secs()),
+                );
+                let mut failed_attempts: u32 = 0;
                 loop {
                     if token.is_cancelled() {
                         return;
@@ -1038,7 +1048,13 @@ pub(crate) fn spawn_reconnect_loop(
                         _ = token.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
                     }
-                    backoff = next_backoff(backoff, BACKOFF_MAX);
+                    // CONVERGE-011: the cap escalates once this peer has
+                    // failed `cold_threshold` consecutive attempts; the
+                    // doubling then climbs toward the cold cap, no cliff.
+                    backoff = next_backoff(
+                        backoff,
+                        backoff_cap(failed_attempts, cold_threshold, BACKOFF_MAX, cold_max),
+                    );
 
                     // CONVERGE-010: re-check roster authority before every
                     // attempt. The outer disconnect handler's checks only run
@@ -1061,6 +1077,24 @@ pub(crate) fn spawn_reconnect_loop(
                         );
                         return;
                     }
+                    // CONVERGE-011: if the peer came back and dialed us
+                    // inbound while this task slept (a long sleep, once
+                    // cold), a live route is already registered -- dialing
+                    // now would clobber that healthy connection with a
+                    // redundant outbound one (`peers.add` overwrite). Exit
+                    // instead; if that connection later drops, its own
+                    // disconnect event spawns a fresh, warm task.
+                    if peers
+                        .peers_for_network_with_conn(&net_name)
+                        .iter()
+                        .any(|(eid, _, _)| *eid == peer_id)
+                    {
+                        tracing::info!(
+                            peer = %peer_id.fmt_short(), ip = %peer_ip,
+                            "peer already reconnected inbound, stopping reconnect attempts"
+                        );
+                        return;
+                    }
 
                     match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
                         Ok(conn) => {
@@ -1068,6 +1102,7 @@ pub(crate) fn spawn_reconnect_loop(
                                 Ok(bi) => bi,
                                 Err(e) => {
                                     tracing::warn!(error = %e, "reconnect handshake failed");
+                                    failed_attempts += 1;
                                     continue;
                                 }
                             };
@@ -1082,6 +1117,7 @@ pub(crate) fn spawn_reconnect_loop(
                             .await
                             {
                                 tracing::warn!(error = %e, "reconnect MeshHello failed");
+                                failed_attempts += 1;
                                 continue;
                             }
                             tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "reconnected to peer");
@@ -1125,6 +1161,7 @@ pub(crate) fn spawn_reconnect_loop(
                             return;
                         }
                         Err(e) => {
+                            failed_attempts += 1;
                             tracing::debug!(error = %e, "reconnect attempt failed");
                         }
                     }
