@@ -527,9 +527,24 @@ class Ipv4RefragmentationPreservesOffset(Requirement):
     those fragments arrives at `forward::run_mesh` as an ordinary IPv4
     packet carrying a non-zero Fragment Offset, a set More-Fragments flag,
     or both. Whenever the peer connection's `max_datagram_size` is below
-    1280 -- the ordinary case on a relay path, and on *every* path for the
-    first few round trips, since noq's default `initial_mtu` is 1200 --
-    such a fragment is oversized and gets re-fragmented.
+    1280, such a fragment is oversized and gets re-fragmented. Two
+    conditions put it there: any path whose underlay MTU is small enough
+    (measured live at a 1224-byte ceiling over a 1300-byte underlay), and
+    *every* path for the first few round trips, since noq's default
+    `initial_mtu` is 1200 and MTU discovery has not yet raised it.
+
+    An earlier draft of this requirement claimed a relay path is the
+    ordinary case for a sub-1280 ceiling. That is **wrong**, measured
+    2026-08-15 while building this requirement's own testsuite coverage:
+    with relay forced between two VMs, node1 fragmented only 12 and then 9
+    packets against traffic implying ~100, even with the underlay NIC
+    clamped to 1300. iroh carries relay traffic inside a TCP connection to
+    the relay server, so the local NIC MTU does not bound the QUIC datagram
+    ceiling on a relay path at all. The handful of events observed there
+    were the connection-startup window above, not a property of relay.
+    `FRAG-001`'s original 2026-07-15 report (`max=1162`) is therefore a
+    direct-path or startup-window observation, not the relay observation it
+    was assumed to be.
 
     `fragment_ipv4` overwrote both fragmentation fields unconditionally:
     the Fragment Offset was recomputed from its own loop position starting
@@ -590,6 +605,17 @@ class Ipv4RefragmentationPreservesOffset(Requirement):
     but neither depends on this one, so the three may land in any order.
     Ordered first here only so it can be cherry-picked alone if a release
     is needed before the other two are ready.
+
+    Live-verified 2026-08-15 on two VMs via `tetron-testsuite`'s
+    `oversized-udp-fragmentation` case, which exists for this requirement:
+    with the datagram ceiling measured at 1224 (asserted, via
+    `MTU-DIAG-001`'s per-peer `max_datagram_size`, rather than assumed),
+    `ping -s 2000` and `ping -s 4000` both returned 10/10 replies and 20/20
+    4000-byte UDP datagrams arrived byte-for-byte intact, while node1
+    fragmented 109 packets over the run. The UDP payloads carry a
+    deterministic pattern precisely so a scrambled reassembly is
+    distinguishable from a dropped packet -- the pre-fix failure mode could
+    produce either.
     """
 
     req_id = "FRAG-004"
