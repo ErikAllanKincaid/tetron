@@ -190,6 +190,16 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     if packet.len() < HEADER_LEN {
         return None;
     }
+    // FRAG-005: `max_size` comes from `Connection::max_datagram_size()`, which
+    // noq derives partly from the *remote* peer's advertised
+    // `max_datagram_frame_size`, so it is partly under a peer's control and can
+    // be driven below `HEADER_LEN`. Guard before the payload arithmetic below,
+    // which would otherwise underflow. `+ 8` because RFC 791 requires every
+    // non-final fragment's payload to be a multiple of 8 bytes, so anything
+    // smaller cannot produce a legal fragment set anyway.
+    if max_size < HEADER_LEN + 8 {
+        return None;
+    }
     let ihl = (packet[0] & 0x0F) as usize;
     if ihl * 4 != HEADER_LEN {
         return None; // IP options not supported
@@ -211,11 +221,9 @@ pub fn fragment_ipv4(packet: &[u8], max_size: usize) -> Option<Vec<Vec<u8>>> {
     }
 
     let payload_len = packet.len() - HEADER_LEN;
-    // Fragment payload must be a multiple of 8 bytes (RFC 791), except the last.
+    // Fragment payload must be a multiple of 8 bytes (RFC 791), except the
+    // last. At least 8 by the `max_size` guard above.
     let max_payload = (max_size - HEADER_LEN) & !7;
-    if max_payload < 8 {
-        return None;
-    }
 
     // Preserve original identification so all fragments share it for reassembly.
     let id_hi = packet[4];
@@ -323,13 +331,21 @@ const MAX_REASSEMBLED_IPV6_PACKET: usize = 1280;
 /// with each other by the receiver.
 ///
 /// Returns `None` when the packet already fits in `max_size` (no
-/// fragmentation needed) or `max_size` leaves no room for the envelope
-/// header plus at least one payload byte.
+/// fragmentation needed), `max_size` leaves no room for the envelope
+/// header plus at least one payload byte, or the packet is longer than the
+/// envelope's 2-byte offset field can address (FRAG-005).
 pub fn fragment_ipv6(packet: &[u8], id: u32, max_size: usize) -> Option<Vec<Vec<u8>>> {
     if packet.len() <= max_size {
         return None;
     }
     if max_size <= FRAG6_HEADER_LEN {
+        return None;
+    }
+    // FRAG-005: the envelope addresses payload bytes with a 2-byte offset, so a
+    // packet longer than that can express cannot be fragmented without
+    // truncating the offset. Unreachable from the TUN (`tun::TUN_MTU` is 1280),
+    // but the cast below must not be the thing enforcing it.
+    if packet.len() > u16::MAX as usize {
         return None;
     }
     let max_payload = max_size - FRAG6_HEADER_LEN;
@@ -867,6 +883,49 @@ mod tests {
         // never be allowed to silently truncate into the 13-bit field.
         let pkt = make_ipv4_fragment(1208, 65528, true);
         assert!(fragment_ipv4(&pkt, 1200).is_none());
+    }
+
+    // ── FRAG-005: bounds guards on peer-influenced inputs ────────────────
+
+    #[test]
+    fn frag_max_size_below_header_len_is_refused_not_underflowed() {
+        // `max_size` is `Connection::max_datagram_size()`, which noq derives
+        // partly from the *remote* peer's advertised max_datagram_frame_size,
+        // so a peer can drive it below the 20-byte IPv4 header length. The
+        // payload arithmetic must not subtract its way past zero first.
+        let pkt = make_ipv4(100, 0x1234, false);
+        for max_size in [0usize, 1, 10, 19, 20, 27] {
+            assert!(
+                fragment_ipv4(&pkt, max_size).is_none(),
+                "max_size {max_size} must be refused, not underflow"
+            );
+        }
+    }
+
+    #[test]
+    fn frag_smallest_workable_max_size_still_fragments() {
+        // The boundary the guard must not overshoot: 20-byte header plus the
+        // 8-byte minimum payload an RFC 791 non-final fragment can carry.
+        let pkt = make_ipv4(100, 0x1234, false);
+        let frags = fragment_ipv4(&pkt, 28).expect("28 bytes is workable");
+        assert!(frags.iter().all(|f| f.len() <= 28));
+        assert_eq!(frags.len(), 100 / 8 + usize::from(100 % 8 != 0));
+    }
+
+    #[test]
+    fn frag6_packet_too_long_for_the_envelope_offset_is_refused() {
+        // The envelope's offset field is 2 bytes, so a packet longer than
+        // u16::MAX cannot be addressed by it. Unreachable from the TUN
+        // (TUN_MTU is 1280), but the cast must not truncate silently.
+        let pkt = make_ipv6(u16::MAX as usize);
+        assert!(fragment_ipv6(&pkt, 1, 1200).is_none());
+    }
+
+    #[test]
+    fn frag6_packet_at_the_offset_limit_still_fragments() {
+        let pkt = make_ipv6(u16::MAX as usize - 40);
+        assert_eq!(pkt.len(), u16::MAX as usize);
+        assert!(fragment_ipv6(&pkt, 1, 1200).is_some());
     }
 
     // ── IPv6 fragmentation tests (FRAG-002) ──────────────────────────────

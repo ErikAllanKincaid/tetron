@@ -571,6 +571,62 @@ class Ipv4RefragmentationPreservesOffset(Requirement):
 
 
 # --------------------------------------------------------------------------
+# FRAG-005: bounds guards on peer-influenced fragmentation inputs
+# --------------------------------------------------------------------------
+
+class FragmentationInputBounds(Requirement):
+    """REQUIREMENT-ID: FRAG-005
+
+    Found 2026-08-15 in the same audit as `FRAG-004`. `fragment_ipv4`
+    computes `let max_payload = (max_size - HEADER_LEN) & !7;` with no
+    prior check that `max_size` is at least `HEADER_LEN` (20). `max_size`
+    is `Connection::max_datagram_size()`, which noq computes as the
+    minimum of the current path MTU budget and *the remote peer's
+    advertised* `max_datagram_frame_size` transport parameter
+    (`vendor/noq-proto-1.1.0/src/connection/datagrams.rs`, `max_size`):
+    the value is therefore partly under a remote peer's control, and a
+    peer advertising a small enough frame size drives it below 20.
+
+    Confirmed by calling the real function with `max_size = 10`: it
+    panics with "attempt to subtract with overflow". Release builds set no
+    `overflow-checks` (`Cargo.toml`'s `[profile.release]`), so a release
+    daemon wraps instead, producing a single oversized "fragment" that
+    `send_datagram` then rejects -- wrong, but contained. A debug or test
+    build panics, and `main::install_panic_hook` turns a daemon panic into
+    `process::abort()`, so an admitted peer could halt another node's
+    daemon by advertising a hostile transport parameter. Admission still
+    gates who can do this (an invite key is required to reach the data
+    path at all), which is why this is hardening rather than a
+    remote-unauthenticated hole.
+
+    **Fix**, both in `packet.rs`:
+
+    - `fragment_ipv4` rejects `max_size < HEADER_LEN + 8` up front,
+      returning `None` (the existing, unchanged "cannot fragment" path in
+      `forward.rs`, which records `DropReason::FragmentationFailed`).
+      `+ 8` rather than `+ 1` because RFC 791 requires every non-final
+      fragment's payload to be a multiple of 8 bytes, so a `max_size`
+      leaving fewer than 8 payload bytes cannot produce a legal fragment
+      set anyway -- exactly what the existing `max_payload < 8` check
+      already concluded, now reached without underflowing first.
+    - `fragment_ipv6` refuses a packet longer than `u16::MAX`, whose byte
+      offset would silently truncate in the envelope's 2-byte offset
+      field (`offset as u16`). Not reachable today, since the TUN never
+      delivers more than `TUN_MTU` bytes, but the cast is unguarded and
+      the envelope format is tetron's own to keep honest. `fragment_ipv6`
+      already guards its `max_size` correctly
+      (`max_size <= FRAG6_HEADER_LEN`), so no change is needed there.
+
+    No behavior change for any real connection: a healthy peer's
+    `max_datagram_size` is over a kilobyte, and both guards are
+    unreachable in normal operation. Independent of `FRAG-004` and
+    `FRAG-006`.
+    """
+
+    req_id = "FRAG-005"
+
+
+# --------------------------------------------------------------------------
 # IPV4-MIN-IHL-001: reject IPv4 headers shorter than five words (upstream
 # 6d008d5 `fix(firewall)`, ported from the 2026-08-05 upstream review)
 # --------------------------------------------------------------------------
