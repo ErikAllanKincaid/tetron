@@ -682,6 +682,96 @@ class InstallSuiteHostsComponent(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-004: upgrading is the default -- core is never silently
+# left behind, and an installed component is never left stale
+# --------------------------------------------------------------------------
+
+class InstallSuiteUpgradesByDefault(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-004
+
+    Reported live by USER 2026-08-16, running the README's own documented
+    one-liner (`curl -fsSL .../install-tetron-suite.sh | bash`): it
+    upgraded the addons and left `core` behind, so a freshly upgraded
+    `webui`/`systray` was left talking `tetron-proto` to a stale daemon --
+    exactly the version skew the matched-release discipline exists to
+    prevent, reintroduced at install time. The run reported success.
+
+    Three separate defects combined to produce it, all fixed here:
+
+    1. **`core`'s upgrade prompt defaulted to "no".** `confirm_sudo_install`
+       asked `[y/N]` for an upgrade of an already-installed `core`, so a
+       bare Enter declined it. The prompt immediately before it
+       (`ADDONS-SUITE-002` tier 4's `Use defaults? [Y/n]`) trains Enter,
+       and every other prompt in the script is `[Y/n]` -- so the one
+       component that matters most was the one keystroke-declined by
+       muscle memory. It then `continue`d silently, and the script still
+       exited `0` behind a row of green addon lines, which is why this
+       went unnoticed long enough to be reported from a real fleet rather
+       than caught here.
+    2. **No controlling terminal skipped `core` outright** unless
+       `--yes-core` was passed (cron, CI, a container without `-it`).
+    3. **A component installed on this host but outside the computed
+       default set was never even considered.** `ADDONS-SUITE-002`'s
+       display-aware default set (`core` alone when headless) governed
+       upgrades as well as fresh installs, so a headless machine with
+       `webui` installed would never upgrade it -- silently, forever.
+
+    **This supersedes `ADDONS-SUITE-002`'s `--yes-core` upgrade gate.**
+    That gate was written to protect a real property: upgrading `core`
+    restarts the daemon and briefly drops every peer on the host. The
+    protection was aimed at the wrong target. Someone running an installer
+    named "install-tetron-suite" is *asking* to be upgraded; the surprise
+    worth preventing is a host left on mismatched versions, not a
+    momentary reconnect. So the default inverts:
+
+    - Upgrading `core` proceeds by default. The prompt still states the
+      cost plainly ("briefly disconnects every peer on this host") but is
+      `[Y/n]`, and an explicit `n` still declines.
+    - With no controlling terminal, `core` upgrades rather than skipping,
+      logging one warning saying so.
+    - **`--no-core`** is the new opt-out, and is the supported way to
+      express "addons only". Declining must be a deliberate statement,
+      not an inferred keystroke.
+    - **`--yes-core` is accepted and ignored**, not removed and not an
+      error: it appears in existing cron entries, CI jobs, and previously
+      documented command lines, and there is nothing left for it to
+      permit. Rejecting it via the catch-all `unrecognized argument`
+      would break exactly the automated callers that took the old advice.
+    - `--core-only` together with `--no-core` is a usage error; they
+      select nothing between them.
+
+    **Already installed implies always upgraded.** The component set is
+    the union of what the selection logic chose and everything already
+    present on the host, `--check` included (reporting the version of an
+    installed-but-unselected component is what a status check is for).
+    `ADDONS-SUITE-002`'s selection tiers keep their full meaning for what
+    gets **newly installed**; they no longer decide what gets left stale.
+    Two explicit overrides survive the sweep: `--core-only`, and any addon
+    explicitly declined at the tier-4 picker -- answering "no" to a
+    component has to mean no, even for one already present. Conversely,
+    the picker now pre-answers `Y` for any component already installed
+    (including `hosts`/`backup`, otherwise unconditionally `N` per
+    `ADDONS-SUITE-003`), since that prompt is offering an upgrade rather
+    than a new install.
+
+    **Skips are reported, never silent.** Anything selected but not
+    installed is listed in a closing summary, and a skipped `core` gets
+    its own warning naming the consequence (addons speak `tetron-proto`
+    to the daemon). The original defect was silent success; the exit code
+    alone is not enough to convey it.
+
+    Verified by `contrib/tests/install-suite-confirm.test.sh`, which
+    extracts `confirm_sudo_install` from the shipped script at run time
+    (so the test cannot drift from the code) and drives its prompt reads
+    from a file rather than `/dev/tty`. Its twelve cases pass here and
+    reproduce defects 1 and 2 as failures against the pre-fix script,
+    leaving the fresh-install and addon paths unchanged.
+    """
+
+    req_id = "ADDONS-SUITE-004"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
