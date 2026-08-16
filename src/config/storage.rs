@@ -302,13 +302,156 @@ fn migrate_legacy(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// --- CONFIG-CACHE-001: parsed-config cache, validated against the files ---
+//
+// `load()` sits in request-handling paths (`MeshManager::status()` calls it
+// twice per request -- once directly, once per network inside
+// `network_status()`), and `tetron-systray` polls `Status` every 8 seconds
+// unconditionally. Re-reading and re-parsing the whole tree there worked out
+// to roughly 1,800 file reads and 1,800 TOML parses per hour on a machine
+// with a tray icon, to rebuild a value that had not changed.
+//
+// Validated against the filesystem rather than expired on a timer: the
+// dominant caller polls on a fixed cadence, so any TTL short enough to bound
+// staleness usefully would be missed by every poll, while a longer one would
+// add a staleness window for nothing. Filesystem validation has no staleness
+// window at all -- which matters because `tetron config set`, `join`, and
+// `leave` write this tree from a *different process* than the daemon reading
+// it, so in-process invalidation alone would be wrong.
+
+/// Identity of the on-disk config tree: enough to tell "unchanged" from
+/// "changed" without reading or parsing anything.
+#[derive(Clone, PartialEq, Eq)]
+struct Fingerprint {
+    /// `None` when `settings.toml` does not exist (a valid state -- `load_in`
+    /// falls back to defaults -- and distinct from any existing file).
+    settings: Option<(std::time::SystemTime, u64)>,
+    /// Directory mtime, which an atomic rename into `networks/` updates. This
+    /// is what catches a network being *added or removed*, and is why the
+    /// validation path never needs its own `read_dir`.
+    networks_dir: Option<std::time::SystemTime>,
+    /// Per-file, catching a network edited *in place* (which leaves the
+    /// directory mtime untouched).
+    network_files: Vec<(std::ffi::OsString, std::time::SystemTime, u64)>,
+}
+
+struct CacheEntry {
+    /// The cache is keyed by directory: `TETRON_CONFIG_DIR` can differ between
+    /// calls (tests do exactly this), and a hit from another directory would
+    /// be silently wrong.
+    dir: PathBuf,
+    fingerprint: Fingerprint,
+    config: AppConfig,
+}
+
+static CONFIG_CACHE: std::sync::RwLock<Option<CacheEntry>> = std::sync::RwLock::new(None);
+
+/// Counts full (cache-missing) loads so tests can assert the cache is
+/// actually being used rather than merely returning correct values. Compiled
+/// out entirely otherwise.
+#[cfg(test)]
+static FULL_LOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn note_full_load() {
+    #[cfg(test)]
+    FULL_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn stat_file(p: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+fn dir_mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).ok()?.modified().ok()
+}
+
+/// Full fingerprint, enumerating `networks/`. Miss path only.
+fn fingerprint_full(dir: &Path) -> Fingerprint {
+    let ndir = dir.join(NETWORKS_SUBDIR);
+    let mut network_files: Vec<(std::ffi::OsString, std::time::SystemTime, u64)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&ndir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.extension().map(|x| x == "toml").unwrap_or(false) {
+                continue;
+            }
+            if let Some((mt, len)) = stat_file(&p) {
+                network_files.push((e.file_name(), mt, len));
+            }
+        }
+    }
+    network_files.sort();
+    Fingerprint {
+        settings: stat_file(&dir.join(SETTINGS_FILE)),
+        networks_dir: dir_mtime(&ndir),
+        network_files,
+    }
+}
+
+/// Cheap validation: `stat`s only what the cached entry already names, with no
+/// `read_dir`. A changed directory mtime means the *set* of networks may have
+/// changed, which forces the full reload that re-enumerates it.
+fn fingerprint_still_valid(dir: &Path, fp: &Fingerprint) -> bool {
+    if stat_file(&dir.join(SETTINGS_FILE)) != fp.settings {
+        return false;
+    }
+    let ndir = dir.join(NETWORKS_SUBDIR);
+    if dir_mtime(&ndir) != fp.networks_dir {
+        return false;
+    }
+    fp.network_files
+        .iter()
+        .all(|(name, mt, len)| stat_file(&ndir.join(name)) == Some((*mt, *len)))
+}
+
 /// Load the full config, assembling it from `settings.toml` + `networks/*.toml`.
 /// Returns a default config if nothing is stored yet. Runs the legacy migration
 /// on first call after an upgrade.
+///
+/// Cached (`CONFIG-CACHE-001`); the cached value is returned only while the
+/// files it was built from are unchanged, so a write from any process is
+/// picked up on the next call.
 pub fn load() -> Result<AppConfig> {
     let dir = config_dir()?;
-    migrate_legacy(&dir)?;
-    load_in(&dir)
+    load_cached_in(&dir, true)
+}
+
+/// `load()`'s body, with the directory injected and the legacy migration
+/// optional so tests can exercise the cache against a tempdir.
+fn load_cached_in(dir: &Path, migrate: bool) -> Result<AppConfig> {
+    let hit = CONFIG_CACHE.read().ok().and_then(|guard| {
+        guard
+            .as_ref()
+            .filter(|e| e.dir == dir && fingerprint_still_valid(dir, &e.fingerprint))
+            .map(|e| e.config.clone())
+    });
+    if let Some(config) = hit {
+        return Ok(config);
+    }
+
+    // Miss. `migrate_legacy` stays on this path only: it is idempotent and
+    // effectively a once-at-startup step, so skipping it on a hit changes
+    // nothing.
+    if migrate {
+        migrate_legacy(dir)?;
+    }
+    // Fingerprint *before* loading: if a write lands between the two, the
+    // recorded fingerprint is the older one, so the next call sees a mismatch
+    // and reloads. Taking it afterwards could record the newer stamp against
+    // the older parse and cache a stale value indefinitely.
+    let fingerprint = fingerprint_full(dir);
+    let config = load_in(dir)?;
+    note_full_load();
+
+    if let Ok(mut guard) = CONFIG_CACHE.write() {
+        *guard = Some(CacheEntry {
+            dir: dir.to_path_buf(),
+            fingerprint,
+            config: config.clone(),
+        });
+    }
+    Ok(config)
 }
 
 fn load_in(dir: &Path) -> Result<AppConfig> {
@@ -535,6 +678,166 @@ mod tests {
             subnet: None,
             nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
         }
+    }
+
+    // --- CONFIG-CACHE-001 ---------------------------------------------
+    // These assert on FULL_LOADS, not just returned values: a cache that is
+    // never consulted still returns correct results, so correctness alone
+    // would pass whether or not the feature works.
+
+    /// Serializes the cache tests against each other. They share one
+    /// process-global cache and one global `FULL_LOADS` counter, so running
+    /// two at once would make both flaky.
+    static CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn full_loads() -> usize {
+        FULL_LOADS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Drops the cache so a test starts from a known state regardless of what
+    /// ran before it.
+    fn clear_cache() {
+        if let Ok(mut g) = CONFIG_CACHE.write() {
+            *g = None;
+        }
+    }
+
+    #[test]
+    fn cached_load_skips_reparse_when_nothing_changed() {
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        save_network_in(dir, &net("homelab")).unwrap();
+        clear_cache();
+
+        let before = full_loads();
+        let a = load_cached_in(dir, false).unwrap();
+        assert_eq!(full_loads(), before + 1, "first call must do a full load");
+
+        for _ in 0..5 {
+            let b = load_cached_in(dir, false).unwrap();
+            assert_eq!(b.networks.len(), a.networks.len());
+        }
+        assert_eq!(
+            full_loads(),
+            before + 1,
+            "repeat calls with an unchanged tree must be served from cache"
+        );
+    }
+
+    #[test]
+    fn cached_load_sees_settings_change() {
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        save_settings_in(
+            dir,
+            &AppConfig {
+                default_hostname: Some("first".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        clear_cache();
+
+        let a = load_cached_in(dir, false).unwrap();
+        assert_eq!(a.default_hostname.as_deref(), Some("first"));
+
+        save_settings_in(
+            dir,
+            &AppConfig {
+                default_hostname: Some("second-and-longer".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let b = load_cached_in(dir, false).unwrap();
+        assert_eq!(
+            b.default_hostname.as_deref(),
+            Some("second-and-longer"),
+            "a settings write from anywhere must invalidate the cache"
+        );
+    }
+
+    #[test]
+    fn cached_load_sees_network_added_and_removed() {
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        save_network_in(dir, &net("homelab")).unwrap();
+        clear_cache();
+
+        assert_eq!(load_cached_in(dir, false).unwrap().networks.len(), 1);
+
+        save_network_in(dir, &net("genesis")).unwrap();
+        assert_eq!(
+            load_cached_in(dir, false).unwrap().networks.len(),
+            2,
+            "adding a network must invalidate the cache"
+        );
+
+        delete_network_in(dir, "genesis").unwrap();
+        assert_eq!(
+            load_cached_in(dir, false).unwrap().networks.len(),
+            1,
+            "removing a network must invalidate the cache"
+        );
+    }
+
+    #[test]
+    fn cached_load_sees_network_edited_in_place() {
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        save_network_in(dir, &net("homelab")).unwrap();
+        clear_cache();
+        assert_eq!(load_cached_in(dir, false).unwrap().networks.len(), 1);
+
+        // Rewrite the file's bytes directly rather than via save_network_in,
+        // which renames and so would move the directory mtime too. This is
+        // the case only the per-file stat can catch.
+        let p = dir.join(NETWORKS_SUBDIR).join("homelab.toml");
+        let mut s = std::fs::read_to_string(&p).unwrap();
+        s.push_str("\n# padding to change length and mtime\n");
+        std::fs::write(&p, s).unwrap();
+
+        let before = full_loads();
+        let _ = load_cached_in(dir, false).unwrap();
+        assert_eq!(
+            full_loads(),
+            before + 1,
+            "an in-place edit leaves the directory mtime alone, so only the \
+             per-file stat can catch it"
+        );
+        // Without this the assertion above would also hold with no cache at
+        // all (every call is a full load then). This pins that the reload was
+        // caused by the edit specifically, and that the cache re-arms after.
+        let _ = load_cached_in(dir, false).unwrap();
+        assert_eq!(
+            full_loads(),
+            before + 1,
+            "the call after the edit-triggered reload must be a cache hit"
+        );
+    }
+
+    #[test]
+    fn cache_does_not_leak_across_directories() {
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        save_network_in(one.path(), &net("homelab")).unwrap();
+        save_network_in(two.path(), &net("alpha")).unwrap();
+        save_network_in(two.path(), &net("beta")).unwrap();
+        clear_cache();
+
+        assert_eq!(load_cached_in(one.path(), false).unwrap().networks.len(), 1);
+        assert_eq!(
+            load_cached_in(two.path(), false).unwrap().networks.len(),
+            2,
+            "a different config dir must never be served from another dir's entry"
+        );
+        assert_eq!(load_cached_in(one.path(), false).unwrap().networks.len(), 1);
     }
 
     #[test]
