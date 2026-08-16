@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-16
+
 ### Performance
 
 - **The daemon now paces its own status rebuilds instead of letting UI clients set the rate** (`STATUS-CACHE-001`). Answering a status request walked iroh's path machinery for every connected peer — `conn.paths()` then `stats()` per path, building every candidate's address, RTT, MTU, black-hole count and PLPMTUD probe counters. That happened once per request, and the request rate was set entirely by the clients: `tetron-systray` polls every 8 seconds whether or not the tray is ever opened, and a `tetron-webui` tab polls every 10 seconds for as long as it is left open, so ~810 full traversals an hour between them, growing with every extra tab. The expensive per-peer detail is now cached and rebuilt at most once per `status-cache.interval` (default 12s), so any number of clients polling at any rate cost the daemon the same. The cache is rebuilt lazily on read, so a headless machine nobody queries does no work at all. The traffic and drop counters are **not** cached — they are atomic reads and stay live on every request, so those numbers are never stale. Any state-changing command drops the cache immediately, so the UI is never behind after something you just did, and `tetron sync` (the webui's existing per-network **sync** button) drops it too, giving a manual refresh with no new command. No wire-format change: `tetron-systray` and `tetron-webui` both benefit without any change of their own.
