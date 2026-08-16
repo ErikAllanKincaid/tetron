@@ -272,7 +272,7 @@ pub struct AdminInfo {
     pub self_node: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkStatus {
     /// This network's local display name (STATUS-NETWORK-FIELD-001).
     /// `#[serde(default)]` for backward compat with pre-upgrade daemons
@@ -328,7 +328,7 @@ fn default_nuke_consensus_threshold() -> u32 {
 }
 
 /// One pending nuke proposal, as surfaced by `tetron status` (NUKE-CONSENSUS).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NukeProposalInfo {
     /// Short id of the proposing coordinator (prefix of its full identity string).
     pub short_id: String,
@@ -355,7 +355,7 @@ pub enum NetworkRole {
     Direct,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerStatus {
     pub endpoint_id: EndpointId,
     pub ip: Ipv4Addr,
@@ -377,7 +377,7 @@ pub struct PeerStatus {
     pub last_seen: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionInfo {
     pub conn_type: ConnType,
     pub remote_addr: Option<String>,

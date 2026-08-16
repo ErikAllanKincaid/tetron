@@ -10,7 +10,7 @@ use std::net::Ipv4Addr;
 
 use super::schema::{
     AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
-    ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
+    ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride, StatusCacheConfig,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -144,6 +144,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         frozen_key if frozen_key.starts_with("reconnect-frozen.") => {
             set_reconnect_frozen_key(&mut cfg.reconnect_frozen, frozen_key, &entries, reset)?;
         }
+        sc_key if sc_key.starts_with("status-cache.") => {
+            set_status_cache_key(&mut cfg.status_cache, sc_key, &entries, reset)?;
+        }
         "nuke-proposal-ttl" => {
             cfg.nuke_proposal_ttl = if reset {
                 None
@@ -159,10 +162,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
             cfg.listen_port = if reset {
                 None
             } else {
-                anyhow::ensure!(
-                    entries.len() == 1,
-                    "listen-port takes a single port number"
-                );
+                anyhow::ensure!(entries.len() == 1, "listen-port takes a single port number");
                 Some(parse_ratelimit_value(&entries[0])?)
             };
         }
@@ -229,7 +229,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              path-flap.<threshold|window>, \
              reconnect-log.<threshold|window>, \
              reconnect-cold.<threshold|backoff>, \
-             reconnect-frozen.<threshold|backoff>, or \
+             reconnect-frozen.<threshold|backoff>, status-cache.interval, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -245,7 +245,9 @@ fn set_drop_monitor_key(
     entries: &[String],
     reset: bool,
 ) -> Result<()> {
-    let sub = key.strip_prefix("drop-monitor.").expect("checked by caller");
+    let sub = key
+        .strip_prefix("drop-monitor.")
+        .expect("checked by caller");
     if reset {
         match sub {
             "window" => dm.window_secs = None,
@@ -307,7 +309,9 @@ fn set_reconnect_log_key(
     entries: &[String],
     reset: bool,
 ) -> Result<()> {
-    let sub = key.strip_prefix("reconnect-log.").expect("checked by caller");
+    let sub = key
+        .strip_prefix("reconnect-log.")
+        .expect("checked by caller");
     if reset {
         match sub {
             "threshold" => rl.threshold = None,
@@ -337,7 +341,9 @@ fn set_reconnect_cold_key(
     entries: &[String],
     reset: bool,
 ) -> Result<()> {
-    let sub = key.strip_prefix("reconnect-cold.").expect("checked by caller");
+    let sub = key
+        .strip_prefix("reconnect-cold.")
+        .expect("checked by caller");
     if reset {
         match sub {
             "threshold" => rc.threshold = None,
@@ -368,7 +374,9 @@ fn set_reconnect_frozen_key(
     entries: &[String],
     reset: bool,
 ) -> Result<()> {
-    let sub = key.strip_prefix("reconnect-frozen.").expect("checked by caller");
+    let sub = key
+        .strip_prefix("reconnect-frozen.")
+        .expect("checked by caller");
     if reset {
         match sub {
             "threshold" => rf.threshold = None,
@@ -386,6 +394,36 @@ fn set_reconnect_frozen_key(
         "threshold" => rf.threshold = Some(parse_ratelimit_value(raw)?),
         "backoff" => rf.backoff_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown reconnect-frozen config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `status-cache.<key>` entry (STATUS-CACHE-001).
+/// `reset` (empty value or "0") clears the field back to `None` (compiled
+/// default of 12s). Same shape as the reconnect knobs above.
+fn set_status_cache_key(
+    sc: &mut StatusCacheConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key
+        .strip_prefix("status-cache.")
+        .expect("checked by caller");
+    if reset {
+        match sub {
+            "interval" => sc.interval_secs = None,
+            other => anyhow::bail!("unknown status-cache config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "status-cache.{sub} takes a single numeric value"
+    );
+    match sub {
+        "interval" => sc.interval_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
+        other => anyhow::bail!("unknown status-cache config key: {other}"),
     }
     Ok(())
 }
@@ -562,6 +600,13 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("status-cache.") {
+            let val = match sub {
+                "interval" => render_opt(cfg.status_cache.interval_secs),
+                other => anyhow::bail!("unknown status-cache config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if k == "nuke-proposal-ttl" {
             return Ok((k.to_string(), render_opt(cfg.nuke_proposal_ttl)));
         }
@@ -724,16 +769,28 @@ mod tests {
     #[test]
     fn config_set_get_path_flap() {
         let mut cfg = AppConfig::default();
-        assert_eq!(config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1, "<default>");
-        assert_eq!(config_get(&cfg, Some("path-flap.window")).unwrap()[0].1, "<default>");
+        assert_eq!(
+            config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1,
+            "<default>"
+        );
+        assert_eq!(
+            config_get(&cfg, Some("path-flap.window")).unwrap()[0].1,
+            "<default>"
+        );
 
         config_set(&mut cfg, "path-flap.threshold", "5", false).unwrap();
         assert_eq!(cfg.path_flap.threshold, Some(5));
-        assert_eq!(config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1, "5");
+        assert_eq!(
+            config_get(&cfg, Some("path-flap.threshold")).unwrap()[0].1,
+            "5"
+        );
 
         config_set(&mut cfg, "path-flap.window", "90", false).unwrap();
         assert_eq!(cfg.path_flap.window_secs, Some(90));
-        assert_eq!(config_get(&cfg, Some("path-flap.window")).unwrap()[0].1, "90");
+        assert_eq!(
+            config_get(&cfg, Some("path-flap.window")).unwrap()[0].1,
+            "90"
+        );
 
         // Empty resets to default (None).
         config_set(&mut cfg, "path-flap.threshold", "", false).unwrap();
@@ -747,16 +804,28 @@ mod tests {
     #[test]
     fn config_set_get_reconnect_log() {
         let mut cfg = AppConfig::default();
-        assert_eq!(config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1, "<default>");
-        assert_eq!(config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1, "<default>");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1,
+            "<default>"
+        );
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1,
+            "<default>"
+        );
 
         config_set(&mut cfg, "reconnect-log.threshold", "5", false).unwrap();
         assert_eq!(cfg.reconnect_log.threshold, Some(5));
-        assert_eq!(config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1, "5");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-log.threshold")).unwrap()[0].1,
+            "5"
+        );
 
         config_set(&mut cfg, "reconnect-log.window", "120", false).unwrap();
         assert_eq!(cfg.reconnect_log.window_secs, Some(120));
-        assert_eq!(config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1, "120");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-log.window")).unwrap()[0].1,
+            "120"
+        );
 
         // Empty resets to default (None).
         config_set(&mut cfg, "reconnect-log.threshold", "", false).unwrap();
@@ -771,16 +840,28 @@ mod tests {
     #[test]
     fn config_set_get_reconnect_cold() {
         let mut cfg = AppConfig::default();
-        assert_eq!(config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1, "<default>");
-        assert_eq!(config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1, "<default>");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1,
+            "<default>"
+        );
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1,
+            "<default>"
+        );
 
         config_set(&mut cfg, "reconnect-cold.threshold", "20", false).unwrap();
         assert_eq!(cfg.reconnect_cold.threshold, Some(20));
-        assert_eq!(config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1, "20");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-cold.threshold")).unwrap()[0].1,
+            "20"
+        );
 
         config_set(&mut cfg, "reconnect-cold.backoff", "1800", false).unwrap();
         assert_eq!(cfg.reconnect_cold.backoff_secs, Some(1800));
-        assert_eq!(config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1, "1800");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-cold.backoff")).unwrap()[0].1,
+            "1800"
+        );
 
         // Empty resets to default (None).
         config_set(&mut cfg, "reconnect-cold.threshold", "", false).unwrap();
@@ -796,16 +877,28 @@ mod tests {
     #[test]
     fn config_set_get_reconnect_frozen() {
         let mut cfg = AppConfig::default();
-        assert_eq!(config_get(&cfg, Some("reconnect-frozen.threshold")).unwrap()[0].1, "<default>");
-        assert_eq!(config_get(&cfg, Some("reconnect-frozen.backoff")).unwrap()[0].1, "<default>");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-frozen.threshold")).unwrap()[0].1,
+            "<default>"
+        );
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-frozen.backoff")).unwrap()[0].1,
+            "<default>"
+        );
 
         config_set(&mut cfg, "reconnect-frozen.threshold", "200", false).unwrap();
         assert_eq!(cfg.reconnect_frozen.threshold, Some(200));
-        assert_eq!(config_get(&cfg, Some("reconnect-frozen.threshold")).unwrap()[0].1, "200");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-frozen.threshold")).unwrap()[0].1,
+            "200"
+        );
 
         config_set(&mut cfg, "reconnect-frozen.backoff", "43200", false).unwrap();
         assert_eq!(cfg.reconnect_frozen.backoff_secs, Some(43200));
-        assert_eq!(config_get(&cfg, Some("reconnect-frozen.backoff")).unwrap()[0].1, "43200");
+        assert_eq!(
+            config_get(&cfg, Some("reconnect-frozen.backoff")).unwrap()[0].1,
+            "43200"
+        );
 
         // Empty resets to default (None).
         config_set(&mut cfg, "reconnect-frozen.threshold", "", false).unwrap();
@@ -841,7 +934,10 @@ mod tests {
         // Set a CIDR (stored raw, even distinct from default).
         config_set(&mut cfg, "subnet", "10.99.0.0/16", false).unwrap();
         assert_eq!(cfg.subnet, Some((Ipv4Addr::new(10, 99, 0, 0), 16)));
-        assert_eq!(config_get(&cfg, Some("subnet")).unwrap()[0].1, "10.99.0.0/16");
+        assert_eq!(
+            config_get(&cfg, Some("subnet")).unwrap()[0].1,
+            "10.99.0.0/16"
+        );
         // Empty resets to default (None).
         config_set(&mut cfg, "subnet", "", false).unwrap();
         assert_eq!(cfg.subnet, None);
@@ -866,7 +962,10 @@ mod tests {
 
         config_set(&mut cfg, "nuke-proposal-ttl", "12h", false).unwrap();
         assert_eq!(cfg.nuke_proposal_ttl, Some(12 * 3600));
-        assert_eq!(config_get(&cfg, Some("nuke-proposal-ttl")).unwrap()[0].1, "43200");
+        assert_eq!(
+            config_get(&cfg, Some("nuke-proposal-ttl")).unwrap()[0].1,
+            "43200"
+        );
 
         config_set(&mut cfg, "listen-port", "51820", false).unwrap();
         assert_eq!(cfg.listen_port, Some(51820));
