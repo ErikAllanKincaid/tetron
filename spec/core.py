@@ -1386,6 +1386,86 @@ class InviteKeyIntent(UserStory):
 
 
 # --------------------------------------------------------------------------
+# CONFIG-CACHE-001: stop re-reading and re-parsing the config tree on every
+# status request
+# --------------------------------------------------------------------------
+
+class ConfigLoadIsCached(Requirement):
+    """REQUIREMENT-ID: CONFIG-CACHE-001
+
+    `config::load()` re-reads and re-parses the entire on-disk config tree
+    from scratch on every call, and it is called from request-handling
+    paths. Found 2026-08-16 while tracing why `xps-17-9720` accumulates
+    memory and `aorus` does not.
+
+    **The measured cost.** `MeshManager::status()` calls `config::load()`
+    twice per request: once directly (to collect `direct` network names)
+    and once more inside `network_status()` per network (for
+    `nuke_proposal_ttl`). Each `load()` runs `migrate_legacy`, reads and
+    TOML-parses `settings.toml`, `read_dir`s `networks/`, then reads and
+    TOML-parses every `networks/*.toml`. With one network that is roughly
+    **four file reads and four TOML parses per status request**.
+
+    `tetron-systray` polls `IpcMessage::Status` every 8 seconds
+    unconditionally (`POLL_INTERVAL`, `tetron-systray/src/main.rs`) --
+    450 requests/hour, so **~1,800 file reads and ~1,800 TOML parses per
+    hour**, forever, on any machine with a tray icon. It does not matter
+    whether anyone is looking at the tray; the poll is unconditional.
+    `tetron-webui`'s browser client polls `/api/status` every 10s but only
+    while a tab is actually open, so it is a real but conditional second
+    source.
+
+    Nothing about this work is necessary: the config changes rarely, and
+    the daemon re-derives an identical `AppConfig` every time.
+
+    **Design: validate against the filesystem, do not expire on a timer.**
+    A process-global cache holds the last parsed `AppConfig` alongside a
+    *fingerprint* of the files it came from -- `settings.toml`'s
+    (mtime, len), the `networks/` directory's mtime, and each
+    `networks/*.toml`'s (name, mtime, len). A call re-`stat`s those and
+    returns the cached value when the fingerprint matches, reloading fully
+    when it does not. On a hit that is 2+N stats instead of 2+N reads plus
+    as many TOML parses.
+
+    A TTL was considered and rejected: the dominant caller polls on a
+    fixed 8-second cadence, so any TTL short enough to bound staleness
+    usefully would be missed by every single poll, and any TTL long enough
+    to be hit would introduce a staleness window for no additional
+    benefit. Filesystem validation has **no staleness window at all**,
+    which matters because `tetron config set`, `join`, and `leave` all
+    write the tree from a *different process* than the running daemon.
+    That is also why explicit in-process invalidation is not sufficient on
+    its own.
+
+    The directory mtime is what catches a network being added or removed
+    (an atomic rename into `networks/` updates it), so the hot path never
+    needs a `read_dir` -- the cached entry already names the files to
+    stat, and a changed directory mtime forces the full reload that
+    re-enumerates them.
+
+    **Scope.** The cache lives inside `config::load()` so every caller
+    benefits (`status`, `node_subnet`, the nuke-TTL lookup, and any future
+    one) rather than only the paths noticed today. `migrate_legacy` runs on
+    the miss path, preserving its existing once-at-startup effect; it is
+    idempotent, so skipping it on a hit changes nothing. Callers that
+    mutate config are unaffected -- their writes change the files, which
+    changes the fingerprint, which invalidates the cache on the next read.
+
+    This is a performance fix, correct on its own merits and worth making
+    regardless of what the concurrent memory-leak investigation concludes.
+    It deliberately does **not** change what `status()` returns, and does
+    not address the separate and larger question of whether `Status`
+    should compute full per-path `ConnectionInfo` (iroh path enumeration
+    plus `stats()` per path, per peer) to answer a caller that only needs
+    one connected/not-connected bit -- see the systray-cost discussion for
+    that, which requires a wire-format decision this requirement does not
+    make.
+    """
+
+    req_id = "CONFIG-CACHE-001"
+
+
+# --------------------------------------------------------------------------
 # Laptop fleet: making tetron work without an always-on member
 #
 # The three laptop fleet changes (CACHE-001, BLOB-001, COORD-001) let a
