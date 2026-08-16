@@ -7,18 +7,20 @@
 # this repo first is not required.
 #
 # Usage:
-#   ./install-tetron-suite.sh [--check] [--yes-core] [--musl]
+#   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
 #       [--core-only | --install-webui] [--install-systray] [--install-hosts]
 #       [--install-backup] [--install-all]
 #
 #   --check           report installed vs. latest versions only, change nothing
-#   --yes-core        allow `core` (and `backup`) to be upgraded without an
-#                      interactive confirmation prompt (needed for a
-#                      non-interactive/scripted upgrade; upgrading core
-#                      needs sudo and briefly disconnects every peer on
-#                      this host while the daemon restarts). Not needed
-#                      for a *fresh* install of core/backup -- nothing is
-#                      running yet, so there is nothing to disrupt.
+#   --no-core         leave `core` alone -- upgrade/install only the addons.
+#                      Upgrading core needs sudo and briefly disconnects
+#                      every peer on this host while the daemon restarts.
+#                      That happens *by default* (it is the whole point of
+#                      running this script); this flag is the opt-out.
+#   --yes-core        accepted and ignored. Kept so existing scripts and
+#                      documented command lines keep working -- core no
+#                      longer has to be opted in to, so there is nothing
+#                      left for this flag to permit.
 #   --musl            force the statically-linked musl `core` build regardless
 #                      of host detection (core only -- webui/systray/hosts/
 #                      backup have no musl variant). Auto-selected without
@@ -48,7 +50,9 @@
 #   not the keyboard, but /dev/tty reaches the controlling terminal
 #   directly regardless (same trick rustup/Homebrew's installers use):
 #     - no controlling terminal at all (cron, CI, a container run without
-#       -it): behaves as --core-only, since there is nothing to prompt.
+#       -it): installs core and upgrades every component already present
+#       on the host, since there is nothing to prompt. It does not add
+#       addons that are not installed yet -- that would be guessing.
 #     - a controlling terminal is reachable: detects a display
 #       ($DISPLAY/$WAYLAND_DISPLAY) and prints the resulting default
 #       (core alone if headless; core+webui+systray with a display), then
@@ -63,7 +67,15 @@
 #       /dev/tty, so it prompts normally too in this same pass.
 #
 #   It is called "install", not "upgrade" -- a selected component missing
-#   on this host is installed, not silently skipped.
+#   on this host is installed, not silently skipped. The mirror rule holds
+#   too, and matters more in practice: a component that is *already*
+#   installed here is always upgraded, whatever the selection logic above
+#   picked. The default set decides what gets newly installed; it never
+#   decides what gets left stale. Without this, a headless host (default
+#   set: core alone) would keep an installed webui at an old version
+#   forever, and every addon speaks tetron-proto to the core daemon, so
+#   drifting versions apart is exactly what breaks. --core-only,
+#   --no-core, and an addon explicitly declined at the picker still win.
 #
 #   backup is a script, not a versioned binary: it fetches
 #   contrib/tetron-backup.sh from the tetron repo's main branch (no
@@ -94,7 +106,7 @@ require_cmd() {
 require_cmd curl install
 
 CHECK_ONLY=0
-YES_CORE=0
+NO_CORE=0
 MUSL_OVERRIDE=0
 CORE_ONLY=0
 INSTALL_WEBUI=0
@@ -107,7 +119,13 @@ SELECTION_FLAG_GIVEN=0
 for arg in "$@"; do
 	case "$arg" in
 	--check) CHECK_ONLY=1 ;;
-	--yes-core) YES_CORE=1 ;;
+	# Accepted and ignored: upgrading core is the default now, so there is
+	# nothing left to permit. Still parsed (rather than rejected by the
+	# catch-all below) so existing cron entries, CI jobs, and copies of the
+	# old documented command line keep running instead of dying on an
+	# "unrecognized argument".
+	--yes-core) ;;
+	--no-core) NO_CORE=1 ;;
 	--musl) MUSL_OVERRIDE=1 ;;
 	--core-only) CORE_ONLY=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-webui) INSTALL_WEBUI=1; SELECTION_FLAG_GIVEN=1 ;;
@@ -116,7 +134,7 @@ for arg in "$@"; do
 	--install-backup) INSTALL_BACKUP=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-all) INSTALL_ALL=1; SELECTION_FLAG_GIVEN=1 ;;
 	-h | --help)
-		sed -n '2,72p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,84p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
@@ -125,6 +143,21 @@ done
 
 [ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
 	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-backup/--install-all"
+
+# --core-only says "core and nothing else"; --no-core says "everything
+# except core". Together they select nothing at all, which is always a
+# mistake rather than a no-op worth honouring silently.
+[ "$CORE_ONLY" -eq 1 ] && [ "$NO_CORE" -eq 1 ] \
+	&& fatal "--core-only and --no-core are contradictory -- they select nothing"
+
+# in_list <needle> <space-separated haystack>: membership test used for the
+# selection bookkeeping below. A plain string rather than a bash array so
+# it stays safe when empty under `set -u` on bash 3.2, which is what macOS
+# still ships as /bin/bash.
+in_list() {
+	case " $2 " in *" $1 "*) return 0 ;; esac
+	return 1
+}
 
 # host_has_display: true if a display server is reachable -- systray can
 # never function without one, and webui defaults follow it too (a remote
@@ -145,6 +178,27 @@ host_has_display() {
 have_tty() {
 	{ : < /dev/tty; } 2>/dev/null
 }
+
+# Defined up here, ahead of the selection logic, rather than down in the
+# per-component config section with its siblings: the "already installed
+# is always upgraded" rule below has to consult it while building the
+# component set, and bash resolves function names at call time, so the
+# definition has to precede the first call.
+component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; backup) echo tetron-backup.sh ;; esac; }
+
+# True when this component's binary is already on this host. Uses PATH
+# rather than the default install dir so a copy installed somewhere
+# nonstandard still counts as installed -- the same reasoning, and the
+# same lookup, as component_dest() further down.
+component_installed() {
+	command -v "$(component_binary "$1")" >/dev/null 2>&1
+}
+
+# Addons explicitly turned down at the interactive picker. They are held
+# back from the "already installed is always upgraded" sweep below --
+# answering "no" to a component has to mean no, even for one that is
+# already present.
+DECLINED=""
 
 COMPONENTS=(core)
 if [ "$INSTALL_ALL" -eq 1 ]; then
@@ -193,8 +247,14 @@ else
 		}
 		webui_default=0; systray_default=0
 		host_has_display && { webui_default=1; systray_default=1; }
-		ask_addon webui "$webui_default" && COMPONENTS+=(webui)
-		ask_addon systray "$systray_default" && COMPONENTS+=(systray)
+		# An addon already installed here is being *upgraded*, not
+		# installed, so it is pre-answered "yes" no matter what the
+		# display heuristic says -- declining an upgrade is still
+		# possible, but it should take a deliberate "n".
+		component_installed webui && webui_default=1
+		component_installed systray && systray_default=1
+		ask_addon webui "$webui_default" && COMPONENTS+=(webui) || DECLINED="$DECLINED webui"
+		ask_addon systray "$systray_default" && COMPONENTS+=(systray) || DECLINED="$DECLINED systray"
 		# hosts registers a new root-level scheduled system service (not
 		# purely additive the way webui/systray's own per-user services
 		# are), so -- like backup -- it defaults to "N" here regardless of
@@ -202,9 +262,49 @@ else
 		# (run automatically below, same as every component) has its own
 		# further wizard for which networks to sync and whether to
 		# schedule automatic runs.
-		ask_addon hosts 0 && COMPONENTS+=(hosts)
-		ask_addon backup 0 && COMPONENTS+=(backup)
+		hosts_default=0; backup_default=0
+		component_installed hosts && hosts_default=1
+		component_installed backup && backup_default=1
+		ask_addon hosts "$hosts_default" && COMPONENTS+=(hosts) || DECLINED="$DECLINED hosts"
+		ask_addon backup "$backup_default" && COMPONENTS+=(backup) || DECLINED="$DECLINED backup"
 	fi
+fi
+
+# Already installed on this host => always upgraded, whatever the block
+# above selected. The selection logic exists to decide what to *add* to a
+# machine; letting it also decide what to leave stale is what produced the
+# live report this fixes (2026-08-16): the documented `curl | bash`
+# one-liner refreshed the addons and quietly left core behind, so a
+# freshly upgraded webui/systray ended up talking tetron-proto to an old
+# daemon -- precisely the version skew the matched-release discipline
+# exists to prevent.
+#
+# --check is included deliberately: reporting the version of something
+# installed but unselected is exactly what a status check is for.
+if [ "$CORE_ONLY" -ne 1 ]; then
+	for comp in core webui systray hosts backup; do
+		component_installed "$comp" || continue
+		in_list "$comp" "$DECLINED" && continue
+		in_list "$comp" "${COMPONENTS[*]}" && continue
+		COMPONENTS+=("$comp")
+		log_info "$comp: already installed -- including it so it is not left stale"
+	done
+fi
+
+# --no-core: drop core back out, after the sweep above would have re-added
+# it. Rebuilds the array rather than unsetting an index, which would leave
+# a sparse array behind.
+if [ "$NO_CORE" -eq 1 ]; then
+	KEPT=()
+	for comp in "${COMPONENTS[@]}"; do
+		[ "$comp" = "core" ] || KEPT+=("$comp")
+	done
+	if [ "${#KEPT[@]}" -eq 0 ]; then
+		log_warn "--no-core leaves nothing to do (no addons selected or installed)"
+		exit 0
+	fi
+	COMPONENTS=("${KEPT[@]}")
+	log_info "--no-core: skipping core"
 fi
 
 # --- platform detection, same suffixes tetron-webui's addons.rs::asset_suffix() uses ---
@@ -267,7 +367,8 @@ musl_reason() {
 }
 
 # --- per-component config ---
-component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; backup) echo tetron-backup.sh ;; esac; }
+# component_binary() / component_installed() are defined further up, ahead
+# of the component-selection logic that has to call them.
 component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
 # All five components install to the same root-owned /usr/local/bin and
 # need sudo -- webui/systray run as per-user services (systemd --user /
@@ -350,19 +451,29 @@ verify_checksum() {
 # tier (component_service_needs_sudo).
 confirm_sudo_install() {
 	local comp="$1" is_upgrade="$2" reply
-	[ "$YES_CORE" -eq 1 ] && return 0
 	if [ "$is_upgrade" -eq 0 ] || [ "$comp" != "core" ]; then
 		have_tty || return 0
 		read -r -p "$([ "$is_upgrade" -eq 1 ] && echo Upgrade || echo Install) $comp now? This needs sudo. [Y/n] " reply < /dev/tty
 		[[ "$reply" =~ ^[Nn]$ ]] && return 1
 		return 0
 	fi
+	# Upgrading an installed core: still the one genuinely disruptive step
+	# here, so the prompt spells out what it costs -- but it now defaults
+	# to yes like every other prompt in this script, and a bare Enter
+	# accepts it. It used to be [y/N], which read as a safe default and
+	# was anything but: the preceding "Use defaults? [Y/n]" trains Enter,
+	# so Enter here silently declined the single most important component,
+	# and the run still exited 0 with a row of green addon lines. That is
+	# how a fleet ends up on freshly upgraded addons over a stale daemon
+	# (reported live 2026-08-16). --no-core is the way to skip it now, and
+	# saying so out loud beats inferring it from a keystroke.
 	if ! have_tty; then
-		log_warn "$comp needs --yes-core to upgrade non-interactively -- skipping $comp"
-		return 1
+		log_warn "$comp: upgrading without a terminal to confirm at -- every peer on this host drops briefly while the daemon restarts (pass --no-core to skip core)"
+		return 0
 	fi
-	read -r -p "Upgrade $comp now? This needs sudo and briefly disconnects every peer on this host. [y/N] " reply < /dev/tty
-	[[ "$reply" =~ ^[Yy]$ ]]
+	read -r -p "Upgrade $comp now? This needs sudo and briefly disconnects every peer on this host. [Y/n] " reply < /dev/tty
+	[[ "$reply" =~ ^[Nn]$ ]] && return 1
+	return 0
 }
 
 install_component() {
@@ -426,6 +537,11 @@ install_backup() {
 }
 
 any_failed=0
+# Components that were selected but deliberately not installed (declined
+# at a prompt, or skipped by --no-core). Surfaced in the closing summary:
+# the failure this script was reported for was silent, so "nothing was
+# said" must never again mean "nothing was skipped".
+skipped=""
 for comp in "${COMPONENTS[@]}"; do
 	dest="$(component_dest "$comp")"
 
@@ -438,7 +554,7 @@ for comp in "${COMPONENTS[@]}"; do
 		else
 			log_info "$comp: not installed"
 			[ "$CHECK_ONLY" -eq 1 ] && continue
-			confirm_sudo_install "$comp" 0 || continue
+			confirm_sudo_install "$comp" 0 || { skipped="$skipped $comp"; continue; }
 			install_backup "$comp" "$dest" || any_failed=1
 		fi
 		continue
@@ -472,10 +588,22 @@ for comp in "${COMPONENTS[@]}"; do
 	if [ "$(component_needs_sudo "$comp")" -eq 1 ]; then
 		is_upgrade=0
 		[ -n "$current" ] && is_upgrade=1
-		confirm_sudo_install "$comp" "$is_upgrade" || continue
+		confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
 	fi
 
 	install_component "$comp" "$dest" "$asset" || any_failed=1
 done
+
+# Say plainly what did not happen. A skipped core is called out on its own
+# line because it is the case that actually breaks a host: every addon
+# speaks tetron-proto to the core daemon, so leaving core behind while the
+# addons move forward is how versions drift apart.
+if [ -n "$skipped" ]; then
+	log_warn "not installed/upgraded:$skipped"
+	if in_list core "$skipped"; then
+		log_warn "core was NOT upgraded -- the daemon is still on the version it was already running"
+		log_warn "addons talk tetron-proto to the core daemon, so leaving core behind risks version skew; re-run and accept the core prompt to finish the upgrade"
+	fi
+fi
 
 exit "$any_failed"

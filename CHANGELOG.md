@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`contrib/install-tetron-suite.sh` now upgrades core by default instead of silently leaving it behind** (`ADDONS-SUITE-004`). Reported from a real fleet upgrade: the documented `curl ... | bash` one-liner refreshed the addons, skipped the core daemon, and reported success — leaving a freshly upgraded `tetron-webui`/`tetron-systray` talking `tetron-proto` to an old daemon, which is the version skew that matched releases exist to prevent. Three causes, all fixed. The confirmation prompt for upgrading an installed core was `[y/N]`, so a bare Enter *declined* it — and the prompt immediately before it (`Use defaults? [Y/n]`) trains you to press Enter, so the most important component was the one most easily skipped by muscle memory, silently, with the run still exiting `0`. It is now `[Y/n]` like every other prompt in the script; an explicit `n` still declines. With no controlling terminal (cron, CI, a container without `-it`) core used to be skipped outright unless `--yes-core` was passed; it now upgrades, logging one warning that peers will briefly drop. And a component already installed on the host is now always upgraded even when it falls outside the computed default set — previously a headless machine (default set: core alone) would never upgrade an installed `tetron-webui`, silently, forever. Anything skipped is now listed in a closing summary, with a skipped core calling out the consequence by name.
+- **New `--no-core` flag** for `install-tetron-suite.sh`: the supported way to say "addons only", replacing the old behavior where declining core was inferred from a keystroke. `--yes-core` is still accepted and now does nothing, so existing cron entries, CI jobs, and copies of the previously documented command line keep working rather than failing on an unrecognized argument. `--core-only` combined with `--no-core` is a usage error, since between them they select nothing.
+
 ## [0.11.0] - 2026-08-15
 
 ### Added
