@@ -447,6 +447,14 @@ pub struct MeshManager {
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
+    /// STATUS-CACHE-001: cached per-network/per-peer status, so answering
+    /// `IpcMessage::Status` does not walk iroh's path machinery
+    /// (`conn.paths()` + `p.stats()` per path per peer) once per request.
+    /// Rebuilt lazily on read when older than `status-cache.interval`, and
+    /// dropped outright by any mutating IPC, so its age is only ever visible
+    /// when nothing has actually changed. The scalar counters are NOT cached
+    /// here -- they are atomic reads and stay live on every request.
+    status_snapshot: std::sync::RwLock<Option<mesh::diagnostics::StatusSnapshot>>,
     /// Daemon-wide shared rate-limit gate (HARDEN-004), built once at
     /// bootstrap from config and cloned into every network's [`MeshCtx`].
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
@@ -1017,6 +1025,13 @@ impl MeshManager {
         if let Some(denied) = Self::check_authorized(&req, peer_cred) {
             return denied;
         }
+        // STATUS-CACHE-001: drop the cached snapshot for anything that is not
+        // a read-only query, so a UI is never stale straight after an action
+        // the user just took. Checked here rather than inside each mutator so
+        // a message added later cannot silently forget to do it.
+        if mesh::diagnostics::invalidates_status_snapshot(&req) {
+            self.invalidate_status_snapshot();
+        }
         match req {
             IpcMessage::Create {
                 mode,
@@ -1069,9 +1084,7 @@ impl MeshManager {
                 )
                 .await
             }
-            IpcMessage::Leave { network, force } => {
-                self.leave_network(&network, force).await
-            }
+            IpcMessage::Leave { network, force } => self.leave_network(&network, force).await,
             IpcMessage::Nuke {
                 network_key,
                 force,
@@ -1477,10 +1490,7 @@ mod accept_handler_tests {
         use ipc::ConnType::*;
         // Nothing to explain -- the report already says Direct.
         let classes = [(Direct, true, true, true)];
-        assert_eq!(
-            super::classify_via_detail(&classes, &Direct),
-            None
-        );
+        assert_eq!(super::classify_via_detail(&classes, &Direct), None);
     }
 
     #[test]
@@ -1577,10 +1587,8 @@ mod accept_handler_tests {
         // as a "Direct" candidate. Must be excluded even though it isn't
         // inside the *currently queried* network's own subnet -- that's
         // exactly what PATHBLEED-STATUS-003's first cut got wrong.
-        let addr = iroh::TransportAddr::Ip(SocketAddr::new(
-            Ipv4Addr::new(10, 88, 1, 147).into(),
-            43737,
-        ));
+        let addr =
+            iroh::TransportAddr::Ip(SocketAddr::new(Ipv4Addr::new(10, 88, 1, 147).into(), 43737));
         let managed_subnets = [
             (Ipv4Addr::new(10, 88, 0, 0), 24), // the network being queried
             (Ipv4Addr::new(10, 88, 1, 0), 24), // a different managed network -- the bleed source
@@ -1613,9 +1621,7 @@ mod accept_handler_tests {
     fn classify_candidate_addr_relay_bypasses_subnet_check_entirely() {
         // Regression check: Relay is trusted unconditionally, before the
         // subnet check ever runs -- unaffected by the correction.
-        let addr = iroh::TransportAddr::Relay(
-            "https://relay.example.com".parse().unwrap(),
-        );
+        let addr = iroh::TransportAddr::Relay("https://relay.example.com".parse().unwrap());
         assert_eq!(
             super::classify_candidate_addr(&addr, &[], &[]),
             (ipc::ConnType::Relay, true)
@@ -1646,7 +1652,10 @@ mod accept_handler_tests {
             super::find_subnet_collision((Ipv4Addr::new(10, 88, 1, 0), 24), &existing),
             None
         );
-        assert_eq!(super::find_subnet_collision((Ipv4Addr::new(10, 88, 0, 0), 24), &[]), None);
+        assert_eq!(
+            super::find_subnet_collision((Ipv4Addr::new(10, 88, 0, 0), 24), &[]),
+            None
+        );
     }
 
     #[test]
@@ -2008,7 +2017,6 @@ mod reconnect_tests {
         assert_eq!(backoff_cap(1_000_000, 10, 154, warm, cold, frozen), frozen);
     }
 
-
     #[test]
     fn doubling_climbs_to_cold_cap_without_cliff() {
         // After escalation, next_backoff keeps doubling from wherever the
@@ -2218,8 +2226,7 @@ mod headless_tests {
         {
             let net_secret = SecretKey::from_bytes(&[9u8; 32]);
             let (placeholder_tx, _placeholder_rx) = mpsc::channel::<Bytes>(1);
-            let (disconnect_tx, _disconnect_rx) =
-                mpsc::channel::<forward::DisconnectEvent>(1);
+            let (disconnect_tx, _disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(1);
             daemon.networks.insert(
                 NET.to_string(),
                 NetworkHandle {
@@ -2240,7 +2247,8 @@ mod headless_tests {
                         reusable_keys: BTreeMap::new(),
                         invites: BTreeMap::new(),
                         nuke_proposals: BTreeMap::new(),
-                        nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+                        nuke_consensus_threshold:
+                            crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
                     poller_notify: Arc::new(Notify::new()),
@@ -2297,7 +2305,12 @@ mod headless_tests {
                 writer1,
             )
             .await;
-        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
+        daemon
+            .networks
+            .get(NET)
+            .unwrap()
+            .active
+            .store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-1").await;
         assert!(
@@ -2320,7 +2333,12 @@ mod headless_tests {
                 writer2,
             )
             .await;
-        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
+        daemon
+            .networks
+            .get(NET)
+            .unwrap()
+            .active
+            .store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-2").await;
         assert!(
@@ -2345,7 +2363,12 @@ mod headless_tests {
                 writer3,
             )
             .await;
-        daemon.networks.get(NET).unwrap().active.store(true, Ordering::SeqCst);
+        daemon
+            .networks
+            .get(NET)
+            .unwrap()
+            .active
+            .store(true, Ordering::SeqCst);
 
         send_pkt(&daemon, b"packet-3").await;
         assert!(
@@ -2410,7 +2433,8 @@ mod headless_tests {
                         reusable_keys: BTreeMap::new(),
                         invites: BTreeMap::new(),
                         nuke_proposals: BTreeMap::new(),
-                        nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+                        nuke_consensus_threshold:
+                            crate::membership::default_nuke_consensus_threshold(),
                     })),
                     dht_notify: None,
                     poller_notify: Arc::new(Notify::new()),
@@ -2647,7 +2671,10 @@ mod headless_tests {
         assert!(config::load_network(NET).unwrap().is_some());
 
         let resp = daemon.leave_network(NET, false).await;
-        assert!(matches!(resp, IpcMessage::Ok { .. }), "expected Ok, got {resp:?}");
+        assert!(
+            matches!(resp, IpcMessage::Ok { .. }),
+            "expected Ok, got {resp:?}"
+        );
         assert!(
             config::load_network(NET).unwrap().is_none(),
             "the stuck config entry must actually be removed"
@@ -2669,7 +2696,10 @@ mod headless_tests {
             .expect("build_headless should succeed");
 
         let resp = daemon.leave_network("no-such-network", false).await;
-        assert!(matches!(resp, IpcMessage::Error { .. }), "expected Error, got {resp:?}");
+        assert!(
+            matches!(resp, IpcMessage::Error { .. }),
+            "expected Error, got {resp:?}"
+        );
     }
 
     /// STATUS-004: hostname resolution (`admin add`, etc.) must be
@@ -2763,6 +2793,72 @@ mod headless_tests {
         );
     }
 
+    /// STATUS-CACHE-001: `status()` populates the snapshot, a read-only
+    /// query leaves it in place, and `Sync` drops it -- which is what makes
+    /// tetron-webui's existing per-network `sync` button work as a manual
+    /// status refresh without any new wire message.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn status_snapshot_is_populated_and_invalidated() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+
+        let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
+            .await
+            .expect("build_headless should not hang")
+            .expect("build_headless should succeed");
+
+        let snapshot_present = || daemon.status_snapshot.read().unwrap().is_some();
+
+        assert!(!snapshot_present(), "no snapshot before the first status");
+
+        let _ = daemon.status();
+        assert!(
+            snapshot_present(),
+            "status() must populate the snapshot so the next read is free"
+        );
+
+        let _ = daemon.handle_request(IpcMessage::Status, None).await;
+        assert!(
+            snapshot_present(),
+            "a read-only Status query must not invalidate the snapshot -- \
+             clients polling must never force the daemon to rebuild"
+        );
+
+        let _ = daemon
+            .handle_request(IpcMessage::Sync { network: None }, None)
+            .await;
+        assert!(
+            !snapshot_present(),
+            "Sync must invalidate, so the existing webui button forces freshness"
+        );
+
+        // A mutation the caller is not authorized for must NOT invalidate:
+        // it changed nothing, so throwing away a good snapshot would just be
+        // a free denial-of-service against the cache. `None` creds are not
+        // root, so this Standby is rejected before it reaches the handler.
+        let _ = daemon.status();
+        assert!(snapshot_present());
+        let _ = daemon
+            .handle_request(IpcMessage::Standby { network: None }, None)
+            .await;
+        assert!(
+            snapshot_present(),
+            "a denied request changed nothing and must leave the snapshot alone"
+        );
+
+        // An authorized mutation does invalidate, so the UI is never stale
+        // right after something the user just did.
+        let _ = daemon
+            .handle_request(IpcMessage::Standby { network: None }, Some((0, 0)))
+            .await;
+        assert!(
+            !snapshot_present(),
+            "an authorized mutating message must invalidate the snapshot"
+        );
+    }
+
     /// SYNC-001: `sync_now` wakes the targeted network's poller (observable
     /// as a pending permit on its `poller_notify`) and errors cleanly on an
     /// unknown network name rather than silently no-op-ing.
@@ -2825,7 +2921,10 @@ mod headless_tests {
         );
 
         let resp = daemon.sync_now(Some(NET));
-        assert!(matches!(resp, IpcMessage::Ok { .. }), "expected Ok, got {resp:?}");
+        assert!(
+            matches!(resp, IpcMessage::Ok { .. }),
+            "expected Ok, got {resp:?}"
+        );
 
         // notify_one() left a permit that the next `.notified()` consumes
         // immediately, without needing a real waiting poller task.
@@ -2836,7 +2935,10 @@ mod headless_tests {
         );
 
         // An unknown network name errors rather than silently no-op-ing.
-        assert!(matches!(daemon.sync_now(Some("no-such-net")), IpcMessage::Error { .. }));
+        assert!(matches!(
+            daemon.sync_now(Some("no-such-net")),
+            IpcMessage::Error { .. }
+        ));
 
         // Unscoped (`None`) targets every joined network without erroring.
         assert!(matches!(daemon.sync_now(None), IpcMessage::Ok { .. }));
@@ -2918,8 +3020,14 @@ mod headless_tests {
 
         // An unresolvable argument still fails cleanly for both, rather than
         // silently treating it as a (nonexistent) local name.
-        assert!(matches!(daemon.admin_list("no-such-net"), IpcMessage::Error { .. }));
-        assert!(matches!(daemon.invite_list("no-such-net"), IpcMessage::Error { .. }));
+        assert!(matches!(
+            daemon.admin_list("no-such-net"),
+            IpcMessage::Error { .. }
+        ));
+        assert!(matches!(
+            daemon.invite_list("no-such-net"),
+            IpcMessage::Error { .. }
+        ));
     }
 }
 

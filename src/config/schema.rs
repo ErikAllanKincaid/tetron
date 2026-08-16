@@ -278,6 +278,22 @@ pub struct ReconnectColdConfig {
 /// a hard stop was rejected. `None` means "use the compiled default". Set
 /// via `tetron config set reconnect-frozen.<key> <value>`; unset (or set
 /// to 0/empty) to return to the default.
+/// Status-snapshot cache overrides (STATUS-CACHE-001). Set via
+/// `tetron config set status-cache.<key> <value>`; unset (or set to 0) to
+/// return to the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StatusCacheConfig {
+    /// Minimum seconds between rebuilds of the cached per-peer connection
+    /// snapshot. Default 12. This is a *floor*, not a timer: the snapshot is
+    /// rebuilt lazily on read, so a daemon nobody is querying does no work at
+    /// all, while any number of polling clients cost at most one rebuild per
+    /// interval between them. Raising it cuts daemon work further at the cost
+    /// of older path/RTT/MTU figures; the traffic and drop counters are read
+    /// live on every request regardless and are never affected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReconnectFrozenConfig {
     /// Consecutive failed dial attempts against one peer before the backoff
@@ -345,6 +361,10 @@ pub struct AppConfig {
     /// See [`ReconnectFrozenConfig`].
     #[serde(default)]
     pub reconnect_frozen: ReconnectFrozenConfig,
+    /// Status-snapshot cache overrides (STATUS-CACHE-001). See
+    /// [`StatusCacheConfig`].
+    #[serde(default)]
+    pub status_cache: StatusCacheConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
@@ -546,10 +566,7 @@ mod tests {
         upsert_network(&mut config, updated.clone());
         assert_eq!(config.networks.len(), 1);
         assert_eq!(config.networks[0].group_mode, GroupMode::Open);
-        assert_eq!(
-            config.networks[0].my_ip,
-            Some(Ipv4Addr::new(10, 88, 10, 5))
-        );
+        assert_eq!(config.networks[0].my_ip, Some(Ipv4Addr::new(10, 88, 10, 5)));
     }
 
     #[test]

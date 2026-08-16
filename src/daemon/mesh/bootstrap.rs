@@ -227,6 +227,7 @@ async fn build_daemon(
         protocol_router: protocol_router.clone(),
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         pruned_peers: Arc::new(DashSet::new()),
+        status_snapshot: std::sync::RwLock::new(None),
         global_gate,
         active: active.clone(),
 
@@ -321,4 +322,3 @@ async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Res
     ipc::send(&mut framed, resp).await?;
     Ok(())
 }
-

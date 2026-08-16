@@ -1466,6 +1466,93 @@ class ConfigLoadIsCached(Requirement):
 
 
 # --------------------------------------------------------------------------
+# STATUS-CACHE-001: the daemon owns the status refresh rate, not its clients
+# --------------------------------------------------------------------------
+
+class StatusSnapshotIsDaemonPaced(Requirement):
+    """REQUIREMENT-ID: STATUS-CACHE-001
+
+    Answering `IpcMessage::Status` walks iroh's path machinery: for every
+    connected peer, `gather_conn_info` calls `conn.paths()` and then
+    `p.stats()` on each path, building a full `ConnectionInfo` with every
+    candidate's address, RTT, MTU, black-hole count and PLPMTUD probe
+    counters. That work is done on demand, once per request.
+
+    **The cost is set by the clients, which is the actual defect.**
+    `tetron-systray` polls every 8 seconds unconditionally -- 450
+    requests/hour whether or not the tray is ever opened -- and
+    `tetron-webui`'s browser client polls every 10 seconds for as long as
+    a tab is open, which USER reports is most of the time. Together that
+    is ~810 full traversals/hour, and it grows with every additional tab
+    or client. Meanwhile systray consumes exactly one bit of it per peer
+    (`connection.is_some()`), having discarded the counters, the version
+    and the endpoint id.
+
+    A daemon must not let uncoordinated UI clients dictate how much work
+    it does.
+
+    **Design, settled with USER 2026-08-16.** The daemon caches the
+    expensive part and chooses its own refresh rate:
+
+    1. **Only the per-peer `ConnectionInfo` is cached** -- the
+       `conn.paths()`/`p.stats()` traversal. The scalar counters
+       (`packets_rx/tx`, `bytes_rx/tx`, `drops`, `fragmented_*`) are plain
+       atomic reads and stay **live on every request**, so traffic and
+       drop numbers a dashboard actually watches are never stale, even
+       between refreshes.
+    2. **Lazy floor, not an eager timer.** The snapshot is rebuilt on
+       read, and only when older than the refresh interval. A headless
+       machine with no UI attached pays nothing at all; a machine with
+       five tabs open pays exactly what one with a single tab pays.
+       Chosen over a fixed timer specifically because most peers in a real
+       fleet are headless, and an eager timer would tax the machines with
+       no UI to serve. A client can still *trigger* a rebuild, but can
+       never make it happen more often than the daemon allows.
+    3. **Invalidated immediately on mutation** -- join, leave, kick,
+       standby, resume, admin changes -- so the UI is never stale
+       following something the user just did. Without this the refresh
+       interval would be visible as a broken-looking UI after every
+       action.
+    4. **The existing `IpcMessage::Sync` also invalidates it.** Its
+       meaning is already "stop waiting for intervals, get current state
+       now", which is exactly the right semantics, and `tetron-webui`
+       already has a button wired to it. A scoped
+       `Sync { network: Some(..) }` invalidates the whole snapshot:
+       over-invalidating a cache is harmless and not worth the complexity
+       of tracking per-network entries.
+    5. **Refresh interval is a config knob with a sensible default**
+       (`status-cache.interval`, ~10-15s), matching how `path-flap`,
+       `reconnect-log`, `reconnect-cold` and `reconnect-frozen` are all
+       handled.
+
+    **No wire-format change, and no addon changes.** `Status` keeps its
+    exact shape and simply stops forcing a rebuild; `Sync` already
+    exists. `tetron-systray` needs no change whatsoever, and
+    `tetron-webui` needs none either -- its existing per-network `sync`
+    button gains fresh-status behavior for free. This was not the first
+    design considered: a new `StatusRefresh` variant was proposed to give
+    a UI a way to demand freshness, and was dropped once `Sync` turned
+    out to mean the same thing already. Avoiding the wire change also
+    avoids dragging addon version bumps along with a core minor.
+
+    **Relationship to `CONFIG-CACHE-001`.** They stack and are
+    independent. That one removes the filesystem work from the same
+    request path (~1,800 reads and parses/hour); this one removes the
+    iroh traversal. Neither subsumes the other.
+
+    Found while investigating why `xps-17-9720` accumulates memory while
+    `aorus` does not -- systray runs on xps and cannot run on headless
+    aorus, making this the one verified behavioral difference between the
+    two machines. This requirement is **not** justified by that
+    investigation and does not depend on its outcome: bounding daemon
+    work by daemon policy rather than by client behavior is correct
+    regardless of whether the traversal turns out to leak.
+    """
+
+    req_id = "STATUS-CACHE-001"
+
+
+# --------------------------------------------------------------------------
 # Laptop fleet: making tetron work without an always-on member
 #
 # The three laptop fleet changes (CACHE-001, BLOB-001, COORD-001) let a

@@ -14,7 +14,7 @@ mod admin;
 mod bootstrap;
 mod coordinator;
 mod create_join;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod invite_handler;
 mod join;
 mod publish;
