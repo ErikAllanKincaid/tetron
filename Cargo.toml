@@ -35,6 +35,14 @@ noq-udp = { path = "vendor/noq-udp-1.1.0" }
 # to `debug!` -- was drowning out real signal in the journal. See
 # vendor/noq-proto-1.1.0/PATCH.md.
 noq-proto = { path = "vendor/noq-proto-1.1.0" }
+# PATH-DIAG-008: local patch deduping `RemoteStateActor::pending_open_paths`
+# before push -- root cause of the OOM investigation's memory bursts. An
+# unbounded `VecDeque` multiplied by the live connection count every 333ms
+# under CID exhaustion, reaching 320 MB doublings within single-digit
+# seconds. See vendor/iroh-1.0.3/PATCH.md. Not yet live-verified; do not
+# add MemoryMax=/Restart=always containment to a host under test until it
+# is (see vendor/iroh-1.0.3/PATCH.md's status note for why).
+iroh = { path = "vendor/iroh-1.0.3" }
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add

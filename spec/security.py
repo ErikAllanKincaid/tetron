@@ -1616,3 +1616,89 @@ class SuppressSelfCandidatePathEvents(Requirement):
     upstream gap ever closes.
     """
     req_id = "PATH-DIAG-007"
+
+
+class VendoredIrohPendingOpenPathsDedupe(Requirement):
+    """REQUIREMENT-ID: PATH-DIAG-008
+
+    Root cause of the OOM/memory-burst investigation
+    (`DO-NOT-COMMIT/oom-leak-investigation/`), found 2026-08-16 on aorus by
+    a size-filtered `realloc` uprobe (six hits above 32 MB in 17 seconds,
+    every one the same stack), traced into the vendored dependency, not
+    guessed: `iroh-1.0.3/src/socket/remote_map/remote_state.rs`.
+
+    **Mechanism.** `RemoteStateActor::open_path_on_conn` (line ~1046), on
+    `PathError::RemoteCidsExhausted` / `PathError::MaxPathIdReached`,
+    unconditionally pushes the failing address onto `State::
+    pending_open_paths` (a plain `VecDeque<FourTuple>`, no dedup, no
+    bound) -- once per connection that fails on that address. A 333ms
+    timer then drains the whole queue and retries every popped address
+    against *every* live connection to that remote peer
+    (`open_path_on_all_conns`, line ~737), regardless of which connection
+    originally queued it. So one address failing on C connections queues
+    C identical copies; next tick, each of those C copies fans back out
+    to C connections again. The queue multiplies by C every 333ms for as
+    long as the failure condition holds -- geometric, not linear. C=1 is
+    a fixed point; C=8 (this investigation's 8-member test coordinators)
+    produced the observed 40 -> 80 -> 160 -> 320 MB doublings within
+    single-digit seconds. Full mechanism and evidence:
+    `DO-NOT-COMMIT/oom-leak-investigation/aorus-tracking/taskcensus/
+    ROOTCAUSE_IrohPendingOpenPaths_2026-08-16.md`.
+
+    **Fix, chosen over two alternatives considered** (push-once-per-address
+    via a restructured call site; bounding the queue with a fixed cap --
+    both recorded with reasons in `DO-NOT-COMMIT/oom-leak-investigation/
+    PLAN_VendoredIrohDedupePatch_ChoicesSequenceReasons_2026-08-17.md`):
+    a dedup guard immediately before the `push_back`, skipping the push
+    if `open_addr` is already queued. Chosen because it is the smallest
+    diff of the three (a single conditional at one call site, versus a
+    signature change at the restructure option, versus a cap that
+    saturates almost immediately under geometric growth and would still
+    let the burst happen, just clipped, while silently starving whichever
+    candidates get dropped past the cap) and because it loses no
+    information: `open_path_on_all_conns` already retries every distinct
+    candidate against every live connection unconditionally every tick,
+    so the duplicate queue entries the dedup removes never carried
+    distinct per-connection state to begin with.
+
+    **Vendoring, same precedent as `LOG-005`/`PORTABILITY-001`:** iroh is
+    not currently vendored (`Cargo.toml` pulls it straight from
+    crates.io). Vendored at the exact `Cargo.lock`-resolved version
+    (`vendor/iroh-1.0.3/`, `[patch.crates-io]` entry in `Cargo.toml`,
+    `vendor/iroh-1.0.3/PATCH.md` documents the diff and upstream-report
+    status). Not reported upstream to n0 yet at requirement-write time --
+    tracked as follow-up, since the maintenance cost of carrying this
+    patch across iroh's release cadence is strictly higher than the two
+    existing vendored patches' cadence.
+
+    **Explicitly out of scope for this requirement, sequenced
+    separately:** the "reduce local candidate addresses" mitigation
+    (binding the transport to a single address instead of `0.0.0.0`,
+    `transport.rs:64`) was considered and dropped -- it costs
+    multi-homing/NAT-traversal robustness for a probabilistic reduction in
+    trigger frequency that this patch's structural fix makes unnecessary
+    (reasons in the same `PLAN_VendoredIrohDedupePatch_...` doc). Tier A
+    containment (`MemoryMax=`/`Restart=always`, `IDEAS_OOM_
+    EmergencyMitigations_IfRootCauseNotFound_2026-08-16.md`) is not part
+    of this requirement and must not land before this patch is verified
+    on the deterministic repro harness with no memory cap active -- a cap
+    present during verification would make "the patch held" and "the
+    patch failed but the cap caught it" produce the same observable
+    restart, destroying the test's own signal.
+
+    **No tetron-owned code changes.** This requirement's only surface is
+    the vendored dependency source and the `Cargo.toml` patch entry --
+    there is no tetron-side function to unit-test (the same shape as
+    `LOG-005`'s `noq-proto` demotion, as distinct from that same
+    requirement's tetron-owned `reconnect_log_decision` half, which *did*
+    get a `PURE-LOGIC-001` unit test). Verification is the live repro
+    protocol recorded in the same plan doc: uncapped daemon, same
+    deterministic 8-member/45s-churn harness and `scheduling open_path`
+    trace-level counter and 5s burst watchdog that caught the original
+    burst, run past the 25-62 minute onset window observed pre-patch
+    across three coordinators, looking for a demonstrated plateau (queue
+    length and RSS flat while the underlying CID-exhaustion trace event
+    keeps firing) -- not merely "ran longer without dying."
+    """
+
+    req_id = "PATH-DIAG-008"
