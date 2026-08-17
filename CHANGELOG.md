@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-08-17
+
 ### Fixed
 
 - **Vendored a dependency patch closing the root cause of the memory-burst OOM investigation** (`PATH-DIAG-008`). `iroh-1.0.3`'s `RemoteStateActor::pending_open_paths` queue had no dedup and no bound: on connection-ID exhaustion, a failing path-open re-queued once per live connection, and the retry timer replayed every queued address against every connection on each tick, so the queue multiplied by the connection count every 333ms for as long as the failure condition held — the source of the multi-hundred-megabyte allocation bursts traced via a `realloc` uprobe during this investigation. Patched at `vendor/iroh-1.0.3/` (`vendor/iroh-1.0.3/PATCH.md`) with a dedup guard before the requeue, matching the existing `noq-proto`/`noq-udp` vendoring precedent. Live-verified: two coordinators, 8 members each, 4 hours of synchronized 45s-churn (well past the 25-62 minute onset window the unpatched burst previously showed), zero burst events on either arm despite the underlying trigger condition firing thousands of times.
