@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # install-tetron-suite.sh: install or upgrade tetron, tetron-webui,
-# tetron-systray, tetron-hosts, and tetron-backup.sh to their latest
-# GitHub releases in one pass. Idempotent -- a component already at the
-# latest release version is left untouched.
+# tetron-systray, tetron-hosts, tetron-sync-receiver, and tetron-backup.sh
+# to their latest GitHub releases in one pass. Idempotent -- a component
+# already at the latest release version is left untouched.
 # Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
 # this repo first is not required.
 #
 # Usage:
 #   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
 #       [--core-only | --install-webui] [--install-systray] [--install-hosts]
-#       [--install-backup] [--install-all]
+#       [--install-sync-receiver] [--install-backup] [--install-all]
 #
 #   --check           report installed vs. latest versions only, change nothing
 #   --no-core         leave `core` alone -- upgrade/install only the addons.
@@ -23,11 +23,12 @@
 #                      left for this flag to permit.
 #   --musl            force the statically-linked musl `core` build regardless
 #                      of host detection (core only -- webui/systray/hosts/
-#                      backup have no musl variant). Auto-selected without
-#                      this flag when the host is Alpine (`/etc/os-release`),
-#                      or when the already-installed `tetron` binary is
-#                      itself static, so an existing musl install upgrades
-#                      in place instead of silently flipping to glibc.
+#                      sync-receiver/backup have no musl variant). Auto-
+#                      selected without this flag when the host is Alpine
+#                      (`/etc/os-release`), or when the already-installed
+#                      `tetron` binary is itself static, so an existing musl
+#                      install upgrades in place instead of silently
+#                      flipping to glibc.
 #   --core-only        install/upgrade core only, no addons. Errors if
 #                      combined with any --install-* flag below.
 #   --install-webui    include webui (core is always included).
@@ -38,10 +39,18 @@
 #                      registers a new root-level scheduled system service
 #                      (a systemd timer, unlike webui/systray's per-user
 #                      services) rather than something purely additive.
+#   --install-sync-receiver  include sync-receiver (core is always
+#                      included) -- the tetron-mobile-sync home-side rsync
+#                      receiver. Like hosts/backup, never in the default
+#                      set -- opt-in only, since it's a specific product
+#                      feature (accepting phone photo-backup uploads), not
+#                      something every tetron install wants. Registers a
+#                      per-user service, same privilege tier as webui/
+#                      systray, not hosts' root-level one.
 #   --install-backup   include backup (core is always included). Unlike
 #                      webui/systray, backup is never in the default set --
 #                      opt-in only, via this flag or the interactive picker.
-#   --install-all      core + webui + systray + hosts + backup.
+#   --install-all      core + webui + systray + hosts + sync-receiver + backup.
 #
 #   With none of the above selection flags, the script picks components
 #   itself. Prompts (below) read from /dev/tty, not stdin, so the
@@ -58,8 +67,9 @@
 #       (core alone if headless; core+webui+systray with a display), then
 #       asks "Use defaults? [Y/n]" -- enter accepts it, "n" drops into a
 #       yes/no prompt per addon (each still pre-filled with the same
-#       display-aware default; hosts/backup default to "N" in this prompt
-#       regardless of display, matching their opt-in-only status above).
+#       display-aware default; hosts/sync-receiver/backup default to "N" in
+#       this prompt regardless of display, matching their opt-in-only
+#       status above).
 #       `tetron-hosts install` (run automatically as this script's last
 #       step for that component, same as every other component) has its
 #       own further interactive wizard -- which networks to sync and
@@ -112,6 +122,7 @@ CORE_ONLY=0
 INSTALL_WEBUI=0
 INSTALL_SYSTRAY=0
 INSTALL_HOSTS=0
+INSTALL_SYNC_RECEIVER=0
 INSTALL_BACKUP=0
 INSTALL_ALL=0
 SELECTION_FLAG_GIVEN=0
@@ -131,18 +142,19 @@ for arg in "$@"; do
 	--install-webui) INSTALL_WEBUI=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-systray) INSTALL_SYSTRAY=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-hosts) INSTALL_HOSTS=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-sync-receiver) INSTALL_SYNC_RECEIVER=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-backup) INSTALL_BACKUP=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-all) INSTALL_ALL=1; SELECTION_FLAG_GIVEN=1 ;;
 	-h | --help)
-		sed -n '2,84p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,94p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
 	esac
 done
 
-[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
-	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-backup/--install-all"
+[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
+	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-backup/--install-all"
 
 # --core-only says "core and nothing else"; --no-core says "everything
 # except core". Together they select nothing at all, which is always a
@@ -184,7 +196,7 @@ have_tty() {
 # is always upgraded" rule below has to consult it while building the
 # component set, and bash resolves function names at call time, so the
 # definition has to precede the first call.
-component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; backup) echo tetron-backup.sh ;; esac; }
+component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; backup) echo tetron-backup.sh ;; esac; }
 
 # True when this component's binary is already on this host. Uses PATH
 # rather than the default install dir so a copy installed somewhere
@@ -202,24 +214,26 @@ DECLINED=""
 
 COMPONENTS=(core)
 if [ "$INSTALL_ALL" -eq 1 ]; then
-	COMPONENTS=(core webui systray hosts backup)
+	COMPONENTS=(core webui systray hosts sync-receiver backup)
 elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 	[ "$CORE_ONLY" -eq 1 ] || {
 		[ "$INSTALL_WEBUI" -eq 1 ] && COMPONENTS+=(webui)
 		[ "$INSTALL_SYSTRAY" -eq 1 ] && COMPONENTS+=(systray)
 		[ "$INSTALL_HOSTS" -eq 1 ] && COMPONENTS+=(hosts)
+		[ "$INSTALL_SYNC_RECEIVER" -eq 1 ] && COMPONENTS+=(sync-receiver)
 		[ "$INSTALL_BACKUP" -eq 1 ] && COMPONENTS+=(backup)
 	}
 elif [ "$CHECK_ONLY" -eq 1 ]; then
 	# Read-only status check: use the display-aware default set with no
 	# prompt at all -- there is nothing to confirm before just reporting.
-	# hosts/backup are opt-in only (see below), so excluded here too.
+	# hosts/sync-receiver/backup are opt-in only (see below), so excluded
+	# here too.
 	host_has_display && COMPONENTS=(core webui systray)
 elif ! have_tty; then
 	# No controlling terminal at all (cron, CI, a container run without
 	# -it) -- nothing to prompt on. Default to core-only and tell the
 	# user how to get addons instead of guessing.
-	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-hosts/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
+	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
 else
 	if host_has_display; then
 		DEFAULT_COMPONENTS=(core webui systray)
@@ -257,15 +271,24 @@ else
 		ask_addon systray "$systray_default" && COMPONENTS+=(systray) || DECLINED="$DECLINED systray"
 		# hosts registers a new root-level scheduled system service (not
 		# purely additive the way webui/systray's own per-user services
-		# are), so -- like backup -- it defaults to "N" here regardless of
-		# display, opt-in only. tetron-hosts's own `install` subcommand
-		# (run automatically below, same as every component) has its own
-		# further wizard for which networks to sync and whether to
-		# schedule automatic runs.
-		hosts_default=0; backup_default=0
+		# are), so -- like sync-receiver/backup -- it defaults to "N"
+		# here regardless of display, opt-in only. tetron-hosts's own
+		# `install` subcommand (run automatically below, same as every
+		# component) has its own further wizard for which networks to
+		# sync and whether to schedule automatic runs.
+		#
+		# sync-receiver (tetron-mobile-sync's home-side rsync receiver)
+		# registers a per-user service like webui/systray, but still
+		# defaults to "N" regardless of display: it is a specific
+		# product feature (accepting phone photo-backup uploads), not
+		# something every tetron install wants, so it is opt-in only
+		# the same way hosts/backup are.
+		hosts_default=0; sync_receiver_default=0; backup_default=0
 		component_installed hosts && hosts_default=1
+		component_installed sync-receiver && sync_receiver_default=1
 		component_installed backup && backup_default=1
 		ask_addon hosts "$hosts_default" && COMPONENTS+=(hosts) || DECLINED="$DECLINED hosts"
+		ask_addon sync-receiver "$sync_receiver_default" && COMPONENTS+=(sync-receiver) || DECLINED="$DECLINED sync-receiver"
 		ask_addon backup "$backup_default" && COMPONENTS+=(backup) || DECLINED="$DECLINED backup"
 	fi
 fi
@@ -282,7 +305,7 @@ fi
 # --check is included deliberately: reporting the version of something
 # installed but unselected is exactly what a status check is for.
 if [ "$CORE_ONLY" -ne 1 ]; then
-	for comp in core webui systray hosts backup; do
+	for comp in core webui systray hosts sync-receiver backup; do
 		component_installed "$comp" || continue
 		in_list "$comp" "$DECLINED" && continue
 		in_list "$comp" "${COMPONENTS[*]}" && continue
@@ -369,7 +392,7 @@ musl_reason() {
 # --- per-component config ---
 # component_binary() / component_installed() are defined further up, ahead
 # of the component-selection logic that has to call them.
-component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
+component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
 # All five components install to the same root-owned /usr/local/bin and
 # need sudo -- webui/systray run as per-user services (systemd --user /
 # launchd LaunchAgent) with no elevated runtime privilege of their own,
@@ -384,11 +407,14 @@ component_needs_sudo() { echo 1; }
 # registering the service is a different privilege question: `core` and
 # `hosts` both register a real root-owned systemd *system* unit (hosts:
 # a scheduled timer, since it writes /etc/hosts, which needs root
-# regardless of who invokes it) -- but webui/systray register a `systemd
-# --user` unit (or launchd LaunchAgent) that must run as the plain
-# invoking user -- running it under sudo points `systemctl --user` at
+# regardless of who invokes it) -- but webui/systray/sync-receiver register
+# a `systemd --user` unit (or launchd LaunchAgent) that must run as the
+# plain invoking user -- running it under sudo points `systemctl --user` at
 # root's own (nonexistent, session-less) user manager instead of the
 # invoking user's, which fails with a D-Bus/XDG_RUNTIME_DIR error.
+# sync-receiver never needs root even to bind its own port -- it always
+# binds a non-privileged port (>1024), a hard requirement of its own
+# `install --port` (see that repo's src/config.rs).
 component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 ;; esac; }
 
 # Prefer wherever the binary is actually already installed (PATH) over the
