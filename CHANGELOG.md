@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`MeshManager::invalidate_status_snapshot` is now `pub`, not `pub(crate)`** (`STATUS-CACHE-001`). The "invalidated immediately on mutation" guarantee that requirement establishes was only wired at one call site — `handle_request`, the desktop Unix-socket IPC dispatch loop. An embedder built on `build_headless()` (no IPC socket — `tetron-mobile`'s `Node`, and any future non-desktop consumer) calls `MeshManager` methods directly and never passes through that loop, so it could never invalidate the cache at all: live-verified in `tetron-mobile` (LG V40, real hardware) that joining a second network left the embedder's own status read reporting only the first for a full `status-cache.interval` (default 12s). No behavior change for the desktop/IPC path; embedders can now call the same method themselves after their own mutating calls.
+
 ## [0.11.2] - 2026-08-17
 
 ### Fixed
