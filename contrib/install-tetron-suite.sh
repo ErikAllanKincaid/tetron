@@ -417,6 +417,59 @@ component_needs_sudo() { echo 1; }
 # `install --port` (see that repo's src/config.rs).
 component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 ;; esac; }
 
+# systemd unit name per component -- matches the binary name for the
+# systemd --user services (also what tetron-webui's own addons.rs
+# `linux_unit` field uses for its is-active check), except hosts, whose
+# actual persistent unit is the *timer* (contrib/tetron-hosts.timer), not
+# the oneshot `.service` it triggers -- the timer is what should be
+# "active" continuously; the service is only transiently active while a
+# sync run is in progress. backup has no service and never calls this.
+component_unit() { case "$1" in core) echo tetron.service ;; hosts) echo tetron-hosts.timer ;; *) component_binary "$1" ;; esac; }
+
+# Is the component's own service actually running, independent of
+# whether its binary is at the latest version? The two can disagree: a
+# binary can be current while its service was never registered (see the
+# "up to date" branch below for why that matters) -- e.g. a previous run
+# was interrupted between placing the binary and running `install`, or
+# the binary arrived some other way (a manual build, a different
+# install path) that never called `install` at all. Only Linux/macOS are
+# handled, matching this script's own two supported platforms above;
+# `false` on anything else is the same "can't tell, so don't claim it's
+# fine" default tetron-webui's own is_active() uses.
+component_service_active() {
+	local comp="$1" unit
+	unit="$(component_unit "$comp")"
+	case "$plat_os" in
+	linux)
+		if [ "$(component_service_needs_sudo "$comp")" -eq 1 ]; then
+			systemctl is-active --quiet "$unit" 2>/dev/null
+		else
+			systemctl --user is-active --quiet "$unit" 2>/dev/null
+		fi
+		;;
+	macos)
+		# launchd label, not a systemd unit name. Matches
+		# tetron-webui's own addons.rs macos_label values
+		# (com.tetron.<component>) for webui/systray/sync-receiver,
+		# and each project's own contrib/*.plist Label for the two
+		# components webui doesn't manage: core is "com.tetron.vpn"
+		# (contrib/com.tetron.vpn.plist, not "com.tetron.core"),
+		# hosts is "com.tetron.hosts" (tetron-hosts/contrib/
+		# com.tetron.hosts.plist) -- which the general case also
+		# produces, so only core needs the override.
+		local label
+		case "$comp" in
+		core) label="com.tetron.vpn" ;;
+		*) label="com.tetron.$comp" ;;
+		esac
+		launchctl list "$label" >/dev/null 2>&1
+		;;
+	*)
+		false
+		;;
+	esac
+}
+
 # Prefer wherever the binary is actually already installed (PATH) over the
 # default dir, so an install in a nonstandard location is upgraded in
 # place rather than a second copy appearing at the default path.
@@ -604,7 +657,30 @@ for comp in "${COMPONENTS[@]}"; do
 
 	status="$comp: installed=${current:-none} latest=$latest"
 	if [ -n "$current" ] && [ "$current" = "$latest" ]; then
-		log_pass "$status (up to date)"
+		if component_service_active "$comp"; then
+			log_pass "$status (up to date)"
+			continue
+		fi
+		# The binary matches latest, but its service isn't running --
+		# e.g. a previous run was interrupted between placing the
+		# binary and registering the service, or the binary arrived
+		# some other way that never called `install`. Re-running
+		# `install` (idempotent, same as a fresh install -- see the
+		# header comment on why it's called "install" not "upgrade")
+		# fixes this without re-downloading an already-current binary.
+		log_info "$status, but its service is not active -- registering/starting it"
+		if [ "$CHECK_ONLY" -eq 1 ]; then
+			any_failed=1
+			continue
+		fi
+		service_sudo_prefix=""
+		[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="sudo"
+		if $service_sudo_prefix "$dest" install; then
+			log_pass "$comp: service registered/started"
+		else
+			log_error "$comp: '$dest install' failed to register/start its service"
+			any_failed=1
+		fi
 		continue
 	fi
 	log_info "$status ($( [ -z "$current" ] && echo "not installed or version unknown" || echo "update available" ))"
