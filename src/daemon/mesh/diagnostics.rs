@@ -18,7 +18,17 @@ impl MeshManager {
     /// `invalidates_status_snapshot`) and therefore also by `Sync`, which is
     /// what makes tetron-webui's existing per-network `sync` button double as
     /// a manual status refresh with no new wire message.
-    pub(crate) fn invalidate_status_snapshot(&self) {
+    ///
+    /// STATUS-CACHE-001 (embedder gap, 2026-08-22): `pub`, not
+    /// `pub(crate)` -- `handle_request`'s call above only covers the
+    /// desktop Unix-socket IPC dispatch loop. An embedder built on
+    /// `build_headless()` (no IPC socket, e.g. `tetron-mobile`'s `Node`)
+    /// calls `MeshManager` methods directly and never passes through
+    /// that loop, so it must be able to call this itself after its own
+    /// mutating calls (join/leave/activate/deactivate/...) or its status
+    /// reads stay stale for a full `status-cache.interval` after
+    /// anything the embedder's own user just did.
+    pub fn invalidate_status_snapshot(&self) {
         if let Ok(mut g) = self.status_snapshot.write() {
             *g = None;
         }

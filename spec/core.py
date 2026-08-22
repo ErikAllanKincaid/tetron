@@ -1547,6 +1547,45 @@ class StatusSnapshotIsDaemonPaced(Requirement):
     investigation and does not depend on its outcome: bounding daemon
     work by daemon policy rather than by client behavior is correct
     regardless of whether the traversal turns out to leak.
+
+    **Gap found 2026-08-22, embedder scope (`tetron-mobile`).** Point 3's
+    "invalidated immediately on mutation" promise is only actually wired
+    at one call site: `MeshManager::handle_request`, the desktop
+    Unix-socket IPC dispatch loop, which checks
+    `invalidates_status_snapshot(&req)` and calls
+    `invalidate_status_snapshot()` before matching on the message
+    (`daemon/mod.rs`). An embedder built on `build_headless()` (no IPC
+    socket -- `tetron-mobile`'s `Node`, and any future non-desktop
+    consumer) calls `MeshManager` methods (`join_network`,
+    `leave_network`, `activate`, `deactivate`, ...) directly and never
+    passes through that dispatch loop, so it never invalidates the
+    snapshot at all. Live-verified in `tetron-mobile`, 2026-08-22 (LG
+    V40, real hardware): joining a second network left the embedder's own
+    status read reporting only the first for the ~12s default interval,
+    then correctly reporting both once the floor elapsed -- exactly the
+    stale-after-an-action failure point 3 exists to prevent, just outside
+    the one place that currently prevents it.
+
+    **Fix, this requirement (not a new one -- same cache, same
+    invalidation contract, wider callers):** `invalidate_status_snapshot`
+    goes from `pub(crate)` to `pub`, so an embedder can call it itself
+    after its own mutating `MeshManager` calls -- the same explicit
+    "invalidate after mutation" shape `handle_request` already uses, at a
+    new call-site category rather than a new mechanism. No behavior
+    change for the desktop/IPC path (`handle_request`'s own call is
+    unchanged); no wire-format change. Deliberately not moved *into*
+    each `MeshManager` mutator instead (the alternative considered): that
+    would invalidate for every caller uniformly and remove the
+    per-embedder remember-to-call-it burden, but every mutator already
+    has to be enumerated exhaustively either way, and `handle_request`'s
+    denylist-shaped `invalidates_status_snapshot` (invalidate on
+    everything except `Status`/`AdminList`/`InviteList`) already fails
+    *safe* for any IPC message added later -- moving the call means
+    re-deriving that same fail-safe shape per mutator, more places to get
+    wrong, not fewer. Exposing the existing method keeps one
+    implementation and lets each embedder own its own call sites, same
+    as `tetron-mobile`'s crate already owns deciding when `up`/`down`/
+    `join`/`leave` happen at all.
     """
 
     req_id = "STATUS-CACHE-001"
