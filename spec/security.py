@@ -1702,3 +1702,63 @@ class VendoredIrohPendingOpenPathsDedupe(Requirement):
     """
 
     req_id = "PATH-DIAG-008"
+
+
+# --------------------------------------------------------------------------
+# IPC-DECODE-ERR-001: reply (bounded) on an undecodable IPC request instead
+# of silently dropping the connection
+# --------------------------------------------------------------------------
+
+class IpcDecodeErrorBoundedReply(Requirement):
+    """REQUIREMENT-ID: IPC-DECODE-ERR-001
+
+    Found 2026-08-23 during the periodic upstream-rayfish review
+    (`DO-NOT-COMMIT/REVIEW_upstream-rayfish_2026-08-23.md`), then
+    independently verified against tetron's own current source before
+    scoping this requirement -- not ported on the strength of upstream's
+    commit message alone.
+
+    **The gap:** `handle_ipc_client` (`src/daemon/mesh/bootstrap.rs`)
+    reads one request with `ipc::recv(&mut framed).await?` and propagates
+    any error -- including a genuine decode failure (an `IpcMessage`
+    variant this build does not know, or a malformed/corrupted frame) --
+    straight out via `?`, before any reply is written. The accept loop's
+    caller only logs it at `debug!` and drops the connection. Every
+    in-tree IPC client (`tetron` CLI, `tetron-webui`, `tetron-systray`)
+    goes through this same path, so a version-skew mismatch across the
+    fleet currently degrades to an undiagnosable "connection closed"
+    instead of naming what the daemon actually rejected.
+
+    **The fix:** `handle_ipc_client` matches the `recv` error instead of
+    `?`-ing it through. On failure it logs at `debug!` (so the event stays
+    visible to `tetron report`/log review -- see the DoS note below for
+    why this matters) and best-effort replies with `IpcMessage::Error {
+    message }` carrying the decode-failure reason, then returns `Ok(())`
+    without propagating further -- the send is allowed to fail silently,
+    since the other common cause of a decode failure is a client that has
+    already gone away.
+
+    **The reply text is bounded to a fixed length (truncated on a UTF-8
+    char boundary, with a truncation marker appended) -- this is not
+    optional polish, it is the substance of this requirement.** tetron's
+    IPC socket is `0666` by design (`set_socket_permissions`, `HARDEN-002`'s
+    rejected-`HARDEN-001` note: authority is granted per-request via
+    `SO_PEERCRED`, never by socket permissions, so any local user can
+    connect), and `tetron-proto::ipc::MAX_FRAME_LEN` is 1 MiB. A decode
+    error's `Display` (via `rmp_serde`) can echo back client-supplied
+    content. Without a bound, any local user could send a ~1 MB malformed
+    frame, never read the reply, and park a daemon task plus a file
+    descriptor on a write that can never complete -- repeated, that
+    exhausts the daemon's fd table. Upstream rayfish shipped exactly this
+    unbounded reply first (`1001e80`) and had to patch the same day
+    (`12272c2`) once review caught it; this requirement adopts the bounded
+    shape from its first commit rather than repeating that two-step
+    history.
+
+    **Regression risk:** low. `handle_ipc_client` has no existing tests to
+    break, and the change is additive -- a new failure-path match arm --
+    leaving the existing decode-succeeds path (`daemon.handle_request` /
+    `ipc::send(&mut framed, resp)`) untouched.
+    """
+
+    req_id = "IPC-DECODE-ERR-001"

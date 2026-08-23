@@ -314,11 +314,81 @@ fn set_socket_permissions(path: &std::path::Path) {
     }
 }
 
+/// IPC-DECODE-ERR-001: cap on a decode-error reply that quotes the request
+/// back (e.g. an unrecognized `IpcMessage` variant's name). The IPC socket
+/// is `0666` by design (`set_socket_permissions` above) with authority
+/// granted per-request via `SO_PEERCRED`, never by file mode, so any local
+/// user can send an up-to-`MAX_FRAME_LEN` (1 MiB) malformed frame and never
+/// read the reply — bounding the echoed text keeps the write inside any
+/// socket buffer instead of parking a task and an fd on one that can never
+/// complete.
+const MAX_DECODE_ERROR_LEN: usize = 512;
+
+/// Truncate on a UTF-8 char boundary, marking that it happened.
+fn truncate_decode_error(s: &str) -> String {
+    if s.len() <= MAX_DECODE_ERROR_LEN {
+        return s.to_string();
+    }
+    let end = (0..=MAX_DECODE_ERROR_LEN)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}... (truncated)", &s[..end])
+}
+
+/// IPC-DECODE-ERR-001: a request this build cannot decode (a settings key it
+/// does not know, a variant from a newer `tetron`, or a malformed frame) gets
+/// the reason back — bounded, see `truncate_decode_error` — instead of a bare
+/// hangup, which the client could previously only report as "connection
+/// closed". Best-effort: the other common cause of a decode failure is a
+/// client that has already gone away, so the reply send is allowed to fail
+/// silently.
 async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Result<()> {
     let peer_cred = stream.peer_cred().ok().map(|c| (c.uid(), c.gid()));
     let mut framed = ipc::framed(stream);
-    let req = ipc::recv(&mut framed).await?;
+    let req = match ipc::recv(&mut framed).await {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::debug!(error = %e, "undecodable IPC request");
+            let message = truncate_decode_error(&format!("{e:#}"));
+            let _ = ipc::send(&mut framed, IpcMessage::Error { message }).await;
+            return Ok(());
+        }
+    };
     let resp = daemon.handle_request(req, peer_cred).await;
     ipc::send(&mut framed, resp).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IPC-DECODE-ERR-001: the decode-error reply is bounded however long
+    /// the triggering request/error text was — what keeps a client that
+    /// sends a ~1 MB malformed frame and never reads the reply from parking
+    /// a daemon task and fd on a write that cannot complete.
+    #[test]
+    fn decode_error_reply_is_bounded_however_long_the_input_was() {
+        let huge = format!("unknown IPC variant: {}", "A".repeat(900_000));
+        let out = truncate_decode_error(&huge);
+        assert!(out.len() < MAX_DECODE_ERROR_LEN + 32, "{}", out.len());
+        assert!(out.ends_with("... (truncated)"), "{out}");
+        assert!(out.starts_with("unknown IPC variant: AAA"), "{out}");
+    }
+
+    #[test]
+    fn short_decode_error_passes_through_unchanged() {
+        let short = "decode IPC message: unexpected end of input";
+        assert_eq!(truncate_decode_error(short), short);
+    }
+
+    #[test]
+    fn truncation_lands_on_a_char_boundary() {
+        // Multi-byte UTF-8 chars straddling the cap must not panic or split
+        // a codepoint.
+        let s = format!("{}{}", "é".repeat(MAX_DECODE_ERROR_LEN), "tail");
+        let out = truncate_decode_error(&s);
+        assert!(out.is_char_boundary(out.len() - "... (truncated)".len()));
+    }
 }
