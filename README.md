@@ -6,7 +6,7 @@ Electric ray *Tetronarce californica*
 
 **Tetron turns any group of machines into one private network, wherever they are.**
 
-Tetron lets you reach every computer you own as if they were sitting on the same desk, no matter where they actually are. Turn on your laptop from a coffee shop and it can talk straight to your home server, your NAS, or your other laptop -- no port forwarding, no static IPs, nothing exposed to the open internet. Install it, invite your other machines, and they're on your network.
+Tetron lets you reach every computer you own as if they were sitting on the same desk, no matter where they actually are. Turn on your laptop or phone from a coffee shop and it can talk straight to your home server, your NAS, or your other laptop -- no port forwarding, no static IPs, nothing exposed to the open internet. Install it, invite your other machines, and they're on your network.
 
 It's a standalone P2P mesh VPN: every device gets a stable, identity-derived address automatically the moment it joins. Peers connect directly over an encrypted tunnel, falling back to relay only when a direct path isn't possible, and the only way onto a network is an invite key you control.
 
