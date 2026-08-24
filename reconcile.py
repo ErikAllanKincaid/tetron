@@ -17,6 +17,11 @@ def run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def check_fmt() -> dict:
+    r = run(["cargo", "fmt", "--all", "--", "--check"])
+    return {"clean": r.returncode == 0, "stdout": r.stdout[-2000:] if r.returncode else ""}
+
+
 def check_build() -> dict:
     r = run(["cargo", "build", "--quiet"])
     return {"success": r.returncode == 0, "stderr": r.stderr[-2000:] if r.returncode else ""}
@@ -417,6 +422,7 @@ def check_product_identity() -> dict:
 
 if __name__ == "__main__":
     ctx = {
+        "fmt": check_fmt(),
         "build": check_build(),
         "clippy": check_clippy(),
         "test": check_tests(),
@@ -437,7 +443,8 @@ if __name__ == "__main__":
     }
     print(json.dumps(ctx, indent=2))
     ok = (
-        ctx["build"]["success"]
+        ctx["fmt"]["clean"]
+        and ctx["build"]["success"]
         and ctx["clippy"]["warnings"] == 0
         and ctx["test"]["pass"]
         and ctx["grep_hardcoded_cgnat"]["unexpected_count"] == 0
