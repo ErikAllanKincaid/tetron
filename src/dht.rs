@@ -40,7 +40,6 @@ pub fn effective_pkarr_url() -> String {
         .unwrap_or_else(|| PKARR_RELAY_URL.to_string())
 }
 
-
 // ---------------------------------------------------------------------------
 // Pkarr client
 // ---------------------------------------------------------------------------
@@ -101,7 +100,9 @@ pub fn mesh_version_from_record(packet: &SignedPacket) -> Option<u32> {
         .find_map(|r| r.strip_prefix("m,").and_then(|v| v.parse::<u32>().ok()))
 }
 
-pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, u64, Vec<EndpointId>)> {
+pub fn decode_network_record(
+    packet: &SignedPacket,
+) -> Result<(blake3::Hash, u64, Vec<EndpointId>)> {
     let records = packet.txt_records(RECORD_NAME);
     ensure!(!records.is_empty(), "no network records found");
     ensure!(
@@ -135,7 +136,11 @@ pub fn decode_network_record(packet: &SignedPacket) -> Result<(blake3::Hash, u64
         }
     }
 
-    Ok((blob_hash.context("missing blob hash (h,)")?, generation, peers))
+    Ok((
+        blob_hash.context("missing blob hash (h,)")?,
+        generation,
+        peers,
+    ))
 }
 
 // ---------------------------------------------------------------------------

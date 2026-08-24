@@ -176,9 +176,14 @@ fn spawn_coordinator_dial_retry(
         let alpn = transport::network_alpn(&network_key);
         let mut backoff = BACKOFF_INITIAL;
         let cfg = crate::config::load().unwrap_or_default();
-        let cold_threshold = cfg.reconnect_cold.threshold.unwrap_or(BACKOFF_COLD_THRESHOLD);
+        let cold_threshold = cfg
+            .reconnect_cold
+            .threshold
+            .unwrap_or(BACKOFF_COLD_THRESHOLD);
         let cold_max = std::time::Duration::from_secs(
-            cfg.reconnect_cold.backoff_secs.unwrap_or(BACKOFF_COLD_MAX.as_secs()),
+            cfg.reconnect_cold
+                .backoff_secs
+                .unwrap_or(BACKOFF_COLD_MAX.as_secs()),
         );
         let frozen_threshold = cfg
             .reconnect_frozen
@@ -363,4 +368,3 @@ pub(crate) async fn finalize_removal(
         }
     }
 }
-

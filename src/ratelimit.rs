@@ -149,7 +149,9 @@ impl GlobalRateLimiter {
     pub fn from_config(overrides: &config::RateLimitConfig) -> Self {
         Self::with_params(
             overrides.global_capacity.unwrap_or(GLOBAL_CAPACITY),
-            overrides.global_refill_per_sec.unwrap_or(GLOBAL_REFILL_PER_SEC),
+            overrides
+                .global_refill_per_sec
+                .unwrap_or(GLOBAL_REFILL_PER_SEC),
             overrides.global_strike_limit.unwrap_or(GLOBAL_STRIKE_LIMIT),
         )
     }

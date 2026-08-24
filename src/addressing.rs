@@ -286,8 +286,7 @@ pub fn ipv6_network_prefix(network: &EndpointId) -> Ipv6Addr {
     let hash = blake3::hash(network.to_string().as_bytes());
     let bytes = hash.as_bytes();
     let octets: [u8; 16] = [
-        0x02, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0, 0, 0, 0, 0, 0, 0,
-        0,
+        0x02, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     Ipv6Addr::from(octets)
 }
@@ -422,7 +421,11 @@ mod tests {
         let net = test_id(100);
         let a = derive_ipv6(&test_id(1), &net);
         let b = derive_ipv6(&test_id(2), &net);
-        assert_eq!(a.octets()[..7], b.octets()[..7], "same network -> same /56 prefix");
+        assert_eq!(
+            a.octets()[..7],
+            b.octets()[..7],
+            "same network -> same /56 prefix"
+        );
         let prefix = ipv6_network_prefix(&net);
         assert_eq!(a.octets()[..7], prefix.octets()[..7]);
     }

@@ -6,7 +6,6 @@ use iroh::EndpointId;
 use iroh::endpoint::Connection;
 use smol_str::SmolStr;
 
-
 /// A `DashMap` using ahash instead of the default SipHash. Used for the
 /// per-packet hot maps (routing table, conntrack, device→user resolution):
 /// ahash is markedly faster for small keys while keeping a randomized seed, so
@@ -89,7 +88,6 @@ impl PeerTable {
         }
     }
 
-
     /// Registers (or refreshes) the peer's connection for `network`. Other
     /// networks' connections to the same peer are preserved.
     pub fn add(
@@ -130,7 +128,6 @@ impl PeerTable {
     pub fn lookup_v6(&self, ip: &Ipv6Addr) -> Option<PeerRoute> {
         self.v6.get(ip).and_then(|e| e.route())
     }
-
 
     /// Removes the peer entirely (all networks). Used for identity rotation.
     pub fn remove(&self, ip: &Ipv4Addr, ipv6: &Ipv6Addr) {

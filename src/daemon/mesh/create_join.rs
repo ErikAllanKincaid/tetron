@@ -392,9 +392,7 @@ impl MeshManager {
                 // SUBNET-COLLISION-001: reject by default, --force to override --
                 // matches the existing leave/nuke --force pattern rather than
                 // leaving this the one unconditional hard failure in the fork.
-                if let Some(overlapping) =
-                    find_subnet_collision(requested, &existing_subnets)
-                {
+                if let Some(overlapping) = find_subnet_collision(requested, &existing_subnets) {
                     anyhow::ensure!(
                         force,
                         "--subnet {}/{} overlaps a network this node already has ({}/{}) -- pick \
@@ -615,7 +613,10 @@ impl MeshManager {
             network: name,
             network_key: net_public_key,
             my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_public_key)),
+            my_ipv6: Some(derive_ipv6(
+                &self.identity.local_identity(),
+                &net_public_key,
+            )),
             // MULTISEG-003: this network's TUN is created fresh, in its own
             // subnet, right above — SUBNET-014's warning existed only because
             // a subnet mismatch used to require a full daemon restart to take
@@ -1616,7 +1617,8 @@ impl MeshManager {
                             error = %e,
                             "could not dial member yet; reconnect loop will retry"
                         );
-                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey).await;
+                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey)
+                            .await;
                     }
                     Err(_elapsed) => {
                         tracing::debug!(
@@ -1625,7 +1627,8 @@ impl MeshManager {
                             timeout_secs = DIAL_TIMEOUT.as_secs(),
                             "dial timed out; reconnect loop will retry"
                         );
-                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey).await;
+                        seed_coordinator_reconnect(&disconnect_tx, m, network_name, &net_pubkey)
+                            .await;
                     }
                 }
             });

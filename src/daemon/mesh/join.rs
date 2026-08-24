@@ -1020,7 +1020,9 @@ pub(crate) fn spawn_reconnect_loop(
                     .threshold
                     .unwrap_or(BACKOFF_COLD_THRESHOLD);
                 let cold_max = std::time::Duration::from_secs(
-                    cfg.reconnect_cold.backoff_secs.unwrap_or(BACKOFF_COLD_MAX.as_secs()),
+                    cfg.reconnect_cold
+                        .backoff_secs
+                        .unwrap_or(BACKOFF_COLD_MAX.as_secs()),
                 );
                 // CONVERGE-013: a third, frozen tier above cold -- same
                 // config-at-task-start pattern.
@@ -1084,9 +1086,7 @@ pub(crate) fn spawn_reconnect_loop(
                     // Consuming the `pruned_peers` entry here has the same
                     // one-shot semantics as the outer handler's consumption.
                     let in_roster = live_state.read().unwrap().members.get(&peer_id).is_some();
-                    let was_pruned = pruned_peers
-                        .remove(&(net_name.clone(), peer_id))
-                        .is_some();
+                    let was_pruned = pruned_peers.remove(&(net_name.clone(), peer_id)).is_some();
                     if dial_retry_decision(in_roster, was_pruned)
                         == DialRetryDecision::AbandonPeerGone
                     {

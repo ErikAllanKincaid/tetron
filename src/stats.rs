@@ -11,13 +11,12 @@
 //! bucket; a background task warns when a bucket's count exceeds the configured
 //! threshold within a window.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use iroh_metrics::{Counter, EncodeLabelSet, EncodeLabelValue, Family, MetricsGroup};
 use tokio_util::sync::CancellationToken;
-
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, EncodeLabelValue)]
 pub enum DropReason {
@@ -168,10 +167,7 @@ static DROP_MONITOR: std::sync::OnceLock<Arc<DropMonitor>> = std::sync::OnceLock
 /// Initialise the global drop monitor from config overrides. Must be called
 /// before any packet flow starts (typically from [`run_daemon`]) and only once.
 /// Uses compiled defaults for any `None` field.
-pub fn init_drop_monitor(
-    config: &crate::config::DropMonitorConfig,
-    token: CancellationToken,
-) {
+pub fn init_drop_monitor(config: &crate::config::DropMonitorConfig, token: CancellationToken) {
     let window = config.window_secs.unwrap_or(DROP_MONITOR_WINDOW_SECS);
     let threshold = config.threshold.unwrap_or(DROP_MONITOR_THRESHOLD);
     let cooldown = config.cooldown_secs.unwrap_or(DROP_MONITOR_COOLDOWN_SECS);
@@ -192,7 +188,6 @@ pub fn init_drop_monitor(
 pub struct DropLabels {
     pub reason: DropReason,
 }
-
 
 #[derive(Debug, MetricsGroup)]
 #[metrics(name = "tetron", default)]
@@ -319,8 +314,7 @@ mod tests {
             1
         );
         assert_eq!(
-            stats.drop_count(DropReason::Malformed)
-                + stats.drop_count(DropReason::NoPeer),
+            stats.drop_count(DropReason::Malformed) + stats.drop_count(DropReason::NoPeer),
             3
         );
     }

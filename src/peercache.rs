@@ -137,8 +137,7 @@ impl PeerAddrCache {
 
 use std::sync::LazyLock;
 
-static CACHE: LazyLock<Mutex<Option<PeerAddrCache>>> =
-    LazyLock::new(|| Mutex::new(None));
+static CACHE: LazyLock<Mutex<Option<PeerAddrCache>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Initialise the global cache from disk. Must be called once at daemon
 /// startup, before any connections are made.
@@ -151,11 +150,7 @@ pub fn init(config_dir: &Path) {
 /// Look up cached addresses for a peer. Called by
 /// [`connect_to_peer_with_alpn`] in `transport.rs`.
 pub(crate) fn lookup(id: &EndpointId) -> Option<Vec<TransportAddr>> {
-    CACHE
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|c| c.lookup(id))
+    CACHE.lock().unwrap().as_ref().and_then(|c| c.lookup(id))
 }
 
 /// Persist the current cache to disk. Called on graceful shutdown.

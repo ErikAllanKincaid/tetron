@@ -150,7 +150,10 @@ pub(crate) fn ensure_service_installed(overrides: &PathOverrides) -> Result<()> 
         inject_plist_env(&mut plist, "CONFIG_DIR", &overrides.config_dir);
         inject_plist_env(&mut plist, "LOG_DIR", &overrides.log_dir);
         inject_plist_env(&mut plist, "SOCKET_PATH", &overrides.socket_path);
-        println!("installing launchd job 'com.tetron.vpn' -> {}", path.display());
+        println!(
+            "installing launchd job 'com.tetron.vpn' -> {}",
+            path.display()
+        );
         std::fs::write(path, plist)
             .with_context(|| format!("failed to write {}", path.display()))?;
         return Ok(());
@@ -171,9 +174,7 @@ pub(crate) fn ensure_service_installed(overrides: &PathOverrides) -> Result<()> 
 /// regardless of caller privilege and points at the actual bootstrap command.
 pub(crate) async fn cmd_resume(hostname: Option<String>, network: Option<String>) -> Result<()> {
     let Ok(mut stream) = ipc::connect().await else {
-        eprintln!(
-            "tetron service is not running. Install and start it with: sudo tetron install"
-        );
+        eprintln!("tetron service is not running. Install and start it with: sudo tetron install");
         std::process::exit(1);
     };
     ipc::send(&mut stream, ipc::IpcMessage::Resume { hostname, network }).await?;
@@ -326,7 +327,11 @@ pub(crate) async fn cmd_install(
     #[cfg(target_os = "linux")]
     require_systemd();
     println!("installing tetron {FULL_VERSION}");
-    let overrides = PathOverrides { config_dir, log_dir, socket_path };
+    let overrides = PathOverrides {
+        config_dir,
+        log_dir,
+        socket_path,
+    };
     install_and_start_service(None, &overrides).await
 }
 

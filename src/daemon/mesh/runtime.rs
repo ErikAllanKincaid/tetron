@@ -319,7 +319,8 @@ impl MeshManager {
         // MULTISEG-003: this network's own TUN device, created (and, if the
         // VPN is already active, brought up) now rather than at daemon boot.
         #[cfg(not(target_os = "android"))]
-        self.create_and_attach_network_tun(name, my_ip, subnet).await;
+        self.create_and_attach_network_tun(name, my_ip, subnet)
+            .await;
 
         // Full mesh: proactively dial every known member so a restarting
         // coordinator/co-coordinator reconnects to peers that haven't (yet)
@@ -357,7 +358,10 @@ impl MeshManager {
             network: name.to_string(),
             network_key: net_public_key,
             my_ip,
-            my_ipv6: Some(derive_ipv6(&self.identity.local_identity(), &net_public_key)),
+            my_ipv6: Some(derive_ipv6(
+                &self.identity.local_identity(),
+                &net_public_key,
+            )),
             // MULTISEG-003: this network's TUN is created fresh, in its own
             // subnet, right above — see the identical note in
             // `create_network_inner`'s `Created` response.
@@ -977,7 +981,9 @@ impl MeshManager {
             None => "VPN active".to_string(),
         };
         if warnings.is_empty() {
-            IpcMessage::Ok { message: up_message }
+            IpcMessage::Ok {
+                message: up_message,
+            }
         } else {
             let mut message = format!("{up_message}, but some things need attention:");
             for w in &warnings {
@@ -1249,10 +1255,14 @@ impl MeshManager {
                 }
 
                 if !unreachable.is_empty() {
-                    let short_ids: Vec<String> =
-                        unreachable.iter().map(|id| id.fmt_short().to_string()).collect();
+                    let short_ids: Vec<String> = unreachable
+                        .iter()
+                        .map(|id| id.fmt_short().to_string())
+                        .collect();
                     let already_promoted = if promoted_count > 0 {
-                        format!("Already promoted {promoted_count} other member(s) that were reachable. ")
+                        format!(
+                            "Already promoted {promoted_count} other member(s) that were reachable. "
+                        )
                     } else {
                         String::new()
                     };

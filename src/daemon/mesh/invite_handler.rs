@@ -12,11 +12,7 @@ impl MeshManager {
     /// If absent, defaults to a 7-day expiry (or `tetron config set
     /// invite-default-expiry <duration>`'s configured value, CONFIG-AUDIT-002);
     /// pass `"0"` or `"never"` for a permanent invite.
-    pub(crate) async fn invite_create(
-        &self,
-        network: &str,
-        expires: Option<&str>,
-    ) -> IpcMessage {
+    pub(crate) async fn invite_create(&self, network: &str, expires: Option<&str>) -> IpcMessage {
         let network = match self.resolve_network_name_or_key(network) {
             Ok(name) => name,
             Err(message) => return IpcMessage::Error { message },
@@ -94,7 +90,9 @@ impl MeshManager {
 
         IpcMessage::InviteCreated {
             invite_key,
-            invite_id: crate::membership::InviteEntry::from_secret(&secret, now, ttl_secs).1.id,
+            invite_id: crate::membership::InviteEntry::from_secret(&secret, now, ttl_secs)
+                .1
+                .id,
             expires_at,
         }
     }
