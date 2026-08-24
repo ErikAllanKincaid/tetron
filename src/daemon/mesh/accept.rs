@@ -120,8 +120,12 @@ impl CoordinatorAcceptState {
         // auto-admit accordingly has no reachable path left; removed
         // 2026-07-17 rather than left as unreachable dead code.
         tracing::warn!(peer = %remote_id.fmt_short(), "no invite presented; denied");
-        self.deny(&conn, send, "a valid invite key is required to join".to_string())
-            .await;
+        self.deny(
+            &conn,
+            send,
+            "a valid invite key is required to join".to_string(),
+        )
+        .await;
     }
 
     /// Admit (or reject) an unknown peer that presented an invite `secret`.
@@ -177,15 +181,7 @@ impl CoordinatorAcceptState {
                 peer = %remote_id.fmt_short(),
                 "invite redeemed from blob"
             );
-            self
-                .admit_peer(
-                    conn,
-                    send,
-                    remote_id,
-                    peer_ip,
-                    hostname,
-                    false,
-                )
+            self.admit_peer(conn, send, remote_id, peer_ip, hostname, false)
                 .await;
             return;
         }
@@ -209,8 +205,7 @@ impl CoordinatorAcceptState {
                 .await;
         } else {
             tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected");
-            self.deny(&conn, send, "invite rejected".to_string())
-                .await;
+            self.deny(&conn, send, "invite rejected".to_string()).await;
         }
     }
 
@@ -364,9 +359,11 @@ impl CoordinatorAcceptState {
         let ipv6_collision = {
             let s = self.state.read().unwrap();
             s.members.all().iter().any(|m| {
-                m.identity != remote_id && derive_ipv6(&m.identity, &self.ctx.network_key) == candidate_ipv6
+                m.identity != remote_id
+                    && derive_ipv6(&m.identity, &self.ctx.network_key) == candidate_ipv6
             }) || s.approved.all().iter().any(|a| {
-                a.identity != remote_id && derive_ipv6(&a.identity, &self.ctx.network_key) == candidate_ipv6
+                a.identity != remote_id
+                    && derive_ipv6(&a.identity, &self.ctx.network_key) == candidate_ipv6
             })
         };
         if ipv6_collision {
@@ -657,5 +654,3 @@ impl ProtocolRouter {
         })
     }
 }
-
-

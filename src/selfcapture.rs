@@ -224,7 +224,8 @@ mod imp {
 
     pub(super) fn apply_inner(listen_port: u16) -> Result<()> {
         let (gw, dev) = default_route()?;
-        let rule = format!("pass out proto udp from any port {listen_port} route-to ({dev} {gw})\n");
+        let rule =
+            format!("pass out proto udp from any port {listen_port} route-to ({dev} {gw})\n");
         let mut child = Command::new("pfctl")
             .args(["-a", ANCHOR_NAME, "-f", "-"])
             .stdin(Stdio::piped())

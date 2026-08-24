@@ -129,10 +129,7 @@ fn path_flap_decision(
 /// (`addressing::ipv6_in_network` needs the network's own public key, not
 /// just its subnet), out of scope here -- the concrete finding motivating
 /// this was v4.
-fn is_self_candidate(
-    addr: &iroh::TransportAddr,
-    subnet: crate::membership::Subnet,
-) -> bool {
+fn is_self_candidate(addr: &iroh::TransportAddr, subnet: crate::membership::Subnet) -> bool {
     match addr {
         iroh::TransportAddr::Ip(std::net::SocketAddr::V4(v4)) => {
             crate::addressing::ip_in_subnet(*v4.ip(), subnet)
@@ -341,25 +338,23 @@ pub async fn run_mesh<R: crate::tun::TunRead>(
             // fragmented at the IP layer before sending. The receiving kernel
             // will reassemble the fragments.
             match pkt.first().map(|b| b >> 4) {
-                Some(4) => {
-                    match fragmenter.fragment_ipv4(&pkt, max_dgram) {
-                        Some(fragments) => {
-                            tracing::debug!(
-                                dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
-                                "fragmenting oversized IP packet",
-                            );
-                            stats.record_fragmented_ipv4();
-                            send_fragment_set(&route.conn, fragments, &stats, info.dst_ip);
-                        }
-                        None => {
-                            tracing::warn!(
-                                dst = %info.dst_ip, len = n, max = max_dgram,
-                                "cannot fragment IPv4 packet (options or malformed)",
-                            );
-                            stats.record_drop(DropReason::FragmentationFailed);
-                        }
+                Some(4) => match fragmenter.fragment_ipv4(&pkt, max_dgram) {
+                    Some(fragments) => {
+                        tracing::debug!(
+                            dst = %info.dst_ip, len = n, max = max_dgram, nfrags = fragments.len(),
+                            "fragmenting oversized IP packet",
+                        );
+                        stats.record_fragmented_ipv4();
+                        send_fragment_set(&route.conn, fragments, &stats, info.dst_ip);
                     }
-                }
+                    None => {
+                        tracing::warn!(
+                            dst = %info.dst_ip, len = n, max = max_dgram,
+                            "cannot fragment IPv4 packet (options or malformed)",
+                        );
+                        stats.record_drop(DropReason::FragmentationFailed);
+                    }
+                },
                 Some(6) => {
                     // FRAG-002: no in-network IPv6 fragmentation exists (RFC 8200
                     // reserves fragmenting to the originating host), so this uses a
@@ -423,12 +418,7 @@ fn fragment_set_wire_len(fragments: &[Bytes]) -> usize {
 /// likewise increment once per original packet), and a per-fragment count would
 /// make the `tetron status` drop breakdown incomparable between a fragmenting
 /// and a non-fragmenting node.
-fn send_fragment_set(
-    conn: &Connection,
-    fragments: &[Bytes],
-    stats: &ForwardMetrics,
-    dst: IpAddr,
-) {
+fn send_fragment_set(conn: &Connection, fragments: &[Bytes], stats: &ForwardMetrics, dst: IpAddr) {
     let total = fragment_set_wire_len(fragments);
     if conn.datagram_send_buffer_space() < total {
         tracing::trace!(
@@ -501,8 +491,7 @@ pub fn spawn_peer_reader(
     // on its own once the connection closes, nothing here needs to observe
     // or cancel it.
     tokio::spawn(
-        log_path_events(conn.clone(), peer_id, network.clone(), subnet)
-            .instrument(span.clone()),
+        log_path_events(conn.clone(), peer_id, network.clone(), subnet).instrument(span.clone()),
     );
     let reader = async move {
         // FRAG-002: per-connection IPv6 reassembly state. Lives for the
@@ -629,9 +618,8 @@ async fn log_path_events(
     // `init_drop_monitor`).
     let cfg = crate::config::load().unwrap_or_default();
     let flap_threshold = cfg.path_flap.threshold.unwrap_or(PATH_FLAP_THRESHOLD);
-    let flap_window = std::time::Duration::from_secs(
-        cfg.path_flap.window_secs.unwrap_or(PATH_FLAP_WINDOW_SECS),
-    );
+    let flap_window =
+        std::time::Duration::from_secs(cfg.path_flap.window_secs.unwrap_or(PATH_FLAP_WINDOW_SECS));
     let mut flap_window_start = std::time::Instant::now();
     let mut flap_count: u32 = 0;
 
@@ -660,7 +648,11 @@ async fn log_path_events(
                     tracing::debug!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path opened");
                 }
             }
-            iroh::endpoint::PathEvent::Closed { remote_addr, last_stats, .. } => {
+            iroh::endpoint::PathEvent::Closed {
+                remote_addr,
+                last_stats,
+                ..
+            } => {
                 if is_self_candidate(&remote_addr, subnet) {
                     tracing::trace!(peer = %peer_id.fmt_short(), net = %network, %remote_addr, "path closed (self-candidate, ignored)");
                 } else {
@@ -834,9 +826,7 @@ mod tests {
 
         #[test]
         fn relay_address_is_never_a_self_candidate() {
-            let addr = iroh::TransportAddr::Relay(
-                "https://relay.example.com/".parse().unwrap(),
-            );
+            let addr = iroh::TransportAddr::Relay("https://relay.example.com/".parse().unwrap());
             assert!(!is_self_candidate(&addr, SUBNET));
         }
 
@@ -986,4 +976,3 @@ mod tests {
         ));
     }
 }
-

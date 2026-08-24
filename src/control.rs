@@ -6,8 +6,8 @@
 use std::net::Ipv4Addr;
 
 use anyhow::{Context, Result};
-use iroh::endpoint::{RecvStream, SendStream};
 use iroh::EndpointId;
+use iroh::endpoint::{RecvStream, SendStream};
 use serde::{Deserialize, Serialize};
 
 use crate::membership::{ApprovedEntry, Member};
@@ -362,5 +362,4 @@ mod tests {
             assert_eq!(decode_msg(&bytes).unwrap(), msg);
         }
     }
-
 }

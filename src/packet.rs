@@ -369,7 +369,11 @@ fn fragment_ipv6_into(
 
     while offset < packet.len() {
         let frag_len = max_payload.min(packet.len() - offset);
-        let more: u8 = if offset + frag_len < packet.len() { 1 } else { 0 };
+        let more: u8 = if offset + frag_len < packet.len() {
+            1
+        } else {
+            0
+        };
 
         // FRAG-006: envelope header on the stack, then straight into the pool.
         let mut hdr = [0u8; FRAG6_HEADER_LEN];
@@ -439,12 +443,7 @@ impl Fragmenter {
 
     /// Split an oversized IPv6 packet into tetron-internal envelopes. See
     /// [`fragment_ipv6_into`] for the envelope format and the `None` cases.
-    pub fn fragment_ipv6(
-        &mut self,
-        packet: &[u8],
-        id: u32,
-        max_size: usize,
-    ) -> Option<&[Bytes]> {
+    pub fn fragment_ipv6(&mut self, packet: &[u8], id: u32, max_size: usize) -> Option<&[Bytes]> {
         self.out.clear();
         fragment_ipv6_into(packet, id, max_size, &mut self.pool, &mut self.out)
             .then_some(self.out.as_slice())
@@ -690,7 +689,7 @@ mod tests {
             p[6] |= 0x40;
         }
         p[8] = 64; // TTL
-        p[9] = 6;  // TCP
+        p[9] = 6; // TCP
         // Fill payload with a pattern so reassembly ordering can be verified
         for i in 0..payload_len {
             p[20 + i] = (i & 0xFF) as u8;

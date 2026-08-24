@@ -108,7 +108,10 @@ pub(crate) fn find_physical_interface_collision(
 /// unavailable or fails -- callers must never block startup on a missing tool.
 #[cfg(target_os = "linux")]
 fn local_ipv4_interfaces() -> Vec<(String, Ipv4Addr, u8)> {
-    let out = match Command::new("ip").args(["-o", "-4", "addr", "show"]).output() {
+    let out = match Command::new("ip")
+        .args(["-o", "-4", "addr", "show"])
+        .output()
+    {
         Ok(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
     };

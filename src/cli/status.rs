@@ -244,7 +244,10 @@ pub(crate) async fn ipc_status() -> Result<()> {
                     .iter()
                     .map(|(reason, n)| format!("{reason} {n}"))
                     .collect();
-                println!("    drops    {total_drops} total ({})", breakdown.join(", "));
+                println!(
+                    "    drops    {total_drops} total ({})",
+                    breakdown.join(", ")
+                );
             }
             if !active {
                 println!("  (run `tetron resume` to activate)");

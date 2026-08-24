@@ -169,7 +169,9 @@ mod tests {
         // INVITE-CHECKSUM-001 CLI discrimination: a base58 string that
         // decodes to 32 bytes (a bare network pubkey) is a room id, not an
         // invite — so the CLI lets it flow to the daemon for denial.
-        assert!(is_bare_room_id(&bs58::encode(test_id(5).as_bytes()).into_string()));
+        assert!(is_bare_room_id(
+            &bs58::encode(test_id(5).as_bytes()).into_string()
+        ));
         // An encoded invite (48-byte legacy or 52-byte checksummed) is not.
         let secret: [u8; SECRET_LEN] = rand::random();
         assert!(!is_bare_room_id(&encode_invite_code(&test_id(6), &secret)));

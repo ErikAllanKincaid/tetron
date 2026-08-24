@@ -349,9 +349,10 @@ fn init_tracing(to_file: bool) -> LogGuard {
     // log-level <level>` -> compiled default `info` (not `debug` -- a production
     // default should not log every packet's routing decision when nothing is
     // wrong; an operator chasing a live issue opts in via the config key).
-    let global_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-        |_| tracing_subscriber::EnvFilter::new(format!("info,tetron={}", config::log_level())),
-    );
+    let global_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(format!("info,tetron={}", config::log_level()))
+        });
     // LOG-004: wrap the ceiling filter in a reload layer so a running daemon
     // can pick up `tetron config set log-level` without a restart. The
     // handle is registered process-globally (tetron::log_reload) since
@@ -568,7 +569,11 @@ async fn main() -> Result<()> {
         Command::Stop => cmd_stop().await,
         Command::Start => cmd_start().await,
         Command::Uninstall => cmd_uninstall_service(),
-        Command::Install { config_dir, log_dir, socket_path } => cmd_install(config_dir, log_dir, socket_path).await,
+        Command::Install {
+            config_dir,
+            log_dir,
+            socket_path,
+        } => cmd_install(config_dir, log_dir, socket_path).await,
         Command::Restart => cmd_restart().await,
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "tetron", &mut std::io::stdout());
@@ -665,9 +670,9 @@ async fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
 /// "Reset", matching the two call sites' existing wording.
 async fn announce_log_level_change(verb: &str, key: &str) {
     match try_live_reload_log_level().await {
-        Ok(()) => println!(
-            "{verb} {key}. Applied immediately to the running daemon (no restart needed)."
-        ),
+        Ok(()) => {
+            println!("{verb} {key}. Applied immediately to the running daemon (no restart needed).")
+        }
         Err(_) => {
             println!("{verb} {key}. Run 'sudo tetron restart' for changes to take effect.")
         }

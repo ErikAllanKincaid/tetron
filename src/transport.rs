@@ -17,7 +17,6 @@ use crate::config::ServerOverride;
 #[cfg(feature = "tor")]
 use std::sync::Arc;
 
-
 /// Compiled-default fixed UDP port the endpoint binds so users can
 /// port-forward a stable, known port for guaranteed direct reachability
 /// (Tailscale-style). Unlike an ephemeral port, this stays the same across

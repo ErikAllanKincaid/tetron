@@ -167,11 +167,17 @@ pub(crate) fn classify_candidate_addr(
 ///    all trustworthy candidates, so a genuinely new, still-validating path
 ///    is still reported rather than hidden as `?` just for being new.
 pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool, bool)]) -> Option<usize> {
-    let trustworthy_count = classes.iter().filter(|(_, _, in_subnet, _)| *in_subnet).count();
+    let trustworthy_count = classes
+        .iter()
+        .filter(|(_, _, in_subnet, _)| *in_subnet)
+        .count();
 
-    if let Some(i) = classes.iter().position(|(_, selected, in_subnet, has_activity)| {
-        *selected && *in_subnet && (*has_activity || trustworthy_count == 1)
-    }) {
+    if let Some(i) = classes
+        .iter()
+        .position(|(_, selected, in_subnet, has_activity)| {
+            *selected && *in_subnet && (*has_activity || trustworthy_count == 1)
+        })
+    {
         return Some(i);
     }
 
@@ -182,9 +188,7 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool, bool)]) -
     ] {
         if let Some(i) = classes
             .iter()
-            .position(|(ct, _, in_subnet, has_activity)| {
-                *ct == want && *in_subnet && *has_activity
-            })
+            .position(|(ct, _, in_subnet, has_activity)| *ct == want && *in_subnet && *has_activity)
         {
             return Some(i);
         }
@@ -338,7 +342,10 @@ pub(crate) fn resolve_welcome_self_ip(
 /// (exponential backoff, PURE-LOGIC-001). Extracted from
 /// `join.rs::spawn_reconnect_loop`'s per-peer retry loop for direct unit
 /// testing, independent of that loop's own tokio/async machinery.
-pub(crate) fn next_backoff(current: std::time::Duration, max: std::time::Duration) -> std::time::Duration {
+pub(crate) fn next_backoff(
+    current: std::time::Duration,
+    max: std::time::Duration,
+) -> std::time::Duration {
     (current * 2).min(max)
 }
 
@@ -440,10 +447,7 @@ pub(crate) enum DialRetryDecision {
 /// is whether a one-shot `pruned_peers` entry for `(network, peer)` existed
 /// (and has already been consumed by the caller) -- it can land before the
 /// roster copy reflects the removal, so either signal alone abandons.
-pub(crate) fn dial_retry_decision(
-    in_roster: bool,
-    was_pruned_locally: bool,
-) -> DialRetryDecision {
+pub(crate) fn dial_retry_decision(in_roster: bool, was_pruned_locally: bool) -> DialRetryDecision {
     if !in_roster || was_pruned_locally {
         return DialRetryDecision::AbandonPeerGone;
     }

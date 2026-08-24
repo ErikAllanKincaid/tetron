@@ -44,15 +44,17 @@ pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()
         }
         ipc::IpcMessage::InviteListResponse { invites } => {
             if json_enabled() {
-                print_json(&serde_json::json!(invites
-                    .iter()
-                    .map(|i| serde_json::json!({
-                        "id": i.id,
-                        "created_at": i.created_at,
-                        "expires_at": i.expires_at,
-                        "revoked": i.revoked,
-                    }))
-                    .collect::<Vec<_>>()));
+                print_json(&serde_json::json!(
+                    invites
+                        .iter()
+                        .map(|i| serde_json::json!({
+                            "id": i.id,
+                            "created_at": i.created_at,
+                            "expires_at": i.expires_at,
+                            "revoked": i.revoked,
+                        }))
+                        .collect::<Vec<_>>()
+                ));
             } else if invites.is_empty() {
                 println!("\n  (no invites)\n");
             } else {
@@ -61,7 +63,8 @@ pub(crate) async fn ipc_invite(network: &str, action: InviteAction) -> Result<()
                     .map(|i| {
                         let status = if i.revoked {
                             "revoked".to_string()
-                        } else if i.expires_at > 0 && i.expires_at <= crate::membership::now_secs() {
+                        } else if i.expires_at > 0 && i.expires_at <= crate::membership::now_secs()
+                        {
                             "expired".to_string()
                         } else {
                             "active".to_string()

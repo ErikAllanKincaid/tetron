@@ -342,7 +342,11 @@ pub fn coordinator_count(members: &[Member]) -> usize {
 /// the `nuke-proposal-ttl` config override (CONFIG-AUDIT-002) — callers
 /// resolve which before calling in, rather than this function reading config
 /// itself, to keep it a pure function of its arguments.
-pub fn active_nuke_proposers(proposals: &BTreeMap<String, u64>, now: u64, ttl_secs: u64) -> Vec<&String> {
+pub fn active_nuke_proposers(
+    proposals: &BTreeMap<String, u64>,
+    now: u64,
+    ttl_secs: u64,
+) -> Vec<&String> {
     proposals
         .iter()
         .filter(|&(_, &proposed_at)| now.saturating_sub(proposed_at) < ttl_secs)
@@ -1887,11 +1891,26 @@ mod tests {
     fn nuke_consensus_requires_two_distinct_active_proposers() {
         let now = 1_000_000u64;
         let mut proposals = BTreeMap::new();
-        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
+        assert!(!nuke_consensus_reached(
+            &proposals,
+            now,
+            2,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
         proposals.insert("alice".to_string(), now);
-        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
+        assert!(!nuke_consensus_reached(
+            &proposals,
+            now,
+            2,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
         proposals.insert("bob".to_string(), now);
-        assert!(nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
+        assert!(nuke_consensus_reached(
+            &proposals,
+            now,
+            2,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
     }
 
     #[test]
@@ -1900,7 +1919,12 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now);
         proposals.insert("bob".to_string(), now - NUKE_PROPOSAL_TTL_SECS - 1);
-        assert!(!nuke_consensus_reached(&proposals, now, 2, NUKE_PROPOSAL_TTL_SECS));
+        assert!(!nuke_consensus_reached(
+            &proposals,
+            now,
+            2,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
     }
 
     /// NUKE-CONSENSUS-THRESHOLD-001: a configured threshold other than the
@@ -1911,12 +1935,27 @@ mod tests {
         let mut proposals = BTreeMap::new();
         proposals.insert("alice".to_string(), now);
         // threshold=1: a single proposer is already enough.
-        assert!(nuke_consensus_reached(&proposals, now, 1, NUKE_PROPOSAL_TTL_SECS));
+        assert!(nuke_consensus_reached(
+            &proposals,
+            now,
+            1,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
         // threshold=3: two proposers are not enough on a stricter network.
         proposals.insert("bob".to_string(), now);
-        assert!(!nuke_consensus_reached(&proposals, now, 3, NUKE_PROPOSAL_TTL_SECS));
+        assert!(!nuke_consensus_reached(
+            &proposals,
+            now,
+            3,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
         proposals.insert("carol".to_string(), now);
-        assert!(nuke_consensus_reached(&proposals, now, 3, NUKE_PROPOSAL_TTL_SECS));
+        assert!(nuke_consensus_reached(
+            &proposals,
+            now,
+            3,
+            NUKE_PROPOSAL_TTL_SECS
+        ));
     }
 
     #[test]

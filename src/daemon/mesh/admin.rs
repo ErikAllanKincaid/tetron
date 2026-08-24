@@ -50,7 +50,7 @@ impl MeshManager {
                 };
                 let Some(key) = key else {
                     return Err(
-                        "only a coordinator (network key holder) can grant admin".to_string(),
+                        "only a coordinator (network key holder) can grant admin".to_string()
                     );
                 };
                 (h.network_key, key)
