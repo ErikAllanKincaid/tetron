@@ -12,6 +12,32 @@ pub struct StatusSnapshot {
     built_at: std::time::Instant,
 }
 
+/// The cache cell itself. Held behind an `Arc` on `MeshManager` and cloned
+/// into every [`MeshCtx`] so background mesh tasks -- which never pass
+/// through `handle_request` -- can invalidate it at their own roster /
+/// peer-table mutation sites (see [`clear_status_cache`]).
+pub(crate) type StatusCache = std::sync::RwLock<Option<StatusSnapshot>>;
+
+/// Drop any cached status snapshot, forcing the next read to rebuild.
+///
+/// STATUS-CACHE-001 (background-mutation gap, 2026-08-28): the original
+/// design invalidated only from `handle_request`'s non-read-only denylist,
+/// which covers just the desktop IPC dispatch loop. The cached
+/// `NetworkStatus` list also holds `member_count` and the per-peer
+/// connection list, both of which are mutated by background tasks off that
+/// path -- a member's deliberate `tetron leave` pruned by the coordinator's
+/// `spawn_peer_cleanup`, a `MemberSync`-triggered roster apply in
+/// `reconverge_and_apply`, a peer disconnect handled by
+/// `spawn_reconnect_loop`. Without invalidating there, `tetron status` on
+/// the coordinator kept reporting a departed member (and its live
+/// connection) for up to a full `status-cache.interval`. Those sites now
+/// call this via the `Arc<StatusCache>` threaded through [`MeshCtx`].
+pub(crate) fn clear_status_cache(cache: &StatusCache) {
+    if let Ok(mut g) = cache.write() {
+        *g = None;
+    }
+}
+
 impl MeshManager {
     /// Drop the cached status snapshot, forcing the next read to rebuild.
     /// Called for every non-read-only IPC message (see
@@ -29,9 +55,7 @@ impl MeshManager {
     /// reads stay stale for a full `status-cache.interval` after
     /// anything the embedder's own user just did.
     pub fn invalidate_status_snapshot(&self) {
-        if let Ok(mut g) = self.status_snapshot.write() {
-            *g = None;
-        }
+        clear_status_cache(&self.status_snapshot);
     }
 
     /// The per-network status list, from cache when it is younger than
@@ -514,5 +538,22 @@ mod status_cache_tests {
             network_key: "k".into(),
             endpoint_id: "e".into(),
         }));
+    }
+
+    #[test]
+    fn clear_status_cache_empties_a_populated_cell() {
+        let cache: StatusCache = std::sync::RwLock::new(Some(StatusSnapshot {
+            networks: Vec::new(),
+            built_at: std::time::Instant::now(),
+        }));
+        assert!(cache.read().unwrap().is_some());
+        clear_status_cache(&cache);
+        assert!(
+            cache.read().unwrap().is_none(),
+            "background mutation sites must be able to force a rebuild"
+        );
+        // Idempotent: clearing an already-empty cell is a no-op, not a panic.
+        clear_status_cache(&cache);
+        assert!(cache.read().unwrap().is_none());
     }
 }

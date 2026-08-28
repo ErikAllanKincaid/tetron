@@ -72,6 +72,13 @@ pub(crate) fn spawn_peer_cleanup(
                             // Only the coordinator is authoritative, so members pass
                             // `coordinator = None` and do neither.
                             if let Some(c) = &coordinator {
+                                // STATUS-CACHE-001: the peer just left this
+                                // network's connection table (`removed` is
+                                // always true past the guard above), and the
+                                // roster edit below may drop it outright --
+                                // both feed the cached `tetron status`, and
+                                // none of this goes through `handle_request`.
+                                super::diagnostics::clear_status_cache(&c.ctx.status_cache);
                                 let member_id = ev.endpoint_id;
                                 let mut changed = false;
                                 {

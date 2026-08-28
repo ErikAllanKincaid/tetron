@@ -519,6 +519,7 @@ impl MeshManager {
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
+            status_cache: self.status_snapshot.clone(),
         };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
@@ -810,6 +811,7 @@ impl MeshManager {
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
+            status_cache: self.status_snapshot.clone(),
         };
         let ctx = JoinContext {
             display_name,

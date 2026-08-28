@@ -902,6 +902,7 @@ pub(crate) fn spawn_reconnect_loop(
         stats,
         pruned_peers,
         global_gate,
+        status_cache,
         ..
     } = ctx;
     use tracing::Instrument as _;
@@ -950,6 +951,11 @@ pub(crate) fn spawn_reconnect_loop(
                 tracing::debug!(peer = %peer_id.fmt_short(), ip = %peer_ip, "ignoring stale disconnect; peer already reconnected");
                 continue;
             }
+            // STATUS-CACHE-001: a peer just left this node's connection table,
+            // so its entry in `tetron status` drops to `connection: None` --
+            // invalidate the cached snapshot (this loop never touches
+            // `handle_request`).
+            super::diagnostics::clear_status_cache(&status_cache);
 
             // A deliberate `tetron leave` (graceful close with the leave code) means
             // the peer is gone for good — don't spin a reconnect task against it.
