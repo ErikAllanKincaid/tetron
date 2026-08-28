@@ -1591,6 +1591,54 @@ class StatusSnapshotIsDaemonPaced(Requirement):
     req_id = "STATUS-CACHE-001"
 
 
+class EmbedderNetworkChangeForward(Requirement):
+    """REQUIREMENT-ID: EMBED-NETCHANGE-001
+
+    `MeshManager` exposes an async `network_changed()` method as part of the
+    embedding API: the host OS observed a network change (Wi-Fi/cellular
+    switch, access-point roam, airplane-mode flip) and the embedder forwards
+    that signal in. The method calls `Endpoint::network_change()` on the
+    iroh endpoint, which rebinds the QUIC UDP socket and re-probes paths
+    (re-STUN, relay reconnect, address re-publish).
+
+    **Why the embedder has to forward it.** On desktop, iroh's `netwatch`
+    watches route changes itself through a netlink subscription, so the
+    endpoint learns of a change with no help from the daemon. On Android an
+    app can not subscribe to netlink route updates -- `netwatch`'s Android
+    route monitor is a stub -- so the endpoint never learns the network
+    moved. A Wi-Fi/cellular handoff then leaves the endpoint bound to dead
+    sockets: no relay, no address publish, no mDNS announce, the device
+    invisible to the mesh until something rebuilds the endpoint (a manual
+    VPN toggle). Measured upstream on a real device: 116 consecutive failed
+    address publishes over roughly 3.5 hours of standby after one
+    transition.
+
+    **Shape.** `pub async fn network_changed(&self)` on `MeshManager`
+    (`src/daemon/mod.rs`), one line: `self.endpoint.network_change().await`.
+    `Endpoint::network_change()` is already a no-op on a closed endpoint
+    (it logs at debug and returns), so the method is safe and idempotent --
+    cheap to call on every OS callback, and harmless when the network did
+    not actually change or iroh already saw it. No new state, no config
+    knob, no wire-format change. The desktop IPC path does not call it and
+    does not need to.
+
+    **Consumer.** `tetron-mobile`'s `Node` wraps it over UniFFI as
+    `Node::network_changed()`, and its Android layer registers a
+    `ConnectivityManager` default-network callback for the node's whole
+    lifetime (standby included, where nothing else would notice a change)
+    that forwards `onAvailable`/`onLost` into the FFI call. That side lives
+    in the `tetron-mobile` repo (its own MOBILE-* requirement) and is
+    cross-repo follow-up, not part of this requirement.
+
+    Ports upstream rayfish commit 3887fda, adapted to this fork's
+    `MeshManager` (direct `endpoint: Endpoint` field, no `transport`
+    wrapper). Independent of STATUS-CACHE-001; no ordering constraint
+    either way.
+    """
+
+    req_id = "EMBED-NETCHANGE-001"
+
+
 # --------------------------------------------------------------------------
 # Laptop fleet: making tetron work without an always-on member
 #

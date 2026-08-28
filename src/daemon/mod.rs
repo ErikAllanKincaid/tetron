@@ -574,6 +574,21 @@ impl MeshManager {
         self.endpoint.close().await;
     }
 
+    /// EMBED-NETCHANGE-001: part of the embedding API (used by `tetron-mobile`).
+    /// The host OS observed a network change (Wi-Fi/cellular switch,
+    /// access-point roam, airplane-mode flip). On desktop, iroh's `netwatch`
+    /// sees route changes itself via a netlink subscription; on Android an app
+    /// cannot subscribe to netlink route updates, so `netwatch`'s Android route
+    /// monitor is a stub and the endpoint never learns the network moved --
+    /// without this forward it sits on dead sockets (no relay, no address
+    /// publish, no mDNS announce) until something rebuilds it. `network_change`
+    /// makes iroh rebind its QUIC socket and re-probe paths. A no-op on a
+    /// closed endpoint, so this is cheap and idempotent -- safe to call on
+    /// every OS callback.
+    pub async fn network_changed(&self) {
+        self.endpoint.network_change().await;
+    }
+
     /// Bundle an existing network's own data-plane handles into a [`MeshCtx`]
     /// (MULTISEG-002). Used only where the [`NetworkHandle`] already exists in
     /// `self.networks` — [`promote_to_coordinator`], the only post-creation
