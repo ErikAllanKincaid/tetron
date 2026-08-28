@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`MeshManager::network_changed()` embedding-API method** (`EMBED-NETCHANGE-001`). An embedder can now forward a host-OS network change (Wi-Fi/cellular switch, access-point roam, airplane-mode flip) into the daemon; it calls `Endpoint::network_change()` so iroh rebinds its QUIC socket and re-probes paths. On desktop iroh's `netwatch` sees route changes itself through a netlink subscription, so nothing changes there — this exists for Android, where an app can not subscribe to netlink route updates and `netwatch`'s Android route monitor is a stub, so without the forward the endpoint sits on dead sockets (no relay, no address publish, no mDNS announce) after every handoff until something rebuilds it. The method is a no-op on a closed endpoint, so it is cheap and idempotent to call on every OS callback. The Android consumer (a `ConnectivityManager` default-network callback wired through UniFFI) lives in `tetron-mobile`.
+
 ### Fixed
 
 - **The daemon now replies when it cannot decode an IPC request, instead of silently dropping the connection** (`IPC-DECODE-ERR-001`). A request this build cannot decode — a settings key it does not know, an `IpcMessage` variant from a newer or older `tetron`, or a malformed frame — used to just close the socket with a debug-level log line and nothing else; every client (`tetron` CLI, `tetron-webui`, `tetron-systray`) could only report "connection closed", with no way to tell a version-skew mismatch from anything else. It now gets the real reason back. The reply is capped at 512 bytes: the IPC socket is `0666` by design (authority is per-request via `SO_PEERCRED`, not file mode), so an unbounded reply that quotes the request back would let any local user send a large malformed frame, never read the response, and park a daemon task and a file descriptor on a write that can never complete.
