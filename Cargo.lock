@@ -4227,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "tetron"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4271,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "tetron-proto"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "anyhow",
  "blake3",
