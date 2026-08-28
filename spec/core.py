@@ -1586,6 +1586,36 @@ class StatusSnapshotIsDaemonPaced(Requirement):
     implementation and lets each embedder own its own call sites, same
     as `tetron-mobile`'s crate already owns deciding when `up`/`down`/
     `join`/`leave` happen at all.
+
+    **Gap found 2026-08-28, background-mutation scope.** The
+    invalidate-on-mutation contract (point 3) was wired only to
+    `handle_request`'s denylist and to the embedder call (above) -- both
+    *local command* paths. But the cached `NetworkStatus` list also holds
+    `member_count` and the per-peer connection list, and those are
+    mutated by background mesh tasks that never touch `handle_request`:
+    - the coordinator's `spawn_peer_cleanup` pruning a member after its
+      deliberate `tetron leave` (`prunes_member()`), or stamping
+      `last_seen` on any disconnect;
+    - `reconverge_and_apply` replacing the roster from a signed record on
+      every non-coordinator node after a `MemberSync` hint;
+    - `spawn_reconnect_loop` dropping a disconnected peer from the
+      connection table.
+    Between such an event and the next `status-cache.interval` boundary,
+    `tetron status` kept reporting a departed member -- with its
+    connection still shown as live -- for up to the full interval.
+    Caught by `tetron-testsuite`'s `core-smoke` (member leaves, coordinator
+    still shows `member_count=1` eight seconds later); it regressed
+    silently the moment the cache landed.
+
+    **Fix, this requirement:** `MeshManager::status_snapshot` becomes an
+    `Arc<StatusCache>` (`StatusCache = RwLock<Option<StatusSnapshot>>`), a
+    clone of which is threaded through `MeshCtx` -- the bundle those
+    background tasks already carry (alongside `stats`/`blob_store`/
+    `pruned_peers`). A free `clear_status_cache(&StatusCache)` is called
+    at each of the three mutation sites above. `invalidate_status_snapshot`
+    now delegates to it. No wire-format change, no new config, no change
+    to the IPC path's own behavior; the cache simply stops being able to
+    outlive a roster/peer change that happened off the command path.
     """
 
     req_id = "STATUS-CACHE-001"

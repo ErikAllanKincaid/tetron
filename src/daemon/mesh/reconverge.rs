@@ -187,6 +187,11 @@ pub(crate) async fn reconverge_and_apply(
     // `pruned_peers` first: closing wakes our own reconnect loop, which would
     // otherwise re-dial the peer (it still lists us) and re-form the link.
     prune_departed_peers(peers, pruned_peers, state, network_name, my_identity);
+    // STATUS-CACHE-001: the roster (`member_count`) was just replaced from the
+    // signed record and `prune_departed_peers` may have dropped connections --
+    // this is how every non-coordinator node learns a member left, and it
+    // never passes through `handle_request`, so drop the cached status here.
+    super::diagnostics::clear_status_cache(&ctx.status_cache);
     tracing::info!(network = %network_name, "reconverged from signed record");
 }
 

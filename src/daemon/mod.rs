@@ -165,6 +165,12 @@ pub(crate) struct MeshCtx {
     /// each connection's own `ControlGate`. Genuinely daemon-wide, like
     /// `stats`/`blob_store`/`pruned_peers` above.
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
+    /// STATUS-CACHE-001: a clone of `MeshManager::status_snapshot`, so a
+    /// background task holding only a `MeshCtx` can drop the cached status
+    /// snapshot at its own roster / peer-table mutation site
+    /// (`clear_status_cache`) -- the IPC `handle_request` denylist never
+    /// sees those.
+    status_cache: Arc<mesh::diagnostics::StatusCache>,
 }
 
 impl MeshCtx {
@@ -451,10 +457,12 @@ pub struct MeshManager {
     /// `IpcMessage::Status` does not walk iroh's path machinery
     /// (`conn.paths()` + `p.stats()` per path per peer) once per request.
     /// Rebuilt lazily on read when older than `status-cache.interval`, and
-    /// dropped outright by any mutating IPC, so its age is only ever visible
-    /// when nothing has actually changed. The scalar counters are NOT cached
-    /// here -- they are atomic reads and stay live on every request.
-    status_snapshot: std::sync::RwLock<Option<mesh::diagnostics::StatusSnapshot>>,
+    /// dropped outright by any mutating IPC -- and by the background mesh
+    /// tasks that mutate the roster / peer table off the IPC path, which
+    /// hold a clone of this `Arc` via [`MeshCtx`] (see `clear_status_cache`).
+    /// The scalar counters are NOT cached here -- they are atomic reads and
+    /// stay live on every request.
+    status_snapshot: Arc<mesh::diagnostics::StatusCache>,
     /// Daemon-wide shared rate-limit gate (HARDEN-004), built once at
     /// bootstrap from config and cloned into every network's [`MeshCtx`].
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
@@ -607,6 +615,7 @@ impl MeshManager {
             blob_store: self.blob_store.clone(),
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
+            status_cache: self.status_snapshot.clone(),
         })
     }
 
@@ -1365,6 +1374,7 @@ mod accept_handler_tests {
             blob_store,
             pruned_peers: Arc::new(DashSet::new()),
             global_gate: Arc::new(crate::ratelimit::GlobalRateLimiter::with_params(10, 3, 50)),
+            status_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
