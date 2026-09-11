@@ -186,6 +186,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             }],
         };
         let bytes = encode_msg(&msg);
@@ -276,6 +277,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             }],
             approved: vec![ApprovedEntry {
                 identity: test_id(2),

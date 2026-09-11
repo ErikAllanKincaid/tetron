@@ -1443,8 +1443,16 @@ class VeilidCustomTransportMechanism(Requirement):
     `CustomTransport`/`CustomEndpoint`/`CustomSender` traits (the same
     `unstable-custom-transports` mechanism TOR-M01 already uses) by
     embedding `veilid-core` in-process and carrying each QUIC transmit as
-    a Veilid `AppMessage`, addressed to a `RouteId` imported from a
-    peer's private-route blob.
+    a Veilid `AppMessage`.
+
+    Addressed by the peer's stable Veilid `NodeId` (`Target::NodeId`,
+    Veilid's default safety-routing for sender privacy), not a
+    private-route `RouteId` as first sketched pre-implementation: a
+    `NodeId` doesn't rotate the way an imported private route does, which
+    sidesteps route-churn bookkeeping entirely, and tetron's invite-gated
+    model (peers already mutually know each other via the signed roster)
+    doesn't need the private-route mechanism's stronger receiver-anonymity
+    property anyway.
 
     Embedding `veilid-core` in-process, rather than talking to a
     separately-running daemon the way `iroh-tor-transport` talks to
@@ -1456,23 +1464,19 @@ class VeilidCustomTransportMechanism(Requirement):
     Out of scope for this requirement, each needing its own future
     requirement once this one has landed and been live-verified:
 
-    - Automatic peer discovery -- resolving an iroh `EndpointId` to a
-      Veilid route the way `TorCustomTransport::discovery()` resolves one
-      to an onion address. Veilid's `create_dht_record`/`open_dht_record`
-      support a deterministic record key when given an explicit owner
-      keypair, which is the likely mechanism (derive a Veilid keypair
-      from the same secret material as the node's iroh identity so any
-      peer holding only the public `EndpointId` can derive the same
-      record key), but record staleness/refresh and who is allowed to
-      overwrite it are a real protocol-design question deserving its own
-      dedicated pass, not a rushed add-on riding along with this one.
+    - Automatic peer discovery. A registered `CustomTransport`'s local
+      address is NOT automatically included in what iroh's own pkarr
+      publisher sends (`socket.rs::publish_my_addr` builds its address
+      list from direct/relay addrs only, by design -- the same isolation
+      boundary that makes Tor need `TorCustomTransport::discovery()` as a
+      separate mechanism applies here too). VEILID-002 addresses this by
+      riding tetron's own signed-roster distribution instead of a new
+      DHT-based discovery protocol -- see its own docstring.
     - Wiring into tetron's own `transport.rs`/`TransportMode`/CLI/status
       display, mirroring `src/transport.rs`'s existing `tor` feature
-      block -- depends on this requirement (needs the crate to exist and
-      be live-verified first) and on the discovery mechanism above (a
-      `--veilid` network is not usable for real mesh joining without it).
+      block -- see VEILID-002.
     - A `tetron-testsuite` scenario exercising it end-to-end -- depends on
-      the previous point.
+      dial-path address injection (see VEILID-003).
 
     Verified by the crate's own integration test, `#[ignore]`d by default
     since it needs to reach Veilid's public bootstrap network (not
@@ -1483,6 +1487,71 @@ class VeilidCustomTransportMechanism(Requirement):
     connection opens and carries data between them end to end.
     """
     req_id = "VEILID-001"
+
+
+class VeilidCoreWiring(Requirement):
+    """REQUIREMENT-ID: VEILID-002 (depends on VEILID-001)
+
+    Wires `veilid-transport` into tetron's own daemon/CLI, mirroring the
+    existing `tor` feature block in `src/transport.rs` exactly:
+
+    - `veilid` cargo feature (`dep:veilid-transport`, a workspace path
+      dependency -- `veilid-transport` is not published anywhere).
+    - `TransportMode::Veilid` (`tetron-proto`) and `ConnType::Veilid`
+      (`tetron-proto::ipc`), alongside the existing `Tor` variants.
+    - `--veilid` on `tetron create`/`tetron join` (`conflicts_with =
+      "tor"` -- the two are mutually exclusive per network, matching one
+      shared iroh `Endpoint` gaining at most the transports its joined
+      networks actually asked for).
+    - `bootstrap.rs` derives `use_veilid` the same way it already derives
+      `use_tor` (`.any(|net| ...is_veilid())` over joined networks) and
+      passes it into `create_endpoint_with_alpns`, which starts an
+      embedded Veilid node (`VeilidTransportBuilder::build()`) and
+      registers it via `.add_custom_transport()` when set.
+    - `choose_path_index` (`daemon/mesh/select.rs`) ranks `Veilid` last,
+      after `Tor` -- both are higher-latency/anonymizing paths, tried
+      only once Direct and Relay are unavailable.
+    - `Member` (`membership.rs`, part of the signed `GroupBlob`) gains an
+      additive `veilid_node_id: Option<String>` field -- the mechanism
+      for VEILID-001's deferred discovery gap: since every joined peer
+      already receives every other member's roster entry (hostname, IP,
+      etc.) via the existing signed-blob distribution, riding a peer's
+      Veilid `NodeId` on that same channel needs no new publish/resolve
+      protocol, unlike Tor's onion address (which correctly stays off
+      the roster/pkarr path since it isn't network-position data the
+      coordinator's admission logic needs to reason about).
+
+    Explicitly NOT done here, deferred to VEILID-003 (its own
+    single-responsibility requirement, since these three are only
+    meaningful as one working unit and don't decompose further on their
+    own):
+
+    - Populating `veilid_node_id` anywhere. Every construction site in
+      this pass sets it to `None` (`build_initial_roster`'s own-entry
+      construction, `admit_peer`/`admit_approved_member`'s admitted-peer
+      construction, and every persisted-config fallback-restore path) --
+      the roster *schema* gained the field, but nothing populates it yet.
+    - Propagating an admitted peer's own `veilid_node_id` through the
+      join/admission wire handshake to the coordinator (today's
+      `MeshHello`-equivalent carries `hostname` but not this).
+    - Injecting a resolved `TransportAddr::Custom` (built from a target
+      peer's roster `veilid_node_id`) into the `EndpointAddr` at the
+      single dial chokepoint, `transport::connect_to_peer_with_alpn`.
+    - A daemon-lifecycle-scoped Veilid transport handle reachable from
+      both the roster-construction and dial-chokepoint call sites (the
+      one embedded Veilid node -- like the one shared iroh `Endpoint` --
+      needs to be built once and shared, not re-started per call).
+    - A `tetron-testsuite` scenario (depends on the above actually
+      carrying peer traffic to be worth writing).
+
+    Until VEILID-003 lands, `--veilid` makes the daemon start a real
+    embedded Veilid node and register it as an active custom transport on
+    the shared endpoint (structurally verified: compiles under
+    `--features veilid`, clippy/fmt clean, `choose_path_index` correctly
+    ranks it), but no peer dial actually uses it yet -- there is no
+    dialable address for iroh to route through the custom transport with.
+    """
+    req_id = "VEILID-002"
 
 
 # --------------------------------------------------------------------------

@@ -1452,6 +1452,19 @@ mod accept_handler_tests {
     }
 
     #[test]
+    fn choose_path_ranks_veilid_below_tor() {
+        use ipc::ConnType::*;
+        // Same fallback-to-best-class logic, extended for VEILID-002: Direct
+        // > Relay > Tor > Veilid (both Tor and Veilid are anonymizing/
+        // higher-latency last resorts; Veilid ranks last).
+        let classes = [(Veilid, false, true, false), (Tor, false, true, false)];
+        assert_eq!(super::choose_path_index(&classes), Some(1));
+
+        let only_veilid = [(Veilid, false, true, false)];
+        assert_eq!(super::choose_path_index(&only_veilid), Some(0));
+    }
+
+    #[test]
     fn choose_path_empty_is_none() {
         assert_eq!(super::choose_path_index(&[]), None);
     }
@@ -1713,6 +1726,7 @@ mod coordinator_dial_order_tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let members = vec![mk(a, true), mk(b, true), mk(c, false), mk(me, true)];
         // minter = b: b first, then the other coordinator a, never c (not coord), never me.
@@ -1729,6 +1743,7 @@ mod coordinator_dial_order_tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
 
         // No coordinators in the roster ⇒ empty order (caller bails).
@@ -1838,6 +1853,7 @@ mod welcome_ip_collision_tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         }
     }
 
@@ -2570,6 +2586,7 @@ mod headless_tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         members
@@ -2580,6 +2597,7 @@ mod headless_tests {
                 hostname: Some("member-a".to_string()),
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         members
@@ -2590,6 +2608,7 @@ mod headless_tests {
                 hostname: Some("member-b".to_string()),
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
 
@@ -2757,6 +2776,7 @@ mod headless_tests {
                 hostname: Some("erikk-thinkpad-p1".to_string()),
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
 

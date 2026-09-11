@@ -64,8 +64,12 @@ pub(crate) enum Command {
         #[arg(long)]
         nuke_consensus: Option<u32>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "veilid")]
         tor: bool,
+        /// Route traffic over an embedded Veilid node (VEILID-001/002; requires
+        /// building with --features veilid)
+        #[arg(long, conflicts_with = "tor")]
+        veilid: bool,
         /// Bypass the subnet-collision guard: allow an explicit --subnet that
         /// overlaps a network this node already has, or the host's own
         /// physical LAN (SUBNET-COLLISION-001/002)
@@ -84,8 +88,12 @@ pub(crate) enum Command {
         #[arg(long)]
         hostname: Option<String>,
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "veilid")]
         tor: bool,
+        /// Route traffic over an embedded Veilid node (VEILID-001/002; requires
+        /// building with --features veilid)
+        #[arg(long, conflicts_with = "tor")]
+        veilid: bool,
         /// Bypass the subnet-collision guard: allow joining a network whose
         /// subnet overlaps one this node already has, or the host's own
         /// physical LAN (SUBNET-COLLISION-001/002)
@@ -550,6 +558,7 @@ async fn main() -> Result<()> {
             subnet,
             nuke_consensus,
             tor,
+            veilid,
             force,
         } => {
             ipc_create(
@@ -559,6 +568,7 @@ async fn main() -> Result<()> {
                 subnet,
                 nuke_consensus,
                 tor,
+                veilid,
                 force,
             )
             .await
@@ -568,8 +578,9 @@ async fn main() -> Result<()> {
             alias,
             hostname,
             tor,
+            veilid,
             force,
-        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor, force).await,
+        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor, veilid, force).await,
         Command::Nuke {
             network_key,
             force,

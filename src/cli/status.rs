@@ -369,6 +369,7 @@ fn print_network(net: &ipc::NetworkStatus) {
                 ipc::ConnType::Direct => "direct".to_string(),
                 ipc::ConnType::Relay => "relay".to_string(),
                 ipc::ConnType::Tor => "tor".to_string(),
+                ipc::ConnType::Veilid => "veilid".to_string(),
                 ipc::ConnType::Unknown => "?".to_string(),
             },
             // STATUS-006: how long this peer has been gone, so a

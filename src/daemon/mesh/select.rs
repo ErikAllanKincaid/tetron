@@ -67,6 +67,8 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
                     hostname: m.hostname,
                     collision_index: 0,
                     last_seen: None,
+                    // Persisted config fallback doesn't carry this yet (VEILID-003).
+                    veilid_node_id: None,
                 })
                 .collect()
         })
@@ -161,7 +163,7 @@ pub(crate) fn classify_candidate_addr(
 /// 1. Selected *and* (active or the sole trustworthy candidate) -- the
 ///    strongest signal, trusted outright.
 /// 2. No tier-1 winner: prefer any candidate with real activity, by class
-///    (Direct > Relay > Tor), *regardless* of `is_selected()` -- corroborated
+///    (Direct > Relay > Tor > Veilid), *regardless* of `is_selected()` -- corroborated
 ///    real traffic outranks a bare selected label or classification alone.
 /// 3. Nothing has proven itself yet: fall back to plain classification among
 ///    all trustworthy candidates, so a genuinely new, still-validating path
@@ -185,6 +187,7 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool, bool)]) -
         ipc::ConnType::Direct,
         ipc::ConnType::Relay,
         ipc::ConnType::Tor,
+        ipc::ConnType::Veilid,
     ] {
         if let Some(i) = classes
             .iter()
@@ -198,6 +201,7 @@ pub(crate) fn choose_path_index(classes: &[(ipc::ConnType, bool, bool, bool)]) -
         ipc::ConnType::Direct,
         ipc::ConnType::Relay,
         ipc::ConnType::Tor,
+        ipc::ConnType::Veilid,
     ] {
         if let Some(i) = classes
             .iter()

@@ -268,6 +268,12 @@ impl MeshManager {
                 hostname: Some(my_hostname.to_string()),
                 collision_index: 0,
                 last_seen: None,
+                // Not yet populated even when `transport` is `Veilid` -- that
+                // needs a shared, daemon-lifecycle Veilid transport handle
+                // reachable from here, deferred to VEILID-003 alongside
+                // propagating an admitted peer's own value and injecting the
+                // resolved address into the dial path (`connect_to_peer_with_alpn`).
+                veilid_node_id: None,
             })
             .expect("self-add cannot collide");
 
@@ -911,6 +917,8 @@ impl MeshManager {
                 hostname: entry.hostname.clone(),
                 collision_index: 0,
                 last_seen: None,
+                // Persisted config fallback doesn't carry this yet (VEILID-003).
+                veilid_node_id: None,
             })
             .collect();
         let approved = nc

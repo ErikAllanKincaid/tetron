@@ -507,6 +507,7 @@ mod tests {
             hostname: None,
             collision_index: idx_a,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
 
@@ -648,6 +649,7 @@ mod tests {
                 hostname: None,
                 collision_index: idx,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         }

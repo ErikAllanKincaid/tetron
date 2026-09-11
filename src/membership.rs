@@ -65,6 +65,15 @@ pub struct Member {
     /// to co-coordinators and survives a coordinator restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<u64>,
+    /// This peer's Veilid `NodeId` (string form, `veilid_core::NodeId`'s
+    /// `Display`/`FromStr`), present only when the peer joined this network
+    /// with `--veilid` (VEILID-002). Rides the existing roster-distribution
+    /// mechanism instead of a separate discovery protocol -- every member
+    /// already receives every other member's `veilid_node_id` the same way
+    /// they receive `hostname`/`ip`, so no new publish/resolve path is
+    /// needed for a peer to find another peer's Veilid address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub veilid_node_id: Option<String>,
 }
 
 /// Controls who can approve new members joining the network.
@@ -734,6 +743,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         list.add(member.clone()).unwrap();
         assert!(list.is_member(&id));
@@ -752,6 +762,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         list.add(member).unwrap();
         let found = list.get_by_ip(Ipv4Addr::new(10, 88, 10, 5)).unwrap();
@@ -769,6 +780,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         let result = list.add(Member {
@@ -778,6 +790,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         });
         assert!(result.is_err());
     }
@@ -793,6 +806,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         list.add(Member {
@@ -802,6 +816,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         assert!(list.get(&id).unwrap().is_coordinator);
@@ -818,6 +833,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         let removed = list.remove(&id);
@@ -836,6 +852,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         list.add(Member {
@@ -845,6 +862,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         assert_eq!(list.all().len(), 2);
@@ -878,6 +896,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         let entry = ApprovedEntry {
@@ -1002,6 +1021,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             });
         }
         list
@@ -1214,6 +1234,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: Some(12345),
+                veilid_node_id: None,
             })
             .unwrap();
         let approved = ApprovedList::new();
@@ -1258,6 +1279,7 @@ mod tests {
                 hostname: None,
                 collision_index: 0,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         let approved = ApprovedList::new();
@@ -1492,6 +1514,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         assert!(validate_member(&member, default_subnet()).is_ok());
     }
@@ -1512,6 +1535,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let err = validate_member(&member, default_subnet())
             .unwrap_err()
@@ -1529,6 +1553,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         assert!(validate_member(&member, default_subnet()).is_err());
     }
@@ -1548,6 +1573,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let gw = Member {
             identity: id,
@@ -1556,6 +1582,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         assert!(validate_member(&net, default_subnet()).is_err());
         assert!(validate_member(&gw, default_subnet()).is_err());
@@ -1598,6 +1625,7 @@ mod tests {
                     hostname: None,
                     collision_index: 0,
                     last_seen: None,
+                    veilid_node_id: None,
                 };
                 assert!(
                     validate_member(&member, default_subnet()).is_ok(),
@@ -1629,6 +1657,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let blob = GroupBlob {
             generation: 0,
@@ -1659,6 +1688,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let blob = GroupBlob {
             generation: 0,
@@ -1686,6 +1716,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         })
         .unwrap();
         mark_coordinator(&mut list, &id);
@@ -1702,6 +1733,7 @@ mod tests {
             hostname: None,
             collision_index: 2,
             last_seen: None,
+            veilid_node_id: None,
         };
         assert!(validate_member(&good, default_subnet()).is_ok());
         let bad = Member {
@@ -1722,6 +1754,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let dup = derive_ip(&a, default_subnet());
         assert!(validate_no_duplicate_ips(&[m(a, dup), m(test_id(2), dup)]).is_err());
@@ -1748,6 +1781,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         };
         let resolved = resolve_ip_tiebreak(vec![mk(hi), mk(lo)], default_subnet());
         // lower identity keeps `ip`; higher re-rolls to a free index.
@@ -1806,6 +1840,7 @@ mod tests {
                 hostname: None,
                 collision_index: idx,
                 last_seen: None,
+                veilid_node_id: None,
             })
             .unwrap();
         }
@@ -1823,6 +1858,7 @@ mod tests {
             hostname: None,
             collision_index: 0,
             last_seen: None,
+            veilid_node_id: None,
         }
     }
 

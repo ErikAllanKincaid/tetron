@@ -504,6 +504,7 @@ pub enum ConnType {
     Direct,
     Relay,
     Tor,
+    Veilid,
     Unknown,
 }
 

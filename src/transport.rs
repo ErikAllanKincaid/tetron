@@ -14,7 +14,7 @@ use iroh::{
 };
 
 use crate::config::ServerOverride;
-#[cfg(feature = "tor")]
+#[cfg(any(feature = "tor", feature = "veilid"))]
 use std::sync::Arc;
 
 /// Compiled-default fixed UDP port the endpoint binds so users can
@@ -44,14 +44,16 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 }
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
-/// When `tor` is true and the `tor` feature is enabled, adds the Tor custom transport
-/// alongside the default relay transport. `listen_port` overrides
-/// [`TETRON_LISTEN_PORT`] (CONFIG-AUDIT-002); pass the constant itself for the
-/// compiled-default behavior.
+/// When `tor`/`veilid` is true and the matching cargo feature is enabled, adds
+/// that custom transport alongside the default relay transport. `listen_port`
+/// overrides [`TETRON_LISTEN_PORT`] (CONFIG-AUDIT-002); pass the constant
+/// itself for the compiled-default behavior.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
     alpns: Vec<Vec<u8>>,
     tor: bool,
+    veilid: bool,
     relay: &ServerOverride,
     discovery: &ServerOverride,
     listen_port: u16,
@@ -61,7 +63,7 @@ pub async fn create_endpoint_with_alpns(
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
     let fixed = format!("0.0.0.0:{listen_port}");
-    let ep = match bind_endpoint(&secret_key, &alpns, tor, &fixed, relay, discovery).await {
+    let ep = match bind_endpoint(&secret_key, &alpns, tor, veilid, &fixed, relay, discovery).await {
         Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(
@@ -69,9 +71,17 @@ pub async fn create_endpoint_with_alpns(
                 error = %e,
                 "fixed UDP port unavailable; falling back to an ephemeral port"
             );
-            bind_endpoint(&secret_key, &alpns, tor, "0.0.0.0:0", relay, discovery)
-                .await
-                .context("failed to bind iroh endpoint")?
+            bind_endpoint(
+                &secret_key,
+                &alpns,
+                tor,
+                veilid,
+                "0.0.0.0:0",
+                relay,
+                discovery,
+            )
+            .await
+            .context("failed to bind iroh endpoint")?
         }
     };
 
@@ -81,12 +91,14 @@ pub async fn create_endpoint_with_alpns(
 }
 
 /// Builds and binds an iroh endpoint at `bind` with the N0 preset and (when
-/// requested + compiled in) the Tor custom transport. Factored out so the caller
-/// can retry with a different bind address after a port collision.
+/// requested + compiled in) the Tor and/or Veilid custom transports. Factored
+/// out so the caller can retry with a different bind address after a port
+/// collision.
 async fn bind_endpoint(
     secret_key: &SecretKey,
     alpns: &[Vec<u8>],
     tor: bool,
+    veilid: bool,
     bind: &str,
     relay: &ServerOverride,
     discovery: &ServerOverride,
@@ -140,6 +152,37 @@ async fn bind_endpoint(
     #[cfg(not(feature = "tor"))]
     if tor {
         anyhow::bail!("Tor support requires building with --features tor");
+    }
+
+    // Unlike Tor, no `.address_lookup(...)` is registered here: a custom
+    // transport's local address is NOT automatically included in what
+    // `Endpoint`'s own pkarr publisher sends (`socket.rs::publish_my_addr`
+    // only ever builds its address list from direct/relay addrs, by design —
+    // the same isolation boundary that makes Tor need its own separate
+    // discovery mechanism applies here). VEILID-003 (deferred, see
+    // `spec/core.py`) resolves peers by injecting a `TransportAddr::Custom`
+    // built from the roster's `Member.veilid_node_id` directly into the
+    // per-peer `EndpointAddr` at dial time (`connect_to_peer_with_alpn`),
+    // rather than through iroh's generic discovery hook.
+    #[cfg(feature = "veilid")]
+    if veilid {
+        let veilid_transport = veilid_transport::VeilidTransportBuilder::new()
+            .build()
+            .await
+            .context("failed to start embedded Veilid node")?;
+        tracing::info!(
+            node_id = %veilid_transport.own_node_id(),
+            "Veilid transport enabled"
+        );
+        builder =
+            builder
+                .add_custom_transport(Arc::new(veilid_transport)
+                    as Arc<dyn iroh::endpoint::transports::CustomTransport>);
+    }
+
+    #[cfg(not(feature = "veilid"))]
+    if veilid {
+        anyhow::bail!("Veilid support requires building with --features veilid");
     }
 
     builder.bind().await.context("failed to bind iroh endpoint")

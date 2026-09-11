@@ -5498,6 +5498,7 @@ dependencies = [
  "tracing-subscriber",
  "tun",
  "url",
+ "veilid-transport",
 ]
 
 [[package]]
