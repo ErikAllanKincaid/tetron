@@ -13,9 +13,9 @@ use iroh::{
     endpoint::{Builder, QuicTransportConfig},
 };
 
-use crate::config::ServerOverride;
-#[cfg(any(feature = "tor", feature = "veilid"))]
 use std::sync::Arc;
+
+use crate::config::ServerOverride;
 
 /// Compiled-default fixed UDP port the endpoint binds so users can
 /// port-forward a stable, known port for guaranteed direct reachability
@@ -48,11 +48,16 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 /// that custom transport alongside the default relay transport. `listen_port`
 /// overrides [`TETRON_LISTEN_PORT`] (CONFIG-AUDIT-002); pass the constant
 /// itself for the compiled-default behavior.
-/// Returns the bound endpoint and, when a Veilid transport was started, this
-/// node's own Veilid `NodeId` (string form) -- the caller stores this on
-/// [`crate::daemon::MeshManager`] for VEILID-003's own-roster-entry and
-/// join-handshake population. `None` when built without `--features veilid`
-/// or no joined network requested it.
+/// Returns the bound endpoint and a live-updating slot for this node's own
+/// Veilid `NodeId` (string form, `None` until resolved) -- the caller
+/// stores the `Arc` on [`crate::daemon::MeshManager`] for the
+/// own-roster-entry/join-handshake population VEILID-002/003/004 build on.
+/// Always present, even when built without `--features veilid` or no
+/// joined network requested it (in which case it just stays empty). Kept
+/// live rather than a one-shot snapshot because identity resolution has
+/// been observed taking several minutes (VEILID-005/006, see
+/// `spec/core.py`) -- far too long to block on here, but also too long for
+/// a value captured once at boot to be useful in practice.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
@@ -62,7 +67,7 @@ pub async fn create_endpoint_with_alpns(
     relay: &ServerOverride,
     discovery: &ServerOverride,
     listen_port: u16,
-) -> Result<(Endpoint, Option<String>)> {
+) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
@@ -108,7 +113,7 @@ async fn bind_endpoint(
     bind: &str,
     relay: &ServerOverride,
     discovery: &ServerOverride,
-) -> Result<(Endpoint, Option<String>)> {
+) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
     #[allow(unused_mut)]
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
@@ -170,52 +175,43 @@ async fn bind_endpoint(
     // from the roster's `Member.veilid_node_id` directly into the
     // per-peer `EndpointAddr` at dial time (`connect_to_peer_with_alpn`),
     // rather than through iroh's generic discovery hook.
+    // Always present (an empty slot when Veilid isn't used or isn't
+    // compiled in), so `MeshManager` can hold one field regardless of the
+    // `veilid` feature. VEILID-006: unlike an `Option<String>` snapshot,
+    // this is a live cell the background task below keeps updated for as
+    // long as it takes -- identity resolution has been observed taking
+    // several minutes even with the IPv4 fix, well past anything sane to
+    // block `bind_endpoint`'s own return on (see VEILID-005). Every
+    // consumer reads it fresh at the point of use rather than capturing a
+    // boot-time value, so a late-arriving identity still reaches the
+    // roster once resolved, not just on the next restart.
+    let veilid_node_id: Arc<arc_swap::ArcSwapOption<String>> =
+        Arc::new(arc_swap::ArcSwapOption::empty());
+
     #[cfg(feature = "veilid")]
-    let veilid_node_id = if veilid {
+    if veilid {
         let veilid_transport = veilid_transport::VeilidTransportBuilder::new()
             .build()
             .await
             .context("failed to start embedded Veilid node")?;
-        // `own_node_id()` resolves in the background (identity is coupled
-        // to Veilid's own attachment progress, not available synchronously
-        // -- see `VeilidTransportBuilder::build`'s doc comment). A short,
-        // bounded, best-effort wait here gives `MeshManager::veilid_node_id`
-        // a real value immediately in the common case without reintroducing
-        // the multi-minute blocking-daemon-startup problem this same
-        // investigation found and fixed at the crate level: if it doesn't
-        // resolve within this window, we proceed with `None` and rely on
-        // VEILID-004's boot-time self-heal to catch up on a later restart
-        // -- a real, currently-open gap (this daemon's own value only ever
-        // gets captured once, here, not re-checked once resolution
-        // eventually completes within this same session) tracked as a
-        // follow-up, not solved by this bound.
-        let node_id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                if let Some(id) = veilid_transport.own_node_id() {
-                    return id;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            }
-        })
-        .await
-        .ok()
-        .map(|id| id.to_string());
-        tracing::info!(node_id = ?node_id, "Veilid transport enabled");
+        tracing::info!("Veilid transport enabled; own identity resolving in the background");
+        let slot = veilid_node_id.clone();
+        let transport_for_wait = veilid_transport.clone();
+        tokio::spawn(async move {
+            let node_id = transport_for_wait.wait_for_own_node_id().await;
+            tracing::info!(%node_id, "Veilid: own identity now available to the daemon");
+            slot.store(Some(Arc::new(node_id.to_string())));
+        });
         builder =
             builder
                 .add_custom_transport(Arc::new(veilid_transport)
                     as Arc<dyn iroh::endpoint::transports::CustomTransport>);
-        node_id
-    } else {
-        None
-    };
+    }
 
     #[cfg(not(feature = "veilid"))]
-    let veilid_node_id: Option<String> = if veilid {
+    if veilid {
         anyhow::bail!("Veilid support requires building with --features veilid");
-    } else {
-        None
-    };
+    }
 
     let ep = builder
         .bind()
@@ -315,9 +311,10 @@ pub async fn connect_to_peer_with_alpn(
     #[cfg_attr(not(feature = "veilid"), allow(unused_mut))]
     let mut addrs = crate::peercache::lookup(&id);
     #[cfg(feature = "veilid")]
-    if let Some(vnid) = veilid_node_id {
-        match vnid.parse::<veilid_transport::NodeId>() {
+    match veilid_node_id {
+        Some(vnid) => match vnid.parse::<veilid_transport::NodeId>() {
             Ok(node_id) => {
+                tracing::debug!(peer = %id.fmt_short(), veilid_node_id = %node_id, "dialing with a Veilid custom-transport candidate address");
                 addrs
                     .get_or_insert_with(Vec::new)
                     .push(iroh::TransportAddr::Custom(
@@ -331,6 +328,9 @@ pub async fn connect_to_peer_with_alpn(
                     "invalid veilid_node_id in roster entry, skipping"
                 );
             }
+        },
+        None => {
+            tracing::debug!(peer = %id.fmt_short(), "dialing with no Veilid candidate address (peer's veilid_node_id not yet known)");
         }
     }
     #[cfg(not(feature = "veilid"))]

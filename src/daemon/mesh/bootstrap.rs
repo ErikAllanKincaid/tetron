@@ -33,6 +33,7 @@ pub async fn run_daemon(token: CancellationToken, stats: Arc<ForwardMetrics>) ->
     // across `standby` so the node stays online to peers. Each network's TUN
     // is created as part of this call (MULTISEG-003), not before it.
     daemon.connect_all_networks().await;
+    daemon.spawn_veilid_identity_watcher();
 
     // Seed the peer address cache from the live connections we just established.
     // Subsequent reconnects (after an all-offline gap) will skip DHT lookup and
@@ -114,6 +115,7 @@ pub async fn build_headless() -> Result<Arc<MeshManager>> {
     let daemon = build_daemon(token, stats).await?;
     // Bring the saved networks' control plane up, matching `run_daemon`.
     daemon.connect_all_networks().await;
+    daemon.spawn_veilid_identity_watcher();
     Ok(daemon)
 }
 

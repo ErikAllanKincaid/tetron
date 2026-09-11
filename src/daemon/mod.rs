@@ -442,13 +442,19 @@ pub struct MeshManager {
     endpoint: Endpoint,
     /// This daemon's own Veilid `NodeId` (string form), if the shared
     /// endpoint started an embedded Veilid transport (VEILID-002/003).
-    /// `None` when built without `--features veilid`, or when no joined
-    /// network asked for it. Read when constructing this node's own
-    /// roster entry (`build_initial_roster`, joiner-side `JoinRequest`)
-    /// and NOT used for dialing -- the dial path resolves a *peer's* own
-    /// `veilid_node_id` from their roster entry instead
+    /// Live, not a boot-time snapshot (VEILID-006): identity resolution
+    /// happens in the background and has been observed taking several
+    /// minutes, so `transport::create_endpoint_with_alpns` hands back an
+    /// already-wired-up cell that a background task keeps current for as
+    /// long as it takes, rather than a value captured once at boot.
+    /// `None`/empty when built without `--features veilid`, or when no
+    /// joined network asked for it, or simply not resolved yet. Use
+    /// [`Self::veilid_node_id`] to read it. Read when constructing this
+    /// node's own roster entry (`build_initial_roster`, joiner-side
+    /// `JoinRequest`) and NOT used for dialing -- the dial path resolves a
+    /// *peer's* own `veilid_node_id` from their roster entry instead
     /// (`transport::connect_to_peer_with_alpn`).
-    veilid_node_id: Option<String>,
+    veilid_node_id: Arc<arc_swap::ArcSwapOption<String>>,
     identity: IrohIdentityProvider,
     stats: Arc<ForwardMetrics>,
     networks: Arc<DashMap<String, NetworkHandle>>,
@@ -575,6 +581,15 @@ mod pruned_peers_gc_tests {
 }
 
 impl MeshManager {
+    /// This daemon's own Veilid identity, if resolved yet -- VEILID-006:
+    /// reads the live cell fresh each call rather than a boot-time
+    /// snapshot, so a late-arriving identity (common; see the field's own
+    /// doc comment) is visible to every caller as soon as the background
+    /// resolver in `transport.rs` fills it in, not just on the next boot.
+    pub(crate) fn veilid_node_id(&self) -> Option<String> {
+        self.veilid_node_id.load_full().map(|s| (*s).clone())
+    }
+
     /// Gracefully take the whole node offline: cancel the daemon-wide shutdown
     /// token (stopping every network run loop, the accept loop, and the
     /// data-plane forward tasks) and then close the iroh endpoint so all QUIC

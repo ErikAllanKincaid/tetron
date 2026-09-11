@@ -429,18 +429,52 @@ impl RemoteStateActor {
                 && !path_remote.is_relay()
                 && conn.side().is_client()
             {
-                // We may have raced this with a relay address.  Try and add any
-                // relay addresses we have back.
+                // We may have raced this with a relay address, or with a
+                // custom-transport address (tetron-local patch, see
+                // PATCH.md: `--tor`/`--veilid` custom transports need the
+                // same treatment relay already got here, or they can never
+                // appear as a path on a connection that a faster candidate,
+                // like Direct on a shared LAN, won outright). Try and add
+                // any of either kind we have back.
+                let known: Vec<_> = self.state.paths.addrs().cloned().collect();
+                trace!(?known, "custom-transport backfill: candidate addrs known at add_connection (tetron-local patch, see PATCH.md)");
                 let relays = self
                     .state
                     .paths
                     .addrs()
-                    .filter(|addr| addr.is_relay())
+                    .filter(|addr| addr.is_relay() || matches!(addr, transports::Addr::Custom(_)))
                     .map(|addr| transports::FourTuple::from_remote(addr.clone()))
                     .collect::<Vec<_>>();
+                trace!(?relays, "custom-transport backfill: addrs to open_path_on_conn for");
                 for open_addr in relays {
                     self.state
                         .open_path_on_conn(conn_id, conn_state, &conn, &open_addr);
+                }
+                // tetron-local patch (PATCH.md): opening a path only
+                // reserves a `PathId` in the connection -- it does not by
+                // itself send anything. Relay backup paths still end up
+                // with real traffic (`has_activity`) because the relay
+                // connection carries its own independent keepalive traffic
+                // outside QUIC path validation; a custom-transport backup
+                // path has no such side channel and was observed live
+                // (`tetron-testsuite`'s `veilid-smoke`, 2026-09-11) to sit
+                // open but silent indefinitely with zero `poll_send` calls
+                // -- nothing here was pinging it to kick off the QUIC-level
+                // PATH_CHALLENGE that `path.ping()` triggers (the same call
+                // `handle_msg_network_change`, just below, already uses for
+                // an equivalent "make sure this path is actually probed"
+                // need). Ping every path just opened above so it validates.
+                for (path_id, addr) in &conn_state.paths {
+                    if let Some(path) = conn.path(*path_id)
+                        && matches!(
+                            addr,
+                            transports::FourTuple::Relay { .. }
+                                | transports::FourTuple::Custom { .. }
+                        )
+                        && let Err(err) = path.ping()
+                    {
+                        warn!(%err, %path_id, ?addr, "failed to ping newly-opened backup path");
+                    }
                 }
             }
         }
@@ -1046,6 +1080,7 @@ impl State {
         let quic_addr =
             open_addr.to_noq_four_tuple(&self.relay_mapped_addrs, &self.custom_mapped_addrs);
         let path_status = self.path_status_for_addr(open_addr);
+        trace!(?open_addr, ?quic_addr, ?path_status, "open_path_on_conn called");
 
         let fut = conn.open_path_ensure(quic_addr, path_status);
         match fut.path_id() {
@@ -1054,6 +1089,7 @@ impl State {
             }
             None => {
                 let ret = now_or_never(fut);
+                trace!(?ret, "open_path_ensure now_or_never result");
                 match ret {
                     Some(Err(PathError::RemoteCidsExhausted))
                     | Some(Err(PathError::MaxPathIdReached)) => {

@@ -225,14 +225,15 @@ impl MeshManager {
         // coordinator has no equivalent "reconnect to myself" path, so
         // this boot-time restore is the only place it can catch up.
         let mut needs_republish = false;
+        let current_veilid_node_id = self.veilid_node_id();
         if net_config
             .and_then(|nc| nc.transport.as_ref())
             .is_some_and(|t| t.is_veilid())
-            && self.veilid_node_id.is_some()
+            && current_veilid_node_id.is_some()
             && let Some(m) = member_list.get_mut(&my_identity)
-            && m.veilid_node_id != self.veilid_node_id
+            && m.veilid_node_id != current_veilid_node_id
         {
-            m.veilid_node_id = self.veilid_node_id.clone();
+            m.veilid_node_id = current_veilid_node_id;
             needs_republish = true;
         }
 
@@ -410,6 +411,102 @@ impl MeshManager {
             initial_invite_key: None,
             subnet: format!("{}/{}", subnet.0, subnet.1),
         })
+    }
+
+    /// VEILID-006: spawns a background task that periodically republishes
+    /// this daemon's own Veilid identity (once known -- however long that
+    /// takes, see `MeshManager::veilid_node_id`'s doc comment) into every
+    /// currently-coordinated network's roster, without waiting for a
+    /// restart. Complements VEILID-004 (which only catches up at the
+    /// *next* boot) and the member-side self-heal a normal reconnect's
+    /// `MeshHello` already provides (VEILID-003) -- a coordinator has no
+    /// equivalent "reconnect to myself" event, so this is the only path
+    /// that closes the gap within one continuously-running session.
+    /// Called once, after `connect_all_networks()`, from both `run_daemon`
+    /// and `build_headless`.
+    ///
+    /// **Deliberately periodic, not one-shot** -- found live via
+    /// `tetron-testsuite`'s `veilid-smoke` run (2026-09-11), after fixing
+    /// the separate missing-`attach()` bug that had been masking this one:
+    /// `connect_all_networks` restores each configured network via a
+    /// fire-and-forget `tokio::spawn`, returning before any of them
+    /// necessarily finish (`self.networks.insert` happens inside that
+    /// spawned restore, not before it). Identity now resolves in ~1-2s
+    /// (post-`attach()`-fix), which turned out to routinely *beat* that
+    /// restore to the finish line -- a one-shot "wait for identity, then
+    /// republish once" run this immediately after `connect_all_networks()`
+    /// returns would fire while `self.networks` was still empty, find
+    /// nothing to republish into, and never run again, silently leaving
+    /// the roster stale for the rest of the process's life. Republishing
+    /// is idempotent and cheap (a per-network `HashMap` read and string
+    /// compare, skipping the write entirely once the roster already
+    /// matches), so looping it is the simple fix, and it doubles as
+    /// self-heal for a network created or joined *after* identity was
+    /// already known, which a one-shot design could never cover either.
+    pub(crate) fn spawn_veilid_identity_watcher(self: &Arc<Self>) {
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            loop {
+                daemon.republish_own_veilid_identity().await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
+
+    /// The actual republish pass `spawn_veilid_identity_watcher` triggers
+    /// once identity is known. Iterates every joined network (names
+    /// collected first, per the existing pattern elsewhere in this file,
+    /// so the `DashMap` iterator isn't held across an `.await`), skips
+    /// anything this node doesn't coordinate or that didn't ask for
+    /// Veilid, and republishes only the ones whose roster entry doesn't
+    /// already match.
+    async fn republish_own_veilid_identity(self: &Arc<Self>) {
+        let Some(node_id) = self.veilid_node_id() else {
+            return;
+        };
+        let my_identity = self.identity.local_identity();
+        let names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
+        tracing::debug!(node_id = %node_id, networks = ?names, "veilid-transport: republish pass starting");
+        for name in names {
+            let (state, dht_notify) = {
+                let Some(handle) = self.networks.get(&name) else {
+                    continue;
+                };
+                let is_coordinator = handle.state.read().unwrap().network_secret_key.is_some();
+                let wants_veilid = config::load_network(&name)
+                    .ok()
+                    .flatten()
+                    .and_then(|nc| nc.transport)
+                    .is_some_and(|t| t.is_veilid());
+                tracing::debug!(network = %name, is_coordinator, wants_veilid, "veilid-transport: republish gate check");
+                if !is_coordinator || !wants_veilid {
+                    continue;
+                }
+                (handle.state.clone(), handle.dht_notify.clone())
+            };
+            let changed = {
+                let mut s = state.write().unwrap();
+                let existing = s
+                    .members
+                    .get(&my_identity)
+                    .and_then(|m| m.veilid_node_id.clone());
+                tracing::debug!(network = %name, existing = ?existing, new = %node_id, "veilid-transport: republish comparing roster entry");
+                match s.members.get_mut(&my_identity) {
+                    Some(m) if m.veilid_node_id.as_deref() != Some(node_id.as_str()) => {
+                        m.veilid_node_id = Some(node_id.clone());
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if changed {
+                update_snapshot_and_publish(&state, &self.blob_store, &dht_notify).await;
+                tracing::info!(
+                    network = %name,
+                    "veilid-transport: republished own identity into roster (VEILID-006)"
+                );
+            }
+        }
     }
 
     /// Destroy a network (NUKE-CONSENSUS). A solo coordinator (no one to

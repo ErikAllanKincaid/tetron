@@ -99,18 +99,30 @@ impl VeilidTransportBuilder {
     ///
     /// **Found live, not by inspection, via `tetron-testsuite`'s
     /// `veilid-smoke` run (2026-09-11), across several iterations:** the
-    /// first cut only waited for *attachment* (`public_internet_ready`,
-    /// observed up to ~2 minutes) and assumed `own_node_id()` -- needed
-    /// immediately, to construct this node's own `CustomAddr` -- was cheap
-    /// and instant, since `veilid-core`'s own internal log
-    /// (`rtab: Node Ids: [...]`) shows the id within milliseconds of
-    /// startup. That assumption was wrong: `get_state()`'s *public*
-    /// snapshot of `network.node_ids` reflects the internally-known id
-    /// only once the network layer makes attachment progress --
-    /// `attachment.state` was observed stuck at `Detached` the whole time
-    /// a bounded wait for it failed. So a node's own identity is coupled
-    /// to the same slow, unbounded-in-the-worst-case attachment process as
-    /// everything else here -- there is no cheap synchronous path to it.
+    /// first cut only waited for *attachment* (`public_internet_ready`)
+    /// and assumed `own_node_id()` -- needed immediately, to construct
+    /// this node's own `CustomAddr` -- was cheap and instant, since
+    /// `veilid-core`'s own internal log (`rtab: Node Ids: [...]`) shows
+    /// the id within milliseconds of startup. That assumption was wrong
+    /// on its own terms (`get_state()`'s *public* snapshot of
+    /// `network.node_ids` reflects the internally-known id only once the
+    /// network layer makes attachment progress), but a much bigger bug
+    /// compounded it and was the real reason a bounded wait for
+    /// `public_internet_ready` never succeeded at any timeout tried, up
+    /// to 5 minutes: `build` called [`api_startup`] but never called
+    /// [`VeilidAPI::attach`], so the node never began attaching at all --
+    /// `attachment.state` stayed `Detached` forever and no veilid-core
+    /// bootstrap/attach log lines ever appeared. `api_startup` only
+    /// constructs the API context; `attach`'s own doc comment says so
+    /// explicitly ("Sets the attachment to maintain peers; the network
+    /// connect proceeds in the background tick loop"). With `attach`
+    /// actually called (see below), identity resolves in ~1-2s and full
+    /// `public_internet_ready` attachment in ~7s in live VM testing --
+    /// not the multi-minute-or-never figures observed before this fix.
+    /// Identity is still resolved asynchronously here rather than
+    /// awaited synchronously, since it is not truly instant and this
+    /// method must not block the one shared iroh `Endpoint`'s startup on
+    /// it (see above).
     ///
     /// Both are therefore resolved the same way: in the background, via
     /// [`spawn_identity_and_attach_watcher`]. `own_node_id()`/`own_addr()`
@@ -141,19 +153,39 @@ impl VeilidTransportBuilder {
         config.network.address_types = vec![veilid_core::VeilidConfigAddressType::Ipv4];
         let (tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
         let update_cb: veilid_core::UpdateCallback = Arc::new(move |update| {
-            if let VeilidUpdate::AppMessage(msg) = update
-                && let Some(sender) = msg.sender()
-            {
-                let _ = tx.send((node_id_to_custom_addr(sender), msg.message().to_vec()));
+            if let VeilidUpdate::AppMessage(msg) = update {
+                match msg.sender() {
+                    Some(sender) => {
+                        tracing::debug!(%sender, len = msg.message().len(), "veilid-transport: AppMessage received");
+                        let _ = tx.send((node_id_to_custom_addr(sender), msg.message().to_vec()));
+                    }
+                    None => {
+                        tracing::debug!(
+                            "veilid-transport: AppMessage received with no sender (routed anonymously), dropping -- this transport addresses by NodeId only"
+                        );
+                    }
+                }
             }
         });
         let api = api_startup(update_cb, config).await?;
+        // `api_startup` only constructs the API context -- it does not
+        // attach to the network on its own (`VeilidAPI::attach`'s own doc
+        // comment: "Sets the attachment to maintain peers; the network
+        // connect proceeds in the background tick loop"). Missing this
+        // call is why identity/attachment previously never progressed at
+        // all in live testing: no veilid-core bootstrap/attach log lines
+        // ever appeared, `attachment.state` stayed `Detached` forever, and
+        // `network.node_ids` never populated even though the node's id was
+        // already known internally (`rtab: Node Ids: [...]` logs
+        // immediately at startup, independent of attachment).
+        api.attach().await?;
         let routing_context = api.routing_context()?;
         let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
+        let (node_id_tx, _) = tokio::sync::watch::channel(None);
         let shared = Arc::new(Shared {
             api: api.clone(),
             routing_context,
-            node_id: Mutex::new(None),
+            node_id_tx,
         });
         spawn_identity_and_attach_watcher(api, shared.clone(), local_addrs.clone());
         Ok(VeilidCustomTransport {
@@ -190,7 +222,7 @@ fn spawn_identity_and_attach_watcher(
                             elapsed = ?start.elapsed(),
                             "veilid-transport: own identity resolved"
                         );
-                        *shared.node_id.lock().unwrap() = Some(node_id.clone());
+                        shared.node_id_tx.send_replace(Some(node_id.clone()));
                         local_addrs.set(vec![node_id_to_custom_addr(&node_id)]).ok();
                         identity_known = true;
                     }
@@ -219,13 +251,13 @@ fn spawn_identity_and_attach_watcher(
 struct Shared {
     api: VeilidAPI,
     routing_context: RoutingContext,
-    node_id: Mutex<Option<NodeId>>,
+    node_id_tx: tokio::sync::watch::Sender<Option<NodeId>>,
 }
 
 impl fmt::Debug for Shared {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Shared")
-            .field("node_id", &*self.node_id.lock().unwrap())
+            .field("node_id", &*self.node_id_tx.borrow())
             .finish_non_exhaustive()
     }
 }
@@ -253,7 +285,29 @@ impl VeilidCustomTransport {
 
     /// This node's own Veilid [`NodeId`], once resolved -- see [`Self::own_addr`].
     pub fn own_node_id(&self) -> Option<NodeId> {
-        self.shared.node_id.lock().unwrap().clone()
+        self.shared.node_id_tx.borrow().clone()
+    }
+
+    /// Waits until this node's own identity has resolved, how ever long
+    /// that takes (see [`VeilidTransportBuilder::build`]'s doc comment for
+    /// why this can't be bounded to something short and still be reliable).
+    /// Returns immediately if already known. For a caller that wants to
+    /// react to identity becoming available rather than poll
+    /// [`Self::own_node_id`] -- e.g. tetron's own `MeshManager`, which
+    /// needs to republish a coordinator's roster entry once a real value
+    /// exists, not just once at boot (VEILID-005's own known follow-up).
+    pub async fn wait_for_own_node_id(&self) -> NodeId {
+        let mut rx = self.shared.node_id_tx.subscribe();
+        loop {
+            if let Some(node_id) = rx.borrow_and_update().clone() {
+                return node_id;
+            }
+            if rx.changed().await.is_err() {
+                // Sender dropped -- can't happen while `self` is alive,
+                // since `Shared` owns it. Park rather than spin.
+                std::future::pending::<()>().await;
+            }
+        }
     }
 
     /// Shuts down the embedded Veilid node. Best-effort; there is no way to
@@ -357,11 +411,13 @@ impl CustomSender for VeilidCustomSender {
         };
         let routing_context = self.shared.routing_context.clone();
         let payload = transmit.contents.to_vec();
+        tracing::debug!(target = ?target, len = payload.len(), "veilid-transport: poll_send invoked, sending app_message");
         // `app_message` is async; fire-and-forget, matching UDP's own
         // unreliable-send semantics (no delivery confirmation here either).
         tokio::spawn(async move {
-            if let Err(e) = routing_context.app_message(target, payload).await {
-                tracing::debug!("veilid-transport: app_message send failed: {e}");
+            match routing_context.app_message(target, payload).await {
+                Ok(()) => tracing::debug!("veilid-transport: app_message send succeeded"),
+                Err(e) => tracing::debug!("veilid-transport: app_message send failed: {e}"),
             }
         });
         Poll::Ready(Ok(()))
