@@ -176,13 +176,36 @@ async fn bind_endpoint(
             .build()
             .await
             .context("failed to start embedded Veilid node")?;
-        let node_id = veilid_transport.own_node_id().to_string();
-        tracing::info!(node_id = %node_id, "Veilid transport enabled");
+        // `own_node_id()` resolves in the background (identity is coupled
+        // to Veilid's own attachment progress, not available synchronously
+        // -- see `VeilidTransportBuilder::build`'s doc comment). A short,
+        // bounded, best-effort wait here gives `MeshManager::veilid_node_id`
+        // a real value immediately in the common case without reintroducing
+        // the multi-minute blocking-daemon-startup problem this same
+        // investigation found and fixed at the crate level: if it doesn't
+        // resolve within this window, we proceed with `None` and rely on
+        // VEILID-004's boot-time self-heal to catch up on a later restart
+        // -- a real, currently-open gap (this daemon's own value only ever
+        // gets captured once, here, not re-checked once resolution
+        // eventually completes within this same session) tracked as a
+        // follow-up, not solved by this bound.
+        let node_id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(id) = veilid_transport.own_node_id() {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+        .await
+        .ok()
+        .map(|id| id.to_string());
+        tracing::info!(node_id = ?node_id, "Veilid transport enabled");
         builder =
             builder
                 .add_custom_transport(Arc::new(veilid_transport)
                     as Arc<dyn iroh::endpoint::transports::CustomTransport>);
-        Some(node_id)
+        node_id
     } else {
         None
     };

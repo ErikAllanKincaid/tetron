@@ -54,7 +54,10 @@ async fn quic_connection_over_veilid_only() -> anyhow::Result<()> {
             .build(),
     )
     .await??;
-    eprintln!("both veilid nodes attached in {:?}", t0.elapsed());
+    eprintln!(
+        "both veilid nodes started in {:?} (attachment continues in the background -- build() no longer blocks on it, see its doc comment)",
+        t0.elapsed()
+    );
 
     let ep_a = iroh::Endpoint::builder(presets::N0)
         .relay_mode(RelayMode::Disabled)
@@ -73,13 +76,32 @@ async fn quic_connection_over_veilid_only() -> anyhow::Result<()> {
         .accept(ECHO_ALPN, Echo)
         .spawn();
 
-    let dst = EndpointAddr::from_parts(
-        ep_b.id(),
-        std::iter::once(TransportAddr::Custom(transport_b.own_addr())),
+    // own_addr() resolves in the background (identity is coupled to
+    // attachment progress, not available synchronously -- see
+    // VeilidTransportBuilder::build's doc comment), so poll for it.
+    let t_addr = Instant::now();
+    let b_addr = loop {
+        if let Some(addr) = transport_b.own_addr() {
+            break addr;
+        }
+        if t_addr.elapsed() > Duration::from_secs(240) {
+            anyhow::bail!("transport_b's own_addr() never resolved within 240s");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    eprintln!(
+        "transport_b's own_addr() resolved in {:?}",
+        t_addr.elapsed()
     );
 
+    let dst = EndpointAddr::from_parts(ep_b.id(), std::iter::once(TransportAddr::Custom(b_addr)));
+
     let t1 = Instant::now();
-    let conn = timeout(Duration::from_secs(60), ep_a.connect(dst, ECHO_ALPN)).await??;
+    // Generous: build() no longer waits for attachment (see its doc
+    // comment), so this connect attempt races real attachment happening in
+    // the background on both sides, which has taken up to ~2 minutes in
+    // manual testing.
+    let conn = timeout(Duration::from_secs(240), ep_a.connect(dst, ECHO_ALPN)).await??;
     eprintln!(
         "QUIC connection established over veilid-transport in {:?}",
         t1.elapsed()
