@@ -27,6 +27,10 @@ pub(crate) struct CoordinatorCleanup {
     /// can report its own eventual disconnect back into this same loop,
     /// exactly like `dial_all_members`'s success branch already does.
     pub(crate) disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
+    /// This daemon's own Veilid NodeId (VEILID-003), sent in the MeshHello
+    /// each redialed member receives. `None` unless this network's own
+    /// `transport` is `TransportMode::Veilid`.
+    pub(crate) my_veilid_node_id: Option<String>,
 }
 
 pub(crate) fn spawn_peer_cleanup(
@@ -128,6 +132,7 @@ pub(crate) fn spawn_peer_cleanup(
                                         c.ctx.clone(),
                                         c.disconnect_tx.clone(),
                                         token.clone(),
+                                        c.my_veilid_node_id.clone(),
                                     );
                                 }
                             }
@@ -169,6 +174,7 @@ fn spawn_coordinator_dial_retry(
     ctx: MeshCtx,
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
+    my_veilid_node_id: Option<String>,
 ) {
     let MeshCtx {
         peers,
@@ -246,7 +252,20 @@ fn spawn_coordinator_dial_retry(
                 return;
             }
 
-            match transport::connect_to_peer_with_alpn(&endpoint, peer_id, &alpn).await {
+            let peer_veilid_node_id = state
+                .read()
+                .unwrap()
+                .members
+                .get(&peer_id)
+                .and_then(|m| m.veilid_node_id.clone());
+            match transport::connect_to_peer_with_alpn(
+                &endpoint,
+                peer_id,
+                peer_veilid_node_id.as_deref(),
+                &alpn,
+            )
+            .await
+            {
                 Ok(conn) => {
                     let Ok((mut send, _)) = conn.open_bi().await else {
                         tracing::warn!(peer = %peer_id.fmt_short(), "coordinator reconnect handshake failed");
@@ -259,6 +278,7 @@ fn spawn_coordinator_dial_retry(
                             identity: my_identity,
                             ip: my_ip,
                             hostname: outgoing_hostname(&network_name),
+                            veilid_node_id: my_veilid_node_id.clone(),
                         },
                     )
                     .await

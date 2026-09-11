@@ -65,8 +65,11 @@ pub(crate) async fn fetch_verified_blob(
     peer_ids.sort_by_key(|id| id.to_string());
     peer_ids.dedup();
     for pid in &peer_ids {
+        // No roster in scope to resolve a Veilid address from (this dial is
+        // itself how the roster gets (re-)fetched).
         if let Ok(conn) =
-            transport::connect_to_peer_with_alpn(endpoint, *pid, iroh_blobs::protocol::ALPN).await
+            transport::connect_to_peer_with_alpn(endpoint, *pid, None, iroh_blobs::protocol::ALPN)
+                .await
             && blob_store
                 .remote()
                 .fetch(conn, HashAndFormat::raw(blob_hash))

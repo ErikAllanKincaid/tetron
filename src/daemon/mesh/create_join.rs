@@ -180,6 +180,15 @@ impl MeshManager {
 
         // Disconnect handler (coordinator removes dead peers, republishes blob)
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
+        // Only sent on redial when this network's own persisted transport
+        // preference is Veilid -- same cross-network-leak rationale as
+        // `run_join_handshake`'s `JoinParams::my_veilid_node_id`.
+        let my_veilid_node_id = config::load_network(name)
+            .ok()
+            .flatten()
+            .and_then(|nc| nc.transport)
+            .filter(|t| t.is_veilid())
+            .and_then(|_| self.veilid_node_id.clone());
         tasks.push(spawn_peer_cleanup(
             disconnect_rx,
             ctx.peers.clone(),
@@ -194,6 +203,7 @@ impl MeshManager {
                 my_identity: self.identity.local_identity(),
                 my_ip,
                 disconnect_tx: disconnect_tx.clone(),
+                my_veilid_node_id,
             }),
         ));
 
@@ -258,6 +268,7 @@ impl MeshManager {
         subnet: crate::membership::Subnet,
         nuke_consensus_threshold: u32,
         pre_approve: Option<(EndpointId, Option<String>)>,
+        want_veilid: bool,
     ) -> Result<NetworkState> {
         let mut member_list = MemberList::new();
         member_list
@@ -268,12 +279,17 @@ impl MeshManager {
                 hostname: Some(my_hostname.to_string()),
                 collision_index: 0,
                 last_seen: None,
-                // Not yet populated even when `transport` is `Veilid` -- that
-                // needs a shared, daemon-lifecycle Veilid transport handle
-                // reachable from here, deferred to VEILID-003 alongside
-                // propagating an admitted peer's own value and injecting the
-                // resolved address into the dial path (`connect_to_peer_with_alpn`).
-                veilid_node_id: None,
+                // VEILID-003: `self.veilid_node_id` is `Some` only if the
+                // shared endpoint actually started an embedded Veilid node
+                // (requires --features veilid); `want_veilid` alone doesn't
+                // guarantee it (e.g. built without the feature -- transport.rs
+                // would have already refused to bind in that case, but this
+                // stays defensive rather than assuming).
+                veilid_node_id: if want_veilid {
+                    self.veilid_node_id.clone()
+                } else {
+                    None
+                },
             })
             .expect("self-add cannot collide");
 
@@ -482,6 +498,7 @@ impl MeshManager {
             subnet,
             nuke_consensus_threshold,
             pre_approve,
+            transport.as_ref().is_some_and(|t| t.is_veilid()),
         )?;
 
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
@@ -998,9 +1015,15 @@ impl MeshManager {
             )];
 
             tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
+            let coordinator_veilid_node_id = data
+                .members
+                .iter()
+                .find(|m| &m.identity == coordinator_id)
+                .and_then(|m| m.veilid_node_id.as_deref());
             let conn = match transport::connect_to_peer_with_alpn(
                 &self.endpoint,
                 *coordinator_id,
+                coordinator_veilid_node_id,
                 ctx.alpn,
             )
             .await
@@ -1125,9 +1148,15 @@ impl MeshManager {
 
         tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
         let mut seed_from_blob = false;
+        let coordinator_veilid_node_id = data
+            .members
+            .iter()
+            .find(|m| m.identity == coordinator_id)
+            .and_then(|m| m.veilid_node_id.as_deref());
         let (state, state_notify) = match transport::connect_to_peer_with_alpn(
             &self.endpoint,
             coordinator_id,
+            coordinator_veilid_node_id,
             ctx.alpn,
         )
         .await
@@ -1251,6 +1280,7 @@ impl MeshManager {
             live_state_rx,
             reconverge_notify_rx,
             self.promote_tx.clone(),
+            self.veilid_node_id.clone(),
         )
     }
 
@@ -1276,6 +1306,15 @@ impl MeshManager {
             ctx.mesh_ctx.clone(),
             JoinParams {
                 my_hostname: Some(ctx.my_hostname.to_string()),
+                // Only sent when this network actually asked for Veilid --
+                // otherwise this node's Veilid identity (if any, shared
+                // across every joined network) would leak to a coordinator
+                // of an unrelated, non-Veilid network.
+                my_veilid_node_id: if ctx.transport.as_ref().is_some_and(|t| t.is_veilid()) {
+                    self.veilid_node_id.clone()
+                } else {
+                    None
+                },
                 net_pubkey: ctx.net_pubkey,
                 invite_secret,
                 reusable_keys: data.reusable_keys.clone(),
@@ -1465,9 +1504,12 @@ impl MeshManager {
             if *peer_id == self.endpoint.id() {
                 continue;
             }
+            // No roster to resolve a Veilid address from yet -- fetching one
+            // is the whole point of this bootstrap dial.
             let conn = match transport::connect_to_peer_with_alpn(
                 &self.endpoint,
                 *peer_id,
+                None,
                 iroh_blobs::protocol::ALPN,
             )
             .await
@@ -1498,9 +1540,12 @@ impl MeshManager {
         peer_id: EndpointId,
         blob_hash: iroh_blobs::Hash,
     ) -> Result<crate::membership::GroupBlob> {
+        // Same rationale as `restore_roster_from_blob`'s dial: no roster
+        // fetched yet to resolve a Veilid address from.
         let conn = transport::connect_to_peer_with_alpn(
             &self.endpoint,
             peer_id,
+            None,
             iroh_blobs::protocol::ALPN,
         )
         .await?;
@@ -1568,6 +1613,7 @@ impl MeshManager {
             let peers = ctx.peers.clone();
             let tun_tx = ctx.tun_tx.clone();
             let stats = ctx.stats.clone();
+            let my_veilid_node_id = self.veilid_node_id.clone();
             dials.push(async move {
                 // Bound the dial and honor cancellation: an unreachable peer
                 // would otherwise sit in iroh's internal handshake timeout,
@@ -1577,7 +1623,12 @@ impl MeshManager {
                     _ = cancel.cancelled() => return,
                     r = tokio::time::timeout(
                         DIAL_TIMEOUT,
-                        transport::connect_to_peer_with_alpn(&self.endpoint, m.identity, alpn),
+                        transport::connect_to_peer_with_alpn(
+                            &self.endpoint,
+                            m.identity,
+                            m.veilid_node_id.as_deref(),
+                            alpn,
+                        ),
                     ) => r,
                 };
                 match conn {
@@ -1589,6 +1640,7 @@ impl MeshManager {
                                     identity: my_identity,
                                     ip: my_ip,
                                     hostname: my_hostname,
+                                    veilid_node_id: my_veilid_node_id,
                                 },
                             )
                             .await;

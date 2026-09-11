@@ -95,20 +95,33 @@ impl CoordinatorAcceptState {
             Ok(Ok(m)) => m,
             _ => return,
         };
-        let (invite_secret, hostname) = match msg {
+        let (invite_secret, hostname, veilid_node_id) = match msg {
             ControlMsg::JoinRequest {
                 invite_secret,
                 hostname,
-            } => (invite_secret, hostname),
+                veilid_node_id,
+            } => (invite_secret, hostname, veilid_node_id),
             // Tolerate a bare MeshHello from older clients as a no-invite join.
-            ControlMsg::MeshHello { hostname, .. } => (None, hostname),
+            ControlMsg::MeshHello {
+                hostname,
+                veilid_node_id,
+                ..
+            } => (None, hostname, veilid_node_id),
             _ => return,
         };
 
         // Unknown peer presenting an invite secret: verify and burn it.
         if let Some(secret) = invite_secret {
-            self.redeem_invite_and_admit(conn, send, remote_id, peer_ip, hostname, secret)
-                .await;
+            self.redeem_invite_and_admit(
+                conn,
+                send,
+                remote_id,
+                peer_ip,
+                hostname,
+                veilid_node_id,
+                secret,
+            )
+            .await;
             return;
         }
 
@@ -151,6 +164,7 @@ impl CoordinatorAcceptState {
     /// update could also accept the same secret. This is accepted for the initial
     /// implementation; a local reject cache will close the window in a follow-up.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
         &self,
         conn: Connection,
@@ -158,6 +172,7 @@ impl CoordinatorAcceptState {
         remote_id: EndpointId,
         peer_ip: Ipv4Addr,
         hostname: Option<String>,
+        veilid_node_id: Option<String>,
         secret: Vec<u8>,
     ) {
         // Phase 1: check blob invite table.
@@ -181,8 +196,16 @@ impl CoordinatorAcceptState {
                 peer = %remote_id.fmt_short(),
                 "invite redeemed from blob"
             );
-            self.admit_peer(conn, send, remote_id, peer_ip, hostname, false)
-                .await;
+            self.admit_peer(
+                conn,
+                send,
+                remote_id,
+                peer_ip,
+                hostname,
+                veilid_node_id,
+                false,
+            )
+            .await;
             return;
         }
 
@@ -201,8 +224,16 @@ impl CoordinatorAcceptState {
             );
             // Reusable joins are non-authoritative: joiner-chosen name,
             // collision --> suffix.
-            self.admit_peer(conn, send, remote_id, peer_ip, hostname, false)
-                .await;
+            self.admit_peer(
+                conn,
+                send,
+                remote_id,
+                peer_ip,
+                hostname,
+                veilid_node_id,
+                false,
+            )
+            .await;
         } else {
             tracing::warn!(peer = %remote_id.fmt_short(), "invite rejected");
             self.deny(&conn, send, "invite rejected".to_string()).await;
@@ -231,6 +262,7 @@ impl CoordinatorAcceptState {
         remote_id: EndpointId,
         _suggested_ip: Ipv4Addr,
         hostname: Option<String>,
+        veilid_node_id: Option<String>,
         // The hostname is coordinator-authoritative (came from an invite binding).
         // Authoritative names are rejected on collision (no silent rename), so no
         // peer can claim another's name (and its Magic-DNS entry).
@@ -254,10 +286,7 @@ impl CoordinatorAcceptState {
                 hostname: final_hostname.clone(),
                 collision_index,
                 last_seen: Some(crate::membership::now_secs()),
-                // VEILID-003 (deferred): the join handshake does not yet carry
-                // the joiner's Veilid NodeId, so an admitted peer's own value
-                // (if they joined with --veilid) is not captured here.
-                veilid_node_id: None,
+                veilid_node_id: veilid_node_id.clone(),
             });
             s.bump_generation_and_refresh();
             s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
@@ -272,6 +301,7 @@ impl CoordinatorAcceptState {
                 identity: remote_id,
                 ip: peer_ip,
                 hostname: final_hostname.clone(),
+                veilid_node_id: veilid_node_id.clone(),
             },
         )
         .await;
@@ -455,7 +485,7 @@ impl MemberAcceptState {
             identity: peer_identity,
             ip,
             hostname,
-            ..
+            veilid_node_id,
         }) = control::recv_msg(&mut recv).await
         else {
             return;
@@ -485,13 +515,18 @@ impl MemberAcceptState {
             None
         };
         if is_approved {
-            self.admit_approved_member(conn, peer_identity, ip, final_hostname)
+            self.admit_approved_member(conn, peer_identity, ip, final_hostname, veilid_node_id)
                 .await;
         } else if is_member {
-            if final_hostname.is_some() {
+            if final_hostname.is_some() || veilid_node_id.is_some() {
                 let mut s = self.state.write().unwrap();
                 if let Some(m) = s.members.get_mut(&peer_identity) {
-                    m.hostname = final_hostname;
+                    if final_hostname.is_some() {
+                        m.hostname = final_hostname;
+                    }
+                    if veilid_node_id.is_some() {
+                        m.veilid_node_id = veilid_node_id;
+                    }
                 }
             }
             self.register_peer(conn, peer_identity, ip);
@@ -508,6 +543,7 @@ impl MemberAcceptState {
         peer_identity: EndpointId,
         ip: Ipv4Addr,
         final_hostname: Option<String>,
+        veilid_node_id: Option<String>,
     ) {
         let (snap_bytes, ip) = {
             let mut s = self.state.write().unwrap();
@@ -525,8 +561,7 @@ impl MemberAcceptState {
                 hostname: final_hostname.clone(),
                 collision_index: member_idx,
                 last_seen: Some(crate::membership::now_secs()),
-                // VEILID-003 (deferred): see admit_peer's identical note.
-                veilid_node_id: None,
+                veilid_node_id: veilid_node_id.clone(),
             });
             s.bump_generation_and_refresh();
             (

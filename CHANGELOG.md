@@ -8,7 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Experimental Veilid transport, not yet usable for real mesh traffic** (`VEILID-001`/`VEILID-002`, requires building with `--features veilid`). `tetron create --veilid` / `tetron join --veilid` (mutually exclusive with `--tor`) now start a real embedded Veilid node and register it as a custom transport on the shared endpoint, and the signed roster gained a field to carry a peer's Veilid identity. Nothing populates or uses that field yet — the join handshake doesn't propagate a peer's Veilid identity to the coordinator, and nothing resolves it into a dial address — so the transport is present but dormant; connectivity is unaffected either way. Tracking further work in `spec/core.py`.
+- **Experimental Veilid transport, structurally wired but not yet live-verified over the real network** (`VEILID-001`/`VEILID-002`/`VEILID-003`, requires building with `--features veilid`). `tetron create --veilid` / `tetron join --veilid` (mutually exclusive with `--tor`) start a real embedded Veilid node and register it as a custom transport on the shared endpoint; the join/reconnect handshake now propagates each peer's Veilid identity through the signed roster, and the dial path resolves it into an address for iroh to route through the custom transport. What's still outstanding: a live end-to-end connectivity check (blocked in the sandboxed environment this was built in, not a known code gap — see `spec/core.py`'s `VeilidCustomTransportMechanism`) and a persisted Veilid identity across daemon restarts (currently regenerated fresh each start). Tracking further work in `spec/core.py`.
 
 ## [0.11.3] - 2026-08-28
 

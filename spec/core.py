@@ -1544,14 +1544,71 @@ class VeilidCoreWiring(Requirement):
     - A `tetron-testsuite` scenario (depends on the above actually
       carrying peer traffic to be worth writing).
 
-    Until VEILID-003 lands, `--veilid` makes the daemon start a real
-    embedded Veilid node and register it as an active custom transport on
-    the shared endpoint (structurally verified: compiles under
-    `--features veilid`, clippy/fmt clean, `choose_path_index` correctly
-    ranks it), but no peer dial actually uses it yet -- there is no
-    dialable address for iroh to route through the custom transport with.
+    As landed, `--veilid` makes the daemon start a real embedded Veilid
+    node and register it as an active custom transport on the shared
+    endpoint (structurally verified: compiles under `--features veilid`,
+    clippy/fmt clean, `choose_path_index` correctly ranks it), but no peer
+    dial actually used it yet -- there was no dialable address for iroh to
+    route through the custom transport with. VEILID-003 closes that gap.
     """
     req_id = "VEILID-002"
+
+
+class VeilidDialPathWiring(Requirement):
+    """REQUIREMENT-ID: VEILID-003 (depends on VEILID-002)
+
+    Closes VEILID-002's gap: a `--veilid` network can now actually dial
+    peers over the Veilid custom transport, not just start one.
+
+    - `ControlMsg::JoinRequest`/`MeshHello`/`MemberApproved`
+      (`src/control.rs`) each gain an additive `veilid_node_id:
+      Option<String>` field alongside the existing `hostname`, so a
+      joiner's own Veilid `NodeId` rides the same admission/reconnect
+      handshake that already carries its hostname -- no separate wire
+      round-trip. `JoinRequest`/reconnect `MeshHello` sends are gated on
+      the *sending* network's own `transport` being `Veilid` (checked at
+      each send site, not globally), so a node's Veilid identity never
+      leaks to a coordinator of an unrelated network it also belongs to.
+    - Coordinator-side admission (`accept.rs`'s `admit_peer`/
+      `admit_approved_member`, reached via `redeem_invite_and_admit`)
+      seats the joiner's `veilid_node_id` directly in the `Member` it
+      constructs, and broadcasts it in `MemberApproved`. A reconnecting
+      known member's fresh `MeshHello` also refreshes the roster's stored
+      value (mirroring how a hostname change on reconnect already
+      updates the roster) -- relevant here specifically because a
+      restarted daemon's embedded Veilid node currently gets a fresh
+      random identity each start (VEILID-001's known config-hardening
+      gap; not closed by this requirement).
+    - `MeshManager` gains a `veilid_node_id: Option<String>` field --
+      this daemon's own value, threaded from `create_endpoint_with_alpns`
+      (now returns `(Endpoint, Option<String>)`) at bootstrap. Read at
+      every join/create/reconnect send site (always gated on that
+      network's own `transport`, per the leak note above), never used
+      for dialing -- the dial path resolves a *peer's* own
+      `veilid_node_id` from their roster entry instead.
+    - `transport::connect_to_peer_with_alpn` gains a `veilid_node_id:
+      Option<&str>` parameter: when `Some` and parseable, it is resolved
+      via `veilid_transport::node_id_to_custom_addr` into a
+      `TransportAddr::Custom` appended to the dialed `EndpointAddr`
+      (alongside whatever `peercache` already contributes) --
+      `#[cfg(feature = "veilid")]`-gated, matching every other
+      `veilid_transport` reference in `src/transport.rs`. Every call
+      site was updated: two are `Member`-in-scope already (cheap), most
+      needed a roster lookup by `EndpointId` first, and three (the
+      pre-roster bootstrap blob-fetch dials in `create_join.rs`/
+      `reconverge.rs`, run before any roster exists to resolve an
+      address from) correctly pass `None`.
+
+    Verification: `reconcile.py` green (fmt/build/clippy/test/cargo-audit)
+    under both default features and `--features veilid`; new coverage in
+    `control.rs` (`ControlMsg` round-trips including a populated
+    `veilid_node_id`). No `tetron-testsuite` pass yet -- deserved its own
+    live-network check the way `VEILID-001`'s own integration test does
+    (blocked on the same Claude-Code-sandbox network restriction
+    documented there), not a claim that this has been live-verified
+    end to end.
+    """
+    req_id = "VEILID-003"
 
 
 # --------------------------------------------------------------------------

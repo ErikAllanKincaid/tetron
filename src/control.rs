@@ -24,6 +24,12 @@ pub enum ControlMsg {
         invite_secret: Option<Vec<u8>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
+        /// The joiner's own Veilid `NodeId` (string form), present only when
+        /// joining with `--veilid` (VEILID-003). Rides the same admission
+        /// message as `hostname` so the coordinator can seat it directly in
+        /// the roster entry it constructs, with no separate round-trip.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        veilid_node_id: Option<String>,
     },
     /// Coordinator response telling the joiner it has been queued for live
     /// approval (closed network, no invite). The joiner retries until accepted.
@@ -44,12 +50,16 @@ pub enum ControlMsg {
         ip: Ipv4Addr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        veilid_node_id: Option<String>,
     },
     MemberApproved {
         identity: EndpointId,
         ip: Ipv4Addr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hostname: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        veilid_node_id: Option<String>,
     },
     Welcome {
         members: Vec<Member>,
@@ -200,6 +210,7 @@ mod tests {
             identity: test_id(1),
             ip: Ipv4Addr::new(10, 88, 0, 4),
             hostname: None,
+            veilid_node_id: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -211,6 +222,7 @@ mod tests {
         let msg = ControlMsg::JoinRequest {
             invite_secret: Some(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             hostname: Some("alice".to_string()),
+            veilid_node_id: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -222,6 +234,21 @@ mod tests {
         let msg = ControlMsg::JoinRequest {
             invite_secret: None,
             hostname: None,
+            veilid_node_id: None,
+        };
+        let bytes = encode_msg(&msg);
+        let decoded = decode_msg(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_join_request_with_veilid_node_id() {
+        // VEILID-003: the joiner's Veilid NodeId rides the same message as
+        // hostname, so a --veilid join carries it in one round trip.
+        let msg = ControlMsg::JoinRequest {
+            invite_secret: Some(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+            hostname: Some("alice".to_string()),
+            veilid_node_id: Some("VLD0:abc123".to_string()),
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
@@ -260,6 +287,7 @@ mod tests {
             identity: test_id(1),
             ip: Ipv4Addr::new(10, 88, 12, 34),
             hostname: None,
+            veilid_node_id: None,
         };
         let bytes = encode_msg(&msg);
         let decoded = decode_msg(&bytes).unwrap();
