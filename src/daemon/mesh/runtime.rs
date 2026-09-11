@@ -183,7 +183,7 @@ impl MeshManager {
         // re-publish becomes a no-op instead of overwriting the roster with a
         // coordinator-only stub.
         let RestoredRoster {
-            members: member_list,
+            members: mut member_list,
             approved: approved_list,
             reusable_keys,
             invites,
@@ -213,6 +213,29 @@ impl MeshManager {
             return Ok(IpcMessage::Error { message });
         }
 
+        // VEILID-004: this network's already-published roster may still
+        // carry this node's own `veilid_node_id` as `None` (or stale) from
+        // before its embedded Veilid transport ever started -- most
+        // commonly the network's very first `tetron create --veilid`,
+        // which runs on an already-booted daemon whose shared endpoint
+        // (and thus `self.veilid_node_id`) was fixed at process startup,
+        // before this network (or its transport preference) existed. A
+        // rejoining/reconnecting MEMBER already self-heals this the same
+        // way via a fresh `MeshHello` on its own restart (VEILID-003); a
+        // coordinator has no equivalent "reconnect to myself" path, so
+        // this boot-time restore is the only place it can catch up.
+        let mut needs_republish = false;
+        if net_config
+            .and_then(|nc| nc.transport.as_ref())
+            .is_some_and(|t| t.is_veilid())
+            && self.veilid_node_id.is_some()
+            && let Some(m) = member_list.get_mut(&my_identity)
+            && m.veilid_node_id != self.veilid_node_id
+        {
+            m.veilid_node_id = self.veilid_node_id.clone();
+            needs_republish = true;
+        }
+
         let mut net_state = NetworkState {
             generation,
             members: member_list,
@@ -231,6 +254,14 @@ impl MeshManager {
             nuke_consensus_threshold,
         };
 
+        // `seal_and_publish` only recomputes the snapshot hash, it does not
+        // bump `generation` -- without this, `dht_read_before_write`'s
+        // equal-generation-but-different-hash case (publish.rs) treats a
+        // same-generation republish as a tie and skips writing, silently
+        // dropping the veilid_node_id fix above.
+        if needs_republish {
+            net_state.bump_generation_and_refresh();
+        }
         self.seal_and_publish(&mut net_state, &net_secret_key).await;
 
         // Update config

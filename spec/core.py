@@ -1611,6 +1611,54 @@ class VeilidDialPathWiring(Requirement):
     req_id = "VEILID-003"
 
 
+class VeilidCoordinatorSelfEntryHeal(Requirement):
+    """REQUIREMENT-ID: VEILID-004 (depends on VEILID-003)
+
+    Closes a real gap found sanity-checking VEILID-003 before live
+    testing: the shared iroh `Endpoint` (and its embedded Veilid
+    transport, if any) is built once at daemon *process* startup from
+    whatever networks are *already* in config -- but `--veilid` only gets
+    persisted to config *during* `tetron create --veilid`/`tetron join
+    --veilid`, which runs against an *already-running* daemon. On a
+    network's very first `--veilid` create, `MeshManager::veilid_node_id`
+    is therefore still `None` at the moment `build_initial_roster` runs,
+    so the coordinator's own `Member` entry gets `veilid_node_id: None`
+    baked into the signed roster -- permanently, since nothing previously
+    republished it. A rejoining/reconnecting MEMBER already self-heals
+    the same class of problem via a fresh `MeshHello` on its own restart
+    (VEILID-003's own design), but a coordinator has no equivalent
+    "reconnect to myself" path.
+
+    Fix, in `runtime.rs::restore_coordinator_network` (the boot-time
+    per-network coordinator restore, the only place `self.veilid_node_id`
+    -- now populated, since the endpoint is already up by the time
+    networks restore -- and the network's own persisted `transport` are
+    both available together): after the roster is restored and this
+    node's own `Member` entry is in hand, if this network's `transport`
+    is `Veilid`, `self.veilid_node_id` is `Some`, and it differs from
+    the roster's stored value, correct it in place and bump the
+    generation before `seal_and_publish` -- required because
+    `seal_and_publish` alone only recomputes the snapshot hash, and
+    `dht_read_before_write`'s equal-generation-but-different-hash case
+    treats a same-generation republish as a tie and silently skips the
+    write, which would have made this fix a no-op in practice.
+
+    No separate member-side restore path exists to parallel-check: a
+    member's restore goes through the ordinary reconnect handshake
+    (`initial=false` in `join_mesh_shared`), which already carries a
+    fresh `my_veilid_node_id` once its own transport is up, per
+    VEILID-003.
+
+    This still does not make a network's Veilid identity stable *within*
+    one uninterrupted daemon session that never restarts after its first
+    `--veilid` create -- only the *next* boot corrects it. A live fix
+    with no restart required at all would need the daemon to notice a
+    newly-available `self.veilid_node_id` while already running and
+    republish then, which is not attempted here.
+    """
+    req_id = "VEILID-004"
+
+
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #
