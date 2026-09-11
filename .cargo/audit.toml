@@ -11,4 +11,19 @@ ignore = [
     # pin; not fixable from tetron's side. Revisit if torut ever bumps it.
     "RUSTSEC-2024-0344",
     "RUSTSEC-2022-0093",
+
+    # hickory-proto 0.25.2 NSEC3 unbounded-loop / O(n^2) name-compression CPU
+    # exhaustion (DoS via a malicious/on-path DNS responder, not memory
+    # unsafety). Pulled in by `hickory-resolver 0.25.2`, pinned by
+    # `veilid-tools 0.5.7` (a `veilid-core` dependency), reachable only via
+    # the new `veilid-transport` crate (VEILID-001) -- not referenced by the
+    # `tetron` package itself yet, and unfixable from tetron's side:
+    # RUSTSEC-2026-0118 has no fixed upgrade at all, and RUSTSEC-2026-0119's
+    # fix (hickory-proto >=0.26.1) needs `veilid-tools` to widen its own
+    # `hickory-resolver` version pin, which is upstream's call, not ours.
+    # Checked 2026-09-11 against veilid-core/veilid-tools 0.5.7 (latest on
+    # crates.io at the time). Revisit if veilid-core bumps hickory-resolver,
+    # or before VEILID-002 wires this crate into the `tetron` package proper.
+    "RUSTSEC-2026-0118",
+    "RUSTSEC-2026-0119",
 ]

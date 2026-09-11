@@ -15,7 +15,7 @@ categories = ["network-programming", "command-line-utilities"]
 # The repo root is both the `tetron` package (binary `tetron`) and the workspace
 # root. `tetron-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
-members = ["tetron-proto"]
+members = ["tetron-proto", "veilid-transport"]
 
 # PORTABILITY-001: local patch for a real musl-target crash (`assertion
 # failed: align_of::<T>() <= align_of::<C>()` in noq-udp's cmsg handling,
