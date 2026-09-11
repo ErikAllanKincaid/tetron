@@ -82,8 +82,9 @@ impl MeshManager {
                             hostname: entry.hostname.clone(),
                             collision_index: 0,
                             last_seen: None,
-                            // Persisted config fallback doesn't carry this yet
-                            // either (VEILID-003).
+                            // `config::schema`'s persisted member entry
+                            // doesn't carry this (unlike the live
+                            // signed-blob `Member`).
                             veilid_node_id: None,
                         });
                     }
@@ -109,7 +110,7 @@ impl MeshManager {
                     collision_index: 0,
                     last_seen: None,
                     // A restarted daemon doesn't yet re-derive/persist its own
-                    // Veilid identity here (VEILID-003) -- see
+                    // Veilid identity here -- still-open gap, see
                     // `VeilidTransportBuilder::build`'s own known-limitation
                     // note on identity not surviving a restart either.
                     veilid_node_id: None,

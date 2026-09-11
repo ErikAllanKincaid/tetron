@@ -165,9 +165,9 @@ async fn bind_endpoint(
     // `Endpoint`'s own pkarr publisher sends (`socket.rs::publish_my_addr`
     // only ever builds its address list from direct/relay addrs, by design —
     // the same isolation boundary that makes Tor need its own separate
-    // discovery mechanism applies here). VEILID-003 (deferred, see
-    // `spec/core.py`) resolves peers by injecting a `TransportAddr::Custom`
-    // built from the roster's `Member.veilid_node_id` directly into the
+    // discovery mechanism applies here). VEILID-003 (see `spec/core.py`)
+    // resolves peers instead by injecting a `TransportAddr::Custom` built
+    // from the roster's `Member.veilid_node_id` directly into the
     // per-peer `EndpointAddr` at dial time (`connect_to_peer_with_alpn`),
     // rather than through iroh's generic discovery hook.
     #[cfg(feature = "veilid")]
