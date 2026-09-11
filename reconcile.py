@@ -34,7 +34,17 @@ def check_clippy() -> dict:
     r = run(["cargo", "clippy", "--workspace", "--all-targets", "--quiet", "--", "-D", "warnings"])
     # -D warnings makes clippy fail (non-zero) if there are any warnings, so a
     # clean pass means returncode == 0; report 0 warnings in that case.
-    return {"warnings": 0 if r.returncode == 0 else r.stderr.count("warning:")}
+    #
+    # BUG (found 2026-09-11, live-verified): -D promotes every lint to a
+    # compiler `error:`, not `warning:` -- rustc/clippy never prints the
+    # literal substring "warning:" for a denied lint. `r.stderr.count(...)`
+    # on a real failure was therefore silently landing on 0 for the common
+    # case (e.g. a lone `unused_mut` under a `#[cfg(...)]`-gated branch),
+    # which the `ok` gate below reads as "clippy: warnings == 0" -- i.e. a
+    # false pass despite `r.returncode != 0`. `max(1, ...)` guarantees a
+    # failing run can never read as clean, while still surfacing the real
+    # count on the rarer diagnostic that does say "warning:" literally.
+    return {"warnings": 0 if r.returncode == 0 else max(1, r.stderr.count("warning:"))}
 
 
 def check_tests() -> dict:

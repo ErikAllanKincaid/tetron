@@ -289,6 +289,7 @@ pub async fn connect_to_peer_with_alpn(
     veilid_node_id: Option<&str>,
     alpn: &[u8],
 ) -> Result<Connection> {
+    #[cfg_attr(not(feature = "veilid"), allow(unused_mut))]
     let mut addrs = crate::peercache::lookup(&id);
     #[cfg(feature = "veilid")]
     if let Some(vnid) = veilid_node_id {
