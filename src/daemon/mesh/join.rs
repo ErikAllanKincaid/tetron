@@ -86,6 +86,13 @@ enum HandshakeOutcome {
 /// this is a fresh join or a reconnect.
 pub(crate) struct JoinParams {
     pub(crate) my_hostname: Option<String>,
+    /// This daemon's own Veilid `NodeId` (VEILID-003), read from
+    /// `MeshManager::veilid_node_id` at the call site -- `Some` only when
+    /// this network's own `transport` is `TransportMode::Veilid` and the
+    /// shared endpoint actually started an embedded Veilid node. Sent
+    /// alongside `my_hostname` in the join/reconnect handshake so the
+    /// coordinator can seat it directly in the roster entry it constructs.
+    pub(crate) my_veilid_node_id: Option<String>,
     pub(crate) net_pubkey: EndpointId,
     pub(crate) invite_secret: Option<Vec<u8>>,
     /// From the fetched blob: reusable join keys, so this node can validate
@@ -163,6 +170,7 @@ pub(crate) async fn join_mesh_shared(
     } = ctx;
     let JoinParams {
         my_hostname,
+        my_veilid_node_id,
         net_pubkey,
         invite_secret,
         reusable_keys,
@@ -189,6 +197,7 @@ pub(crate) async fn join_mesh_shared(
         initial,
         invite_secret,
         &my_hostname,
+        &my_veilid_node_id,
     )
     .await?
     {
@@ -216,7 +225,14 @@ pub(crate) async fn join_mesh_shared(
     // On reconnect/restore the coordinator hasn't seen our hostname this session,
     // so send a MeshHello. A fresh join already conveyed it in the JoinRequest.
     if !initial {
-        send_reconnect_hello(&initial_conn, my_identity, my_ip, network_name).await?;
+        send_reconnect_hello(
+            &initial_conn,
+            my_identity,
+            my_ip,
+            network_name,
+            &my_veilid_node_id,
+        )
+        .await?;
     }
 
     // Register the coordinator connection as our first peer, then dial the rest
@@ -264,6 +280,7 @@ pub(crate) async fn join_mesh_shared(
         disconnect_tx.clone(),
         token.clone(),
         network_subnet,
+        my_veilid_node_id.clone(),
     );
 
     let live_state = build_member_state(
@@ -378,6 +395,7 @@ async fn send_reconnect_hello(
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
     network_name: &str,
+    my_veilid_node_id: &Option<String>,
 ) -> Result<()> {
     let (mut send, _recv) = conn.open_bi().await?;
     control::send_msg(
@@ -386,6 +404,7 @@ async fn send_reconnect_hello(
             identity: my_identity,
             ip: my_ip,
             hostname: outgoing_hostname(network_name),
+            veilid_node_id: my_veilid_node_id.clone(),
         },
     )
     .await
@@ -493,6 +512,9 @@ fn spawn_roster_peer_dials(
     token: CancellationToken,
     // This network's own overlay subnet (PATH-DIAG-007).
     network_subnet: crate::membership::Subnet,
+    // This daemon's own Veilid NodeId (VEILID-003), sent in the MeshHello
+    // each dialed peer receives.
+    my_veilid_node_id: Option<String>,
 ) {
     tokio::spawn(async move {
         use futures::StreamExt;
@@ -506,6 +528,7 @@ fn spawn_roster_peer_dials(
             let (ep, alpn, ctx) = (&ep, &alpn, &ctx);
             let (disconnect_tx, token) = (&disconnect_tx, &token);
             let network_name = &network_name;
+            let my_veilid_node_id = &my_veilid_node_id;
             dials.push(async move {
                 // Bound the dial and honor cancellation so one unreachable
                 // member can't keep this task alive far longer than the dial
@@ -514,7 +537,12 @@ fn spawn_roster_peer_dials(
                     _ = token.cancelled() => return,
                     r = tokio::time::timeout(
                         MESH_PEER_DIAL_TIMEOUT,
-                        transport::connect_to_peer_with_alpn(ep, member.identity, alpn),
+                        transport::connect_to_peer_with_alpn(
+                            ep,
+                            member.identity,
+                            member.veilid_node_id.as_deref(),
+                            alpn,
+                        ),
                     ) => r,
                 };
                 match conn {
@@ -532,6 +560,7 @@ fn spawn_roster_peer_dials(
                                 identity: my_identity,
                                 ip: my_ip,
                                 hostname: outgoing_hostname(network_name),
+                                veilid_node_id: my_veilid_node_id.clone(),
                             },
                         )
                         .await
@@ -588,6 +617,7 @@ async fn perform_join_handshake(
     initial: bool,
     invite_secret: Option<Vec<u8>>,
     my_hostname: &Option<String>,
+    my_veilid_node_id: &Option<String>,
 ) -> Result<HandshakeOutcome> {
     if initial {
         let (mut send, mut recv) = initial_conn
@@ -599,6 +629,7 @@ async fn perform_join_handshake(
             &ControlMsg::JoinRequest {
                 invite_secret,
                 hostname: my_hostname.clone(),
+                veilid_node_id: my_veilid_node_id.clone(),
             },
         )
         .await
@@ -893,6 +924,10 @@ pub(crate) fn spawn_reconnect_loop(
     live_state_rx: tokio::sync::oneshot::Receiver<SharedNetworkState>,
     reconverge_notify_rx: tokio::sync::oneshot::Receiver<Arc<tokio::sync::Notify>>,
     promote_tx: mpsc::Sender<String>,
+    // This daemon's own Veilid NodeId (VEILID-003), unlike hostname not
+    // re-readable from per-network config (it's a daemon-session-scoped
+    // value off `MeshManager::veilid_node_id`), so it's captured here.
+    my_veilid_node_id: Option<String>,
 ) -> JoinHandle<()> {
     // The reconnect MeshHello reads the current hostname fresh from config
     // (`outgoing_hostname`), so no captured hostname is threaded through.
@@ -998,6 +1033,7 @@ pub(crate) fn spawn_reconnect_loop(
             let live_state = live_state.clone();
             let global_gate = global_gate.clone();
             let pruned_peers = pruned_peers.clone();
+            let my_veilid_node_id = my_veilid_node_id.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -1121,7 +1157,20 @@ pub(crate) fn spawn_reconnect_loop(
                         return;
                     }
 
-                    match transport::connect_to_peer_with_alpn(&ep, peer_id, &alpn).await {
+                    let peer_veilid_node_id = live_state
+                        .read()
+                        .unwrap()
+                        .members
+                        .get(&peer_id)
+                        .and_then(|m| m.veilid_node_id.clone());
+                    match transport::connect_to_peer_with_alpn(
+                        &ep,
+                        peer_id,
+                        peer_veilid_node_id.as_deref(),
+                        &alpn,
+                    )
+                    .await
+                    {
                         Ok(conn) => {
                             let (mut send, _) = match conn.open_bi().await {
                                 Ok(bi) => bi,
@@ -1137,6 +1186,7 @@ pub(crate) fn spawn_reconnect_loop(
                                     identity: my_identity,
                                     ip: my_ip,
                                     hostname: outgoing_hostname(&net_name),
+                                    veilid_node_id: my_veilid_node_id.clone(),
                                 },
                             )
                             .await

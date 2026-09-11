@@ -165,7 +165,7 @@ async fn build_daemon(
     let listen_port = app_config
         .listen_port
         .unwrap_or(transport::TETRON_LISTEN_PORT);
-    let ep = transport::create_endpoint_with_alpns(
+    let (ep, veilid_node_id) = transport::create_endpoint_with_alpns(
         key.clone(),
         alpns,
         use_tor,
@@ -224,6 +224,7 @@ async fn build_daemon(
     let (left_tx, left_rx) = mpsc::channel::<String>(16);
     let daemon = Arc::new(MeshManager {
         endpoint: ep,
+        veilid_node_id,
         identity,
         stats: stats.clone(),
         networks: Arc::new(DashMap::new()),

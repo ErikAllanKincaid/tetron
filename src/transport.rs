@@ -48,6 +48,11 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 /// that custom transport alongside the default relay transport. `listen_port`
 /// overrides [`TETRON_LISTEN_PORT`] (CONFIG-AUDIT-002); pass the constant
 /// itself for the compiled-default behavior.
+/// Returns the bound endpoint and, when a Veilid transport was started, this
+/// node's own Veilid `NodeId` (string form) -- the caller stores this on
+/// [`crate::daemon::MeshManager`] for VEILID-003's own-roster-entry and
+/// join-handshake population. `None` when built without `--features veilid`
+/// or no joined network requested it.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
@@ -57,37 +62,38 @@ pub async fn create_endpoint_with_alpns(
     relay: &ServerOverride,
     discovery: &ServerOverride,
     listen_port: u16,
-) -> Result<Endpoint> {
+) -> Result<(Endpoint, Option<String>)> {
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
     let fixed = format!("0.0.0.0:{listen_port}");
-    let ep = match bind_endpoint(&secret_key, &alpns, tor, veilid, &fixed, relay, discovery).await {
-        Ok(ep) => ep,
-        Err(e) => {
-            tracing::warn!(
-                port = listen_port,
-                error = %e,
-                "fixed UDP port unavailable; falling back to an ephemeral port"
-            );
-            bind_endpoint(
-                &secret_key,
-                &alpns,
-                tor,
-                veilid,
-                "0.0.0.0:0",
-                relay,
-                discovery,
-            )
-            .await
-            .context("failed to bind iroh endpoint")?
-        }
-    };
+    let (ep, veilid_node_id) =
+        match bind_endpoint(&secret_key, &alpns, tor, veilid, &fixed, relay, discovery).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!(
+                    port = listen_port,
+                    error = %e,
+                    "fixed UDP port unavailable; falling back to an ephemeral port"
+                );
+                bind_endpoint(
+                    &secret_key,
+                    &alpns,
+                    tor,
+                    veilid,
+                    "0.0.0.0:0",
+                    relay,
+                    discovery,
+                )
+                .await
+                .context("failed to bind iroh endpoint")?
+            }
+        };
 
     tracing::info!(id = %ep.id().fmt_short(), "iroh endpoint ready");
 
-    Ok(ep)
+    Ok((ep, veilid_node_id))
 }
 
 /// Builds and binds an iroh endpoint at `bind` with the N0 preset and (when
@@ -102,7 +108,7 @@ async fn bind_endpoint(
     bind: &str,
     relay: &ServerOverride,
     discovery: &ServerOverride,
-) -> Result<Endpoint> {
+) -> Result<(Endpoint, Option<String>)> {
     #[allow(unused_mut)]
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
@@ -165,27 +171,34 @@ async fn bind_endpoint(
     // per-peer `EndpointAddr` at dial time (`connect_to_peer_with_alpn`),
     // rather than through iroh's generic discovery hook.
     #[cfg(feature = "veilid")]
-    if veilid {
+    let veilid_node_id = if veilid {
         let veilid_transport = veilid_transport::VeilidTransportBuilder::new()
             .build()
             .await
             .context("failed to start embedded Veilid node")?;
-        tracing::info!(
-            node_id = %veilid_transport.own_node_id(),
-            "Veilid transport enabled"
-        );
+        let node_id = veilid_transport.own_node_id().to_string();
+        tracing::info!(node_id = %node_id, "Veilid transport enabled");
         builder =
             builder
                 .add_custom_transport(Arc::new(veilid_transport)
                     as Arc<dyn iroh::endpoint::transports::CustomTransport>);
-    }
+        Some(node_id)
+    } else {
+        None
+    };
 
     #[cfg(not(feature = "veilid"))]
-    if veilid {
+    let veilid_node_id: Option<String> = if veilid {
         anyhow::bail!("Veilid support requires building with --features veilid");
-    }
+    } else {
+        None
+    };
 
-    builder.bind().await.context("failed to bind iroh endpoint")
+    let ep = builder
+        .bind()
+        .await
+        .context("failed to bind iroh endpoint")?;
+    Ok((ep, veilid_node_id))
 }
 
 /// Builds the [`QuicTransportConfig`] for tetron's data-plane shape (one stream
@@ -264,12 +277,42 @@ fn apply_discovery(mut builder: Builder, o: &ServerOverride) -> Result<Builder> 
 /// this peer, they are included in the [`EndpointAddr`] so iroh tries them
 /// directly before falling back to DHT lookup — this enables reconnection
 /// after an all-offline gap without a functioning pkarr relay.
+///
+/// `veilid_node_id` (VEILID-003), when `Some`, is the target peer's own
+/// Veilid `NodeId` (string form, from their roster `Member.veilid_node_id`)
+/// -- resolved here into a `TransportAddr::Custom` and appended, since a
+/// custom transport's address is not discoverable through iroh's normal
+/// discovery path (see `bind_endpoint`'s doc comment on the same point).
 pub async fn connect_to_peer_with_alpn(
     ep: &Endpoint,
     id: EndpointId,
+    veilid_node_id: Option<&str>,
     alpn: &[u8],
 ) -> Result<Connection> {
-    let addr: EndpointAddr = match crate::peercache::lookup(&id) {
+    let mut addrs = crate::peercache::lookup(&id);
+    #[cfg(feature = "veilid")]
+    if let Some(vnid) = veilid_node_id {
+        match vnid.parse::<veilid_transport::NodeId>() {
+            Ok(node_id) => {
+                addrs
+                    .get_or_insert_with(Vec::new)
+                    .push(iroh::TransportAddr::Custom(
+                        veilid_transport::node_id_to_custom_addr(&node_id),
+                    ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    peer = %id.fmt_short(),
+                    error = %e,
+                    "invalid veilid_node_id in roster entry, skipping"
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "veilid"))]
+    let _ = veilid_node_id;
+
+    let addr: EndpointAddr = match addrs {
         Some(addrs) => EndpointAddr::from_parts(id, addrs),
         None => id.into(),
     };

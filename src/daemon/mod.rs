@@ -440,6 +440,15 @@ struct TunTasks {
 
 pub struct MeshManager {
     endpoint: Endpoint,
+    /// This daemon's own Veilid `NodeId` (string form), if the shared
+    /// endpoint started an embedded Veilid transport (VEILID-002/003).
+    /// `None` when built without `--features veilid`, or when no joined
+    /// network asked for it. Read when constructing this node's own
+    /// roster entry (`build_initial_roster`, joiner-side `JoinRequest`)
+    /// and NOT used for dialing -- the dial path resolves a *peer's* own
+    /// `veilid_node_id` from their roster entry instead
+    /// (`transport::connect_to_peer_with_alpn`).
+    veilid_node_id: Option<String>,
     identity: IrohIdentityProvider,
     stats: Arc<ForwardMetrics>,
     networks: Arc<DashMap<String, NetworkHandle>>,
