@@ -1485,6 +1485,25 @@ class VeilidCustomTransportMechanism(Requirement):
     relay, manually exchange their `CustomAddr`s (standing in for the
     discovery this requirement does not build), and assert a real QUIC
     connection opens and carries data between them end to end.
+
+    **Bug found + fixed live via `tetron-testsuite`'s `veilid-smoke` run
+    (2026-09-11), not by inspection:** `VeilidTransportBuilder::build()`
+    originally awaited Veilid's own public-network attachment (up to ~2
+    minutes observed) before returning. Since `bind_endpoint`
+    (`transport.rs`) awaits this synchronously while building the one
+    shared iroh `Endpoint` at daemon *process* startup -- before the IPC
+    socket, TUN, or any *other*, unrelated network is up -- this stalled
+    the *entire* daemon's startup on Veilid's bootstrap, not just Veilid
+    functionality. `tetron restart` gave up waiting for the daemon to
+    become IPC-reachable well before attachment finished, so `sudo tetron
+    restart` itself failed on a VM in the `veilid-smoke` test. Fixed:
+    `build()` now returns immediately after `api_startup` (a node's own
+    identity is available then regardless of attachment state); actual
+    network attachment continues in the background, logged once complete
+    for diagnostics only. `poll_send`'s existing fire-and-forget send
+    already degrades gracefully in the meantime -- failed sends are logged
+    and dropped, the same way an unreachable IP/relay path already
+    behaves for every other transport.
     """
     req_id = "VEILID-001"
 
@@ -1657,6 +1676,83 @@ class VeilidCoordinatorSelfEntryHeal(Requirement):
     republish then, which is not attempted here.
     """
     req_id = "VEILID-004"
+
+
+class VeilidNonBlockingStartup(Requirement):
+    """REQUIREMENT-ID: VEILID-005 (depends on VEILID-004)
+
+    A severe bug found and fixed live via `tetron-testsuite`'s
+    `veilid-smoke` scenario (2026-09-11), across several iterations of
+    running it, reading `journalctl`, and re-running -- not by code
+    inspection. Before this fix, **any daemon with a `--veilid` network
+    configured could not reliably restart at all**: `VeilidTransportBuilder
+    ::build()` (the `veilid-transport` crate) synchronously awaited first
+    the node's own identity becoming resolvable, then full attachment to
+    the public Veilid network, before returning -- and `bind_endpoint`
+    (`transport.rs`) awaits `build()` synchronously while constructing the
+    one shared iroh `Endpoint`, before the daemon's IPC socket, TUN, or any
+    *other*, unrelated network is even up. Observed live: `tetron restart`
+    gave up waiting for the daemon to become IPC-reachable well inside
+    Veilid's own attach window (up to several minutes), the daemon process
+    then errored out and exited, and systemd's restart policy respawned it
+    into the *same* failure repeatedly -- a genuine crash loop, confirmed
+    over 9+ restart cycles in one run, blocking not just Veilid
+    connectivity but the whole daemon (every joined network, `--veilid` or
+    not) for as long as the loop continued.
+
+    Root cause, once isolated: `get_state()`'s `network.node_ids` (this
+    node's own identity) reflects the identity `veilid-core`'s internal
+    log already shows within milliseconds of startup only once the
+    network layer has made attachment progress -- `attachment.state` was
+    observed stuck at `Detached` for the node's entire process lifetime in
+    a failing run. Identity is therefore coupled to the same
+    slow, occasionally IPv6-black-holed (see `VEILID-001`'s own
+    IPv4-only fix, found in the same investigation) attachment process as
+    everything else, not available cheaply and synchronously the way an
+    earlier version of this code assumed.
+
+    Fix: both identity resolution and attachment readiness now resolve
+    fully in the background (`veilid-transport`'s
+    `spawn_identity_and_attach_watcher`), never blocking `build()`'s
+    return. `VeilidCustomTransport::own_node_id()`/`own_addr()` return
+    `Option` (`None` until resolved) instead of a value guaranteed to
+    exist; `watch_local_addrs()` starts empty and is updated live once
+    identity resolves -- the same "not yet known, arrives later" shape
+    iroh's own IP/relay transports already have for their local
+    addresses, not a special case invented here. Live-verified: the same
+    `veilid-smoke` scenario that previously crash-looped for 9+ restarts
+    now completes both restarts cleanly, with the daemon IPC-reachable
+    within a couple of seconds each time, and runs the full ~9-minute
+    scenario (join, real peer traffic, 60KB+ transferred) without a single
+    failure of this kind.
+
+    Consequence, left open rather than solved here: `transport.rs`'s
+    `bind_endpoint` still captures `MeshManager::veilid_node_id` as a
+    one-shot `Option<String>` snapshot via a short (10s), bounded,
+    best-effort wait on `own_node_id()`, so daemon startup itself stays
+    fast either way. But live testing showed identity resolution
+    routinely taking well over 10s (multiple minutes observed) even with
+    the IPv4 fix -- meaning that snapshot is `None` far more often than
+    `Some` in practice, so the join/create roster-population paths
+    VEILID-002/003/004 built rarely have a real value to work with within
+    a given daemon session. The same `veilid-smoke` run confirmed this
+    directly: both peers connected successfully (over `Direct`, correctly
+    outranking Veilid per `choose_path_index` since both VMs shared a
+    LAN), but `conn_type` never became `Veilid` -- consistent with the
+    roster never having received a real `veilid_node_id` for either side
+    within the test's own runtime. A full live fix needs
+    `MeshManager::veilid_node_id` to become a live-updating value (e.g. an
+    `ArcSwapOption<String>`, matching this codebase's own preference for
+    that over a `Mutex` for shared, frequently-read state) that the
+    background watcher updates once resolved, with every consumption site
+    (`build_initial_roster`, `run_join_handshake`'s `JoinParams`,
+    `spawn_coordinator_background_tasks`, `spawn_join_reconnect`,
+    `dial_all_members`) reading it fresh rather than a boot-time snapshot
+    -- not attempted here, tracked as the next concrete step before a
+    `--veilid` network can be expected to actually select Veilid as its
+    connection type within a single, no-restart-needed session.
+    """
+    req_id = "VEILID-005"
 
 
 # --------------------------------------------------------------------------
