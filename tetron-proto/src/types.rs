@@ -38,10 +38,11 @@ impl std::str::FromStr for GroupMode {
     }
 }
 
-/// Per-network transport preference (relay/direct vs. Tor).
+/// Per-network transport preference (relay/direct vs. Tor vs. Veilid).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, derive_more::IsVariant)]
 pub enum TransportMode {
     #[default]
     Default,
     Tor,
+    Veilid,
 }

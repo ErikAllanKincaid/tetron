@@ -158,6 +158,10 @@ async fn build_daemon(
         .networks
         .iter()
         .any(|net| net.transport.as_ref().is_some_and(|t| t.is_tor()));
+    let use_veilid = app_config
+        .networks
+        .iter()
+        .any(|net| net.transport.as_ref().is_some_and(|t| t.is_veilid()));
     let listen_port = app_config
         .listen_port
         .unwrap_or(transport::TETRON_LISTEN_PORT);
@@ -165,6 +169,7 @@ async fn build_daemon(
         key.clone(),
         alpns,
         use_tor,
+        use_veilid,
         &app_config.relay,
         &app_config.discovery_dns,
         listen_port,

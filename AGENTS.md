@@ -41,7 +41,7 @@ between requirements, and testsuite/docs/cross-repo follow-up:
 ## Build
 
 ```bash
-cargo -q build                 # add --features tor for Tor transport
+cargo -q build                 # add --features tor for Tor transport, --features veilid for the experimental Veilid transport (VEILID-001/002, not yet usable for real mesh traffic)
 cargo -q check
 cargo -q test --workspace      # --workspace is required: without it only the root `tetron` package is tested, silently skipping `tetron-proto`'s own tests
 cargo -q clippy --workspace --all-targets   # same trap; `reconcile.py` already runs both this way

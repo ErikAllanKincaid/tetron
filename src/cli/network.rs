@@ -10,6 +10,7 @@ pub(crate) async fn ipc_create(
     subnet: Option<String>,
     nuke_consensus: Option<u32>,
     tor: bool,
+    veilid: bool,
     force: bool,
 ) -> Result<()> {
     // Validate the CIDR locally so the user gets an immediate error, but send it
@@ -28,6 +29,8 @@ pub(crate) async fn ipc_create(
     }
     let transport = if tor {
         Some(config::TransportMode::Tor)
+    } else if veilid {
+        Some(config::TransportMode::Veilid)
     } else {
         None
     };
@@ -144,10 +147,13 @@ pub(crate) async fn ipc_join(
     alias: Option<&str>,
     hostname: Option<String>,
     tor: bool,
+    veilid: bool,
     force: bool,
 ) -> Result<()> {
     let transport = if tor {
         Some(config::TransportMode::Tor)
+    } else if veilid {
+        Some(config::TransportMode::Veilid)
     } else {
         None
     };

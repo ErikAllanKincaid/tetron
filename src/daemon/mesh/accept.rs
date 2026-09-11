@@ -254,6 +254,10 @@ impl CoordinatorAcceptState {
                 hostname: final_hostname.clone(),
                 collision_index,
                 last_seen: Some(crate::membership::now_secs()),
+                // VEILID-003 (deferred): the join handshake does not yet carry
+                // the joiner's Veilid NodeId, so an admitted peer's own value
+                // (if they joined with --veilid) is not captured here.
+                veilid_node_id: None,
             });
             s.bump_generation_and_refresh();
             s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone())
@@ -521,6 +525,8 @@ impl MemberAcceptState {
                 hostname: final_hostname.clone(),
                 collision_index: member_idx,
                 last_seen: Some(crate::membership::now_secs()),
+                // VEILID-003 (deferred): see admit_peer's identical note.
+                veilid_node_id: None,
             });
             s.bump_generation_and_refresh();
             (

@@ -82,6 +82,9 @@ impl MeshManager {
                             hostname: entry.hostname.clone(),
                             collision_index: 0,
                             last_seen: None,
+                            // Persisted config fallback doesn't carry this yet
+                            // either (VEILID-003).
+                            veilid_node_id: None,
                         });
                     }
                     for entry in &nc.approved {
@@ -105,6 +108,11 @@ impl MeshManager {
                     hostname: persisted_hostname.clone(),
                     collision_index: 0,
                     last_seen: None,
+                    // A restarted daemon doesn't yet re-derive/persist its own
+                    // Veilid identity here (VEILID-003) -- see
+                    // `VeilidTransportBuilder::build`'s own known-limitation
+                    // note on identity not surviving a restart either.
+                    veilid_node_id: None,
                 })
                 .expect("self-add cannot collide");
         }
