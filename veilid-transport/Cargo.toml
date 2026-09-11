@@ -1,0 +1,36 @@
+[package]
+name = "veilid-transport"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+authors = ["Dario", "ErikAllanKincaid"]
+license = "MPL-2.0"
+description = "iroh CustomTransport carrying QUIC traffic over an embedded Veilid node (VEILID-001, unshipped)"
+repository = "https://github.com/ErikAllanKincaid/tetron"
+
+# VEILID-001. Not yet a dependency of the `tetron` package itself -- see
+# spec/core.py's VeilidCustomTransportMechanism requirement for scope and
+# the explicitly-deferred follow-up work (automatic discovery, tetron core
+# wiring, tetron-testsuite coverage).
+
+[dependencies]
+anyhow = "1"
+iroh = { version = "1", features = ["unstable-custom-transports"] }
+iroh-base = "1"
+n0-watcher = "1"
+# Pinned to exactly the version `iroh` itself patches to (see the
+# workspace root `Cargo.toml`'s `[patch.crates-io]`) -- `RecvMeta` must be
+# the *same* type iroh's own transport internals use, not a separately
+# resolved copy.
+noq-udp = { version = "1.1.0", default-features = false }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+tracing = "0.1"
+# `test-util` pulls in veilid-core's own fixture config helpers
+# (`veilid_core::tests::fixture_veilid_core_with_namespace`), reused here
+# as a stand-in for a real production `VeilidConfig` (self-signed test TLS
+# certificate, insecure-fallback protected store). VEILID-001 explicitly
+# does not harden this -- see the requirement's docstring.
+veilid-core = { version = "0.5.7", features = ["test-util"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

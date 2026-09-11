@@ -1436,6 +1436,55 @@ class TorPerNetworkPolicy(Requirement):
     req_id = "TOR-M01"
 
 
+class VeilidCustomTransportMechanism(Requirement):
+    """REQUIREMENT-ID: VEILID-001
+
+    A new `veilid-transport` workspace crate implements iroh's
+    `CustomTransport`/`CustomEndpoint`/`CustomSender` traits (the same
+    `unstable-custom-transports` mechanism TOR-M01 already uses) by
+    embedding `veilid-core` in-process and carrying each QUIC transmit as
+    a Veilid `AppMessage`, addressed to a `RouteId` imported from a
+    peer's private-route blob.
+
+    Embedding `veilid-core` in-process, rather than talking to a
+    separately-running daemon the way `iroh-tor-transport` talks to
+    Tor's ControlPort, is not a style choice: no published
+    `veilid-server`/client crate exists on crates.io to reuse for that
+    (checked 2026-09-11). Embedding `veilid-core` directly is the only
+    implementable path today.
+
+    Out of scope for this requirement, each needing its own future
+    requirement once this one has landed and been live-verified:
+
+    - Automatic peer discovery -- resolving an iroh `EndpointId` to a
+      Veilid route the way `TorCustomTransport::discovery()` resolves one
+      to an onion address. Veilid's `create_dht_record`/`open_dht_record`
+      support a deterministic record key when given an explicit owner
+      keypair, which is the likely mechanism (derive a Veilid keypair
+      from the same secret material as the node's iroh identity so any
+      peer holding only the public `EndpointId` can derive the same
+      record key), but record staleness/refresh and who is allowed to
+      overwrite it are a real protocol-design question deserving its own
+      dedicated pass, not a rushed add-on riding along with this one.
+    - Wiring into tetron's own `transport.rs`/`TransportMode`/CLI/status
+      display, mirroring `src/transport.rs`'s existing `tor` feature
+      block -- depends on this requirement (needs the crate to exist and
+      be live-verified first) and on the discovery mechanism above (a
+      `--veilid` network is not usable for real mesh joining without it).
+    - A `tetron-testsuite` scenario exercising it end-to-end -- depends on
+      the previous point.
+
+    Verified by the crate's own integration test, `#[ignore]`d by default
+    since it needs to reach Veilid's public bootstrap network (not
+    available in every CI/sandbox environment): build two plain iroh
+    `Endpoint`s, each configured with only this custom transport and no
+    relay, manually exchange their `CustomAddr`s (standing in for the
+    discovery this requirement does not build), and assert a real QUIC
+    connection opens and carries data between them end to end.
+    """
+    req_id = "VEILID-001"
+
+
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #
