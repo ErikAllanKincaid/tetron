@@ -1755,6 +1755,173 @@ class VeilidNonBlockingStartup(Requirement):
     req_id = "VEILID-005"
 
 
+class VeilidLiveIdentityAndMissingAttach(Requirement):
+    """REQUIREMENT-ID: VEILID-006 (depends on VEILID-005)
+
+    Closes the gap VEILID-005 left open, plus a second, more severe bug
+    found while closing it -- both live-verified via `tetron-testsuite`'s
+    `veilid-smoke` scenario (2026-09-11).
+
+    Part 1 -- live-updating identity (the gap VEILID-005 named): before
+    this fix, `MeshManager::veilid_node_id` was a one-shot `Option<String>`
+    snapshot captured via a short, bounded, best-effort wait during
+    `bind_endpoint`, so it was `None` far more often than `Some` for the
+    life of a daemon process. Fixed by making it an
+    `Arc<arc_swap::ArcSwapOption<String>>`: a background task
+    (`spawn_veilid_identity_watcher`, `daemon/mesh/runtime.rs`) polls
+    until `veilid-transport`'s own identity resolves, then republishes it
+    into this daemon's own roster entry on every coordinator-owned network
+    configured for Veilid (`republish_own_veilid_identity`, gated the same
+    way VEILID-004's self-heal is, and reusing `publish.rs`'s existing
+    `update_snapshot_and_publish` to bump generation/snapshot/blob-store/
+    DHT together). Every consumption site VEILID-005 named
+    (`build_initial_roster`, `run_join_handshake`'s `JoinParams`,
+    `spawn_coordinator_background_tasks`, `spawn_join_reconnect`,
+    `dial_all_members`) reads the live cell via the new
+    `MeshManager::veilid_node_id()` accessor method instead of a
+    boot-time-frozen field.
+
+    Part 2 -- missing `attach()` call (found live while verifying part 1,
+    not by inspection): even with live-updating plumbing in place, a
+    freshly-rebuilt `veilid-smoke` run still showed **zero** Veilid path
+    activity after two full 240-second settle windows. Manual single-VM
+    diagnosis (`journalctl` inspection well past the test's own timeout)
+    found `veilid-transport`'s own readiness watcher logging
+    `did not reach full readiness within 5 minutes elapsed=300s
+    identity_known=false` -- and, more tellingly, **zero** veilid-core
+    `attach`/`bootstrap`/`rtab` log lines of any kind after the initial
+    few milliseconds of startup, even though the node's own internal
+    `rtab: Node Ids: [...]` line (proof identity is known internally)
+    appeared immediately. Root cause: `VeilidTransportBuilder::build()`
+    called `api_startup()` but never called `VeilidAPI::attach()` --
+    `api_startup` only constructs the API context; `attach`'s own doc
+    comment states the network connect only begins once it is called
+    ("Sets the attachment to maintain peers; the network connect proceeds
+    in the background tick loop"). Without it, the node never began
+    attaching at all, so `attachment.state` stayed `Detached` forever and
+    `get_state()`'s `network.node_ids` -- which VEILID-005 correctly
+    observed only reflects the internally-known identity once the network
+    layer makes attachment progress -- never had any progress to reflect.
+    This, not any inherent slowness in `veilid-core` itself, was the real
+    reason VEILID-005's investigation saw identity/attachment take
+    "multiple minutes or never."
+
+    Fix: `build()` now calls `api.attach().await?` immediately after
+    `api_startup()`. Live-verified on a single diagnostic VM after the
+    fix: `attach: Attaching...` and the full veilid-core bootstrap log
+    sequence now appear within 1 second of startup, `own identity
+    resolved` at ~1.5s, and `attached to the public Veilid network`
+    (`public_internet_ready`) at ~7s -- down from never-within-5-minutes.
+    Re-running the full two-node `veilid-smoke` scenario after this fix
+    exercises `conn_type: Veilid`/Veilid path-activity end to end (see
+    `tests/veilid-smoke.sh` in `tetron-testsuite` for the live assertion:
+    a Veilid path candidate with real `has_activity` in `paths[]`, not
+    `conn_type` itself, since `choose_path_index` deliberately ranks
+    Direct above Veilid and this test topology always has Direct
+    available) -- but still does not pass end to end, live-verified after
+    this fix: the roster/dial-path wiring this requirement covers is now
+    confirmed correct (both peers dial each other with the right,
+    up-to-date `veilid_node_id` candidate address), but no traffic
+    actually crosses the resulting path. See `VEILID-007` for the
+    separate, deeper gap this fix's own verification run exposed.
+    """
+
+    req_id = "VEILID-006"
+
+
+class VeilidCustomPathIrohRaceGap(Requirement):
+    """REQUIREMENT-ID: VEILID-007 (depends on VEILID-006)
+
+    Still-open gap, found live while verifying VEILID-006, not yet fixed.
+    With VEILID-001..006 all in place and correct (identity resolves in
+    ~1-2s, attachment in ~7s, the roster carries a fresh `veilid_node_id`
+    on both sides, and both peers' dial calls correctly include a
+    `TransportAddr::Custom` candidate for the Veilid `NodeId`), the
+    `veilid-smoke` scenario still shows **zero** Veilid path activity in
+    `paths[]` after a full settle window, on both a manual single-restart
+    VM pair and a clean automated `tetron-testsuite` run.
+
+    Two sub-findings, both confirmed live via `journalctl`/rolling-file
+    log inspection (`RUST_LOG`/`tetron config set log-level debug` only
+    elevates the `tetron` crate's own target -- `vendor/iroh-1.0.3`'s
+    tracing calls needed temporary `info!` promotion to be visible at all,
+    since the file layer's `EnvFilter` is `"info,tetron=<level>"` and
+    dependency crates always stay at `info` regardless of the configured
+    level, per `LOG-003`):
+
+    1. **Vendored iroh 1.0.3 never gave a custom transport (`--tor`,
+       `--veilid`) the same "raced but still worth keeping as a backup
+       path" treatment relay already gets.** `RemoteStateActor::
+       handle_msg_add_connection` (`vendor/iroh-1.0.3/src/socket/
+       remote_map/remote_state.rs`), on establishing a connection whose
+       winning path is not relay, explicitly re-adds any known *relay*
+       candidate as a backup path -- so relay always shows up in `paths[]`
+       even when Direct wins the connection outright. Custom-transport
+       candidates got no equivalent call: on a shared-LAN topology where
+       Direct wins in ~1ms, a Veilid candidate address correctly included
+       in the original `EndpointAddr` was silently dropped once Direct
+       won the race, and could never appear as a path at all.
+
+       Patched (`vendor/iroh-1.0.3/PATCH.md`, dedicated entry): widened
+       that backfill to also include `transports::Addr::Custom` entries.
+       Live-verified this much: `open_path_on_conn` now runs for the
+       Veilid candidate and successfully registers a `PathId` on the
+       connection (`"opening new path"` trace log, non-`None` `path_id`).
+
+    2. **Opening a path does not by itself cause any traffic to be sent
+       on it**, discovered once (1) was fixed and still nothing arrived:
+       registering a `PathId` only reserves a slot in the connection; QUIC
+       path validation (`PATH_CHALLENGE`/`PATH_RESPONSE`) only begins once
+       something actually pings the path. Relay's backup path shows real
+       `has_activity` anyway because the relay connection carries its own
+       independent keepalive traffic outside QUIC path validation entirely
+       -- a custom transport has no such side channel. Patched by pinging
+       every relay/custom path just opened in that same backfill step,
+       mirroring the existing `handle_msg_network_change` handler's own
+       "ping every path so loss-detection starts ASAP" pattern. Live-
+       verified this much too: `path.ping()` is called and returns `Ok`
+       for the Veilid path (no `"failed to ping"` warning), on a `PathId`
+       confirmed registered on a real, non-immediately-closed connection.
+
+    Despite both of these landing correctly, `poll_send` on
+    `VeilidCustomSender` (`veilid-transport/src/lib.rs`) was still never
+    observed to fire even once, confirmed with dedicated `poll_send`/
+    `AppMessage`-received tracing added on both the send and receive
+    sides across two independent live runs (one manual single-cycle VM
+    pair, one clean fully-automated `tetron-testsuite` run) -- so this is
+    not restart-storm noise. Root cause suspected but **not confirmed**:
+    live log inspection during this investigation showed the same peer
+    accumulating **multiple concurrent `noq::Connection` objects**
+    (distinct `conn_id`s, several `AddConnection` events within
+    milliseconds of each other) for what tetron's own reconnect logic
+    believes is a single logical dial -- consistent with iroh racing
+    several connection attempts per `ep.connect()` call (one per
+    candidate transport) and keeping only the fastest (Direct, ~1ms on a
+    shared LAN) as the connection `tetron status` actually reports, while
+    discarding the others. The custom-transport path in the investigation
+    was repeatedly observed opened and pinged on connections *other than*
+    the one that ultimately won and is shown in `tetron status --json`,
+    which would fully explain silent `poll_send` starvation without any
+    further bug in this crate's own code. `RemoteCidsExhausted` (the
+    trigger PATH-DIAG-008's own dedup patch targets) also fired
+    repeatedly on nearly every open attempt in these runs, consistent
+    with several connection objects competing for the same finite
+    remote-issued CID pool.
+
+    Confirming or ruling this out needs deliberately instrumenting or
+    tracing `noq`'s own connection-establishment/racing logic directly
+    (not attempted here -- out of scope for what VEILID-006 set out to
+    close), or reproducing with a topology where Direct is unavailable so
+    there is no fast winner to race against. Tracked here rather than
+    closed silently; `tests/veilid-smoke.sh` in `tetron-testsuite`
+    continues to run (not in the default `run-list.txt`) and correctly
+    fails until this is resolved -- it is not a flaky or misconfigured
+    test, it is accurately reporting a real, still-open gap.
+    """
+
+    req_id = "VEILID-007"
+
+
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #

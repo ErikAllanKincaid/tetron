@@ -83,3 +83,62 @@ no further decay. Four to five orders of magnitude smaller/slower than
 this patch's target mechanism, and not conflated with it here -- tracked
 as its own open item,
 `tetron/DO-NOT-COMMIT/TODO_DETAILS.md#slow-climb-leak-post-burst-patch`.
+
+## Patch 2: backfill + ping custom-transport backup paths (VEILID-007, found; not yet a full fix)
+
+**File:** `src/socket/remote_map/remote_state.rs`,
+`RemoteStateActor::handle_msg_add_connection`.
+
+**Found:** 2026-09-11, live-verifying `spec/core.py`'s `VeilidCustomPathIrohRaceGap`
+(`VEILID-007`) via `tetron-testsuite`'s `veilid-smoke` scenario, after every
+gap in tetron's own code (`VEILID-001`..`006`) was already fixed and
+confirmed correct.
+
+**Root cause, part 1:** on establishing a connection whose winning path is
+not relay, `handle_msg_add_connection` explicitly re-adds any known *relay*
+candidate as a backup path ("We may have raced this with a relay address.
+Try and add any relay addresses we have back.") -- but has no equivalent
+handling for custom-transport (`--tor`/`--veilid`) candidates. On a
+shared-LAN topology where Direct wins the connection race in ~1ms, a
+Veilid candidate address correctly included in the original `EndpointAddr`
+was silently dropped the moment Direct won, and could never appear in
+`paths[]` at all -- confirmed live: zero `poll_send` calls on the custom
+transport's sender across an entire settle window, on both a manual VM
+pair and a clean automated test run.
+
+**Fix, part 1:** widen the relay-only backfill filter to also match
+`transports::Addr::Custom(_)`. Live-verified: `open_path_on_conn` now runs
+for the Veilid candidate and registers a real `PathId` on the connection.
+
+**Root cause, part 2, found immediately after fixing part 1 and still
+seeing zero traffic:** registering a `PathId` only reserves a slot in the
+connection; QUIC path validation (`PATH_CHALLENGE`/`PATH_RESPONSE`) only
+begins once something actually pings the path. Relay's backup path shows
+real activity regardless, because the relay connection carries its own
+independent keepalive traffic entirely outside QUIC path validation -- a
+custom transport has no equivalent side channel.
+
+**Fix, part 2:** after the backfill loop, ping every relay/custom path
+just opened, mirroring `handle_msg_network_change`'s own existing "ping
+every path so loss-detection starts ASAP" pattern elsewhere in this same
+file. Live-verified: `path.ping()` runs and returns `Ok` for the Veilid
+path (no `"failed to ping"` warning) on a `PathId` confirmed registered on
+a real, non-immediately-closed connection.
+
+**Status: partial, live-verified as far as it goes, NOT sufficient alone.**
+Both parts of this patch were confirmed doing exactly what they were meant
+to live, twice (manual single-cycle VM pair, clean automated
+`tetron-testsuite` run) -- but `veilid-smoke` still fails: `poll_send` on
+`VeilidCustomSender` is still never observed to fire. The suspected (not
+confirmed) reason is a level up from anything this patch touches: the same
+peer was observed accumulating multiple concurrent `noq::Connection`
+objects for what tetron believes is one logical dial, `RemoteCidsExhausted`
+firing on nearly every one of them, with the custom-transport path
+opened+pinged on a connection *other than* the one that ultimately won and
+is shown in `tetron status`. Full writeup, including what would be needed
+to confirm or rule that out: `spec/core.py`'s `VeilidCustomPathIrohRaceGap`
+(`VEILID-007`) docstring. This patch is kept regardless of that open
+question -- it is a real, independently-correct fix (custom transports now
+get the same backup-path treatment relay always had), just not sufficient
+on its own to make a Veilid path show real traffic on a shared-LAN test
+topology.

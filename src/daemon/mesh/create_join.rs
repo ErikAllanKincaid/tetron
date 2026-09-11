@@ -188,7 +188,7 @@ impl MeshManager {
             .flatten()
             .and_then(|nc| nc.transport)
             .filter(|t| t.is_veilid())
-            .and_then(|_| self.veilid_node_id.clone());
+            .and_then(|_| self.veilid_node_id());
         tasks.push(spawn_peer_cleanup(
             disconnect_rx,
             ctx.peers.clone(),
@@ -286,7 +286,7 @@ impl MeshManager {
                 // would have already refused to bind in that case, but this
                 // stays defensive rather than assuming).
                 veilid_node_id: if want_veilid {
-                    self.veilid_node_id.clone()
+                    self.veilid_node_id()
                 } else {
                     None
                 },
@@ -1286,7 +1286,7 @@ impl MeshManager {
             // Veilid -- same cross-network-leak rationale as
             // `run_join_handshake`'s `JoinParams::my_veilid_node_id`.
             if ctx.transport.as_ref().is_some_and(|t| t.is_veilid()) {
-                self.veilid_node_id.clone()
+                self.veilid_node_id()
             } else {
                 None
             },
@@ -1320,7 +1320,7 @@ impl MeshManager {
                 // across every joined network) would leak to a coordinator
                 // of an unrelated, non-Veilid network.
                 my_veilid_node_id: if ctx.transport.as_ref().is_some_and(|t| t.is_veilid()) {
-                    self.veilid_node_id.clone()
+                    self.veilid_node_id()
                 } else {
                     None
                 },
@@ -1621,7 +1621,7 @@ impl MeshManager {
             .flatten()
             .and_then(|nc| nc.transport)
             .filter(|t| t.is_veilid())
-            .and_then(|_| self.veilid_node_id.clone());
+            .and_then(|_| self.veilid_node_id());
         let mut dials = futures::stream::FuturesUnordered::new();
         for m in members {
             if m.identity == my_identity {
