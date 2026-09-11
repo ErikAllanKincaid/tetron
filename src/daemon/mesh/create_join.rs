@@ -934,7 +934,9 @@ impl MeshManager {
                 hostname: entry.hostname.clone(),
                 collision_index: 0,
                 last_seen: None,
-                // Persisted config fallback doesn't carry this yet (VEILID-003).
+                // `config::schema`'s persisted member entry doesn't carry
+                // this (unlike the live signed-blob `Member`) -- see
+                // `select.rs::persisted_roster`'s identical note.
                 veilid_node_id: None,
             })
             .collect();
@@ -1280,7 +1282,14 @@ impl MeshManager {
             live_state_rx,
             reconverge_notify_rx,
             self.promote_tx.clone(),
-            self.veilid_node_id.clone(),
+            // Only sent on reconnect when this network's own transport is
+            // Veilid -- same cross-network-leak rationale as
+            // `run_join_handshake`'s `JoinParams::my_veilid_node_id`.
+            if ctx.transport.as_ref().is_some_and(|t| t.is_veilid()) {
+                self.veilid_node_id.clone()
+            } else {
+                None
+            },
         )
     }
 
@@ -1602,6 +1611,17 @@ impl MeshManager {
         // Announce the current name (a pending rename or the confirmed one),
         // read fresh from config, rather than a value captured before a rename.
         let my_hostname = outgoing_hostname(network_name).or(my_hostname);
+        // Only sent when this network's own persisted transport preference is
+        // Veilid -- same cross-network-leak rationale as
+        // `spawn_coordinator_background_tasks`'s identical check; this
+        // function has no `transport` param, so read it fresh from config
+        // the same way `outgoing_hostname` above does for the name.
+        let my_veilid_node_id = config::load_network(network_name)
+            .ok()
+            .flatten()
+            .and_then(|nc| nc.transport)
+            .filter(|t| t.is_veilid())
+            .and_then(|_| self.veilid_node_id.clone());
         let mut dials = futures::stream::FuturesUnordered::new();
         for m in members {
             if m.identity == my_identity {
@@ -1613,7 +1633,7 @@ impl MeshManager {
             let peers = ctx.peers.clone();
             let tun_tx = ctx.tun_tx.clone();
             let stats = ctx.stats.clone();
-            let my_veilid_node_id = self.veilid_node_id.clone();
+            let my_veilid_node_id = my_veilid_node_id.clone();
             dials.push(async move {
                 // Bound the dial and honor cancellation: an unreachable peer
                 // would otherwise sit in iroh's internal handshake timeout,

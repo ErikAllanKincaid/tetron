@@ -67,7 +67,10 @@ pub(crate) fn persisted_roster(network_name: &str) -> Vec<Member> {
                     hostname: m.hostname,
                     collision_index: 0,
                     last_seen: None,
-                    // Persisted config fallback doesn't carry this yet (VEILID-003).
+                    // `config::schema`'s persisted member entry doesn't carry
+                    // this (unlike the live signed-blob `Member`) -- this
+                    // fallback path is a degraded reconstruction already
+                    // (collision_index/last_seen are lost too).
                     veilid_node_id: None,
                 })
                 .collect()
