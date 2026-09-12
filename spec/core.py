@@ -1917,9 +1917,89 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     continues to run (not in the default `run-list.txt`) and correctly
     fails until this is resolved -- it is not a flaky or misconfigured
     test, it is accurately reporting a real, still-open gap.
+
+    UPDATE (found investigating this requirement further, see VEILID-008):
+    live cross-network testing (a real laptop switched onto a mobile
+    hotspot, removing the same-LAN "Direct wins in ~1ms" confound entirely)
+    produced a stronger negative result than this requirement's own
+    racing-connection theory predicts -- with no faster Direct candidate to
+    race against at all, the Veilid custom sender was *still* never
+    exercised (zero `poll_send`/`AppMessage`/`VeilidCustomSender` log
+    lines). That data point, plus a code-level read of the roster-
+    propagation path, surfaced VEILID-008: a member's `veilid_node_id`
+    could never be corrected in the coordinator's published roster after
+    that member's initial admission, regardless of how many times it
+    reconnected with a live, freshly-attached Veilid identity. This does
+    not yet prove the connection-racing theory above is wrong (VEILID-008
+    was a real, independently-confirmable bug either way), but it is a
+    more parsimonious explanation for every symptom recorded here, since a
+    peer whose `veilid_node_id` the other side never received has no
+    candidate to dial in the first place -- no racing required. Re-test
+    once VEILID-008 lands before spending further effort on the `noq`-level
+    tracing this requirement calls for above.
     """
 
     req_id = "VEILID-007"
+
+
+class VeilidMemberIdentityReconnectPropagation(Requirement):
+    """REQUIREMENT-ID: VEILID-008 (depends on VEILID-006)
+
+    Closes a roster-propagation gap found investigating VEILID-007: a
+    member's `veilid_node_id` was only ever written into the coordinator's
+    published roster once, at that member's initial admission
+    (`accept.rs::admit_peer`). Nothing updated it again for the rest of
+    that membership's life, no matter how many times the member
+    reconnected with a fresh, correct Veilid identity.
+
+    The gap: every reconnect, a member already sends its current
+    `veilid_node_id` to the coordinator in `MeshHello`
+    (`join.rs::send_reconnect_hello`), same as VEILID-003's own join-time
+    design intends. But the coordinator's accept-side fast path for an
+    already-known member (`accept.rs::handle_known_member_reconnect`)
+    hands the connection straight to `coordinator.rs::
+    spawn_coordinator_control_reader`'s persistent loop -- which received
+    every `MeshHello` on that loop but discarded it outright. The comment
+    at that discard site predates VEILID-003: *"every other control
+    message (including an inbound Pong, and MeshHello -- whose hostname is
+    inert since MINIMAL-014 fixed hostname at join) is received but not
+    acted on here."* True for `hostname`; stale for `veilid_node_id`, which
+    rides the same message but was never carved out.
+
+    Compounded by `VeilidNonBlockingStartup` (VEILID-005)'s own finding:
+    the embedded Veilid node only actually starts on a daemon's *second*
+    boot for a given config, so a member's `veilid_node_id` at the moment
+    of first admission is essentially always `None` or stale -- meaning
+    this gap, not restart timing, is what permanently locked every member
+    (other than the coordinator itself, which self-heals via VEILID-004's
+    boot-time fix and VEILID-006's periodic `republish_own_veilid_identity`
+    watcher) out of ever getting a working Veilid dial candidate published
+    for it.
+
+    Fix: `spawn_coordinator_control_reader` now also matches
+    `ControlMsg::MeshHello { veilid_node_id: Some(id), .. }`, applying it
+    via a new `apply_reconnect_veilid_node_id` helper that mirrors
+    `runtime.rs::republish_own_veilid_identity`'s own compare-then-publish
+    shape (skip the write entirely, no generation bump, when the roster
+    already matches; otherwise write, bump generation, and republish the
+    signed blob via the same `update_snapshot_and_publish` both paths
+    share) -- covered by `coordinator.rs`'s `veilid_reconnect_tests`
+    (changed / unchanged / unknown-peer cases). The `remote_id` used to key
+    the roster write is the QUIC-authenticated connection identity already
+    captured at accept time, not the peer-claimed `identity` field inside
+    the message body, so a peer can only ever update its own entry.
+
+    Narrows, but does not by itself resolve, `VeilidCustomPathIrohRaceGap`
+    (VEILID-007): that requirement's own investigation notes record a run
+    where Veilid stayed silent even with no faster Direct candidate to
+    race against, which this gap fully explains without requiring the
+    connection-racing theory to be true. Re-run `tests/veilid-smoke.sh`
+    once this lands to see whether closing this gap alone is sufficient,
+    or whether VEILID-007's `noq`-level racing theory still has a real
+    contribution on top.
+    """
+
+    req_id = "VEILID-008"
 
 
 # --------------------------------------------------------------------------

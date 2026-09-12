@@ -315,17 +315,20 @@ fn spawn_coordinator_dial_retry(
 }
 
 /// Coordinator-side per-member control reader. Continuously accepts control
-/// streams from one member and answers `Ping`; every other message (including
-/// `MeshHello` — hostname is fixed at join, MINIMAL-014 removed rename
-/// propagation) is received but not acted on. Runs until the network token is
-/// cancelled or the connection drops.
+/// streams from one member and answers `Ping`; a `MeshHello` carrying a
+/// changed `veilid_node_id` is applied to the roster and republished
+/// (VEILID-008 — hostname itself is still fixed at join, MINIMAL-014 removed
+/// rename propagation, so that part of the message stays inert). Every other
+/// message (including an inbound Pong) is received but not acted on. Runs
+/// until the network token is cancelled or the connection drops.
 pub(crate) fn spawn_coordinator_control_reader(
     conn: Connection,
     remote_id: EndpointId,
-    _peer_ip: Ipv4Addr,
-    _network_name: String,
     token: CancellationToken,
     global_gate: Arc<crate::ratelimit::GlobalRateLimiter>,
+    state: SharedNetworkState,
+    blob_store: FsStore,
+    dht_notify: Option<Arc<tokio::sync::Notify>>,
 ) {
     tokio::spawn(async move {
         let mut gate = crate::ratelimit::ControlGate::new();
@@ -355,14 +358,81 @@ pub(crate) fn spawn_coordinator_control_reader(
                     return;
                 }
             }
-            // Every other control message (including an inbound Pong, and
-            // MeshHello — whose hostname is inert since MINIMAL-014 fixed
-            // hostname at join) is received but not acted on here.
-            if let ControlMsg::Ping { nonce } = msg {
-                respond_pong(&conn, nonce).await;
+            match msg {
+                ControlMsg::Ping { nonce } => respond_pong(&conn, nonce).await,
+                ControlMsg::MeshHello {
+                    veilid_node_id: Some(node_id),
+                    ..
+                } => {
+                    apply_reconnect_veilid_node_id(
+                        &state,
+                        &blob_store,
+                        &dht_notify,
+                        remote_id,
+                        &node_id,
+                    )
+                    .await;
+                }
+                // Every other control message (including a bare MeshHello with
+                // no veilid_node_id, and an inbound Pong) is received but not
+                // acted on here.
+                _ => {}
             }
         }
     });
+}
+
+/// VEILID-008: apply a reconnecting known member's freshly reported
+/// `veilid_node_id` (from its reconnect `MeshHello`, `join.rs::
+/// send_reconnect_hello`) into the coordinator's roster, republishing the
+/// signed blob if it actually changed.
+///
+/// Closes a gap where a member's `veilid_node_id`, once written into the
+/// roster at initial admission (`accept.rs::admit_peer`), could never be
+/// corrected again: `spawn_coordinator_control_reader`'s loop received every
+/// reconnect `MeshHello` but discarded it outright (previously: "hostname is
+/// inert since MINIMAL-014 fixed hostname at join" — true for hostname, but
+/// stale once the same message also started carrying `veilid_node_id`,
+/// VEILID-003). Since the embedded Veilid node only actually starts on a
+/// daemon's *second* boot, a member's identity at first-join time is
+/// essentially always `None` or stale, and with no correction path this made
+/// the roster's `veilid_node_id` for every member other than the coordinator
+/// itself permanently unreliable — the coordinator could never dial a
+/// member's real Veilid `NodeId` and vice versa was masked entirely, which is
+/// consistent with every symptom `VEILID-007`'s investigation observed
+/// (`spec/core.py`'s `VeilidCustomPathIrohRaceGap`: both sides confirmed
+/// live-attached, roster claimed to carry a fresh `veilid_node_id`, yet zero
+/// dial attempts or `poll_send` activity ever appeared).
+///
+/// Mirrors `runtime.rs::republish_own_veilid_identity`'s own compare-then-
+/// publish shape (that watcher only ever updates the coordinator's *own*
+/// roster entry on its own periodic timer; this closes the equivalent gap
+/// for every *other* member, event-driven off their own reconnect).
+pub(crate) async fn apply_reconnect_veilid_node_id(
+    state: &SharedNetworkState,
+    blob_store: &FsStore,
+    dht_notify: &Option<Arc<tokio::sync::Notify>>,
+    peer_id: EndpointId,
+    new_node_id: &str,
+) {
+    let changed = {
+        let mut s = state.write().unwrap();
+        match s.members.get_mut(&peer_id) {
+            Some(m) if m.veilid_node_id.as_deref() != Some(new_node_id) => {
+                m.veilid_node_id = Some(new_node_id.to_string());
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        update_snapshot_and_publish(state, blob_store, dht_notify).await;
+        tracing::info!(
+            peer = %peer_id.fmt_short(),
+            node_id = %new_node_id,
+            "veilid-transport: updated member's veilid_node_id from reconnect MeshHello (VEILID-008)"
+        );
+    }
 }
 
 /// Remove one identity from the roster + approved list. Does NOT publish or
@@ -393,5 +463,103 @@ pub(crate) async fn finalize_removal(
             ctx.peers
                 .remove_peer_from_network(&ip, &derive_ipv6(&pid, &ctx.network_key), network);
         }
+    }
+}
+
+#[cfg(test)]
+mod veilid_reconnect_tests {
+    use super::*;
+    use crate::membership::default_subnet;
+    use std::collections::BTreeMap;
+
+    fn make_state_with_member(
+        peer_id: EndpointId,
+        veilid_node_id: Option<&str>,
+    ) -> SharedNetworkState {
+        let net_secret = SecretKey::from_bytes(&[9u8; 32]);
+        let net_pub = net_secret.public();
+        let mut members = MemberList::new();
+        members
+            .add(Member {
+                identity: peer_id,
+                ip: "10.88.0.5".parse().unwrap(),
+                is_coordinator: false,
+                hostname: None,
+                collision_index: 0,
+                last_seen: None,
+                veilid_node_id: veilid_node_id.map(String::from),
+            })
+            .unwrap();
+        Arc::new(RwLock::new(NetworkState {
+            generation: 0,
+            members,
+            approved: ApprovedList::new(),
+            snapshot: None,
+            network_secret_key: Some(net_secret),
+            network_public_key: net_pub,
+            network_name: Some("test-net".to_string()),
+            mode: GroupMode::Restricted,
+            subnet: default_subnet(),
+            reusable_keys: BTreeMap::new(),
+            invites: BTreeMap::new(),
+            nuke_proposals: BTreeMap::new(),
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn reconnect_hello_with_new_veilid_node_id_updates_and_publishes() {
+        let peer_id = SecretKey::from_bytes(&[7u8; 32]).public();
+        let state = make_state_with_member(peer_id, Some("VLD0:old"));
+        let tmp = tempfile::tempdir().unwrap();
+        let blob_store = FsStore::load(tmp.path()).await.unwrap();
+
+        apply_reconnect_veilid_node_id(&state, &blob_store, &None, peer_id, "VLD0:new").await;
+
+        let s = state.read().unwrap();
+        assert_eq!(
+            s.members.get(&peer_id).unwrap().veilid_node_id.as_deref(),
+            Some("VLD0:new")
+        );
+        // A real change must bump generation and produce a fresh signed
+        // snapshot -- otherwise no other peer's reconverge would ever fetch
+        // this update (VEILID-008's whole point).
+        assert_eq!(s.generation, 1);
+        assert!(s.snapshot.is_some());
+    }
+
+    #[tokio::test]
+    async fn reconnect_hello_with_unchanged_veilid_node_id_is_a_no_op() {
+        let peer_id = SecretKey::from_bytes(&[8u8; 32]).public();
+        let state = make_state_with_member(peer_id, Some("VLD0:same"));
+        let tmp = tempfile::tempdir().unwrap();
+        let blob_store = FsStore::load(tmp.path()).await.unwrap();
+
+        apply_reconnect_veilid_node_id(&state, &blob_store, &None, peer_id, "VLD0:same").await;
+
+        let s = state.read().unwrap();
+        // No change means no generation bump -- matches
+        // `republish_own_veilid_identity`'s own idempotent-skip behavior, so
+        // a healthy steady-state reconnect loop doesn't spuriously
+        // republish the roster every time.
+        assert_eq!(s.generation, 0);
+        assert!(s.snapshot.is_none());
+    }
+
+    #[tokio::test]
+    async fn reconnect_hello_for_unknown_peer_is_a_no_op() {
+        let known_peer = SecretKey::from_bytes(&[10u8; 32]).public();
+        let unknown_peer = SecretKey::from_bytes(&[11u8; 32]).public();
+        let state = make_state_with_member(known_peer, None);
+        let tmp = tempfile::tempdir().unwrap();
+        let blob_store = FsStore::load(tmp.path()).await.unwrap();
+
+        // A stale or spoofed identity not in the roster must not create an
+        // entry or otherwise touch the published state.
+        apply_reconnect_veilid_node_id(&state, &blob_store, &None, unknown_peer, "VLD0:x").await;
+
+        let s = state.read().unwrap();
+        assert_eq!(s.generation, 0);
+        assert!(s.members.get(&unknown_peer).is_none());
     }
 }
