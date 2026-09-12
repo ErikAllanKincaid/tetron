@@ -133,6 +133,8 @@ pub(crate) fn spawn_peer_cleanup(
                                         c.disconnect_tx.clone(),
                                         token.clone(),
                                         c.my_veilid_node_id.clone(),
+                                        c.blob_store.clone(),
+                                        c.dht_notify.clone(),
                                     );
                                 }
                             }
@@ -157,11 +159,18 @@ pub(crate) fn spawn_peer_cleanup(
 /// (`dial_retry_decision`, `backoff_cap`, `next_backoff`) so roster-
 /// authority and cold/frozen-escalation behavior are identical to the
 /// member path regardless of which role initiated the dial. On success,
-/// registers into the `PeerTable` and spawns a peer reader exactly like
-/// `dial_all_members`'s own success branch (no control-reader spawn either
-/// -- same asymmetry already present there: a coordinator's outbound dial
-/// never spawns `spawn_coordinator_control_reader`, only inbound accepts
-/// do).
+/// registers into the `PeerTable`, spawns a peer reader, **and** (VEILID-010)
+/// a control reader on this same connection -- until this fix, only the
+/// accept-side paths (`handle_known_member_reconnect`,
+/// `spawn_admitted_member_tasks`) ever did, so a connection that happened
+/// to survive because the *coordinator's* own dial won a reconnect race
+/// (as likely as the member's dial winning) had no listener for anything
+/// the member sent back on it: not a `Ping`, not a VEILID-009 periodic
+/// identity announce, nothing. `dial_all_members`'s own initial-connect
+/// success branch has the same latent gap and is not fixed here -- by the
+/// time any reconnect cycle matters, `spawn_reconnect_loop`
+/// (member-initiated) or this function (coordinator-initiated) has always
+/// taken over, both now correctly wired.
 #[allow(clippy::too_many_arguments)]
 fn spawn_coordinator_dial_retry(
     peer_id: EndpointId,
@@ -175,6 +184,8 @@ fn spawn_coordinator_dial_retry(
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
     my_veilid_node_id: Option<String>,
+    blob_store: FsStore,
+    dht_notify: Option<Arc<tokio::sync::Notify>>,
 ) {
     let MeshCtx {
         peers,
@@ -182,6 +193,7 @@ fn spawn_coordinator_dial_retry(
         stats,
         pruned_peers,
         network_key,
+        global_gate,
         ..
     } = ctx;
     tokio::spawn(async move {
@@ -289,6 +301,22 @@ fn spawn_coordinator_dial_retry(
                     }
                     tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "coordinator reconnected to member");
                     peers.add(peer_ip, peer_ipv6, conn.clone(), peer_id, &network_name);
+                    // VEILID-010: a connection the *coordinator* dials out
+                    // (this success path) previously got only a data-plane
+                    // reader -- no control-message listener at all, so
+                    // nothing the member ever sent back on it (a periodic
+                    // VEILID-009 identity announce, a Ping, anything) was
+                    // ever read. Spawn the same control reader the
+                    // accept-side paths already get.
+                    spawn_coordinator_control_reader(
+                        conn.clone(),
+                        peer_id,
+                        token.clone(),
+                        global_gate,
+                        state.clone(),
+                        blob_store,
+                        dht_notify,
+                    );
                     forward::spawn_peer_reader(
                         conn,
                         peer_id,

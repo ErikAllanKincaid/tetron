@@ -30,7 +30,26 @@ tracing = "0.1"
 # as a stand-in for a real production `VeilidConfig` (self-signed test TLS
 # certificate, insecure-fallback protected store). VEILID-001 explicitly
 # does not harden this -- see the requirement's docstring.
-veilid-core = { version = "0.5.7", features = ["test-util"] }
+#
+# `footgun-nodeid-target`: required for `RoutingContext::app_message` to
+# accept a `Target::NodeId` at all -- without it, `app_message` compiles to
+# a variant that unconditionally rejects `Target::NodeId` with
+# `InvalidTarget` (only `Target::RouteId` is permitted), which is exactly
+# what `VeilidCustomSender::poll_send` passes. Missing this feature meant
+# every send failed instantly, silently (the error is fire-and-forget
+# logged at `debug!` on this crate's own tracing target, which `tetron`'s
+# `"info,tetron=<level>"` file-log filter never promotes past `info` --
+# see LOG-003) -- this is the actual root cause behind VEILID-007's "opens
+# and pings but never carries traffic" mystery, not iroh connection
+# racing. Confirmed independently: `tailveil` (a sibling Veilid-mesh
+# project, /home/erik/code/tailveil, same veilid-core 0.5.7, identical
+# `Target::NodeId` + `app_message` call shape) enables this same feature
+# and works. Keeping the default `SafetySelection::Safe` (sender-privacy
+# via safety route) rather than tailveil's `Unsafe` choice -- this feature
+# alone is sufficient for `Safe`-mode `NodeId` targeting; switching to
+# `Unsafe` is a separate, independent tradeoff (lower overhead, no
+# safety-route sender-privacy) not made here.
+veilid-core = { version = "0.5.7", features = ["test-util", "footgun-nodeid-target"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
