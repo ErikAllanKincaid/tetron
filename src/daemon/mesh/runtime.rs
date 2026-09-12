@@ -509,6 +509,105 @@ impl MeshManager {
         }
     }
 
+    /// VEILID-009: spawns a background task that periodically re-announces
+    /// this daemon's own Veilid identity to the coordinator of every network
+    /// it is a plain member of (not coordinator), over that network's
+    /// already-live connection -- closing a gap VEILID-008 left open.
+    ///
+    /// VEILID-008 made the coordinator apply a member's `veilid_node_id`
+    /// from a reconnect `MeshHello`, but that only helps when the *member's*
+    /// own dial happens to be the connection that survives a concurrent
+    /// reconnect race. When the *coordinator's* own dial wins instead
+    /// (equally likely -- both sides' reconnect loops fire independently
+    /// after a mutual disconnect), its `MeshHello` only ever announces the
+    /// coordinator's identity to the member; there is no message on that
+    /// connection carrying the member's identity back, and nothing retries.
+    /// Found live investigating `VEILID-007`: `tetron-testsuite`'s
+    /// `veilid-smoke` run showed the *member's* own dial-time `MeshHello`
+    /// correctly carrying the coordinator's Veilid candidate, but the
+    /// connection that actually survived was the coordinator-initiated one
+    /// -- which structurally could never carry the member's identity at all,
+    /// VEILID-008 or not.
+    ///
+    /// Mirrors `spawn_veilid_identity_watcher`'s own reasoning (VEILID-006):
+    /// re-announcing periodically on whatever connection currently exists,
+    /// instead of relying on a single event to land, closes the gap
+    /// regardless of which side happens to have dialed. No coordinator-side
+    /// change is needed -- `spawn_coordinator_control_reader`'s VEILID-008
+    /// handling already applies whatever `veilid_node_id` arrives in a
+    /// `MeshHello`, no matter when.
+    pub(crate) fn spawn_veilid_member_identity_watcher(self: &Arc<Self>) {
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            loop {
+                daemon.announce_veilid_identity_to_coordinator().await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
+
+    /// The actual announce pass `spawn_veilid_member_identity_watcher`
+    /// triggers once identity is known. Iterates every joined network,
+    /// skips anything this node coordinates or that didn't ask for Veilid,
+    /// and re-sends `MeshHello` over that network's live connection to its
+    /// coordinator (if one is currently connected -- silently retried next
+    /// tick otherwise). No compare-then-skip needed here: the coordinator's
+    /// own `apply_reconnect_veilid_node_id` already no-ops (no generation
+    /// bump, no republish) when nothing actually changed, so resending an
+    /// unchanged identity every 5s costs one small control message, not a
+    /// wasted blob republish.
+    async fn announce_veilid_identity_to_coordinator(self: &Arc<Self>) {
+        let Some(node_id) = self.veilid_node_id() else {
+            return;
+        };
+        let my_identity = self.identity.local_identity();
+        let names: Vec<String> = self.networks.iter().map(|e| e.key().clone()).collect();
+        for name in names {
+            let (my_ip, conn) = {
+                let Some(handle) = self.networks.get(&name) else {
+                    continue;
+                };
+                let is_coordinator = handle.state.read().unwrap().network_secret_key.is_some();
+                let wants_veilid = config::load_network(&name)
+                    .ok()
+                    .flatten()
+                    .and_then(|nc| nc.transport)
+                    .is_some_and(|t| t.is_veilid());
+                if is_coordinator || !wants_veilid {
+                    continue;
+                }
+                let coordinator_id = {
+                    let s = handle.state.read().unwrap();
+                    s.members
+                        .all()
+                        .iter()
+                        .find(|m| m.is_coordinator)
+                        .map(|m| m.identity)
+                };
+                let Some(coordinator_id) = coordinator_id else {
+                    continue;
+                };
+                let conn = handle
+                    .peers
+                    .peers_for_network_with_conn(&name)
+                    .into_iter()
+                    .find(|(id, _, _)| *id == coordinator_id)
+                    .map(|(_, _, conn)| conn);
+                let Some(conn) = conn else {
+                    continue;
+                };
+                (handle.my_ip, conn)
+            };
+            if let Err(e) =
+                send_reconnect_hello(&conn, my_identity, my_ip, &name, &Some(node_id.clone())).await
+            {
+                tracing::debug!(network = %name, error = %e, "veilid-transport: periodic identity announce to coordinator failed");
+            } else {
+                tracing::debug!(network = %name, node_id = %node_id, "veilid-transport: announced own identity to coordinator (VEILID-009)");
+            }
+        }
+    }
+
     /// Destroy a network (NUKE-CONSENSUS). A solo coordinator (no one to
     /// second) nukes immediately, unchanged from the original behavior. With
     /// two or more coordinators, this adds the caller's own proposal to the

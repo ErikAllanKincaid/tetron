@@ -389,8 +389,11 @@ fn persist_join_config(
 
 /// Send a `MeshHello` to the coordinator on reconnect/restore (a fresh join
 /// already conveyed the hostname in its `JoinRequest`). Reads the hostname fresh
-/// from config (its join-fixed name).
-async fn send_reconnect_hello(
+/// from config (its join-fixed name). Also reused by
+/// `runtime.rs::spawn_veilid_member_identity_watcher` (VEILID-009) to
+/// re-announce this daemon's own Veilid identity periodically over an
+/// already-live connection, not just at the moment of a fresh dial.
+pub(crate) async fn send_reconnect_hello(
     conn: &Connection,
     my_identity: EndpointId,
     my_ip: Ipv4Addr,
