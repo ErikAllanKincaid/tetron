@@ -1947,6 +1947,29 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     requirement originally called for is still not needed to explain any
     symptom observed so far, and remains the last resort if propagation
     turns out not to be the whole story.
+
+    UPDATE 3 (VEILID-009 live-tested, still fails, structural gap found and
+    closed -- VEILID-010; then the actual root cause found by reading
+    `veilid-core` source, not by more live testing -- VEILID-011): the
+    periodic announce fired correctly but was never read at all, traced to
+    `spawn_coordinator_dial_retry` never spawning a control-reader on its
+    own successful connections (VEILID-010, a pre-existing structural gap,
+    not Veilid-specific). But even with every roster-propagation gap now
+    closed (VEILID-006/008/009/010), the actual send call underneath all of
+    it -- `veilid-core`'s `RoutingContext::app_message(Target::NodeId, ..)`
+    -- has been unconditionally rejected since before this investigation
+    began: it requires the `footgun-nodeid-target` Cargo feature, never
+    enabled in `veilid-transport/Cargo.toml`, so every send failed
+    instantly, silently (fire-and-forget `poll_send`, failure logged at a
+    level `tetron`'s own log filter never surfaces for a dependency crate).
+    This fully explains every symptom recorded in this requirement, with
+    nothing left for the connection-racing theory to account for. See
+    `VeilidNodeIdTargetFootgunFeature` (VEILID-011) for the fix and its
+    independent confirmation (a working sibling project, `tailveil`,
+    pinned to the same `veilid-core` version, differing in exactly this
+    feature flag). **Not yet closed**: VEILID-011 is fix-applied but not
+    yet live-verified end-to-end -- re-run `tests/veilid-smoke.sh` before
+    treating this requirement as resolved.
     """
 
     req_id = "VEILID-007"
@@ -2062,9 +2085,137 @@ class VeilidMemberIdentityPeriodicAnnounce(Requirement):
     part of this whole chain that could be meaningfully unit-tested without
     a real connection, and already is (`coordinator.rs`'s
     `veilid_reconnect_tests`).
+
+    UPDATE (live re-run against this fix, 2026-09-12): debug logs confirmed
+    the periodic announce itself firing correctly, every 5s, exactly as
+    designed -- but the coordinator never applied a single one. Root cause
+    was structural, not in this fix: `spawn_coordinator_dial_retry` (the
+    task that owns a connection whenever the *coordinator's* own dial wins
+    a reconnect race -- confirmed the common case in this exact topology)
+    never spawned a control-reader loop on the connection it dials at all,
+    so nothing arriving on it -- this fix's announces included -- was ever
+    read. See `VeilidCoordinatorDialControlReader` (VEILID-010).
     """
 
     req_id = "VEILID-009"
+
+
+class VeilidCoordinatorDialControlReader(Requirement):
+    """REQUIREMENT-ID: VEILID-010 (depends on VEILID-009)
+
+    Closes a structural gap VEILID-009's live re-run exposed, pre-dating
+    Veilid entirely: `coordinator.rs::spawn_coordinator_dial_retry`
+    (CONVERGE-012 -- the task that redials a member after a coordinator
+    observes it disconnect) registered its successful connection into the
+    `PeerTable` and spawned a data-plane `forward::spawn_peer_reader`, but
+    never spawned a control-message listener on it at all. Every other
+    coordinator-side connection-establishing path
+    (`accept.rs::handle_known_member_reconnect`,
+    `accept.rs::spawn_admitted_member_tasks`) already spawns
+    `spawn_coordinator_control_reader`; this one -- the one that runs
+    whenever the *coordinator's* own dial wins a reconnect race instead of
+    the member's -- silently did not. QUIC is full-duplex per connection:
+    each side needs its own `accept_bi()` loop to see streams the other
+    side opens, independent of who dialed. Without one here, nothing the
+    member ever sent on a coordinator-dialed connection was read: not a
+    `Ping`, not `VEILID-009`'s periodic identity announce, nothing --
+    invisible because it never errored, the reads simply never happened.
+
+    Fix: `spawn_coordinator_dial_retry` now also calls
+    `spawn_coordinator_control_reader` on its own successful connection,
+    threading the two additional handles it needs (`blob_store`,
+    `dht_notify`) through from the existing `CoordinatorCleanup` bundle its
+    caller already holds.
+
+    `dial_all_members`'s own initial-connect success branch (used by both
+    roles at first connect/restore) has the identical latent gap and is
+    **not** fixed here -- deliberately out of scope: by the time any
+    reconnect cycle matters (which is when a stale identity would actually
+    need correcting), `join.rs::spawn_reconnect_loop` (member-initiated,
+    already correct via `spawn_member_control_listener`) or this function
+    (coordinator-initiated, now correct) has always taken over. Revisit
+    only if a concrete gap traces back to the very first connection
+    specifically.
+
+    Not unit-tested, same reasoning as VEILID-009: needs a live QUIC
+    `Connection` to exercise at all; verified via `tetron-testsuite`'s
+    `veilid-smoke`.
+    """
+
+    req_id = "VEILID-010"
+
+
+class VeilidNodeIdTargetFootgunFeature(Requirement):
+    """REQUIREMENT-ID: VEILID-011 (depends on VEILID-001)
+
+    The actual root cause behind every symptom `VeilidCustomPathIrohRaceGap`
+    (VEILID-007) recorded, found by reading `veilid-core`'s own source after
+    VEILID-008/009/010 (all real, independently-justified fixes) still left
+    live re-tests showing zero Veilid traffic: `veilid-core`'s
+    `RoutingContext::app_message` has two implementations gated by a Cargo
+    feature, `footgun-nodeid-target`. Without it:
+
+    ```rust
+    pub async fn app_message(&self, target: Target, message: Vec<u8>) -> VeilidAPIResult<()> {
+        match target {
+            Target::RouteId(_) => self.internal_app_message(target, message.into()).await,
+            Target::NodeId(_) => Err(VeilidAPIError::invalid_target(
+                "Only PrivateRoute targets are allowed without the footgun feature",
+            )),
+        }
+    }
+    ```
+
+    `veilid-transport/src/lib.rs`'s `VeilidCustomSender::poll_send` calls
+    exactly this, with exactly `Target::NodeId` (`VEILID-001`'s own
+    deliberate addressing choice -- see that requirement's docstring for
+    why a private/safety route was rejected). `veilid-transport/Cargo.toml`
+    never enabled `footgun-nodeid-target`. Every single `app_message` call
+    this transport has ever made -- across every VEILID-006 through
+    VEILID-010 live test, every topology, same-LAN and cross-network --
+    has failed **instantly**, before any network I/O, with `InvalidTarget`.
+
+    Two things hid this completely:
+
+    1. `poll_send` is fire-and-forget by design (matches UDP's own
+       unreliable-send semantics): it `tokio::spawn`s the `app_message`
+       future and unconditionally returns `Poll::Ready(Ok(()))` to the QUIC
+       layer immediately. iroh never saw the failure -- from its side a
+       `PATH_CHALLENGE` ping over this path just never got a
+       `PATH_RESPONSE`, indistinguishable from an ordinary black hole.
+    2. The failure *is* logged (`tracing::debug!("...app_message send
+       failed: {e}")`) -- but at `debug!`, on `veilid_transport`'s own
+       crate target, which `main.rs::init_tracing`'s file-layer filter
+       (`"info,tetron=<level>"`, `LOG-003`) never promotes past `info`
+       regardless of `tetron config set log-level debug` -- that override
+       only ever elevates the `tetron` crate's own target. The error fired
+       on every single call, silently, through every diagnostic session in
+       this entire investigation.
+
+    Confirmed independently before touching code: `tailveil`
+    (`/home/erik/code/tailveil`, a separate Tailscale-alike built on
+    Veilid, unrelated to tetron) uses the identical `veilid-core = "0.5.7"`
+    and the identical `Target::NodeId` + `rc.app_message(target, payload)`
+    call shape, and its `Cargo.toml` enables `footgun-nodeid-target`
+    (alongside `footgun-config`, an unrelated internal-tuning gate tetron
+    does not need -- see `veilid_config.rs`). Working sibling code pinned
+    to the same dependency version, differing in exactly this one feature
+    flag, is about as strong a confirmation as this could get without a
+    live re-test (pending -- this requirement is fix-applied, not yet
+    verified end-to-end; do not treat VEILID-007 as closed until
+    `tests/veilid-smoke.sh` actually passes against it).
+
+    Fix: `veilid-transport/Cargo.toml`'s `veilid-core` dependency now
+    enables `footgun-nodeid-target`. Deliberately did **not** also adopt
+    `tailveil`'s `SafetySelection::Unsafe` choice -- this feature alone is
+    sufficient for `Target::NodeId` under the default `SafetySelection::Safe`
+    (sender-privacy via safety route), which is what `VEILID-001` already
+    chose and documented; switching to `Unsafe` is an independent
+    latency/privacy tradeoff, not required to fix this bug, and not made
+    here.
+    """
+
+    req_id = "VEILID-011"
 
 
 # --------------------------------------------------------------------------
