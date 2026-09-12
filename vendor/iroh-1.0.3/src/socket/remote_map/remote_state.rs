@@ -450,32 +450,6 @@ impl RemoteStateActor {
                     self.state
                         .open_path_on_conn(conn_id, conn_state, &conn, &open_addr);
                 }
-                // tetron-local patch (PATCH.md): opening a path only
-                // reserves a `PathId` in the connection -- it does not by
-                // itself send anything. Relay backup paths still end up
-                // with real traffic (`has_activity`) because the relay
-                // connection carries its own independent keepalive traffic
-                // outside QUIC path validation; a custom-transport backup
-                // path has no such side channel and was observed live
-                // (`tetron-testsuite`'s `veilid-smoke`, 2026-09-11) to sit
-                // open but silent indefinitely with zero `poll_send` calls
-                // -- nothing here was pinging it to kick off the QUIC-level
-                // PATH_CHALLENGE that `path.ping()` triggers (the same call
-                // `handle_msg_network_change`, just below, already uses for
-                // an equivalent "make sure this path is actually probed"
-                // need). Ping every path just opened above so it validates.
-                for (path_id, addr) in &conn_state.paths {
-                    if let Some(path) = conn.path(*path_id)
-                        && matches!(
-                            addr,
-                            transports::FourTuple::Relay { .. }
-                                | transports::FourTuple::Custom { .. }
-                        )
-                        && let Err(err) = path.ping()
-                    {
-                        warn!(%err, %path_id, ?addr, "failed to ping newly-opened backup path");
-                    }
-                }
             }
         }
         self.trigger_holepunching();
@@ -1086,6 +1060,45 @@ impl State {
         match fut.path_id() {
             Some(path_id) => {
                 trace!(%conn_id, %path_id, ?path_status, "opening new path");
+                // tetron-local patch (PATCH.md, PATH-DIAG-008 follow-up):
+                // opening a path only reserves a `PathId` -- it does not by
+                // itself send anything, so nothing begins the QUIC-level
+                // PATH_CHALLENGE that proves the path actually works
+                // (`has_activity` in tetron's own status reporting). Relay
+                // backup paths still end up with real traffic anyway
+                // because the relay connection carries its own independent
+                // keepalive outside QUIC path validation; a custom-transport
+                // backup path has no such side channel.
+                //
+                // Pinging here, at the one place a `path_id` is ever newly
+                // assigned, is deliberate: found live investigating
+                // VEILID-007 that the *first* open attempt (from
+                // `handle_msg_add_connection`) essentially always fails with
+                // `RemoteCidsExhausted` (the connection is only
+                // milliseconds old; the peer has not issued enough CIDs
+                // yet) and falls into the `None` branch below, queued into
+                // `pending_open_paths` -- the actual successful open then
+                // happens later, via `open_path_on_all_conns`'s periodic
+                // retry sweep, calling this same function again but through
+                // a *different* call site than the one an earlier version
+                // of this patch pinged from. That earlier version's ping
+                // loop (inside `handle_msg_add_connection` only) therefore
+                // almost never ran against a path that had *just* opened --
+                // confirmed live (`tetron-testsuite`'s `veilid-smoke`, two
+                // separate sessions): zero ping-issued and zero ping-failed
+                // log lines appeared across either a same-LAN or a
+                // Tailscale-adjacent topology, despite the path opening
+                // successfully every time. Centralizing the ping here
+                // covers both the rare immediate-success case and the
+                // near-universal delayed-retry case with one call.
+                if matches!(
+                    open_addr,
+                    transports::FourTuple::Relay { .. } | transports::FourTuple::Custom { .. }
+                ) && let Some(path) = conn.path(path_id)
+                    && let Err(err) = path.ping()
+                {
+                    warn!(%err, %path_id, ?open_addr, "failed to ping newly-opened backup path");
+                }
             }
             None => {
                 let ret = now_or_never(fut);

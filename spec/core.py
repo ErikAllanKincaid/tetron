@@ -1989,9 +1989,36 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     `dial_all_members`, `spawn_roster_peer_dials`) fire concurrently after
     a restart, each producing its own racing `noq::Connection`, with
     nothing deduplicating them. See `VeilidConcurrentDialDedup`
-    (VEILID-012) for the fix. **Still not closed**: VEILID-012 is
-    fix-applied but not yet live-verified end-to-end -- re-run
-    `tests/veilid-smoke.sh` before treating this requirement as resolved.
+    (VEILID-012) for the fix.
+
+    UPDATE 5 (VEILID-012 live-verified working, still not sufficient --
+    the actual final defect found and fixed): a follow-up live test built
+    specifically to remove every remaining confound (a third restart, of
+    the coordinator only, whose restore-time dial already has the
+    member's correct, unchanged `veilid_node_id` loaded from the signed
+    blob before it ever dials) confirmed VEILID-012 works exactly as
+    designed -- a single, uncontested, correctly-addressed dial -- and
+    *still* produced zero Veilid path activity. One more promoted-trace
+    diagnostic session found why: `VeilidCustomPathIrohRaceGap`'s own
+    Patch 2 (the ping-after-open fix) pinged a newly-opened path from
+    inside `handle_msg_add_connection`, but that function's own open
+    attempt essentially always fails with `RemoteCidsExhausted` (the
+    connection is milliseconds old), so the real, successful open always
+    happens later via a *different* call site
+    (`open_path_on_all_conns`'s retry sweep) that the ping loop never
+    covered -- the path reliably opened, real `PathId` and all, and
+    nothing ever pinged it, for the entire duration of this
+    investigation. See `VeilidPingAtPathOpenOrigin` (VEILID-013,
+    `vendor/iroh-1.0.3/PATCH.md` Patch 3) for the fix: move the ping into
+    `open_path_on_conn` itself, the one place a `path_id` is ever newly
+    assigned, covering every caller uniformly.
+
+    **Still not closed**: VEILID-013 is fix-applied but not yet
+    live-verified end-to-end -- re-run `tests/veilid-smoke.sh` before
+    treating this requirement as resolved. If it passes, every fix from
+    VEILID-006 through VEILID-013 was independently real and necessary;
+    none of the intermediate work was wasted even though each one alone
+    looked, at the time, like it should have been sufficient.
     """
 
     req_id = "VEILID-007"
@@ -2307,9 +2334,69 @@ class VeilidConcurrentDialDedup(Requirement):
     same `(network, peer)` is refused while the first is held; dropping
     the guard frees it for another claim; different networks or different
     peers never contend with each other.
+
+    UPDATE (real and necessary, but not the final blocker): a follow-up
+    live test specifically designed to remove every remaining confound --
+    a third restart, of the coordinator only, whose restore-time dial
+    reloads a roster that already has the member's still-valid
+    `veilid_node_id` from the signed blob, so the correct candidate is
+    present from that dial's very first attempt, no racing or propagation
+    delay of any kind -- confirmed this fix works exactly as intended
+    (a single, uncontested, correctly-addressed dial) and *still* produced
+    zero Veilid path activity. See `VeilidPingAtPathOpenOrigin`
+    (VEILID-013, a vendored-`iroh` fix, `vendor/iroh-1.0.3/PATCH.md`
+    Patch 3) for the actual remaining defect this test uncovered.
     """
 
     req_id = "VEILID-012"
+
+
+class VeilidPingAtPathOpenOrigin(Requirement):
+    """REQUIREMENT-ID: VEILID-013 (depends on VEILID-012)
+
+    The actual, final defect behind `VeilidCustomPathIrohRaceGap`
+    (VEILID-007) -- found only after a live test specifically constructed
+    to remove every other confound (see VEILID-012's own UPDATE) still
+    showed zero Veilid path activity from a single, uncontested,
+    correctly-addressed dial. Documented in full in
+    `vendor/iroh-1.0.3/PATCH.md`'s "Patch 3" entry; summary here.
+
+    Patch 2 (`VeilidCustomPathIrohRaceGap`'s own vendored-iroh fix, found
+    2026-09-11) pinged a newly-opened backup path from inside
+    `RemoteStateActor::handle_msg_add_connection`, right after that same
+    function's own call to `open_path_on_conn`. But that first call
+    essentially always returns `RemoteCidsExhausted` -- the connection is
+    only milliseconds old; the peer has not yet issued enough connection
+    IDs for a new path -- so the address gets queued into
+    `pending_open_paths` and is actually opened moments later by
+    `open_path_on_all_conns`'s periodic retry sweep: a *different* call
+    site, one call frame away, that Patch 2's ping loop never covered.
+    Net effect: the path reliably opens (a real `PathId` gets assigned),
+    but nothing ever pings it, so QUIC path validation
+    (`PATH_CHALLENGE`/`PATH_RESPONSE`) never begins and `has_activity`
+    never becomes true -- indistinguishable from every other symptom this
+    entire investigation chased, because it produces exactly the same
+    "opens but silent" signature this requirement's own docstring named
+    from the very first live session.
+
+    Confirmed directly, not inferred: promoting Patch 2's own `trace!`
+    calls to `info!` for one more diagnostic session (the same technique
+    that found Patch 2 itself) showed the candidate opening successfully
+    every time, and zero `"backup path ping issued"`/`"failed to ping"`
+    log lines ever appearing, across two separate live topologies.
+
+    Fix: move the ping call into `open_path_on_conn` itself, at the one
+    place a `path_id` is ever newly assigned, shared by both call sites
+    (`handle_msg_add_connection`'s first attempt and
+    `open_path_on_all_conns`'s retry sweep) -- and delete the
+    now-redundant separate ping loop `handle_msg_add_connection` had.
+
+    Not yet live-verified end-to-end as of this fix landing -- re-run
+    `tests/veilid-smoke.sh` (now including the VEILID-012 confound-free
+    third-restart check) before treating `VEILID-007` as closed.
+    """
+
+    req_id = "VEILID-013"
 
 
 # --------------------------------------------------------------------------
