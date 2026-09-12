@@ -125,20 +125,71 @@ file. Live-verified: `path.ping()` runs and returns `Ok` for the Veilid
 path (no `"failed to ping"` warning) on a `PathId` confirmed registered on
 a real, non-immediately-closed connection.
 
-**Status: partial, live-verified as far as it goes, NOT sufficient alone.**
-Both parts of this patch were confirmed doing exactly what they were meant
-to live, twice (manual single-cycle VM pair, clean automated
-`tetron-testsuite` run) -- but `veilid-smoke` still fails: `poll_send` on
-`VeilidCustomSender` is still never observed to fire. The suspected (not
-confirmed) reason is a level up from anything this patch touches: the same
-peer was observed accumulating multiple concurrent `noq::Connection`
-objects for what tetron believes is one logical dial, `RemoteCidsExhausted`
-firing on nearly every one of them, with the custom-transport path
-opened+pinged on a connection *other than* the one that ultimately won and
-is shown in `tetron status`. Full writeup, including what would be needed
-to confirm or rule that out: `spec/core.py`'s `VeilidCustomPathIrohRaceGap`
-(`VEILID-007`) docstring. This patch is kept regardless of that open
-question -- it is a real, independently-correct fix (custom transports now
-get the same backup-path treatment relay always had), just not sufficient
-on its own to make a Veilid path show real traffic on a shared-LAN test
-topology.
+**Status: part 1 stands as originally written; part 2 (the ping call) was
+buggy and has been superseded by Patch 3 below -- see that entry for why
+and what changed.** Both parts were confirmed doing exactly what they were
+meant to, live, at the time this was written (manual single-cycle VM pair,
+clean automated `tetron-testsuite` run): `open_path_on_conn` opened a real
+`PathId` for the Veilid candidate, and `path.ping()` returned `Ok` with no
+`"failed to ping"` warning. What that observation didn't catch: the ping
+call as originally placed almost never actually ran against the path that
+had just opened (see Patch 3) -- the `Ok` results being logged were real,
+they just weren't happening where or as often as this entry assumed at the
+time. Investigating why `veilid-smoke` still failed despite both parts
+apparently working also produced two further real, independently-necessary
+fixes before Patch 3 was found: `VEILID-008`..`010` (roster-propagation and
+control-reader gaps in `tetron`'s own code, not this vendored copy) and a
+`footgun-nodeid-target` Cargo feature gate in `veilid-core` itself
+(`VEILID-011`, `veilid-transport/Cargo.toml`). None of that work was
+wasted -- each was independently confirmable and necessary regardless of
+Patch 3 -- but none of it was sufficient either, because the actual
+remaining defect was back here the whole time, in this file, underneath
+all of it.
+
+## Patch 3: ping a newly-opened backup path at its one real point of origin (VEILID-007, actual fix)
+
+**File:** `src/socket/remote_map/remote_state.rs`, `State::open_path_on_conn`
+(the ping call moves out of `RemoteStateActor::handle_msg_add_connection`,
+which no longer needs any patch-local code of its own).
+
+**Found:** 2026-09-12, after `VEILID-008`..`011` (see `spec/core.py`) were
+all live-verified individually correct and `veilid-smoke` *still* failed.
+Re-running with Patch 2's own `trace!` calls promoted to `info!` for one
+diagnostic session (the same technique used to find Patch 2 itself)
+showed the Veilid candidate opening successfully as a real `PathId` --
+proving Patch 2's part 1 and `VEILID-011` both correct -- but **zero**
+`"backup path ping issued"` or `"failed to ping"` log lines appeared
+anywhere, across two separate live sessions (a same-LAN topology and a
+Tailscale-adjacent one), despite the path opening every single time.
+
+**Root cause:** Patch 2's ping loop lived inside
+`handle_msg_add_connection`, right after that function's *own* call to
+`open_path_on_conn`. But that first call essentially always returns
+`RemoteCidsExhausted` (`open_path_on_conn`'s `None` branch) -- the
+connection is only milliseconds old at that point; the peer has not yet
+issued enough connection IDs for a new path. The failed address gets
+queued into `pending_open_paths` and is opened successfully *later*, by
+`open_path_on_all_conns`'s periodic retry sweep (`scheduled_open_path`,
+fired every 333ms) -- a different call site, one call frame away from
+`handle_msg_add_connection`, that Patch 2's ping loop never ran for. So
+the real-world sequence was: open fails (no ping attempted, correctly --
+nothing opened yet), open succeeds moments later on retry (path genuinely
+opens -- but nothing ever pings it, because the only ping call site is
+back in the function that failed). This matches every observation from
+Patch 2's own write-up: `path_id` reliably assigned, zero ping activity,
+ever.
+
+**Fix:** move the ping call into `open_path_on_conn` itself, in the
+`Some(path_id) =>` arm of `fut.path_id()`'s match -- the one place, shared
+by every caller (`handle_msg_add_connection`'s first attempt *and*
+`open_path_on_all_conns`'s retry sweep), where a `path_id` is ever newly
+assigned. This also let the separate ping loop in
+`handle_msg_add_connection` be deleted outright rather than kept
+alongside it: every path that loop could have reached had already been
+opened (and is now pinged) via this same function.
+
+**Status: live-verification of this specific patch is the next step**
+(re-run `tests/veilid-smoke.sh`, now with the extra node1-only restart the
+test itself gained alongside this patch, checking for a genuinely
+confound-free steady-state reconnect). Not yet confirmed end-to-end; do
+not treat `VEILID-007` as closed until it passes.
