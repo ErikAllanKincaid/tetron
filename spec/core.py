@@ -1934,9 +1934,19 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     was a real, independently-confirmable bug either way), but it is a
     more parsimonious explanation for every symptom recorded here, since a
     peer whose `veilid_node_id` the other side never received has no
-    candidate to dial in the first place -- no racing required. Re-test
-    once VEILID-008 lands before spending further effort on the `noq`-level
-    tracing this requirement calls for above.
+    candidate to dial in the first place -- no racing required.
+
+    UPDATE 2 (VEILID-008 live-tested, still fails, root cause narrowed
+    further -- see VEILID-009): re-testing found VEILID-008 working exactly
+    as designed, but exposed a second, distinct propagation gap underneath
+    it -- whichever side's post-restart reconnect dial happens to win the
+    race determines whether the member's identity has any path to the
+    coordinator at all, independent of VEILID-008's fix. VEILID-009 closes
+    that gap with a periodic member-side re-announce. Re-test again once
+    VEILID-009 lands; the `noq`-level connection-racing tracing this
+    requirement originally called for is still not needed to explain any
+    symptom observed so far, and remains the last resort if propagation
+    turns out not to be the whole story.
     """
 
     req_id = "VEILID-007"
@@ -1993,13 +2003,68 @@ class VeilidMemberIdentityReconnectPropagation(Requirement):
     (VEILID-007): that requirement's own investigation notes record a run
     where Veilid stayed silent even with no faster Direct candidate to
     race against, which this gap fully explains without requiring the
-    connection-racing theory to be true. Re-run `tests/veilid-smoke.sh`
-    once this lands to see whether closing this gap alone is sufficient,
-    or whether VEILID-007's `noq`-level racing theory still has a real
-    contribution on top.
+    connection-racing theory to be true.
+
+    UPDATE (live re-run against this fix, `tetron-testsuite`'s
+    `veilid-smoke`, 2026-09-12): still zero Veilid path activity -- but the
+    debug logs captured this time (not captured in earlier runs) show this
+    fix working exactly as designed, and pin the remaining gap precisely.
+    The member's own dial-time `MeshHello` to the coordinator correctly
+    carried the coordinator's Veilid candidate; the coordinator would have
+    applied a fresh member `veilid_node_id` correctly had one arrived. But
+    the connection that actually survived the post-restart reconnect race
+    was the *coordinator's own* dial into the member, not the member's dial
+    into the coordinator -- both sides' reconnect loops fire independently
+    after a mutual disconnect, and either can win. A coordinator-initiated
+    `MeshHello` only ever announces the coordinator's own identity; there is
+    no message on that connection carrying the member's identity back, so
+    this fix's own handler never got a `MeshHello` to act on at all. See
+    `VeilidMemberIdentityPeriodicAnnounce` (VEILID-009) for the follow-up
+    that closes this specific gap.
     """
 
     req_id = "VEILID-008"
+
+
+class VeilidMemberIdentityPeriodicAnnounce(Requirement):
+    """REQUIREMENT-ID: VEILID-009 (depends on VEILID-008)
+
+    Closes the specific gap VEILID-008's live re-run exposed: a member's
+    `veilid_node_id` only ever reaches the coordinator via a `MeshHello`
+    the *member* sends when *its own* dial to the coordinator wins a
+    reconnect race. When the *coordinator's* own dial wins instead --
+    equally likely, since both sides' reconnect loops fire independently
+    after a mutual disconnect (confirmed live: the surviving connection in
+    `veilid-smoke`'s run was the coordinator-initiated one) -- nothing ever
+    carries the member's identity to the coordinator at all, VEILID-008 or
+    not, because a coordinator-initiated `MeshHello` only ever announces
+    the coordinator's own identity.
+
+    Fix: `runtime.rs::spawn_veilid_member_identity_watcher`, a member-side
+    periodic background task (5s cadence, same as VEILID-006's
+    coordinator-side `spawn_veilid_identity_watcher`) that re-sends
+    `MeshHello` to the coordinator over whatever connection is *currently*
+    live for that network, independent of which side dialed it. Reuses
+    `join.rs::send_reconnect_hello` (now `pub(crate)`) rather than
+    duplicating the wire-message construction. No coordinator-side change
+    needed: `spawn_coordinator_control_reader`'s VEILID-008 handling
+    already applies whatever `veilid_node_id` arrives in any `MeshHello`,
+    regardless of when it arrives, and already no-ops (no generation bump,
+    no republish) when the roster already matches -- so resending an
+    unchanged identity every 5s costs one small control message per member
+    per tick, not a wasted blob republish.
+
+    Not unit-tested: like `admit_peer`/`spawn_coordinator_control_reader`
+    and every other VEILID requirement that needs a live QUIC `Connection`
+    to do anything (VEILID-001 through 006), this is verified live via
+    `tetron-testsuite`'s `veilid-smoke`, not a synthetic fixture -- the
+    coordinator-side roster-mutation logic VEILID-008 added is the only
+    part of this whole chain that could be meaningfully unit-tested without
+    a real connection, and already is (`coordinator.rs`'s
+    `veilid_reconnect_tests`).
+    """
+
+    req_id = "VEILID-009"
 
 
 # --------------------------------------------------------------------------
