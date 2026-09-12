@@ -533,6 +533,20 @@ fn spawn_roster_peer_dials(
             let network_name = &network_name;
             let my_veilid_node_id = &my_veilid_node_id;
             dials.push(async move {
+                // VEILID-012: this node's own reconnect loop or (if we're
+                // the coordinator) dial-retry task may already be dialing
+                // this exact member concurrently -- see
+                // `MeshCtx::dial_in_flight`'s doc comment. Skip rather than
+                // start a second, redundant connection; whichever attempt
+                // is already in flight will register the peer if it
+                // succeeds, and the reconnect loop is the backstop if it
+                // doesn't.
+                let Some(_dial_claim) =
+                    DialInFlightGuard::try_claim(&ctx.dial_in_flight, network_name, member.identity)
+                else {
+                    tracing::debug!(peer = %member.identity.fmt_short(), "another dial to this peer is already in flight; skipping");
+                    return;
+                };
                 // Bound the dial and honor cancellation so one unreachable
                 // member can't keep this task alive far longer than the dial
                 // is worth.
@@ -941,6 +955,7 @@ pub(crate) fn spawn_reconnect_loop(
         pruned_peers,
         global_gate,
         status_cache,
+        dial_in_flight,
         ..
     } = ctx;
     use tracing::Instrument as _;
@@ -1036,6 +1051,7 @@ pub(crate) fn spawn_reconnect_loop(
             let live_state = live_state.clone();
             let global_gate = global_gate.clone();
             let pruned_peers = pruned_peers.clone();
+            let dial_in_flight = dial_in_flight.clone();
             let my_veilid_node_id = my_veilid_node_id.clone();
 
             tokio::spawn(async move {
@@ -1159,6 +1175,19 @@ pub(crate) fn spawn_reconnect_loop(
                         );
                         return;
                     }
+
+                    // VEILID-012: another of this node's own dial call
+                    // sites (the coordinator's own dial-retry,
+                    // `dial_all_members`, ...) may already be dialing this
+                    // exact peer -- see `MeshCtx::dial_in_flight`'s doc
+                    // comment. Skip this attempt rather than start a
+                    // second, redundant connection.
+                    let Some(_dial_claim) =
+                        DialInFlightGuard::try_claim(&dial_in_flight, &net_name, peer_id)
+                    else {
+                        tracing::debug!(peer = %peer_id.fmt_short(), "another dial to this peer is already in flight; skipping this attempt");
+                        continue;
+                    };
 
                     let peer_veilid_node_id = live_state
                         .read()

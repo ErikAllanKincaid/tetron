@@ -307,6 +307,7 @@ impl MeshManager {
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
+            dial_in_flight: self.dial_in_flight.clone(),
         };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             name,

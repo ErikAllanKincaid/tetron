@@ -543,6 +543,7 @@ impl MeshManager {
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
+            dial_in_flight: self.dial_in_flight.clone(),
         };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
@@ -835,6 +836,7 @@ impl MeshManager {
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
+            dial_in_flight: self.dial_in_flight.clone(),
         };
         let ctx = JoinContext {
             display_name,
@@ -1633,8 +1635,20 @@ impl MeshManager {
             let peers = ctx.peers.clone();
             let tun_tx = ctx.tun_tx.clone();
             let stats = ctx.stats.clone();
+            let dial_in_flight = ctx.dial_in_flight.clone();
             let my_veilid_node_id = my_veilid_node_id.clone();
             dials.push(async move {
+                // VEILID-012: this node's own reconnect loop or dial-retry
+                // task may already be dialing this exact member
+                // concurrently -- see `MeshCtx::dial_in_flight`'s doc
+                // comment. Skip rather than start a second, redundant
+                // connection; the reconnect loop is the backstop either way.
+                let Some(_dial_claim) =
+                    DialInFlightGuard::try_claim(&dial_in_flight, network_name, m.identity)
+                else {
+                    tracing::debug!(peer = %m.identity.fmt_short(), "another dial to this peer is already in flight; skipping");
+                    return;
+                };
                 // Bound the dial and honor cancellation: an unreachable peer
                 // would otherwise sit in iroh's internal handshake timeout,
                 // keeping this call alive (and deaf to leave/down/shutdown)
