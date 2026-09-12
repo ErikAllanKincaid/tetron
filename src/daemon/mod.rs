@@ -171,6 +171,102 @@ pub(crate) struct MeshCtx {
     /// (`clear_status_cache`) -- the IPC `handle_request` denylist never
     /// sees those.
     status_cache: Arc<mesh::diagnostics::StatusCache>,
+    /// Peers this node currently has an outbound dial in progress toward,
+    /// keyed by `(network, peer)` like `pruned_peers` above (VEILID-012).
+    /// iroh creates a distinct `noq::Connection` object per `ep.connect()`
+    /// call rather than deduplicating concurrent dials to the same
+    /// identity -- found live investigating VEILID-007: several of this
+    /// node's own dial call sites (`spawn_reconnect_loop`,
+    /// `spawn_coordinator_dial_retry`, `dial_all_members`,
+    /// `spawn_roster_peer_dials`) can fire within the same restart window,
+    /// each creating its own racing connection object; whichever wins
+    /// becomes "the" connection and every other one's paths -- including
+    /// one that may have successfully opened a working Veilid candidate --
+    /// are simply discarded with it. `MeshCtx::try_claim_dial` gates entry
+    /// to a dial attempt on this set so only one of this node's own dial
+    /// call sites is ever in flight to a given peer at a time.
+    dial_in_flight: Arc<DashSet<(String, EndpointId)>>,
+}
+
+/// RAII claim on `MeshCtx::dial_in_flight`, held for the duration of one
+/// dial attempt. Dropping it (attempt succeeded, failed, or was cancelled)
+/// releases the peer for another dial attempt.
+pub(crate) struct DialInFlightGuard {
+    set: Arc<DashSet<(String, EndpointId)>>,
+    key: (String, EndpointId),
+}
+
+impl Drop for DialInFlightGuard {
+    fn drop(&mut self) {
+        self.set.remove(&self.key);
+    }
+}
+
+impl DialInFlightGuard {
+    /// Claims the right to dial `peer` on `network` against `set`
+    /// (`MeshCtx::dial_in_flight`/`MeshManager::dial_in_flight`, whichever
+    /// this call site already has in scope), or returns `None` if another
+    /// of this node's own dial call sites is already dialing the same peer
+    /// (VEILID-012 -- see `MeshCtx::dial_in_flight`'s own doc comment for
+    /// why this matters). Callers should skip this round entirely on
+    /// `None` rather than dial anyway; the in-progress attempt will either
+    /// succeed (nothing more to do) or fail (the next tick tries again,
+    /// uncontended).
+    pub(crate) fn try_claim(
+        set: &Arc<DashSet<(String, EndpointId)>>,
+        network: &str,
+        peer: EndpointId,
+    ) -> Option<Self> {
+        let key = (network.to_string(), peer);
+        if set.insert(key.clone()) {
+            Some(Self {
+                set: set.clone(),
+                key,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod dial_in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn second_claim_for_same_peer_is_refused_while_first_is_held() {
+        let set: Arc<DashSet<(String, EndpointId)>> = Arc::new(DashSet::new());
+        let peer = SecretKey::from_bytes(&[4u8; 32]).public();
+        let first = DialInFlightGuard::try_claim(&set, "net", peer);
+        assert!(first.is_some());
+        assert!(DialInFlightGuard::try_claim(&set, "net", peer).is_none());
+    }
+
+    #[test]
+    fn dropping_the_guard_frees_the_peer_for_another_claim() {
+        let set: Arc<DashSet<(String, EndpointId)>> = Arc::new(DashSet::new());
+        let peer = SecretKey::from_bytes(&[5u8; 32]).public();
+        {
+            let _first = DialInFlightGuard::try_claim(&set, "net", peer);
+        }
+        assert!(DialInFlightGuard::try_claim(&set, "net", peer).is_some());
+    }
+
+    #[test]
+    fn different_networks_or_peers_do_not_contend() {
+        let set: Arc<DashSet<(String, EndpointId)>> = Arc::new(DashSet::new());
+        let a = SecretKey::from_bytes(&[6u8; 32]).public();
+        let b = SecretKey::from_bytes(&[7u8; 32]).public();
+        let _same_peer_other_network = DialInFlightGuard::try_claim(&set, "net-a", a);
+        assert!(
+            DialInFlightGuard::try_claim(&set, "net-b", a).is_some(),
+            "same peer, different network must not contend"
+        );
+        assert!(
+            DialInFlightGuard::try_claim(&set, "net-a", b).is_some(),
+            "different peer, same network must not contend"
+        );
+    }
 }
 
 impl MeshCtx {
@@ -468,6 +564,10 @@ pub struct MeshManager {
     /// Peers removed from a roster whose reconnect should be suppressed once.
     /// Shared into [`MeshCtx::pruned_peers`]; see that field for the mechanism.
     pruned_peers: Arc<DashSet<(String, EndpointId)>>,
+    /// Peers this node currently has an outbound dial in progress toward.
+    /// Shared into [`MeshCtx::dial_in_flight`]; see that field for the
+    /// mechanism (VEILID-012).
+    dial_in_flight: Arc<DashSet<(String, EndpointId)>>,
     /// STATUS-CACHE-001: cached per-network/per-peer status, so answering
     /// `IpcMessage::Status` does not walk iroh's path machinery
     /// (`conn.paths()` + `p.stats()` per path per peer) once per request.
@@ -640,6 +740,7 @@ impl MeshManager {
             pruned_peers: self.pruned_peers.clone(),
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
+            dial_in_flight: self.dial_in_flight.clone(),
         })
     }
 
@@ -1399,6 +1500,7 @@ mod accept_handler_tests {
             pruned_peers: Arc::new(DashSet::new()),
             global_gate: Arc::new(crate::ratelimit::GlobalRateLimiter::with_params(10, 3, 50)),
             status_cache: Arc::new(std::sync::RwLock::new(None)),
+            dial_in_flight: Arc::new(DashSet::new()),
         }
     }
 

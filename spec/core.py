@@ -1970,6 +1970,28 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     feature flag). **Not yet closed**: VEILID-011 is fix-applied but not
     yet live-verified end-to-end -- re-run `tests/veilid-smoke.sh` before
     treating this requirement as resolved.
+
+    UPDATE 4 (VEILID-011 live-verified working correctly, but still not
+    sufficient by itself -- final root cause confirmed directly, not
+    inferred): a live re-test with VEILID-009/010/011 all in place still
+    showed zero Veilid path activity. Temporarily promoting
+    `vendor/iroh-1.0.3`'s own `trace!` calls to `info!` for one run (the
+    established diagnostic pattern, reverted before committing) showed the
+    Veilid candidate genuinely opening as a real `PathId` -- proving
+    VEILID-011 works -- but on a `noq::Connection` object that was not the
+    one that ultimately won and became the connection `tetron status`
+    reports; a separate, independently-dialed connection object won
+    instead, and the Veilid-carrying connection's paths were discarded
+    with it. This is exactly the connection-racing theory this
+    requirement's investigation notes suspected at the very top, now
+    confirmed directly: this node's own several dial call sites
+    (`spawn_reconnect_loop`, `spawn_coordinator_dial_retry`,
+    `dial_all_members`, `spawn_roster_peer_dials`) fire concurrently after
+    a restart, each producing its own racing `noq::Connection`, with
+    nothing deduplicating them. See `VeilidConcurrentDialDedup`
+    (VEILID-012) for the fix. **Still not closed**: VEILID-012 is
+    fix-applied but not yet live-verified end-to-end -- re-run
+    `tests/veilid-smoke.sh` before treating this requirement as resolved.
     """
 
     req_id = "VEILID-007"
@@ -2213,9 +2235,81 @@ class VeilidNodeIdTargetFootgunFeature(Requirement):
     chose and documented; switching to `Unsafe` is an independent
     latency/privacy tradeoff, not required to fix this bug, and not made
     here.
+
+    UPDATE (live re-verification, 2026-09-12): confirmed correct and
+    necessary -- `poll_send` no longer fails instantly -- but not
+    sufficient by itself. A live re-test with this fix plus VEILID-009/010
+    still showed zero Veilid path activity in `tetron status`. Temporarily
+    promoting `vendor/iroh-1.0.3`'s own `trace!` calls in
+    `handle_msg_add_connection`/`open_path_on_conn` to `info!` for one run
+    (reverted before committing, per the established diagnostic pattern)
+    showed the Veilid candidate *did* open as a real `PathId` -- three
+    times, on one specific `noq::Connection` -- proving this fix works
+    exactly as intended. See `VeilidConcurrentDialDedup` (VEILID-012) for
+    what happens to that connection next, and why it still never showed up
+    in `status`.
     """
 
     req_id = "VEILID-011"
+
+
+class VeilidConcurrentDialDedup(Requirement):
+    """REQUIREMENT-ID: VEILID-012 (depends on VEILID-011)
+
+    The final piece, found live via the same promoted-trace-log
+    diagnostic VEILID-011's own update paragraph describes: within about
+    1.5s of a peer restarting, this node's own code independently starts
+    **several genuinely concurrent** `connect_to_peer_with_alpn` calls to
+    that same peer -- `join.rs::spawn_reconnect_loop`'s per-peer task, this
+    node's role-appropriate one-shot dial-out (`spawn_roster_peer_dials`
+    for a member, `dial_all_members` for a coordinator/restore), and, if
+    this node is the coordinator, `coordinator.rs::
+    spawn_coordinator_dial_retry` too -- all reacting to the same
+    disconnect independently, with no coordination between them. iroh
+    creates a **separate `noq::Connection` object per `ep.connect()` call**
+    rather than deduplicating concurrent dials to the same identity; one
+    live run showed four such connection objects for a single peer inside
+    1.5 seconds. The Veilid candidate genuinely opened as a real path on
+    one of them (confirmed live, see VEILID-011's update) -- but that
+    connection was not the one that ultimately won and became "the"
+    connection `PeerTable`/`tetron status` report; a *different* racing
+    connection won instead, and the Veilid-carrying connection's paths
+    were simply discarded along with it when it was superseded/closed.
+    This fully accounts for every remaining symptom in
+    `VeilidCustomPathIrohRaceGap` (VEILID-007) -- the "iroh races multiple
+    connection objects" theory that requirement's own investigation
+    suspected from the start, now confirmed directly rather than inferred,
+    and traced to its actual cause: not an iroh bug, but tetron's own
+    several independent dial call sites racing each other with nothing to
+    stop them.
+
+    Fix: `MeshCtx::dial_in_flight` (`Arc<DashSet<(String, EndpointId)>>`,
+    daemon-wide like the existing `pruned_peers` it sits next to) plus
+    `DialInFlightGuard`, a small RAII claim -- `DialInFlightGuard::
+    try_claim(set, network, peer)` inserts `(network, peer)` and returns
+    `Some(guard)` only if it was not already present; the guard removes
+    the entry on drop (dial succeeded, failed, or was cancelled -- all
+    paths release it). Applied at the four call sites named above: each
+    now claims the peer before calling `connect_to_peer_with_alpn` and
+    skips this attempt entirely (not a failure -- no backoff escalation)
+    if another of this node's own call sites already holds the claim. This
+    is generic connection-establishment hygiene, not Veilid-specific --
+    it reduces redundant concurrent connection objects (and the
+    QUIC-level churn, `RemoteCidsExhausted` included, that the live trace
+    also showed accompanying them) for every transport, not just Veilid;
+    Veilid is simply the transport where losing this race is fully fatal
+    to that racing connection's only path, since a lost Direct/Relay race
+    still leaves the winning connection with *a* working path, just not
+    the one that particular dial call opened.
+
+    Unit-tested (`dial_in_flight_tests` in `daemon/mod.rs`, pure
+    `DashSet` logic, no live connection needed): a second claim for the
+    same `(network, peer)` is refused while the first is held; dropping
+    the guard frees it for another claim; different networks or different
+    peers never contend with each other.
+    """
+
+    req_id = "VEILID-012"
 
 
 # --------------------------------------------------------------------------

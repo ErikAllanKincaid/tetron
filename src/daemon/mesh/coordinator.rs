@@ -194,6 +194,7 @@ fn spawn_coordinator_dial_retry(
         pruned_peers,
         network_key,
         global_gate,
+        dial_in_flight,
         ..
     } = ctx;
     tokio::spawn(async move {
@@ -263,6 +264,21 @@ fn spawn_coordinator_dial_retry(
                 tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer already reconnected inbound, stopping coordinator reconnect attempts");
                 return;
             }
+
+            // VEILID-012: another of this node's own dial call sites (this
+            // task's own next tick, `dial_all_members`, ...) may already be
+            // dialing this exact peer -- iroh does not deduplicate
+            // concurrent `ep.connect()` calls to the same identity itself,
+            // so racing dials each get their own `noq::Connection` and
+            // whichever wins discards every path the others opened. Skip
+            // this attempt (not a failure -- don't escalate backoff) rather
+            // than start a second, redundant connection.
+            let Some(_dial_claim) =
+                DialInFlightGuard::try_claim(&dial_in_flight, &network_name, peer_id)
+            else {
+                tracing::debug!(peer = %peer_id.fmt_short(), "another dial to this peer is already in flight; skipping this attempt");
+                continue;
+            };
 
             let peer_veilid_node_id = state
                 .read()
