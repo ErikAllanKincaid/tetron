@@ -2728,6 +2728,97 @@ class RelayDisableKnob(Requirement):
     req_id = "RELAY-001"
 
 
+class TransportPathPreference(Requirement):
+    """REQUIREMENT-ID: PATHPREF-001 (benefits from RELAY-001 for testing,
+    not a hard dependency)
+
+    Today `choose_path_index` (daemon/mesh/select.rs) fixes the
+    preference order Direct > Relay > Tor > Veilid unconditionally, and
+    that function only governs what `tetron status` *reports* as
+    selected -- the actual QUIC-level decision of which path carries
+    real application data is iroh's own internal `PathSelector`
+    (`vendor/iroh-1.0.3/src/socket/remote_map/remote_state.rs`), which
+    tetron has never overridden (`Endpoint::path_selector(...)` is a
+    public iroh builder method, never called). The shipped default,
+    `BiasedRttPathSelector`, is pure lowest-RTT-wins with Direct/IP and
+    custom transports (Tor, Veilid) both defaulting to the same
+    "primary" tier and Relay alone demoted to "backup" -- meaning Direct
+    on a shared LAN always wins by RTT, and there is no way for a user
+    who specifically wants their traffic to go over Veilid or Tor
+    (e.g., for that transport's own properties, not merely as a last
+    resort) to make that happen while Direct/Relay remain reachable.
+
+    Scope: daemon-wide (`AppConfig`), not per-network. `MeshManager`
+    holds exactly one shared `iroh::Endpoint` for the whole daemon
+    process across every network it participates in
+    (`daemon/mod.rs::MeshManager::endpoint`, populated once by
+    `transport::create_endpoint_with_alpns`) -- `PathSelector` is
+    registered once per endpoint, so it is architecturally daemon-wide
+    regardless of how many networks exist. This also means it reuses the
+    existing global `tetron config set`/`config get`/`config unset`
+    machinery directly (`config::overrides`), not a new per-network CLI
+    surface.
+
+    Fix: a new global setting (`tetron config set path-preference
+    <auto|direct|relay|tor|veilid>`, default `auto` = current RTT-based
+    behavior, live-reloadable the same way `log-level` is, LOG-004's
+    pattern) backing a new tetron-provided `PathSelector` implementation
+    that wraps/delegates to the existing RTT logic (iroh's
+    `BiasedRttPathSelector`) for `auto`, but when a preference is set,
+    force-selects a candidate of that transport type -- **only once it
+    has real, confirmed activity** (the same received-traffic concept
+    `PATHBLEED-STATUS-002`'s `has_activity` already uses elsewhere),
+    never an unvalidated, possibly-still-failing candidate. This is a
+    deliberate safety choice: "prefer Veilid" must mean "use it once it
+    is actually working," not "strand the connection on an unproven
+    path" -- falling back to `auto` (RTT-based) behavior whenever the
+    preferred transport has no validated candidate yet is not optional.
+
+    A preference for a transport that was never enabled on a given
+    network via `--tor`/`--veilid` (`TransportMode`, `tetron-proto`) at
+    create/join time is a no-op for that network's peers: there is
+    nothing to prefer if the embedded node was never started. This
+    setting is deliberately independent from `TransportMode`
+    (`--tor`/`--veilid`) rather than folded into it -- "start this
+    transport as an available backup" and "prefer this transport once
+    it is proven working" are different decisions a user may want to
+    make separately.
+
+    Addon follow-up (not scoped here, tracked for later): exposing this
+    from `tetron-webui`/`tetron-mobile` needs a new `tetron-proto` wire
+    field (status output + a settable field) -- per standing practice
+    this requires an explicit, separate `cargo update` in both addon
+    repos once this lands and is live-verified in core, not an
+    automatic follow (`[[feedback_always_check_addons_on_wire_changes]]`,
+    `[[feedback_tetron_priority_core_addons_integration]]`).
+
+    Implementation: `src/path_selector.rs` (`TetronPathSelector`),
+    wired into `transport.rs::bind_endpoint` via
+    `Endpoint::builder(..).path_selector(..)`. Required a new vendored
+    iroh patch (`vendor/iroh-1.0.3/PATCH.md`'s Patch 6) re-exporting
+    `PathSelector` and widening `BiasedRttPathSelector` from
+    `pub(crate)` to `pub`, since neither was reachable outside iroh's own
+    crate as shipped despite `Endpoint::path_selector` being a public
+    method -- a real, deliberately accepted tradeoff (relying on iroh's
+    internal API shape, not its documented public contract), see that
+    patch entry for the full reasoning.
+
+    Live-verified: `path_selector.rs`'s own unit tests pass (transport
+    classification, with and without the `veilid` feature); a full
+    `tetron-testsuite` `core-smoke` run (create -> join -> status shows
+    peer -> leave -> gone) passed against a release build with the new
+    selector wired into real endpoint construction, confirming default
+    (`auto`) behavior is unchanged from before this feature existed. Not
+    yet separately live-verified: an explicit non-`auto` preference (e.g.
+    `veilid`) actually winning selection over a reachable Direct
+    candidate on a real connection -- the safety-gated logic (only
+    override once the preferred candidate has confirmed activity) is
+    unit-tested in isolation but not yet exercised end-to-end live.
+    """
+
+    req_id = "PATHPREF-001"
+
+
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #

@@ -16,6 +16,7 @@ use iroh::{
 use std::sync::Arc;
 
 use crate::config::ServerOverride;
+use crate::path_selector::{PathPreferenceSlot, TetronPathSelector};
 
 /// Compiled-default fixed UDP port the endpoint binds so users can
 /// port-forward a stable, known port for guaranteed direct reachability
@@ -67,34 +68,46 @@ pub async fn create_endpoint_with_alpns(
     relay: &ServerOverride,
     discovery: &ServerOverride,
     listen_port: u16,
+    path_preference: PathPreferenceSlot,
 ) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
     let fixed = format!("0.0.0.0:{listen_port}");
-    let (ep, veilid_node_id) =
-        match bind_endpoint(&secret_key, &alpns, tor, veilid, &fixed, relay, discovery).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::warn!(
-                    port = listen_port,
-                    error = %e,
-                    "fixed UDP port unavailable; falling back to an ephemeral port"
-                );
-                bind_endpoint(
-                    &secret_key,
-                    &alpns,
-                    tor,
-                    veilid,
-                    "0.0.0.0:0",
-                    relay,
-                    discovery,
-                )
-                .await
-                .context("failed to bind iroh endpoint")?
-            }
-        };
+    let (ep, veilid_node_id) = match bind_endpoint(
+        &secret_key,
+        &alpns,
+        tor,
+        veilid,
+        &fixed,
+        relay,
+        discovery,
+        path_preference.clone(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(
+                port = listen_port,
+                error = %e,
+                "fixed UDP port unavailable; falling back to an ephemeral port"
+            );
+            bind_endpoint(
+                &secret_key,
+                &alpns,
+                tor,
+                veilid,
+                "0.0.0.0:0",
+                relay,
+                discovery,
+                path_preference,
+            )
+            .await
+            .context("failed to bind iroh endpoint")?
+        }
+    };
 
     tracing::info!(id = %ep.id().fmt_short(), "iroh endpoint ready");
 
@@ -105,6 +118,7 @@ pub async fn create_endpoint_with_alpns(
 /// requested + compiled in) the Tor and/or Veilid custom transports. Factored
 /// out so the caller can retry with a different bind address after a port
 /// collision.
+#[allow(clippy::too_many_arguments)]
 async fn bind_endpoint(
     secret_key: &SecretKey,
     alpns: &[Vec<u8>],
@@ -113,6 +127,7 @@ async fn bind_endpoint(
     bind: &str,
     relay: &ServerOverride,
     discovery: &ServerOverride,
+    path_preference: PathPreferenceSlot,
 ) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
     #[allow(unused_mut)]
     let mut builder = Endpoint::builder(presets::N0)
@@ -121,6 +136,14 @@ async fn bind_endpoint(
         .clear_ip_transports()
         .bind_addr(bind)
         .context("invalid bind address")?
+        // PATHPREF-001: overrides iroh's own default `BiasedRttPathSelector`
+        // with tetron's own, which delegates to that same default logic
+        // (re-exported for exactly this, `vendor/iroh-1.0.3/PATCH.md` Patch
+        // 6) whenever no preference is set -- so `auto` behavior is
+        // unchanged from before this feature existed.
+        .path_selector(
+            Arc::new(TetronPathSelector::new(path_preference)) as Arc<dyn iroh::PathSelector>
+        )
         // Rayfish's data plane is a single stream of QUIC datagrams per peer
         // (TUN packets → `send_datagram`), with a few reliable control streams per
         // connection. Tune the transport config for that shape:

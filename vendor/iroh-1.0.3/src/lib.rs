@@ -284,6 +284,22 @@ pub use iroh_base::{
     EndpointAddr, EndpointId, KeyParsingError, PublicKey, RelayUrl, RelayUrlParseError, SecretKey,
     Signature, SignatureError, TransportAddr,
 };
+// tetron-local patch (PATCH.md, Patch 6, PATHPREF-001): `Endpoint::path_selector`
+// (endpoint.rs) is a public builder method taking `Arc<dyn PathSelector>`, but
+// `PathSelector` and its supporting types live in `mod socket;` (private) /
+// `pub(crate) mod remote_map;` (crate-only) -- unreachable outside this crate
+// as shipped, despite the trait's own `#[cfg_attr(not(feature =
+// "unstable-custom-transports"), allow(unreachable_pub))]` suggesting it is
+// meant to be reachable once that feature is on (which tetron enables). A
+// narrow re-export, not a broader `pub mod socket`, so nothing else in that
+// module tree becomes externally visible.
+pub use socket::remote_map::{PathSelection, PathSelectionContext, PathSelectionData, PathSelector};
+pub use socket::transports::{AddrKind, FourTuple};
+// Also re-exports iroh's own default selector so a custom `PathSelector`
+// can delegate to the *real* RTT-based logic (stickiness thresholds,
+// per-`AddrKind` biases) for the "no preference set" case, rather than
+// reimplementing tuning that could silently drift from iroh's own.
+pub use socket::biased_rtt_path_selector::BiasedRttPathSelector;
 #[cfg(not(wasm_browser))]
 pub use iroh_dns::dns;
 pub use iroh_dns::endpoint_info;

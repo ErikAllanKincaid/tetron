@@ -341,3 +341,53 @@ it. Left open rather than blocking this patch -- possibly related to
 *asynchronously*) never applying the `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`
 override the way `open_path_on_conn`'s own synchronous success arm
 does, but unconfirmed against this specific capture.
+
+## Patch 6: re-export `PathSelector` and widen `BiasedRttPathSelector` to `pub` (PATHPREF-001)
+
+**Files:** `src/lib.rs` (new re-exports), `src/socket/biased_rtt_path_selector.rs`
+(`pub(crate)` → `pub` on the struct's own declaration).
+
+**Found:** 2026-09-13, scoping `PATHPREF-001` (a tetron feature letting a
+user force a specific transport to actually carry application data).
+`Endpoint::path_selector(self, selector: Arc<dyn PathSelector>) -> Self`
+(`src/endpoint.rs`) is a public builder method, but `PathSelector` and its
+supporting types (`PathSelection`, `PathSelectionContext`,
+`PathSelectionData`, `AddrKind`, `FourTuple`) live in `mod socket;`
+(private) / `pub(crate) mod remote_map;` (crate-only) — unreachable from
+outside this crate as shipped, with no re-export anywhere. Confirmed live
+by attempting to reference `iroh::socket::remote_map::PathSelector` from
+tetron's own crate: `error[E0603]: module 'socket' is private`.
+
+The trait's own `#[cfg_attr(not(feature = "unstable-custom-transports"),
+allow(unreachable_pub))]` attribute suggests this was meant to become
+reachable once that feature is enabled (which tetron already does for Tor)
+— reads as an incomplete public surface in this vendored version, not a
+deliberate "keep this private."
+
+**Fix:** a narrow `pub use` block in `lib.rs` re-exporting exactly
+`PathSelection`, `PathSelectionContext`, `PathSelectionData`,
+`PathSelector`, `AddrKind`, `FourTuple` — not a broader `pub mod socket`,
+so nothing else in that module tree becomes externally visible.
+Separately, `BiasedRttPathSelector` (iroh's own default selector) is
+declared `pub(crate)` on the struct itself, a stronger restriction a
+`pub use` alone cannot cross — widened to plain `pub` (fields stay
+module-private; only construction via `Default` and the `PathSelector`
+impl become externally usable) so a custom selector can delegate to
+iroh's *real* RTT-tuning logic for its "no preference set" case instead
+of reimplementing tuning (switching thresholds, per-`AddrKind` biases)
+that could silently drift out of sync with iroh's own.
+
+**Tradeoff, accepted deliberately (not free):** this relies on iroh's
+internal API shape rather than its documented public contract — none of
+these types carry iroh's own semver guarantees, and a future iroh version
+bump could change or remove any of them without warning. Weighed against
+the alternatives (forking/reimplementing iroh's socket layer entirely, or
+not building the feature) and accepted; see `spec/core.py`'s
+`TransportPathPreference` (PATHPREF-001) for the full reasoning.
+
+**Status: live-verified.** `tetron_path_selector`'s own unit tests pass
+(classification logic, both with and without the `veilid` feature); a
+full `tetron-testsuite` `core-smoke` run (create → join → status shows
+peer → leave → gone) passed with the new selector wired into real
+endpoint construction, confirming default (`auto`) behavior is unchanged
+from before this patch.

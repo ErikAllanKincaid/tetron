@@ -140,6 +140,15 @@ pub enum IpcMessage {
     SetLogLevel {
         level: String,
     },
+    /// Live-reload the running daemon's transport path preference without a
+    /// restart (PATHPREF-001, mirrors `SetLogLevel`'s LOG-004 pattern). Sent
+    /// by `tetron config set/unset path-preference` after it has already
+    /// written the new value to `settings.toml`. `preference` is `None` for
+    /// `auto` (reset to iroh's own RTT-based selection), or one of
+    /// direct/relay/tor/veilid.
+    SetPathPreference {
+        preference: Option<String>,
+    },
     /// Coordinator-only: grant the per-network secret key to a member, making it
     /// a co-coordinator (can publish / suggest firewall rules).
     AdminAdd {

@@ -86,8 +86,15 @@ impl TransportBias {
 /// The biases are configured per [`AddrKind`].  Defaults: IPv4 and IPv6 are primary
 /// (IPv6 has a 3ms RTT advantage), Relay is backup, custom transports are primary with
 /// no advantage.
+// tetron-local patch (PATCH.md, Patch 6, PATHPREF-001): widened from
+// `pub(crate)` to `pub` (re-exported from lib.rs) so a custom `PathSelector`
+// outside this crate can delegate to iroh's own real RTT logic for its
+// "no preference set" case, instead of reimplementing tuning (switching
+// thresholds, per-`AddrKind` biases) that could silently drift out of sync.
+// Fields stay module-private; only construction (`Default`) and the trait
+// impl become externally usable.
 #[derive(Debug, Clone)]
-pub(crate) struct BiasedRttPathSelector {
+pub struct BiasedRttPathSelector {
     biases: Arc<FxHashMap<AddrKind, TransportBias>>,
 }
 

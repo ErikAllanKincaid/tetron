@@ -551,6 +551,14 @@ pub struct MeshManager {
     /// *peer's* own `veilid_node_id` from their roster entry instead
     /// (`transport::connect_to_peer_with_alpn`).
     veilid_node_id: Arc<arc_swap::ArcSwapOption<String>>,
+    /// PATHPREF-001: the live, daemon-wide transport preference this
+    /// endpoint's `TetronPathSelector` reads on every selection. Seeded
+    /// from the persisted config at startup; `Self::set_path_preference`
+    /// writes it directly for live IPC reload (LOG-004 pattern). One
+    /// shared `iroh::Endpoint`/`PathSelector` per daemon process, so this
+    /// is daemon-wide, not per-network -- see `path_selector.rs`'s own
+    /// module doc for the full reasoning.
+    path_preference: crate::path_selector::PathPreferenceSlot,
     identity: IrohIdentityProvider,
     stats: Arc<ForwardMetrics>,
     networks: Arc<DashMap<String, NetworkHandle>>,
@@ -1144,6 +1152,26 @@ impl MeshManager {
         }
     }
 
+    /// Live-reload the running daemon's transport path preference
+    /// (PATHPREF-001), mirroring `set_log_level`'s LOG-004 pattern.
+    /// `preference` was already validated by the CLI
+    /// (`config::config_set`'s `parse_path_preference_value`) before
+    /// `settings.toml` was written; unlike `log_level`'s separate
+    /// `OnceLock<Handle>` registry, the live value already lives directly
+    /// on `self.path_preference` (`TetronPathSelector` reads the same
+    /// `Arc` on every selection), so this just stores into it -- there is
+    /// no failure mode to report short of the process itself being gone,
+    /// which this call could not be reached for anyway.
+    pub(crate) fn set_path_preference(&self, preference: Option<String>) -> IpcMessage {
+        self.path_preference.store(preference.clone().map(Arc::new));
+        IpcMessage::Ok {
+            message: format!(
+                "path preference live-reloaded to {}",
+                preference.as_deref().unwrap_or("auto")
+            ),
+        }
+    }
+
     pub(crate) fn set_operator(&self, uid: u32) -> IpcMessage {
         let mut app_config = match config::load() {
             Ok(c) => c,
@@ -1261,6 +1289,7 @@ impl MeshManager {
             }
             IpcMessage::SetOperator { uid } => self.set_operator(uid),
             IpcMessage::SetLogLevel { level } => self.set_log_level(&level),
+            IpcMessage::SetPathPreference { preference } => self.set_path_preference(preference),
             IpcMessage::AdminAdd { network, peer } => self.admin_add(&network, &peer).await,
             IpcMessage::AdminList { network } => self.admin_list(&network),
             IpcMessage::InviteCreate { network, expires } => {
