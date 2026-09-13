@@ -252,7 +252,14 @@ fn quic_transport_config() -> QuicTransportConfig {
 /// which case the N0 preset's default relays are kept). Replace mode uses only
 /// the configured relays; augment mode appends n0's default relay URLs so the
 /// node keeps the n0 fallback.
+///
+/// RELAY-001: `off` is a distinct third case from unset -- maps to iroh's own
+/// `RelayMode::Disabled` ("disable relay servers completely") rather than
+/// falling through to URL parsing, which would reject `off` as an invalid URL.
 pub fn build_relay_mode(o: &ServerOverride) -> Result<Option<RelayMode>> {
+    if o.servers == ["off"] {
+        return Ok(Some(RelayMode::Disabled));
+    }
     let urls = crate::config::relay_urls(o)?;
     if urls.is_empty() {
         return Ok(None);
@@ -411,6 +418,18 @@ mod tests {
         };
         let mode = build_relay_mode(&aug).unwrap().expect("some mode");
         assert!(mode.relay_map().urls::<Vec<RelayUrl>>().len() > 1);
+    }
+
+    #[test]
+    fn relay_mode_off_disables_relay_entirely() {
+        // RELAY-001: distinct from unset (`None`, keeps the n0 default) --
+        // `off` maps to iroh's own `RelayMode::Disabled`.
+        let off = ServerOverride {
+            servers: vec!["off".to_string()],
+            replace: true,
+        };
+        let mode = build_relay_mode(&off).unwrap().expect("some mode");
+        assert_eq!(mode, RelayMode::Disabled);
     }
 
     #[test]

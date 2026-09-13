@@ -2674,6 +2674,61 @@ class VeilidBackupPathValidationRetry(Requirement):
 
 
 # --------------------------------------------------------------------------
+# Transport path selection (RELAY-*, PATHPREF-*)
+#
+# Grew out of the VEILID-007 investigation's own discussion, not a defect
+# in it: users who deliberately want Veilid (or Tor) to carry traffic --
+# not merely stand by as an unreachable last resort ranked behind Direct
+# and Relay -- have no way to make that happen today. `choose_path_index`
+# (daemon/mesh/select.rs) is fixed-priority status-reporting logic; the
+# actual wire-level path selection is iroh's own `PathSelector` trait,
+# which tetron has never overridden. `RELAY-001` is a small, independent
+# prerequisite (a clean way to take Relay out of contention, needed to
+# actually construct a "Direct and Relay both unreachable" test topology
+# without firewall hacks); `PATHPREF-001` is the real feature.
+# --------------------------------------------------------------------------
+
+class RelayDisableKnob(Requirement):
+    """REQUIREMENT-ID: RELAY-001
+
+    `tetron config set relay <value> [--replace]` today has no way to
+    mean "no relay at all" -- empty or the literal `n0` both *reset* to
+    the default n0 preset, they never disable relay outright. The only
+    existing workaround (pointing `relay` at a deliberately unreachable
+    URL) is a hack: it still attempts a real network connection to a
+    bogus host that will eventually time out, it is not obviously
+    self-documenting in `tetron config get`, and it is fragile if the
+    "unreachable" URL ever accidentally resolves to something real.
+
+    Motivation: building a test topology where Direct and Relay are both
+    genuinely unreachable (so Veilid/Tor must serve as the *primary*
+    path, not merely an unused backup) needs a clean way to remove Relay
+    from contention entirely -- this is a direct, small prerequisite for
+    that, and independently useful any time a user wants to force
+    Direct-only (or Direct+Tor/Veilid, once `PATHPREF-001` lands)
+    behavior without touching a firewall.
+
+    Fix: recognize a new sentinel value, `off`, for the existing `relay`
+    config key (`config::overrides::config_set`) -- distinct from the
+    existing `n0`/empty reset case. Stored via the existing
+    `ServerOverride` shape (no new schema field) as a recognized
+    sentinel entry, and mapped in `transport::build_relay_mode` to
+    iroh's own `RelayMode::Disabled` (an existing iroh variant --
+    "disable relay servers completely," already exported, tetron simply
+    never had a path to it) rather than attempting to parse `off` as a
+    URL. `--replace` is a no-op when combined with `off` (already
+    unambiguous on its own) rather than an error. `tetron config get
+    relay` round-trips `off` back out; `tetron config unset relay`
+    clears it back to the default n0 preset, same as any other key.
+    Applies on `sudo tetron restart`, same timing as every other
+    `relay`/`discovery-dns` change (not live-reloadable like
+    `log-level`).
+    """
+
+    req_id = "RELAY-001"
+
+
+# --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #
 # MINIMAL-013 originally removed invite minting (approval-only admission).
