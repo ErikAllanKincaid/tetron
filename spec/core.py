@@ -2805,15 +2805,38 @@ class TransportPathPreference(Requirement):
 
     Live-verified: `path_selector.rs`'s own unit tests pass (transport
     classification, with and without the `veilid` feature); a full
-    `tetron-testsuite` `core-smoke` run (create -> join -> status shows
-    peer -> leave -> gone) passed against a release build with the new
-    selector wired into real endpoint construction, confirming default
-    (`auto`) behavior is unchanged from before this feature existed. Not
-    yet separately live-verified: an explicit non-`auto` preference (e.g.
-    `veilid`) actually winning selection over a reachable Direct
-    candidate on a real connection -- the safety-gated logic (only
-    override once the preferred candidate has confirmed activity) is
-    unit-tested in isolation but not yet exercised end-to-end live.
+    `tetron-testsuite` `core-smoke` run confirmed default (`auto`)
+    behavior is unchanged. A dedicated live check
+    (`DO-NOT-COMMIT/pathpref-veilid-live-check.sh`, kept per
+    `[[feedback_preserve_diagnostic_evidence]]`-equivalent archival
+    practice) went further, exercising the actual override end to end on
+    a real connection: with Direct already selected and a validated
+    Veilid backup path present, `tetron config set path-preference
+    veilid` correctly flipped `conn_type` to `Veilid`, and `tetron config
+    unset path-preference` correctly reverted it to `Direct`.
+
+    First attempt at this live check failed (`conn_type` stayed `Direct`
+    after setting the preference) -- traced to a real, separate gap this
+    feature's own initial design missed: iroh's `select_path()` (the
+    function that actually asks a `PathSelector` for a decision) is only
+    called reactively, from three call sites each tied to a specific path
+    lifecycle event (established/abandoned/closed) -- never because a
+    `PathSelector`'s own criteria changed. A live-reloaded preference
+    updated the shared value correctly, but nothing re-asked iroh to
+    reconsider its already-stable selection, so the change had no visible
+    effect until some unrelated path event happened to fire next
+    (unpredictable, possibly a long time on a stable connection) --
+    contradicting the "applied immediately" the CLI already claimed for
+    live-reloaded settings. Fixed with a fourth, unconditional
+    `select_path()` call site: a new periodic timer in
+    `RemoteStateActor`'s own event loop (`vendor/iroh-1.0.3/PATCH.md`'s
+    Patch 7, `RESELECT_PATH_INTERVAL` = 3s -- cheap, since `select_path()`
+    is a pure read of already-cached path stats, no I/O), matching the
+    existing pattern this file already uses for holepunch retries. Also
+    benefits ordinary RTT-based `auto` selection, which previously had
+    the same theoretical gap (an RTT change with no new path event would
+    never trigger reconsideration either). Re-ran the live check after
+    this fix: passed.
     """
 
     req_id = "PATHPREF-001"

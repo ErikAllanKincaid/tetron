@@ -67,6 +67,21 @@ const GOOD_ENOUGH_LATENCY: Duration = Duration::from_millis(10);
 /// Even if we have some non-relay route that works.
 const UPGRADE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// tetron-local patch (PATCH.md, Patch 7, PATHPREF-001): how often to
+/// re-run `select_path()` unconditionally, not just reactively off a path
+/// event. `select_path()` is a pure, cheap read of already-known paths'
+/// stats (no I/O) -- found live that a `PathSelector`'s own criteria can
+/// change (e.g. a live-reloaded transport preference, PATHPREF-001) with
+/// no path event ever firing on an already-stable connection, so the new
+/// decision was otherwise never re-evaluated. `select_path()`'s own three
+/// existing call sites are each tied to a specific path lifecycle event
+/// (established/abandoned/closed) and stay as-is; this is a fourth,
+/// unconditional one. Short enough that a live preference change feels
+/// like it actually applies "immediately," as the CLI already claims;
+/// cheap enough (no I/O, just comparing already-cached stats) that
+/// running it this often on every remote is not a real cost.
+const RESELECT_PATH_INTERVAL: Duration = Duration::from_secs(3);
+
 /// The time after which an idle [`RemoteStateActor`] stops.
 ///
 /// The actor only enters the idle state if no connections are active and no inbox senders exist
@@ -286,6 +301,11 @@ impl RemoteStateActor {
         let check_connections = time::interval(UPGRADE_INTERVAL);
         n0_future::pin!(check_connections);
 
+        // tetron-local patch (PATCH.md, Patch 7, PATHPREF-001): see
+        // `RESELECT_PATH_INTERVAL`'s own doc comment.
+        let reselect_path = time::interval(RESELECT_PATH_INTERVAL);
+        n0_future::pin!(reselect_path);
+
         loop {
             let scheduled_path_open = match self.state.scheduled_open_path {
                 Some(when) => MaybeFuture::Some(time::sleep_until(when)),
@@ -353,6 +373,9 @@ impl RemoteStateActor {
                 }
                 _ = check_connections.tick() => {
                     self.check_connections();
+                }
+                _ = reselect_path.tick() => {
+                    self.select_path();
                 }
                 _ = &mut idle_timeout => {
                     if self.is_idle(&inbox) {

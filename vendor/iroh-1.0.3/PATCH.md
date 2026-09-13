@@ -391,3 +391,42 @@ full `tetron-testsuite` `core-smoke` run (create → join → status shows
 peer → leave → gone) passed with the new selector wired into real
 endpoint construction, confirming default (`auto`) behavior is unchanged
 from before this patch.
+
+## Patch 7: periodic unconditional `select_path()` re-evaluation (PATHPREF-001)
+
+**File:** `src/socket/remote_map/remote_state.rs` -- a new
+`RESELECT_PATH_INTERVAL` constant, a new `reselect_path` ticker in
+`RemoteStateActor::run`'s event loop, and one new `select!` arm.
+
+**Found:** 2026-09-13, live-verifying Patch 6's own `PATHPREF-001`
+feature end to end (`DO-NOT-COMMIT/pathpref-veilid-live-check.sh`). With
+Direct already selected and a validated Veilid backup path present,
+`tetron config set path-preference veilid` reported "applied immediately"
+(the IPC live-reload round-trip worked, confirmed via the shared
+`ArcSwapOption` value), but `conn_type` stayed `Direct` -- the raw
+`paths[]` array showed `is_selected: false` on the Veilid entry too,
+proving this was not a status-display bug but the real `PathSelector`
+never actually reconsidering its choice.
+
+**Root cause:** `select_path()` -- the only function that calls
+`PathSelector::select()` -- has exactly three call sites, all reactive:
+a path becoming `Established`, a path being `Abandoned`, and one other
+event-driven path. There was no periodic or on-demand trigger. On an
+already-stable connection where nothing else changes, a `PathSelector`'s
+own criteria changing (a live-reloaded preference, PATHPREF-001; in
+principle also an RTT drift under `auto` mode with no new path event)
+had no way to ever get re-evaluated.
+
+**Fix:** a fourth call site -- a new `time::interval(RESELECT_PATH_INTERVAL)`
+(3s) ticker in the actor's own `tokio::select!` loop, alongside the
+existing `check_connections`/holepunch/path-open timers, calling
+`self.select_path()` unconditionally on each tick. `select_path()` is a
+pure read of already-cached path stats (no I/O), so this costs
+negligibly more than the ticker itself, run per remote.
+
+**Status: live-verified.** Re-ran the same live check after this fix:
+`tetron config set path-preference veilid` correctly flipped `conn_type`
+to `Veilid` within the check's ~10s wait (well inside the 3s tick
+interval's margin), and `tetron config unset path-preference` correctly
+reverted it to `Direct`. See `spec/core.py`'s `TransportPathPreference`
+(PATHPREF-001) for the full account, including the first (failed) attempt.
