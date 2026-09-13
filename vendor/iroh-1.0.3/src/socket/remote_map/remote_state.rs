@@ -16,7 +16,10 @@ use n0_future::{
 };
 use n0_watcher::Watcher;
 use noq::{Closed, PathStats, PathStatus, WeakConnectionHandle};
-use noq_proto::{PathError, PathEvent as NoqPathEvent, PathId, n0_nat_traversal};
+use noq_proto::{
+    PathAbandonReason, PathError, PathEvent as NoqPathEvent, PathId, TransportErrorCode,
+    n0_nat_traversal,
+};
 use rustc_hash::FxHashMap;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -174,6 +177,23 @@ struct State {
     /// They failed to open because we did not have enough CIDs issued by the remote.
     pending_open_paths: VecDeque<transports::FourTuple>,
 
+    /// tetron-local patch (PATCH.md, VEILID-016): addresses for paths that
+    /// were opened (a real `PathId` assigned, see `open_path_on_conn`) but
+    /// have not yet reached `NoqPathEvent::Established` -- keyed by the
+    /// `PathId` a connection assigned them, since PathIds are only unique
+    /// per-connection. `noq_proto::PathEvent::Abandoned`'s own doc comment
+    /// is explicit that this is a normal, expected case: "this may be the
+    /// first event for a path: if a path is abandoned before having been
+    /// established, no `Established` event is emitted" -- and `Abandoned`
+    /// carries no address, only the `PathId`, so without this map there is
+    /// no way to recover which address to retry once `ConnectionState`'s
+    /// own `paths` map (populated only on `Established`, via
+    /// `register_and_configure_path`) comes up empty. Entries are removed
+    /// on `Established` (now tracked normally via `ConnectionState::paths`
+    /// instead) or consumed by `Abandoned`'s own retry logic; per-connection
+    /// scope matches the doc comment on `ConnectionState::paths` above.
+    unvalidated_paths: FxHashMap<(ConnId, PathId), transports::FourTuple>,
+
     // Internal state - address lookup
     //
     /// Stream of Address Lookup results, or always pending if Address Lookup is not running.
@@ -212,6 +232,7 @@ impl RemoteStateActor {
                 scheduled_holepunch: None,
                 scheduled_open_path: None,
                 pending_open_paths: VecDeque::new(),
+                unvalidated_paths: FxHashMap::default(),
                 address_lookup_stream: None,
                 path_selector,
             },
@@ -607,6 +628,13 @@ impl RemoteStateActor {
         trace!("path event");
         match event {
             NoqPathEvent::Established { id: path_id, .. } => {
+                // tetron-local patch (VEILID-016): this path made it to
+                // `Established` through the normal path, so `unvalidated_paths`
+                // (VEILID-016's own tracking for a path that hasn't reached
+                // this point yet) no longer needs the entry -- avoid an
+                // unbounded map over a long-lived connection's many opens.
+                self.state.unvalidated_paths.remove(&(conn_id, path_id));
+
                 let Some(path) = conn.path(path_id) else {
                     trace!("path open event for unknown path");
                     return;
@@ -617,8 +645,21 @@ impl RemoteStateActor {
                 self.select_path();
             }
             NoqPathEvent::Abandoned { id, reason, .. } => {
-                // Remove abandoned path from the conn state.
-                let Some(network_path) = conn_state.remove_path(&id, &conn) else {
+                // tetron-local patch (PATCH.md, VEILID-016): `noq_proto`'s
+                // own `PathEvent::Abandoned` doc comment: "this may be the
+                // first event for a path: if a path is abandoned before
+                // having been established, no `Established` event is
+                // emitted" -- exactly the case a lost ping produces, and
+                // confirmed live: `conn_state.remove_path` (populated only
+                // on `Established`) reliably misses in exactly this case.
+                // Fall back to `unvalidated_paths` (populated at open time,
+                // before validation) to recover the address a `Custom`
+                // retry needs; `conn_state.remove_path` stays the primary
+                // source for a path that *did* reach `Established` first.
+                let network_path = conn_state.remove_path(&id, &conn).or_else(|| {
+                    self.state.unvalidated_paths.remove(&(conn_id, id))
+                });
+                let Some(network_path) = network_path else {
                     debug!(%id, "path not in path_id_map");
                     return;
                 };
@@ -643,6 +684,73 @@ impl RemoteStateActor {
                     %network_path,
                     ?reason
                 );
+
+                // tetron-local patch (PATCH.md, VEILID-016): a custom-transport
+                // backup path's own `path.ping()` (fired once at open time,
+                // see `open_path_on_conn`'s VEILID-007/013 comment) can be
+                // silently lost -- `VeilidCustomSender::poll_send` always
+                // reports success to noq even when the underlying
+                // `app_message` send actually fails, which live testing
+                // confirmed happens routinely for several-to-tens-of-seconds
+                // after a freshly-attached embedded Veilid node dials out:
+                // its own network attach can still be settling ("no routing
+                // domain"), or the peer's Veilid route may not resolve via
+                // the DHT yet ("could not resolve node id") even well after
+                // this node's own attach completed.
+                //
+                // The abandon this actually surfaces as is *not*
+                // `PathAbandonReason::TimedOut`: `open_path_on_conn` only
+                // ever runs on the client side (`if conn.side().is_server()
+                // { return; }` above it), so VEILID-014's own
+                // `set_max_idle_timeout` override only ever reaches the
+                // dialing node's own copy of the path. The other side (the
+                // server for this connection direction) never gets that
+                // override and gives up on its own, shorter default first,
+                // sending a PATH_ABANDON frame -- which arrives here as
+                // `PathAbandonReason::RemoteAbandoned` carrying
+                // `TransportErrorCode::PATH_UNSTABLE_OR_POOR`, confirmed
+                // live (`error_code: 15990` = `0x3e76`), not a local
+                // `TimedOut` we would otherwise see. Before this fix, that
+                // abandon vanished the path from `tetron status`'s paths[]
+                // permanently, with nothing to ever retry it (unlike the
+                // PathId-assignment race VEILID-013 already retries via
+                // `pending_open_paths`). Re-queuing here reuses that exact
+                // same retry sweep, so a lost ping just becomes another
+                // open+ping attempt rather than a dead end.
+                //
+                // Deliberately narrow to `PATH_UNSTABLE_OR_POOR` specifically
+                // (not every `RemoteAbandoned`): a remote's own
+                // `APPLICATION_ABANDON_PATH` (e.g. because the whole
+                // connection is being torn down and replaced) is a real,
+                // deliberate close that should not be resurrected. Relay is
+                // exempt from all of this: its own protocol-level keepalive
+                // already gives it real traffic independent of QUIC path
+                // validation (see `open_path_on_conn`'s comment), so it
+                // never needed this. No cap on retry count -- same
+                // indefinite-retry posture already accepted for
+                // holepunching in this file; each cycle costs one small
+                // datagram at most every few seconds.
+                let is_stale_validation_abandon = match reason {
+                    PathAbandonReason::TimedOut => true,
+                    PathAbandonReason::RemoteAbandoned { error_code } => {
+                        TransportErrorCode::from(error_code)
+                            == TransportErrorCode::PATH_UNSTABLE_OR_POOR
+                    }
+                    _ => false,
+                };
+                if is_stale_validation_abandon
+                    && matches!(network_path, transports::FourTuple::Custom { .. })
+                {
+                    debug!(?network_path, "VEILID-016: re-queuing abandoned custom-transport path for another open+ping attempt");
+                    self.state.scheduled_open_path = self
+                        .state
+                        .scheduled_open_path
+                        .map(|at| at.min(Instant::now() + Duration::from_millis(333)))
+                        .or_else(|| Some(Instant::now() + Duration::from_millis(333)));
+                    if !self.state.pending_open_paths.contains(&network_path) {
+                        self.state.pending_open_paths.push_back(network_path.clone());
+                    }
+                }
 
                 // If the remote closed our selected path, select a new one.
                 self.select_path();
@@ -1137,11 +1245,20 @@ impl State {
                     if let Err(err) = path.ping() {
                         warn!(%err, %path_id, ?open_addr, "failed to ping newly-opened backup path");
                     }
+                    // tetron-local patch (VEILID-016): record this
+                    // Custom-transport path's address *before* it has
+                    // reached `Established` -- see `unvalidated_paths`'s
+                    // own doc comment for why: an abandon before
+                    // validation carries no address of its own to retry.
+                    if matches!(open_addr, transports::FourTuple::Custom { .. }) {
+                        self.unvalidated_paths
+                            .insert((conn_id, path_id), open_addr.clone());
+                    }
                 }
             }
             None => {
                 let ret = now_or_never(fut);
-                trace!(?ret, "open_path_ensure now_or_never result");
+                trace!(?ret, ?open_addr, "open_path_ensure now_or_never result");
                 match ret {
                     Some(Err(PathError::RemoteCidsExhausted))
                     | Some(Err(PathError::MaxPathIdReached)) => {
@@ -1159,7 +1276,7 @@ impl State {
                         }
                         trace!(?open_addr, ?ret, "scheduling open_path");
                     }
-                    _ => warn!(?ret, "Opening path failed"),
+                    _ => warn!(?ret, ?open_addr, "Opening path failed"),
                 }
             }
         }

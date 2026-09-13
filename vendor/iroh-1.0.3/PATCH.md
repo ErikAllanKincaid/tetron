@@ -244,3 +244,100 @@ despite `poll_send` reporting local success every time. Whether to ship
 with `Unsafe` or keep pursuing `Safe` is a deliberate product decision,
 tracked in `spec/core.py`'s `VeilidCustomPathIrohRaceGap` (VEILID-007)
 UPDATE 6, not resolved by this patch.
+
+## Patch 5: re-queue an abandoned custom-transport backup path for another open+ping attempt (VEILID-016)
+
+**Files:** `src/socket/remote_map/remote_state.rs` --
+`RemoteStateActor::handle_path_event`'s `Established`/`Abandoned` arms,
+`State::open_path_on_conn`'s `Some(path_id)` arm, and a new
+`State::unvalidated_paths` field.
+
+**Found:** 2026-09-12, after VEILID-007 was declared closed --
+re-running `tetron-testsuite`'s `veilid-smoke` repeatedly against the
+same commit, no code changes, surfaced a real ~1-in-3 failure rate. A
+dedicated diagnostic loop (`tetron/DO-NOT-COMMIT/veilid-flake-diag.sh`,
+kept per that repo's own evidence-preservation policy, not deleted)
+reproduced it five separate times across the diagnosis below, each
+capture correcting the previous session's working theory.
+
+**Root cause, layer 1:** `VeilidCustomSender::poll_send`
+(`veilid-transport/src/lib.rs`, tetron's own crate, not this vendored
+copy) is fire-and-forget: it spawns the async `app_message` call and
+always returns `Poll::Ready(Ok(()))` to noq, regardless of whether the
+send actually succeeds. Patch 3's `path.ping()` call fires exactly once
+at path-open time. Live captures showed that specific `app_message`
+send failing for two genuinely transient reasons -- `"No connection: no
+routing domain"` (a brief offline/online blip in Veilid's own network
+detection during early attach) and `"No connection: could not resolve
+node id"` (DHT resolution of the peer's route, observed failing for
+tens of seconds even after this node's own attach had already
+completed). Because `poll_send` lies about success, noq never learns
+the challenge was lost and eventually abandons the path.
+
+**Root cause, layer 2 (first fix attempt, wrong target):** the initial
+retry condition matched `PathAbandonReason::TimedOut`, which never
+actually fires here. `open_path_on_conn` only runs client-side (`if
+conn.side().is_server() { return; }`), so Patch 4's
+`set_max_idle_timeout` override never reaches the *peer's* copy of the
+path -- the peer (server side for that connection direction) times out
+on its own shorter default first and sends a PATH_ABANDON frame, which
+arrives here as `PathAbandonReason::RemoteAbandoned` carrying
+`TransportErrorCode::PATH_UNSTABLE_OR_POOR` (confirmed live via the raw
+wire code, `15990` = `0x3e76`).
+
+**Root cause, layer 3 (second fix attempt, still not running):** even
+after widening the match to `RemoteAbandoned{PATH_UNSTABLE_OR_POOR}`,
+live captures showed the retry code still never executing.
+`noq_proto::PathEvent::Abandoned`'s own doc comment states it directly:
+*"this may be the first event for a path: if a path is abandoned before
+having been established, no `Established` event is emitted."*
+`ConnectionState::paths` -- what the retry code looked up the address
+from -- is only ever populated by `register_and_configure_path`, called
+*only* from the `Established` handler. A path abandoned before ever
+validating (exactly the case here) was never in that map, so the lookup
+silently failed every time.
+
+**Fix:** a new `State::unvalidated_paths: FxHashMap<(ConnId, PathId),
+FourTuple>` records a `Custom`-transport path's address at open+ping
+time (in `open_path_on_conn`'s success arm), independent of whether it
+ever reaches `Established`. In `handle_path_event`'s `Abandoned` arm,
+the address is recovered from `ConnectionState::remove_path` (the
+normal case) or, failing that, from `unvalidated_paths`. When the
+reason is `TimedOut` or `RemoteAbandoned{PATH_UNSTABLE_OR_POOR}` and the
+address is `Custom`, it is re-queued into the same
+`pending_open_paths`/`scheduled_open_path` mechanism Patch 1/3 already
+use -- a lost ping just becomes another open+ping attempt.
+`unvalidated_paths` entries are cleared on `Established` too, so a path
+that validates normally never lingers in both maps. Relay is exempt:
+its own protocol keepalive already gives it real traffic outside QUIC
+path validation, so it never hit this failure mode. No retry cap,
+matching this file's existing indefinite-retry posture for
+holepunching; each cycle costs at most one small datagram.
+
+**Status: live-verified.** Once the retry logic was confirmed actually
+running, two more captures surfaced one final real fact rather than a
+code bug: worst-case Veilid path validation can legitimately take ~50+
+seconds, and a retry needs a similar window of its own -- the
+diagnostic loop's original 120s post-restart settle sometimes ended
+mid-retry, with the path still pending rather than validated or
+exhausted. `tetron-testsuite`'s own `tests/veilid-smoke.sh` had its
+matching `TESTSUITE_VEILID_RESETTLE_SECS` raised from 120s to 240s for
+the same reason.
+
+**Honest final measurement, not just a declared fix:** a larger,
+unattended batch at the 240s window (8 attempts, no early stop) passed
+6 of 8 (75%) -- a real improvement over the pre-fix baseline, not full
+elimination. The 2 failures were two different shapes. One matched this
+patch's own target exactly: the retry fired 4 separate times, each
+attempt failing the same way (`RemoteAbandoned{PATH_UNSTABLE_OR_POOR}`)
+-- reads as genuinely sustained Veilid route-resolution unavailability
+to that specific peer for the whole window, not a defect in the retry
+logic itself. The other is a distinct, unexplained case: the path
+reached noq's own `Established` event (meaning it validated) and then
+still vanished with **no abandon event ever logged**, despite
+confirming `open_path_on_conn`'s ping/idle-timeout branch did run for
+it. Left open rather than blocking this patch -- possibly related to
+`register_and_configure_path` (the code path for a path that validates
+*asynchronously*) never applying the `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`
+override the way `open_path_on_conn`'s own synchronous success arm
+does, but unconfirmed against this specific capture.
