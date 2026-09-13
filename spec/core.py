@@ -1504,6 +1504,16 @@ class VeilidCustomTransportMechanism(Requirement):
     already degrades gracefully in the meantime -- failed sends are logged
     and dropped, the same way an unreachable IP/relay path already
     behaves for every other transport.
+
+    UPDATE (VEILID-007's investigation, 2026-09-12): the `NodeId`-vs-`RouteId`
+    addressing choice above is unaffected and still correct, but the
+    *safety-selection* default this requirement's own text assumed
+    ("Veilid's default safety-routing for sender privacy") did not survive
+    contact with live testing -- `SafetySelection::Safe` never once
+    delivered a message across the entire `VEILID-007`..`015` investigation,
+    while `SafetySelection::Unsafe` worked immediately. `veilid-transport`
+    now explicitly selects `Unsafe`; see that crate's own module docs
+    ("Routing mode") for the full rationale and accepted tradeoff.
     """
     req_id = "VEILID-001"
 
@@ -2035,22 +2045,25 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     tell the two custom transports apart), caught only because the
     path's `remote_addr` still carried the real Veilid transport id.
 
-    **Still not fully closed**: this establishes that the mechanism
-    works end-to-end under `SafetySelection::Unsafe` -- direct Veilid
-    delivery, no sender-anonymizing safety route. The default
-    `SafetySelection::Safe` (the originally intended mode, see
-    `VEILID-001`'s own addressing rationale) was live-tested repeatedly
-    across this investigation and never once delivered a single message,
-    despite `poll_send`/`app_message` locally reporting success every
-    time -- consistent with safety-route allocation between two
-    freshly-bootstrapped nodes being unreliable or too slow within any
-    settle window tested so far, not yet confirmed which. Whether to ship
-    with `Unsafe` (working, less private within the Veilid network) or
-    keep pursuing `Safe` (the originally intended privacy properties, not
-    yet made to work) is a deliberate product decision, not a bug fix --
-    tracked separately, not resolved by VEILID-014/015. Re-run
-    `tests/veilid-smoke.sh` against whichever mode is chosen before
-    treating this requirement as resolved.
+    UPDATE 7 (`Safe`-vs-`Unsafe` decided; not yet re-verified end-to-end
+    against every fix together): this establishes the mechanism works
+    end-to-end under `SafetySelection::Unsafe` -- direct Veilid delivery,
+    no sender-anonymizing safety route. The default `SafetySelection::Safe`
+    (the originally intended mode, see `VEILID-001`'s own addressing
+    rationale) was live-tested repeatedly across this investigation and
+    never once delivered a single message, despite `poll_send`/
+    `app_message` locally reporting success every time. Decided: keep
+    `Unsafe` deliberately (see `veilid-transport`'s own module docs and
+    `VEILID-001`'s UPDATE for the accepted tradeoff) rather than keep
+    pursuing a `Safe` mode that has not once worked in this investigation
+    -- a working transport beats a non-functional one, and tetron's own
+    threat model here (mutually-known, invite-gated peers; Veilid ranked
+    below Tor as a last-resort fallback) does not lean on Veilid's own
+    sender-privacy the way an anonymous-peer application would.
+    Revisiting `Safe` mode later is possible but not required. **Not yet
+    closed**: re-run `tests/veilid-smoke.sh` with `Unsafe` plus every fix
+    through VEILID-015 together before treating this requirement as
+    resolved.
     """
 
     req_id = "VEILID-007"
@@ -2307,6 +2320,18 @@ class VeilidNodeIdTargetFootgunFeature(Requirement):
     exactly as intended. See `VeilidConcurrentDialDedup` (VEILID-012) for
     what happens to that connection next, and why it still never showed up
     in `status`.
+
+    UPDATE 2 (the `Safe`-vs-`Unsafe` choice above did not hold, 2026-09-12):
+    once every other gap through VEILID-013/014 was closed, live testing
+    showed `SafetySelection::Safe` never once delivered a message --
+    `poll_send`/`app_message` reported local success every time, but zero
+    `AppMessage received` on the far side, across every settle window
+    tried. `SafetySelection::Unsafe` worked immediately and reliably.
+    `veilid-transport` now uses `Unsafe` deliberately -- see its own module
+    docs and `VEILID-001`'s UPDATE for the accepted tradeoff. The
+    `footgun-nodeid-target` fix this requirement made is unaffected and
+    still required either way (`Unsafe` also needs it to accept a
+    `Target::NodeId` at all).
     """
 
     req_id = "VEILID-011"

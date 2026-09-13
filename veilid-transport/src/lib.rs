@@ -22,11 +22,31 @@
 //!
 //! Each Veilid node has a stable `NodeId` (unlike a private/safety route,
 //! which rotates). This transport addresses peers directly by `NodeId`
-//! (`veilid_core::Target::NodeId`), which keeps Veilid's default
-//! sender-privacy (safety routing) without taking on route-churn
-//! bookkeeping — see `VEILID-001`'s docstring for why receiver-anonymity
-//! (private routes) was intentionally not chosen for tetron's use case
-//! (mutually-known, invite-gated peers, not anonymous hidden services).
+//! (`veilid_core::Target::NodeId`) — see `VEILID-001`'s docstring for why
+//! receiver-anonymity (private routes) was intentionally not chosen for
+//! tetron's use case (mutually-known, invite-gated peers, not anonymous
+//! hidden services).
+//!
+//! # Routing mode: `Unsafe`, not the library default `Safe`
+//!
+//! [`VeilidTransportBuilder::build`] explicitly selects
+//! `SafetySelection::Unsafe` — a direct send, no sender-anonymizing
+//! safety route. This is a deliberate product decision, not an oversight:
+//! `Safe` (the library default, and tetron's own original intent) never
+//! once delivered a message across the entire live investigation behind
+//! `VEILID-007`..`015` (`spec/core.py`), despite `poll_send`/`app_message`
+//! locally reporting success every time — safety-route allocation between
+//! two freshly-bootstrapped nodes was unreliable or too slow within every
+//! settle window tested. `Unsafe` worked immediately and reliably.
+//! Accepted tradeoff: within the Veilid network itself, a network-level
+//! observer can now tell which real Veilid node is talking to which — but
+//! tetron peers already know each other's identity directly (invite-gated
+//! mesh, not anonymous), and Veilid is a last-resort fallback ranked below
+//! Tor (`select.rs::choose_path_index`), which already provides the more
+//! mature anonymity property for whoever actually needs it. Revisiting
+//! `Safe` mode (e.g. after understanding why route allocation fails, or
+//! with a longer settle budget) is a separate, non-blocking follow-up, not
+//! required for this transport to be usable.
 
 use std::fmt;
 use std::io;
@@ -179,7 +199,15 @@ impl VeilidTransportBuilder {
         // already known internally (`rtab: Node Ids: [...]` logs
         // immediately at startup, independent of attachment).
         api.attach().await?;
-        let routing_context = api.routing_context()?;
+        // `Unsafe` routing, deliberately -- see the module docs' "Routing
+        // mode" section for the full rationale and the live investigation
+        // that led here (`Safe`, the library default, never once
+        // delivered a message across `VEILID-007`..`015`'s testing).
+        let routing_context =
+            api.routing_context()?
+                .with_safety(veilid_core::SafetySelection::Unsafe(
+                    veilid_core::Sequencing::PreferUnordered,
+                ))?;
         let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
         let (node_id_tx, _) = tokio::sync::watch::channel(None);
         let shared = Arc::new(Shared {
