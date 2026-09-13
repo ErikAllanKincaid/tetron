@@ -431,6 +431,17 @@ pub struct AppConfig {
     /// `tetron config set log-level <level>` (CONFIG-AUDIT-002 style).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_level: Option<String>,
+    /// PATHPREF-001: which transport a user wants to actually carry real
+    /// application data, overriding iroh's own RTT-based selection once a
+    /// candidate of that type has proven itself with real received
+    /// activity. `None` (`auto`) is the compiled default -- unchanged
+    /// RTT-based behavior. Daemon-wide, not per-network (`MeshManager`
+    /// holds one shared `iroh::Endpoint`, see `path_selector.rs`'s own
+    /// module doc). One of `direct`/`relay`/`tor`/`veilid`. Live-reloads
+    /// an already-running daemon the same way `log_level` does (LOG-004
+    /// pattern) -- set via `tetron config set path-preference <value>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_preference: Option<String>,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
 }

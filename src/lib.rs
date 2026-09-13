@@ -27,6 +27,7 @@ pub mod logdir;
 pub mod membership;
 pub mod network_name;
 pub mod packet;
+pub mod path_selector;
 pub mod peercache;
 pub mod peers;
 pub mod ratelimit;

@@ -85,6 +85,8 @@ struct Settings {
     selfcapture_mitigation: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     log_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path_preference: Option<String>,
 }
 
 /// Look up the `tetron` group's gid (Linux), if the group exists.
@@ -486,6 +488,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             invite_default_expiry: None,
             selfcapture_mitigation: None,
             log_level: None,
+            path_preference: None,
         }
     };
 
@@ -534,6 +537,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         invite_default_expiry: settings.invite_default_expiry,
         selfcapture_mitigation: settings.selfcapture_mitigation,
         log_level: settings.log_level,
+        path_preference: settings.path_preference,
         networks,
     })
 }
@@ -572,6 +576,13 @@ pub fn log_level() -> String {
         .unwrap_or_else(|| "info".to_string())
 }
 
+/// Resolved `path-preference` value (PATHPREF-001). `None` means `auto` --
+/// unlike `log_level`, there is no compiled-default string to fall back to,
+/// `None` itself *is* the default (iroh's own RTT-based selection).
+pub fn path_preference() -> Option<String> {
+    load().ok().and_then(|c| c.path_preference)
+}
+
 /// Persist the node's operative overlay subnet (a local cache of the network's
 /// authoritative `GroupBlob` value) so the daemon rebuilds its TUN/identity in
 /// it at the next bootstrap. Stores `None` for the default subnet.
@@ -606,6 +617,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         invite_default_expiry: config.invite_default_expiry,
         selfcapture_mitigation: config.selfcapture_mitigation,
         log_level: config.log_level.clone(),
+        path_preference: config.path_preference.clone(),
     };
     let path = dir.join(SETTINGS_FILE);
     let contents = toml::to_string_pretty(&settings).context("serializing settings")?;

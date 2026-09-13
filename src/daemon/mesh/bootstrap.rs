@@ -169,6 +169,13 @@ async fn build_daemon(
     let listen_port = app_config
         .listen_port
         .unwrap_or(transport::TETRON_LISTEN_PORT);
+    // PATHPREF-001: seeded from the persisted config, then handed to
+    // `TetronPathSelector`; the same `Arc` is kept on `MeshManager` below so
+    // `tetron config set path-preference` can live-reload it over IPC
+    // without a restart, mirroring `log_reload`'s LOG-004 pattern.
+    let path_preference: crate::path_selector::PathPreferenceSlot = Arc::new(
+        arc_swap::ArcSwapOption::from(app_config.path_preference.clone().map(Arc::new)),
+    );
     let (ep, veilid_node_id) = transport::create_endpoint_with_alpns(
         key.clone(),
         alpns,
@@ -177,6 +184,7 @@ async fn build_daemon(
         &app_config.relay,
         &app_config.discovery_dns,
         listen_port,
+        path_preference.clone(),
     )
     .await?;
 
@@ -229,6 +237,7 @@ async fn build_daemon(
     let daemon = Arc::new(MeshManager {
         endpoint: ep,
         veilid_node_id,
+        path_preference,
         identity,
         stats: stats.clone(),
         networks: Arc::new(DashMap::new()),

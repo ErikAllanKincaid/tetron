@@ -683,6 +683,8 @@ async fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             config::save_settings(&cfg)?;
             if key == "log-level" {
                 announce_log_level_change("Set", &key).await;
+            } else if key == "path-preference" {
+                announce_path_preference_change("Set").await;
             } else {
                 println!("Set {key}. Run 'sudo tetron restart' for changes to take effect.");
             }
@@ -693,6 +695,8 @@ async fn cmd_config(action: Option<ConfigAction>, json: bool) -> Result<()> {
             config::save_settings(&cfg)?;
             if key == "log-level" {
                 announce_log_level_change("Reset", &key).await;
+            } else if key == "path-preference" {
+                announce_path_preference_change("Reset").await;
             } else {
                 println!(
                     "Reset {key} to default. Run 'sudo tetron restart' for changes to take effect."
@@ -729,6 +733,44 @@ async fn try_live_reload_log_level() -> Result<()> {
     let level = config::log_level();
     let mut stream = ipc::connect().await?;
     ipc::send(&mut stream, ipc::IpcMessage::SetLogLevel { level }).await?;
+    match ipc::recv(&mut stream).await? {
+        ipc::IpcMessage::Ok { .. } => Ok(()),
+        ipc::IpcMessage::Error { message } => anyhow::bail!(message),
+        other => anyhow::bail!("unexpected response: {:?}", other),
+    }
+}
+
+/// After `settings.toml` already carries the new `path-preference` value,
+/// tries to notify the already-running daemon so it takes effect
+/// immediately (PATHPREF-001, mirrors `announce_log_level_change`'s
+/// LOG-004 pattern). `verb` is "Set" or "Reset".
+async fn announce_path_preference_change(verb: &str) {
+    match try_live_reload_path_preference().await {
+        Ok(()) => {
+            println!(
+                "{verb} path-preference. Applied immediately to the running daemon (no restart needed)."
+            )
+        }
+        Err(_) => {
+            println!(
+                "{verb} path-preference. Run 'sudo tetron restart' for changes to take effect."
+            )
+        }
+    }
+}
+
+/// Sends the freshly-saved `path-preference` value to the running daemon
+/// over IPC. Reads it back via `config::path_preference()` (not the raw
+/// CLI arg) so an unset correctly resolves to `None` (auto) without a
+/// separate codepath, mirroring `try_live_reload_log_level`.
+async fn try_live_reload_path_preference() -> Result<()> {
+    let preference = config::path_preference();
+    let mut stream = ipc::connect().await?;
+    ipc::send(
+        &mut stream,
+        ipc::IpcMessage::SetPathPreference { preference },
+    )
+    .await?;
     match ipc::recv(&mut stream).await? {
         ipc::IpcMessage::Ok { .. } => Ok(()),
         ipc::IpcMessage::Error { message } => anyhow::bail!(message),

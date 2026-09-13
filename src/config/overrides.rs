@@ -236,10 +236,22 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
                 Some(parse_log_level_value(&entries[0])?)
             };
         }
+        "path-preference" => {
+            cfg.path_preference = if reset {
+                None
+            } else {
+                anyhow::ensure!(
+                    entries.len() == 1,
+                    "path-preference takes a single value: direct/relay/tor/veilid"
+                );
+                Some(parse_path_preference_value(&entries[0])?)
+            };
+        }
         other => anyhow::bail!(
             "unknown config key: {other} (expected relay, discovery-dns, subnet, \
              nuke-proposal-ttl, listen-port, poller-interval, log-retention, \
              invite-default-expiry, selfcapture-mitigation, log-level, \
+             path-preference, \
              drop-monitor.<window|threshold|cooldown>, \
              path-flap.<threshold|window>, \
              reconnect-log.<threshold|window>, \
@@ -537,6 +549,17 @@ fn parse_log_level_value(raw: &str) -> Result<String> {
     }
 }
 
+/// PATHPREF-001: validates and canonicalizes a `path-preference` value.
+/// Returns the lowercase transport name, matching
+/// `path_selector::TetronPathSelector`'s own matching.
+fn parse_path_preference_value(raw: &str) -> Result<String> {
+    let lower = raw.to_ascii_lowercase();
+    match lower.as_str() {
+        "direct" | "relay" | "tor" | "veilid" => Ok(lower),
+        _ => anyhow::bail!("invalid path-preference: {raw} (expected direct/relay/tor/veilid)"),
+    }
+}
+
 /// Parse a human-readable duration string into seconds.
 ///
 /// Supports suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days),
@@ -695,6 +718,13 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if k == "path-preference" {
+            let val = match &cfg.path_preference {
+                Some(pref) => pref.clone(),
+                None => "<default: auto>".to_string(),
+            };
+            return Ok((k.to_string(), val));
+        }
         let o = match k {
             "relay" => &cfg.relay,
             "discovery-dns" => &cfg.discovery_dns,
@@ -746,6 +776,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("invite-default-expiry")?,
             row("selfcapture-mitigation")?,
             row("log-level")?,
+            row("path-preference")?,
         ]),
     }
 }
