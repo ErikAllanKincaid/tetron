@@ -91,6 +91,17 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         "relay" => {
             if reset {
                 cfg.relay = ServerOverride::default();
+            } else if entries == ["off"] {
+                // RELAY-001: an explicit "no relay at all" sentinel,
+                // distinct from `n0`/empty (which reset to the default n0
+                // preset). Mapped to iroh's own `RelayMode::Disabled` in
+                // `transport::build_relay_mode`. `replace` is meaningless
+                // here (nothing to augment or replace) so it is not
+                // stored/consulted.
+                cfg.relay = ServerOverride {
+                    servers: vec!["off".to_string()],
+                    replace: true,
+                };
             } else {
                 for e in &entries {
                     resolve_url_entry(e, RELAY_PRESET_RAYFISH)?;
@@ -563,6 +574,8 @@ pub(crate) fn parse_duration(s: &str) -> std::result::Result<u64, String> {
 fn render_override(o: &ServerOverride) -> String {
     if o.is_unset() {
         "<default>".to_string()
+    } else if o.servers == ["off"] {
+        "off".to_string()
     } else {
         let mode = if o.replace { "replace" } else { "augment" };
         format!("{} ({mode})", o.servers.join(","))
@@ -1006,6 +1019,34 @@ mod tests {
         assert!(!cfg.relay.is_unset());
         config_set(&mut cfg, "relay", "n0", false).unwrap();
         assert!(cfg.relay.is_unset());
+    }
+
+    #[test]
+    fn config_set_off_disables_relay() {
+        let mut cfg = AppConfig::default();
+        config_set(&mut cfg, "relay", "off", false).unwrap();
+        // RELAY-001: distinct from unset -- "off" is a real, stored override,
+        // not "use the default."
+        assert!(!cfg.relay.is_unset());
+        assert_eq!(cfg.relay.servers, vec!["off".to_string()]);
+        assert_eq!(config_get(&cfg, Some("relay")).unwrap()[0].1, "off");
+    }
+
+    #[test]
+    fn config_set_off_then_unset_resets_to_default() {
+        let mut cfg = AppConfig::default();
+        config_set(&mut cfg, "relay", "off", false).unwrap();
+        config_set(&mut cfg, "relay", "n0", false).unwrap();
+        assert!(cfg.relay.is_unset());
+        assert_eq!(config_get(&cfg, Some("relay")).unwrap()[0].1, "<default>");
+    }
+
+    #[test]
+    fn config_set_off_ignores_replace_flag() {
+        let mut cfg = AppConfig::default();
+        config_set(&mut cfg, "relay", "off", true).unwrap();
+        assert_eq!(cfg.relay.servers, vec!["off".to_string()]);
+        assert_eq!(config_get(&cfg, Some("relay")).unwrap()[0].1, "off");
     }
 
     #[test]
