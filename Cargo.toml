@@ -102,6 +102,10 @@ bytesize = "2.4.0"
 [dev-dependencies]
 tempfile = "3"
 criterion = "0.5"
+# Only for constructing a raw `CustomAddr` in `classify_candidate_addr`'s
+# own Veilid-vs-Tor unit tests (VEILID-007 follow-up) -- already resolved
+# transitively through `iroh`/`veilid-transport` at a compatible version.
+iroh-base = "1"
 
 # Microbenchmarks for the per-packet data path (header parse + the zero-copy
 # Bytes hand-off). Run with `cargo bench`. `harness = false` lets Criterion own

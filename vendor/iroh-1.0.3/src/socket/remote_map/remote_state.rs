@@ -72,6 +72,19 @@ const UPGRADE_INTERVAL: Duration = Duration::from_secs(60);
 /// in a high frequency, and to keep data about previous path around for subsequent connections.
 const ACTOR_MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// tetron-local patch (PATCH.md, VEILID-007 follow-up): idle timeout for a
+/// custom-transport backup path, mirroring [`RELAY_PATH_MAX_IDLE_TIMEOUT`]'s
+/// own purpose (`noq_proto`'s `PathStatus::Backup` doc: a path with no
+/// `max_idle_timeout` specified expires). Deliberately longer than relay's
+/// 30s: relay backup paths survive regardless thanks to the relay
+/// connection's own protocol-level keepalive outside QUIC, so 30s was
+/// never really tested against a real gap; a custom transport has no such
+/// side channel, and live testing (`tetron-testsuite`'s `veilid-smoke`)
+/// found real traffic bursts on a Veilid backup path separated by gaps
+/// upward of 30s on their own, with the path confirmed expiring within a
+/// handful of seconds of a 30s override -- comfortably wider margin here.
+const CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// A stream of events from all paths for all connections.
 ///
 /// The connection is identified using [`ConnId`].  The event `Err` variant happens when the
@@ -1095,9 +1108,35 @@ impl State {
                     open_addr,
                     transports::FourTuple::Relay { .. } | transports::FourTuple::Custom { .. }
                 ) && let Some(path) = conn.path(path_id)
-                    && let Err(err) = path.ping()
                 {
-                    warn!(%err, %path_id, ?open_addr, "failed to ping newly-opened backup path");
+                    // tetron-local patch (PATCH.md, VEILID-007 follow-up):
+                    // `noq_proto`'s own `PathStatus::Backup` doc comment is
+                    // explicit -- "If the max_idle_timeout is specified the
+                    // path will be kept alive so that it does not expire."
+                    // Unspecified is the implied alternative: it *does*
+                    // expire. A relay backup path's own primary-path
+                    // registration (`register_and_configure_path`) already
+                    // sets this, though empirically relay backup paths
+                    // survive regardless, kept warm by the relay
+                    // connection's own protocol-level keepalive outside
+                    // QUIC entirely. A custom-transport backup path has no
+                    // such side channel and no equivalent registration
+                    // call -- confirmed live investigating VEILID-007: a
+                    // Veilid backup path opened, pinged, and carried real
+                    // confirmed bidirectional `AppMessage` traffic for
+                    // ~30s, then was gone from `tetron status`'s `paths[]`
+                    // entirely well within a ~120s settle window, with no
+                    // disconnect or error logged in between -- consistent
+                    // with exactly this expiry, not a delivery failure.
+                    if matches!(open_addr, transports::FourTuple::Custom { .. })
+                        && let Err(e) =
+                            path.set_max_idle_timeout(Some(CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT))
+                    {
+                        debug!(?e, %path_id, "failed to set custom-transport path idle timeout");
+                    }
+                    if let Err(err) = path.ping() {
+                        warn!(%err, %path_id, ?open_addr, "failed to ping newly-opened backup path");
+                    }
                 }
             }
             None => {

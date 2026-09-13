@@ -5476,6 +5476,7 @@ dependencies = [
  "futures",
  "hex",
  "iroh",
+ "iroh-base",
  "iroh-blobs",
  "iroh-dns",
  "iroh-metrics",
