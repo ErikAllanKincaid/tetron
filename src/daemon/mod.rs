@@ -1792,6 +1792,42 @@ mod accept_handler_tests {
         );
     }
 
+    #[cfg(feature = "veilid")]
+    #[test]
+    fn classify_candidate_addr_identifies_veilid_by_transport_id() {
+        // VEILID-007 follow-up: this predates VEILID-002 and defaulted
+        // every custom transport to Tor regardless of which one it
+        // actually was -- live-verified reporting a real, active Veilid
+        // path as `conn_type: "Tor"` in `tetron status`.
+        // A real, well-formed Veilid NodeId observed live during the
+        // VEILID-007 investigation -- only its shape (a valid encoded key)
+        // matters here, not which node it was.
+        let node_id = "VLD0:vLG8QLzyqdWo79JGZ-S7OVlgxALtNoVv3EX50qPXTKk"
+            .parse()
+            .unwrap();
+        let addr = iroh::TransportAddr::Custom(veilid_transport::node_id_to_custom_addr(&node_id));
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &[], &[]),
+            (ipc::ConnType::Veilid, true)
+        );
+    }
+
+    #[test]
+    fn classify_candidate_addr_falls_back_to_tor_for_other_custom_transports() {
+        // Any custom-transport id that isn't Veilid's (Tor's own, or any
+        // future one not yet given its own arm) still classifies as Tor,
+        // matching the original behavior from before a second custom
+        // transport existed at all.
+        let addr = iroh::TransportAddr::Custom(iroh_base::CustomAddr::from_parts(
+            u64::from_be_bytes(*b"\0\0\0tor\0\0"),
+            b"onion-address",
+        ));
+        assert_eq!(
+            super::classify_candidate_addr(&addr, &[], &[]),
+            (ipc::ConnType::Tor, true)
+        );
+    }
+
     #[test]
     fn subnet_collision_detects_overlap() {
         use std::net::Ipv4Addr;

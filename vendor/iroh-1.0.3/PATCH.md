@@ -188,8 +188,59 @@ assigned. This also let the separate ping loop in
 alongside it: every path that loop could have reached had already been
 opened (and is now pinged) via this same function.
 
-**Status: live-verification of this specific patch is the next step**
-(re-run `tests/veilid-smoke.sh`, now with the extra node1-only restart the
-test itself gained alongside this patch, checking for a genuinely
-confound-free steady-state reconnect). Not yet confirmed end-to-end; do
-not treat `VEILID-007` as closed until it passes.
+**Status: live-verified working exactly as designed** -- re-testing (with
+`veilid-transport/Cargo.toml`'s `footgun-nodeid-target` feature and a
+diagnostic `SafetySelection::Unsafe` switch, see that crate's own
+`VeilidTransportBuilder::build`) showed genuine end-to-end delivery for
+the first time in this entire investigation: `poll_send` firing with real
+data, `AppMessage received` on the far side, the ping probe itself
+arriving. This patch is confirmed correct. See Patch 4 below for what
+happened next.
+
+## Patch 4: idle timeout for custom-transport backup paths (VEILID-014)
+
+**File:** `src/socket/remote_map/remote_state.rs`, `State::open_path_on_conn`
+(same `Some(path_id) =>` arm Patch 3 added the ping to).
+
+**Found:** 2026-09-12, immediately after Patch 3's own live re-verification
+showed real Veilid delivery working, then disappearing: `tetron status`'s
+final check, run roughly 90 seconds after the last confirmed
+`AppMessage`, showed no Veilid path at all -- not present with zero
+activity, simply gone, with no disconnect or error logged in between.
+
+**Root cause:** `noq_proto`'s own `connection::paths::PathStatus::Backup`
+doc comment: *"If the `max_idle_timeout` is specified the path will be
+kept alive so that it does not expire."* The unstated alternative is that,
+without one, it does. `register_and_configure_path` sets
+`RELAY_PATH_MAX_IDLE_TIMEOUT` (30s) for a connection's *primary* path when
+it is relay -- but nothing in this vendored copy ever set anything for a
+*backup* path of any kind, relay included. Relay backup paths have simply
+never needed it: they are kept alive incidentally by the relay
+connection's own protocol-level keepalive, entirely outside QUIC path
+validation. A Veilid backup path has no equivalent side channel.
+
+**Fix:** at the same point Patch 3 pings a newly-opened path, also call
+`path.set_max_idle_timeout` for `transports::FourTuple::Custom` addresses
+specifically. Deliberately does **not** reuse `RELAY_PATH_MAX_IDLE_TIMEOUT`'s
+exact value: a new `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT` (300s) gives
+comfortable margin over the 30-90s gaps observed live between real
+traffic bursts on a Veilid backup path -- a first attempt reusing relay's
+30s value was confirmed, by inches (within a handful of seconds), still
+too short.
+
+**Status: live-verified.** With this fix, a Veilid backup path survived a
+full settle window and showed `has_activity: true` in
+`tetron status --json`'s `paths[]` -- the first time this entire
+investigation produced that result. (It reported as `conn_type: "Tor"`, a
+separate, independent bug in `tetron`'s own status code, not this
+vendored copy -- see `spec/core.py`'s `VeilidStatusMislabeledAsTor`,
+VEILID-015.)
+
+**Open, not a bug in this file:** getting this far required a diagnostic
+`SafetySelection::Unsafe` switch in `veilid-transport` (tetron's own
+crate, not vendored) -- the intended default, `SafetySelection::Safe`,
+has never once delivered a message across this entire investigation,
+despite `poll_send` reporting local success every time. Whether to ship
+with `Unsafe` or keep pursuing `Safe` is a deliberate product decision,
+tracked in `spec/core.py`'s `VeilidCustomPathIrohRaceGap` (VEILID-007)
+UPDATE 6, not resolved by this patch.

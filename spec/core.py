@@ -2013,12 +2013,44 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     `open_path_on_conn` itself, the one place a `path_id` is ever newly
     assigned, covering every caller uniformly.
 
-    **Still not closed**: VEILID-013 is fix-applied but not yet
-    live-verified end-to-end -- re-run `tests/veilid-smoke.sh` before
-    treating this requirement as resolved. If it passes, every fix from
-    VEILID-006 through VEILID-013 was independently real and necessary;
-    none of the intermediate work was wasted even though each one alone
-    looked, at the time, like it should have been sufficient.
+    UPDATE 6 (VEILID-013 live-verified: real delivery confirmed for the
+    first time, then a final, narrow expiry gap found and closed): a
+    re-test showed genuine end-to-end Veilid traffic -- `poll_send` firing
+    with real data, `AppMessage received` on the far side, the ping probe
+    itself arriving -- then the path vanishing from `tetron status` ~90s
+    after the last confirmed activity. `VeilidBackupPathIdleTimeout`
+    (VEILID-014) closed this: a custom-transport backup path had no
+    `max_idle_timeout` set at all (unlike relay, which gets one on its
+    primary path, though empirically never needed it there either, kept
+    alive incidentally by the relay protocol's own keepalive), so
+    `noq_proto` let it expire once real traffic quieted down for longer
+    than its default. With a deliberately generous override (300s, well
+    past the 30-90s gaps observed between bursts), a Veilid backup path
+    survived a full settle window and showed `has_activity: true` in
+    `tetron status --json` -- the first time this entire investigation
+    produced that result. A second, independent bug surfaced in the same
+    verification pass: the surviving path reported `conn_type: "Tor"`
+    instead of `"Veilid"` (`VeilidStatusMislabeledAsTor`, VEILID-015 --
+    `classify_candidate_addr` predated VEILID-002 and never learned to
+    tell the two custom transports apart), caught only because the
+    path's `remote_addr` still carried the real Veilid transport id.
+
+    **Still not fully closed**: this establishes that the mechanism
+    works end-to-end under `SafetySelection::Unsafe` -- direct Veilid
+    delivery, no sender-anonymizing safety route. The default
+    `SafetySelection::Safe` (the originally intended mode, see
+    `VEILID-001`'s own addressing rationale) was live-tested repeatedly
+    across this investigation and never once delivered a single message,
+    despite `poll_send`/`app_message` locally reporting success every
+    time -- consistent with safety-route allocation between two
+    freshly-bootstrapped nodes being unreliable or too slow within any
+    settle window tested so far, not yet confirmed which. Whether to ship
+    with `Unsafe` (working, less private within the Veilid network) or
+    keep pursuing `Safe` (the originally intended privacy properties, not
+    yet made to work) is a deliberate product decision, not a bug fix --
+    tracked separately, not resolved by VEILID-014/015. Re-run
+    `tests/veilid-smoke.sh` against whichever mode is chosen before
+    treating this requirement as resolved.
     """
 
     req_id = "VEILID-007"
@@ -2391,12 +2423,90 @@ class VeilidPingAtPathOpenOrigin(Requirement):
     `open_path_on_all_conns`'s retry sweep) -- and delete the
     now-redundant separate ping loop `handle_msg_add_connection` had.
 
-    Not yet live-verified end-to-end as of this fix landing -- re-run
-    `tests/veilid-smoke.sh` (now including the VEILID-012 confound-free
-    third-restart check) before treating `VEILID-007` as closed.
+    UPDATE (live re-verification, 2026-09-12): confirmed correct and, for
+    the first time in this entire investigation, produced genuine
+    end-to-end delivery -- live logs showed `poll_send` firing repeatedly
+    with real QUIC data and `AppMessage received` on the *other* node
+    (previously always zero), including the `path.ping()` probe itself
+    arriving and presumably being answered. But `tetron status`'s final
+    check, run ~90s after the last confirmed traffic, still showed no
+    Veilid path at all -- not "present, no activity", simply gone. See
+    `VeilidBackupPathIdleTimeout` (VEILID-014) for why: the path was
+    genuinely working and then expired.
     """
 
     req_id = "VEILID-013"
+
+
+class VeilidBackupPathIdleTimeout(Requirement):
+    """REQUIREMENT-ID: VEILID-014 (depends on VEILID-013)
+
+    Found live immediately after VEILID-013's own re-verification showed
+    real Veilid delivery working, then vanishing. `noq_proto`'s own
+    `connection::paths::PathStatus::Backup` doc comment states directly:
+    "If the max_idle_timeout is specified the path will be kept alive so
+    that it does not expire" -- the unstated alternative being that,
+    without one, it does. `register_and_configure_path` already sets
+    `RELAY_PATH_MAX_IDLE_TIMEOUT` (30s) for a connection's *primary* path
+    when it's relay, but nothing in this vendored copy ever set anything
+    for a *backup* path of any kind, relay included -- relay backup paths
+    have simply never needed it, kept alive incidentally by the relay
+    connection's own protocol-level keepalive entirely outside QUIC. A
+    Veilid backup path has no equivalent side channel, and confirmed live:
+    real bidirectional traffic for roughly 30-90s (across two separate
+    test runs), then gone, with no disconnect or error logged in between
+    -- consistent with exactly this expiry on an unset timeout, not a
+    delivery failure.
+
+    Fix: at the same point VEILID-013 added the ping call
+    (`open_path_on_conn`'s `Some(path_id)` arm, the one place a path ID is
+    ever newly assigned), also call `path.set_max_idle_timeout` for
+    `Custom`-transport paths specifically -- deliberately *not* reusing
+    `RELAY_PATH_MAX_IDLE_TIMEOUT`'s exact value: a new
+    `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT` (300s) gives comfortable
+    margin over the 30-90s gaps observed live between real traffic bursts,
+    where a first attempt at exactly 30s was confirmed (by inches --
+    within a handful of seconds) still too short.
+
+    Live-verified: with this fix, a Veilid backup path survived a full
+    settle window and appeared in `tetron status --json`'s `paths[]` with
+    `has_activity: true` -- the first time this entire investigation ever
+    produced that result. (Its `conn_type` showed as `"Tor"`, a separate,
+    genuine bug -- see `VeilidStatusMislabeledAsTor`, VEILID-015 -- but the
+    underlying path, confirmed via its `remote_addr`'s encoded transport
+    id, was unambiguously Veilid.)
+    """
+
+    req_id = "VEILID-014"
+
+
+class VeilidStatusMislabeledAsTor(Requirement):
+    """REQUIREMENT-ID: VEILID-015 (depends on VEILID-002)
+
+    A real, independent classification bug found live while confirming
+    VEILID-014: `daemon/mesh/select.rs::classify_candidate_addr` had
+    `if addr.is_custom() { return (ipc::ConnType::Tor, true); }` --
+    written when Tor was the only custom transport tetron had (predating
+    `VEILID-002`), and never updated once Veilid shipped a second one. A
+    live, genuinely-active Veilid path was confirmed reported by
+    `tetron status --json` as `conn_type: "Tor"` -- caught only because
+    its `remote_addr` field still carried the real, hex-encoded
+    `veilid_...` custom-transport id, giving it away regardless of the
+    label.
+
+    Fix: match on the actual `CustomAddr`'s transport id
+    (`veilid_transport::VEILID_TRANSPORT_ID`, gated
+    `#[cfg(feature = "veilid")]` so a build without the feature is
+    unaffected) before falling back to the original Tor default -- so any
+    *other* custom transport (Tor's own real id, or any future one not yet
+    given its own arm) keeps the exact prior behavior. Unit-tested
+    (`daemon/mod.rs`'s `classify_candidate_addr_identifies_veilid_by_transport_id`
+    / `..._falls_back_to_tor_for_other_custom_transports`): a real Veilid
+    `CustomAddr` classifies as `Veilid`; any other custom transport id
+    still classifies as `Tor`, unchanged.
+    """
+
+    req_id = "VEILID-015"
 
 
 # --------------------------------------------------------------------------

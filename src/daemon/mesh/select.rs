@@ -115,7 +115,21 @@ pub(crate) fn classify_candidate_addr(
     if addr.is_relay() {
         return (ipc::ConnType::Relay, true);
     }
-    if addr.is_custom() {
+    #[cfg_attr(not(feature = "veilid"), allow(unused_variables))]
+    if let iroh::TransportAddr::Custom(custom) = addr {
+        // VEILID-007 follow-up: this predates VEILID-002 and defaulted
+        // every custom transport to Tor regardless of which one it
+        // actually was -- harmless while Tor was the only one, wrong
+        // once Veilid shipped a second. `tetron status` was live-verified
+        // reporting a real, active Veilid path as `conn_type: "Tor"`
+        // (`remote_addr` gave it away: a hex-encoded `veilid_...` custom
+        // address id). Falls back to Tor for anything else, matching the
+        // original behavior for an actual Tor address (and any future
+        // custom transport not yet given its own arm here).
+        #[cfg(feature = "veilid")]
+        if custom.id() == veilid_transport::VEILID_TRANSPORT_ID {
+            return (ipc::ConnType::Veilid, true);
+        }
         return (ipc::ConnType::Tor, true);
     }
     let looks_self_captured_or_bled = match addr {
