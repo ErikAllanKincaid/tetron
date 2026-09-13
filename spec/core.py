@@ -2060,10 +2060,21 @@ class VeilidCustomPathIrohRaceGap(Requirement):
     threat model here (mutually-known, invite-gated peers; Veilid ranked
     below Tor as a last-resort fallback) does not lean on Veilid's own
     sender-privacy the way an anonymous-peer application would.
-    Revisiting `Safe` mode later is possible but not required. **Not yet
-    closed**: re-run `tests/veilid-smoke.sh` with `Unsafe` plus every fix
-    through VEILID-015 together before treating this requirement as
-    resolved.
+    Revisiting `Safe` mode later is possible but not required.
+
+    **CLOSED 2026-09-12**: `tests/veilid-smoke.sh` passed with every fix
+    from `VEILID-006` through `VEILID-015` plus the `Unsafe` decision in
+    place together for the first time -- both nodes, both directions,
+    `veilid path with activity=true`. The connection-racing theory this
+    requirement's investigation opened with was real (`VEILID-012`), but
+    was one of several independently-necessary layers, not the whole
+    story; every requirement in this chain was a genuine, separately
+    load-bearing fix, confirmed live at each step rather than assumed.
+    Still not usable for real mesh traffic beyond this smoke test until a
+    dedicated Veilid-only topology (Direct and Relay both genuinely
+    unreachable, not merely outranked) is tried -- see
+    `VeilidCustomTransportMechanism` (VEILID-001)'s own scope notes for
+    what that would need.
     """
 
     req_id = "VEILID-007"
