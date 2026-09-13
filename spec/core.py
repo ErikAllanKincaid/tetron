@@ -2545,6 +2545,134 @@ class VeilidStatusMislabeledAsTor(Requirement):
     req_id = "VEILID-015"
 
 
+class VeilidBackupPathValidationRetry(Requirement):
+    """REQUIREMENT-ID: VEILID-016 (depends on VEILID-013, VEILID-014)
+
+    Found live after `VeilidCustomPathIrohRaceGap` (VEILID-007) was
+    declared closed: re-running `tetron-testsuite`'s `veilid-smoke`
+    repeatedly against the exact same commit, with no code changes,
+    surfaced a real ~1-in-3 failure rate -- a Veilid backup path
+    sometimes never appears in `paths[]` at all, distinct from
+    `VeilidBackupPathIdleTimeout`'s (VEILID-014) already-fixed "opens,
+    works, then expires" symptom.
+
+    Root cause, confirmed live by promoting the relevant `trace!` calls
+    (`open_path_on_conn`, `open_path_on_all_conns`, `handle_path_event`,
+    `VeilidCustomSender::poll_send`) to `info!` across a chain of
+    diagnostic captures, each correcting the previous session's working
+    theory once live data contradicted it:
+
+    1. `VeilidCustomSender::poll_send` (`veilid-transport/src/lib.rs`)
+       is fire-and-forget -- it spawns the async
+       `routing_context.app_message(..)` call and unconditionally
+       returns `Poll::Ready(Ok(()))` to noq regardless of whether that
+       send actually succeeds. `open_path_on_conn`'s own `path.ping()`
+       call (the VEILID-013 fix) fires exactly once, at path-open time,
+       to trigger QUIC's `PATH_CHALLENGE`. Live captures showed this
+       specific `app_message` send failing for two distinct, genuinely
+       transient reasons: `"No connection: no routing domain"` (Veilid's
+       own network detection briefly flips `PublicInternet`
+       offline/online during early attach) and `"No connection: could
+       not resolve node id"` (DHT resolution of the *peer's* route can
+       still fail for tens of seconds even after this node's own attach
+       completed).
+    2. Because `poll_send` always reports success, noq never learns the
+       challenge was lost -- it waits for a `PATH_CHALLENGE` response
+       that was never transmitted, and eventually abandons the path. The
+       *first* working theory (retry on
+       `noq_proto::PathAbandonReason::TimedOut`) turned out to never
+       actually fire: `open_path_on_conn` only runs client-side (`if
+       conn.side().is_server() { return; }`), so VEILID-014's own
+       `set_max_idle_timeout` override never reaches the *peer's* copy
+       of the path. The peer (server side for that connection
+       direction) times out on its own shorter default first and sends
+       a PATH_ABANDON frame, which arrives here as
+       `PathAbandonReason::RemoteAbandoned` carrying
+       `TransportErrorCode::PATH_UNSTABLE_OR_POOR` (confirmed live via
+       the raw wire code, `15990` = `0x3e76`) -- not `TimedOut`.
+    3. Even after widening the retry condition to also match
+       `RemoteAbandoned{PATH_UNSTABLE_OR_POOR}`, live captures still
+       showed the fix's own code never running. Root cause: `noq_proto`'s
+       own `PathEvent::Abandoned` doc comment states directly -- "this
+       may be the first event for a path: if a path is abandoned before
+       having been established, no `Established` event is emitted."
+       `conn_state.paths` (what the retry code looked up the address
+       from) is only ever populated by `register_and_configure_path`,
+       called *only* from the `Established` handler -- so a path that
+       is opened, pinged, and abandoned without ever validating (exactly
+       the failure mode this requirement exists for) was never in that
+       map to begin with, and the lookup silently failed every time.
+
+    Fix, in `RemoteStateActor`/`State`
+    (`src/socket/remote_map/remote_state.rs`): a new
+    `State::unvalidated_paths: FxHashMap<(ConnId, PathId),
+    transports::FourTuple>` records a `Custom`-transport path's address
+    at the moment it is opened and pinged (before validation), so the
+    address survives even if `Established` never fires. In
+    `handle_path_event`'s `Abandoned` arm, the address is recovered from
+    `conn_state.remove_path` (the normal case, for a path that *did*
+    validate first) or, failing that, from `unvalidated_paths`. When the
+    reason is `TimedOut` or `RemoteAbandoned{PATH_UNSTABLE_OR_POOR}` and
+    the address is `Custom`, it is re-queued into the exact same
+    `pending_open_paths`/`scheduled_open_path` retry machinery VEILID-013
+    already built -- a lost ping just becomes another open+ping attempt
+    instead of a dead end. `unvalidated_paths` entries are cleared on
+    `Established` too, so a path that does validate normally does not
+    linger in both maps. Relay is deliberately exempt from all of this:
+    its own protocol-level keepalive already gives it real traffic
+    independent of QUIC path validation (see
+    `VeilidBackupPathIdleTimeout`'s reasoning), so it never hit this. No
+    retry cap: same indefinite-retry posture this file already accepts
+    for holepunching, and each cycle costs at most one small datagram.
+
+    Live-verified, honestly: reproduced the original failure repeatedly
+    across the diagnostic chain above via a dedicated loop
+    (`DO-NOT-COMMIT/veilid-flake-diag.sh`, kept per
+    `[[feedback_preserve_diagnostic_evidence]]`-equivalent archival
+    practice, not deleted). Once the retry logic was confirmed actually
+    running, one more real fact surfaced, not a code bug: worst-case
+    Veilid path validation can legitimately take 50+ seconds, and a
+    retry needs a similar window of its own -- the diagnostic loop's
+    original 120s post-restart settle sometimes ended mid-retry with the
+    path still pending. Raised to 240s (also applied to
+    `tests/veilid-smoke.sh`'s matching `TESTSUITE_VEILID_RESETTLE_SECS`)
+    and re-measured across a larger, unattended batch (8 attempts, no
+    early stop): **6 of 8 passed (75%)**, a real improvement over the
+    pre-fix baseline, but not 100%. The two failures were not the same
+    shape:
+
+    - One matched this requirement's own target exactly: the path never
+      validated, the retry fired 4 separate times, each attempt failing
+      the same way (`RemoteAbandoned{PATH_UNSTABLE_OR_POOR}`) -- reads as
+      genuinely sustained Veilid route-resolution unavailability to that
+      specific peer for the whole 240s window, not a bug in the retry
+      itself.
+    - The other is a distinct, not-yet-explained symptom: the path
+      reached noq's own `Established` event (meaning it validated) and
+      then still vanished from `tetron status` with **no abandon event
+      ever logged** in the ~4 minutes of capture available. Traced as
+      far as confirming `open_path_on_conn`'s ping/idle-timeout-override
+      branch did run for this path, so the disappearance is not (yet)
+      explained by anything this requirement fixes -- may be a separate,
+      real gap (e.g. `register_and_configure_path`, the code path for a
+      path that validates asynchronously, never applies the
+      Custom-transport idle-timeout override VEILID-014 added, unlike
+      `open_path_on_conn`'s own synchronous success arm -- unconfirmed
+      whether this is the actual cause here) or ordinary backup-path
+      pruning behavior in iroh unrelated to a bug. Left as an open
+      follow-up rather than blocking this fix, which measurably improves
+      reliability and is a real, live-verified improvement on its own
+      terms.
+
+    The official `tests/veilid-smoke.sh` run against this exact fix
+    (240s window) also failed once on its own single run -- consistent
+    with the ~25% residual rate measured above, not a contradiction of
+    it.
+    """
+
+    req_id = "VEILID-016"
+
+
 # --------------------------------------------------------------------------
 # Invite-key admission (INVITE-*)
 #
