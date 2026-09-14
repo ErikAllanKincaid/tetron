@@ -1,13 +1,17 @@
 //! The connection actor: owns the TCP socket to `tetron-veilid`'s
 //! `client_api`, performs the initial handshake, then multiplexes ongoing
-//! requests (identity polling, `AppMessage` sends) and demultiplexes
-//! inbound `AppMessage` pushes over that one connection. See
-//! `spec/core.py`'s `VeilidExternalDaemonProtocol` (VEILID-017) and
-//! `VeilidExternalDaemonDataPath` (VEILID-018).
+//! requests (identity polling, `AppMessage` sends), demultiplexes inbound
+//! `AppMessage` pushes over that one connection, and transparently
+//! reconnects (with backoff) if the connection is lost. See
+//! `spec/core.py`'s `VeilidExternalDaemonProtocol` (VEILID-017),
+//! `VeilidExternalDaemonDataPath` (VEILID-018), and
+//! `VeilidExternalDaemonReconnect` (VEILID-019).
 
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use iroh_base::CustomAddr;
@@ -148,15 +152,28 @@ enum Command {
 #[derive(Clone)]
 pub(crate) struct ClientHandle {
     cmd_tx: mpsc::UnboundedSender<Command>,
-    /// The `Unsafe`-mode routing context id from the handshake. Fixed for
-    /// VEILID-018's scope (no reconnect yet -- VEILID-019 will need to
-    /// make this reconnect-aware).
-    pub(crate) rc_id: u32,
+    /// The `Unsafe`-mode routing context id from the handshake. Shared and
+    /// mutable (not a plain `u32`) because VEILID-019's reconnect gets a
+    /// fresh one each time -- `rc_id`s are connection-scoped, not assumed
+    /// to survive a reconnect.
+    rc_id: Arc<AtomicU32>,
 }
 
 impl ClientHandle {
+    /// The current `Unsafe`-mode routing context id. Only meaningful
+    /// alongside a request sent through this same handle -- if a
+    /// reconnect races a caller reading this then calling `call`/
+    /// `send_fire_and_forget`, the actor always uses whatever `rc_id` is
+    /// current *when it processes the request*, so a request built with a
+    /// just-stale id still gets corrected in transit (the actor, not the
+    /// caller, owns the source of truth).
+    pub(crate) fn rc_id(&self) -> u32 {
+        self.rc_id.load(Ordering::Relaxed)
+    }
+
     /// Sends `body` and awaits the correlated response's `value`, or a
-    /// clean error (daemon-reported, or the connection/actor being gone).
+    /// clean error (daemon-reported, disconnected, or the actor being
+    /// gone).
     pub(crate) async fn call(&self, body: Value) -> io::Result<Value> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -183,41 +200,164 @@ impl ClientHandle {
     }
 }
 
+/// Initial backoff before the first reconnect attempt, doubling up to
+/// [`MAX_RECONNECT_BACKOFF`] each subsequent failure -- reset to this
+/// floor as soon as a reconnect succeeds.
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(500);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
+/// Debounce window/threshold for the "still reconnecting" log line
+/// (mirrors the `reconnect-log.threshold`/`.window` idiom, LOG-005,
+/// `join.rs::reconnect_log_decision` -- a private in-crate constant here,
+/// not a new `tetron config` key, since this is an addon-internal daemon
+/// connection, not a mesh-peer reconnect).
+const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
+const RECONNECT_LOG_THRESHOLD: u32 = 1;
+
 /// Takes ownership of an already-handshaken connection and turns it into
 /// an ongoing multiplexing actor: [`ClientHandle::call`]/
 /// `send_fire_and_forget` requests are written out with freshly allocated
-/// ids, correlated responses are routed back by id, and unsolicited
+/// ids, correlated responses are routed back by id, unsolicited
 /// `AppMessage` pushes are decoded and pushed into `inbound_tx` (the same
-/// channel [`crate::VeilidCustomEndpoint::poll_recv`] drains).
+/// channel [`crate::VeilidCustomEndpoint::poll_recv`] drains), and a lost
+/// connection is transparently redialed against `addr` (VEILID-019) --
+/// callers never see a "the actor died" error from a mere disconnect, only
+/// from every `ClientHandle` being dropped.
 pub(crate) fn spawn_actor(
+    addr: SocketAddr,
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     rc_id: u32,
     inbound_tx: mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+    node_id_tx: watch::Sender<Option<NodeId>>,
 ) -> ClientHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    tokio::spawn(actor_loop(reader, writer, cmd_rx, inbound_tx));
-    ClientHandle { cmd_tx, rc_id }
+    let rc_id = Arc::new(AtomicU32::new(rc_id));
+    let handle = ClientHandle {
+        cmd_tx,
+        rc_id: rc_id.clone(),
+    };
+    tokio::spawn(actor_loop(
+        addr,
+        reader,
+        writer,
+        rc_id,
+        cmd_rx,
+        inbound_tx,
+        node_id_tx,
+        handle.clone(),
+    ));
+    handle
 }
 
+/// Outer loop: serve requests on one connection until it breaks, then
+/// reconnect and repeat. Only exits once every [`ClientHandle`] (hence
+/// `cmd_rx`) is dropped -- a mere disconnect never ends this task.
+#[allow(clippy::too_many_arguments)]
 async fn actor_loop(
+    addr: SocketAddr,
     mut reader: BufReader<OwnedReadHalf>,
     mut writer: OwnedWriteHalf,
+    rc_id: Arc<AtomicU32>,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     inbound_tx: mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+    node_id_tx: watch::Sender<Option<NodeId>>,
+    self_handle: ClientHandle,
 ) {
+    let span = tracing::info_span!("veilid-transport-connection");
+    let _enter = span.enter();
+    let mut backoff = INITIAL_RECONNECT_BACKOFF;
+    let mut log_window_start = std::time::Instant::now();
+    let mut log_count_in_window: u32 = 0;
+
+    'connection: loop {
+        let shutdown =
+            serve_one_connection(&mut reader, &mut writer, &mut cmd_rx, &inbound_tx).await;
+        if shutdown {
+            return; // every ClientHandle dropped -- true shutdown, no reconnect.
+        }
+        tracing::debug!("veilid-transport: connection lost, entering reconnect loop");
+
+        loop {
+            match connect_and_handshake(addr).await {
+                Ok((new_reader, new_writer, new_rc_id)) => {
+                    reader = new_reader;
+                    writer = new_writer;
+                    rc_id.store(new_rc_id, Ordering::Relaxed);
+                    backoff = INITIAL_RECONNECT_BACKOFF;
+                    log_window_start = std::time::Instant::now();
+                    log_count_in_window = 0;
+                    tracing::info!("veilid-transport: reconnected to daemon");
+                    // Identity may have changed (a fresh tetron-veilid
+                    // process is a fresh Veilid identity) -- re-resolve it
+                    // the same bounded way startup does, updating the same
+                    // watch channel a caller may already be parked on.
+                    tokio::spawn(identity_poll_loop(self_handle.clone(), node_id_tx.clone()));
+                    continue 'connection;
+                }
+                Err(e) => {
+                    let (log_at_info, new_window_start, new_count) = reconnect_log_decision(
+                        std::time::Instant::now(),
+                        log_window_start,
+                        log_count_in_window,
+                        RECONNECT_LOG_THRESHOLD,
+                        RECONNECT_LOG_WINDOW,
+                    );
+                    log_window_start = new_window_start;
+                    log_count_in_window = new_count;
+                    if log_at_info {
+                        tracing::info!(error = %e, next_attempt_in = ?backoff, "veilid-transport: reconnect attempt failed");
+                    } else {
+                        tracing::debug!(error = %e, next_attempt_in = ?backoff, "veilid-transport: reconnect attempt failed");
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+                }
+            }
+        }
+    }
+}
+
+/// Same decision `join.rs::reconnect_log_decision` makes for a mesh
+/// peer's own reconnect logging, mirrored here rather than shared: log at
+/// `info` for the first `threshold` failures within `window` of the first
+/// one, `debug` once exceeded, so sustained "daemon still unreachable"
+/// churn quiets down without ever going permanently silent. Returns
+/// `(log_at_info, new_window_start, new_count)`.
+fn reconnect_log_decision(
+    now: std::time::Instant,
+    window_start: std::time::Instant,
+    count: u32,
+    threshold: u32,
+    window: Duration,
+) -> (bool, std::time::Instant, u32) {
+    if now.duration_since(window_start) >= window {
+        return (true, now, 1);
+    }
+    let new_count = count + 1;
+    (new_count <= threshold, window_start, new_count)
+}
+
+/// Serves requests/reads on one connection until it breaks. Returns
+/// `true` if every [`ClientHandle`] was dropped (true shutdown, caller
+/// should not reconnect), `false` if the connection itself was lost
+/// (caller should reconnect).
+async fn serve_one_connection(
+    reader: &mut BufReader<OwnedReadHalf>,
+    writer: &mut OwnedWriteHalf,
+    cmd_rx: &mut mpsc::UnboundedReceiver<Command>,
+    inbound_tx: &mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+) -> bool {
     // 1/2 were used by the handshake (connect_and_handshake) before this
     // actor existed -- start well clear of those.
     let mut next_id: u32 = 100;
     let mut pending: HashMap<u32, oneshot::Sender<io::Result<Value>>> = HashMap::new();
     let mut line_buf = String::new();
 
-    loop {
+    let result = loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 let Some(Command::Send { mut body, reply }) = cmd else {
-                    // Every ClientHandle dropped -- nothing left to serve.
-                    return;
+                    break true; // every ClientHandle dropped
                 };
                 let id = next_id;
                 next_id = next_id.wrapping_add(1);
@@ -232,29 +372,39 @@ async fn actor_loop(
                 line.push('\n');
                 if let Err(e) = writer.write_all(line.as_bytes()).await {
                     let _ = reply.send(Err(io::Error::other(format!("veilid-transport: write failed: {e}"))));
-                    // VEILID-019 adds reconnect; for now a write failure ends the actor.
-                    return;
+                    break false; // connection lost -- caller reconnects
                 }
                 pending.insert(id, reply);
             }
             read_result = reader.read_line(&mut line_buf) => {
                 match read_result {
-                    Ok(0) => return, // EOF -- VEILID-019 adds reconnect.
+                    Ok(0) => break false, // EOF
                     Ok(_) => {
                         let trimmed = line_buf.trim();
                         if !trimmed.is_empty() {
-                            handle_incoming_line(trimmed, &mut pending, &inbound_tx);
+                            handle_incoming_line(trimmed, &mut pending, inbound_tx);
                         }
                         line_buf.clear();
                     }
                     Err(e) => {
-                        tracing::debug!(error = %e, "veilid-transport: read failed, connection actor stopping");
-                        return; // VEILID-019 adds reconnect.
+                        tracing::debug!(error = %e, "veilid-transport: read failed");
+                        break false;
                     }
                 }
             }
         }
+    };
+
+    if !result {
+        // Connection lost, not a true shutdown -- fail every in-flight
+        // request cleanly rather than hanging its caller forever.
+        for (_, reply) in pending.drain() {
+            let _ = reply.send(Err(io::Error::other(
+                "veilid-transport: daemon disconnected",
+            )));
+        }
     }
+    result
 }
 
 fn handle_incoming_line(
@@ -364,19 +514,55 @@ pub(crate) mod test_support {
     use tokio::net::TcpListener;
 
     /// One step of a scripted mock daemon's behavior.
-    ///
-    /// `Close` is unused until VEILID-019's own disconnect tests -- lands
-    /// correctly staged here since the harness itself is written once, in
-    /// VEILID-017.
-    #[allow(dead_code)]
     pub(crate) enum Step {
         /// Read one request line (ignored content) and write back `reply`
         /// verbatim (a complete JSON line, no trailing newline needed).
         Reply(serde_json::Value),
         /// Push an unsolicited line with no preceding request.
         Push(serde_json::Value),
+        /// Read one request line and close without replying -- simulates
+        /// the daemon dying after receiving a request but before
+        /// answering it (VEILID-019).
+        ReadOneAndClose,
         /// Close the connection immediately.
         Close,
+    }
+
+    async fn run_script(stream: tokio::net::TcpStream, script: Vec<Step>) {
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        for step in script {
+            match step {
+                Step::Reply(value) => {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut out = serde_json::to_string(&value).unwrap();
+                    out.push('\n');
+                    if write_half.write_all(out.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                Step::Push(value) => {
+                    let mut out = serde_json::to_string(&value).unwrap();
+                    out.push('\n');
+                    if write_half.write_all(out.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                Step::ReadOneAndClose => {
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line).await;
+                    return;
+                }
+                Step::Close => return,
+            }
+        }
+        // Keep the connection open (don't drop it) until the test itself
+        // finishes, so a caller doing more reads after the script ends
+        // sees a live-but-quiet connection rather than an immediate EOF.
+        std::future::pending::<()>().await;
     }
 
     /// Binds a random loopback port, accepts exactly one connection, and
@@ -387,47 +573,32 @@ pub(crate) mod test_support {
             .expect("bind mock daemon");
         let addr = listener.local_addr().expect("local_addr");
         tokio::spawn(async move {
-            let (stream, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let (read_half, mut write_half) = stream.into_split();
-            let mut reader = BufReader::new(read_half);
-            for step in script {
-                match step {
-                    Step::Reply(value) => {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
-                            return;
-                        }
-                        let mut out = serde_json::to_string(&value).unwrap();
-                        out.push('\n');
-                        if write_half.write_all(out.as_bytes()).await.is_err() {
-                            return;
-                        }
-                    }
-                    Step::Push(value) => {
-                        let mut out = serde_json::to_string(&value).unwrap();
-                        out.push('\n');
-                        if write_half.write_all(out.as_bytes()).await.is_err() {
-                            return;
-                        }
-                    }
-                    Step::Close => return,
-                }
+            if let Ok((stream, _)) = listener.accept().await {
+                run_script(stream, script).await;
             }
-            // Keep the connection open (don't drop it) until the test itself
-            // finishes, so a caller doing more reads after the script ends
-            // sees a live-but-quiet connection rather than an immediate EOF.
-            std::future::pending::<()>().await;
         });
         addr
+    }
+
+    /// Same as [`spawn_scripted_daemon`], but binds `addr` exactly instead
+    /// of picking a random port -- for VEILID-019's reconnect tests, where
+    /// a second mock "instance" needs to occupy the same address the
+    /// first one (now closed) was reachable at.
+    pub(crate) async fn spawn_scripted_daemon_at(addr: SocketAddr, script: Vec<Step>) {
+        let listener = TcpListener::bind(addr)
+            .await
+            .expect("rebind mock daemon address");
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                run_script(stream, script).await;
+            }
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{Step, spawn_scripted_daemon};
+    use super::test_support::{Step, spawn_scripted_daemon, spawn_scripted_daemon_at};
     use super::*;
     use tokio::sync::watch;
 
@@ -499,9 +670,9 @@ mod tests {
 
         let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
         let (inbound_tx, _inbound_rx) = unbounded_inbound();
-        let handle = spawn_actor(reader, writer, rc_id, inbound_tx);
-        let (tx, mut rx) = watch::channel(None);
-        tokio::spawn(identity_poll_loop(handle, tx));
+        let (node_id_tx, mut rx) = watch::channel(None);
+        let handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx.clone());
+        tokio::spawn(identity_poll_loop(handle, node_id_tx));
 
         let node_id = loop {
             if let Some(id) = rx.borrow_and_update().clone() {
@@ -527,11 +698,12 @@ mod tests {
 
         let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
         let (inbound_tx, _inbound_rx) = unbounded_inbound();
-        let handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+        let (node_id_tx, _) = watch::channel(None);
+        let handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx);
 
         let target = "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo";
         let result = handle
-            .call(wire::req_app_message(0, rc_id, target, b"hello"))
+            .call(wire::req_app_message(0, handle.rc_id(), target, b"hello"))
             .await;
         assert!(
             result.is_ok(),
@@ -555,7 +727,8 @@ mod tests {
 
         let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
         let (inbound_tx, mut inbound_rx) = unbounded_inbound();
-        let _handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+        let (node_id_tx, _) = watch::channel(None);
+        let _handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx);
 
         let (from, payload) = inbound_rx.recv().await.expect("push delivered");
         assert_eq!(from, node_id_to_custom_addr(&target.parse().unwrap()));
@@ -584,12 +757,117 @@ mod tests {
 
         let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
         let (inbound_tx, mut inbound_rx) = unbounded_inbound();
-        let _handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+        let (node_id_tx, _) = watch::channel(None);
+        let _handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx);
 
         let (_from, payload) = inbound_rx
             .recv()
             .await
             .expect("the named-sender push should arrive");
         assert_eq!(payload, b"named sender");
+    }
+
+    #[tokio::test]
+    async fn pending_request_fails_cleanly_on_disconnect() {
+        let addr = spawn_scripted_daemon(vec![
+            Step::Reply(ok_response(1, serde_json::json!(1))),
+            Step::Reply(ok_response(2, serde_json::json!(2))),
+            // Receives the GetState call below, then dies before replying.
+            Step::ReadOneAndClose,
+        ])
+        .await;
+
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, _rx) = unbounded_inbound();
+        let (node_id_tx, _) = watch::channel(None);
+        let handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx);
+
+        let result = handle.call(wire::req_get_state(0)).await;
+        let err =
+            result.expect_err("a request in flight when the daemon dies must not hang forever");
+        assert!(
+            err.to_string().contains("disconnected"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnects_and_serves_new_requests_after_disconnect() {
+        let addr = spawn_scripted_daemon(vec![
+            Step::Reply(ok_response(1, serde_json::json!(1))),
+            Step::Reply(ok_response(2, serde_json::json!(2))),
+            Step::Close,
+        ])
+        .await;
+
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, _rx) = unbounded_inbound();
+        let (node_id_tx, _) = watch::channel(None);
+        let handle = spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx);
+
+        // Let the actor notice the disconnect and start its own reconnect
+        // attempts (which will fail until the second mock below is up) --
+        // exercises the real backoff-retry path, not a lucky first hit.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // A "new instance" of the daemon at the same address -- the actor
+        // must redial and re-handshake against it (fresh ids, starting
+        // from 1/2 again, exactly like a real fresh connection).
+        spawn_scripted_daemon_at(
+            addr,
+            vec![
+                Step::Reply(ok_response(1, serde_json::json!(1))),
+                Step::Reply(ok_response(2, serde_json::json!(2))),
+                Step::Reply(ok_response(100, Value::Null)),
+            ],
+        )
+        .await;
+
+        let target = "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo";
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(v) = handle
+                    .call(wire::req_app_message(0, handle.rc_id(), target, b"x"))
+                    .await
+                {
+                    return v;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the actor should reconnect and serve a new request within 10s");
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn reconnect_log_decision_first_failure_logs_at_info() {
+        let now = std::time::Instant::now();
+        let (log_at_info, _, count) =
+            reconnect_log_decision(now, now, 0, 1, Duration::from_secs(60));
+        assert!(log_at_info);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn reconnect_log_decision_second_failure_in_window_is_quiet() {
+        let window_start = std::time::Instant::now();
+        let now = window_start + Duration::from_secs(1);
+        let (log_at_info, new_window_start, count) =
+            reconnect_log_decision(now, window_start, 1, 1, Duration::from_secs(60));
+        assert!(!log_at_info);
+        assert_eq!(new_window_start, window_start);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn reconnect_log_decision_resets_after_window_elapses() {
+        let window_start = std::time::Instant::now();
+        let now = window_start + Duration::from_secs(61);
+        let (log_at_info, new_window_start, count) =
+            reconnect_log_decision(now, window_start, 50, 1, Duration::from_secs(60));
+        assert!(log_at_info);
+        assert_eq!(new_window_start, now);
+        assert_eq!(count, 1);
     }
 }

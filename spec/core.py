@@ -2829,6 +2829,64 @@ class VeilidExternalDaemonDataPath(Requirement):
     req_id = "VEILID-018"
 
 
+class VeilidExternalDaemonReconnect(Requirement):
+    """REQUIREMENT-ID: VEILID-019 (depends on VEILID-018)
+
+    The one genuinely new failure class the external-daemon architecture
+    introduces, flagged in every planning document that led here and not
+    present in the embedded design at all: the `tetron-veilid` companion
+    process can be restarted, or simply not running yet, independent of
+    the tetron daemon's own lifecycle.
+
+    On a broken connection (read EOF/error, or a write failure), the
+    connection actor: fails every in-flight pending request with a clear
+    "daemon disconnected" error rather than hanging its caller forever;
+    enters a named (`tracing::info_span!`-tagged), capped-backoff
+    reconnect loop (500ms initial, doubling to a 30s ceiling, reset on
+    success) -- the established project idiom for a retry loop
+    (`src/daemon/mesh/join.rs::spawn_reconnect_loop`), not a literal reuse
+    of that function, which is mesh-peer-specific and considerably more
+    complex than a single client-socket reconnect needs; on reconnect
+    success, re-issues `NewRoutingContext`->`WithSafety` for a fresh
+    `rc_id` (daemon-side `rc_id`s are connection-scoped, held in an
+    `AtomicU32` shared with every `ClientHandle` clone so a request built
+    against a just-stale id still gets corrected in transit -- the actor,
+    not the caller, owns the source of truth) and re-spawns
+    `identity_poll_loop` against the same `node_id_tx`/local-address watch
+    channels VEILID-017 built, so a caller already parked in
+    `wait_for_own_node_id()` or watching local addresses sees the
+    (possibly-changed) identity with no special-casing on its end -- a
+    fresh `tetron-veilid` process is a fresh Veilid identity, not
+    guaranteed to match the one before the disconnect. Debounces its own
+    "still reconnecting" log line under sustained daemon-unavailability
+    (`info` for the first failure per 60s window, `debug` thereafter),
+    mirroring the `reconnect-log.threshold`/`.window` idiom (LOG-005,
+    `join.rs::reconnect_log_decision`) as a private in-crate constant --
+    not a new `tetron config` key, since this is an addon-internal daemon
+    connection, not a mesh-peer reconnect.
+
+    Depends on VEILID-018 because the reconnect state machine lives
+    inside the same actor task that owns request/response multiplexing
+    and the live `rc_id`/identity state VEILID-018 introduced.
+
+    Verified by extending the mock-server harness: a `ReadOneAndClose`
+    scripted step (receives a request, dies before replying) confirms a
+    pending request's oneshot resolves to a clear disconnected error
+    promptly, not hung; a second scripted mock rebinding the exact same
+    address the first one was closed at confirms the actor redials and
+    re-handshakes from scratch (fresh ids starting from 1/2 again) and
+    that a request issued after reconnection succeeds against the new
+    connection (polled with a bounded retry loop in the test itself,
+    tolerant of exactly when the reconnect actually completes); three
+    pure-function unit tests for the debounce decision itself (first
+    failure logs at `info`, a second failure inside the window is quiet,
+    a failure after the window elapses resets and logs at `info` again),
+    mirroring `join.rs::reconnect_log_decision_tests`'s own shape.
+    """
+
+    req_id = "VEILID-019"
+
+
 # --------------------------------------------------------------------------
 # Transport path selection (RELAY-*, PATHPREF-*)
 #

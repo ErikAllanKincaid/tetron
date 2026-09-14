@@ -155,22 +155,27 @@ impl VeilidTransportBuilder {
     ) -> anyhow::Result<VeilidCustomTransport> {
         let (reader, writer, rc_id) = client::connect_and_handshake(addr).await?;
         let (inbound_tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
-        let handle = client::spawn_actor(reader, writer, rc_id, inbound_tx);
-
         let (node_id_tx, _) = tokio::sync::watch::channel(None);
+        let handle =
+            client::spawn_actor(addr, reader, writer, rc_id, inbound_tx, node_id_tx.clone());
+
         let identity_task = tokio::spawn(client::identity_poll_loop(
             handle.clone(),
             node_id_tx.clone(),
         ));
         let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
         {
+            // Runs for the transport's whole life, not just until the
+            // first resolution -- a reconnect (VEILID-019) can re-resolve
+            // to a *different* identity (a fresh tetron-veilid process is
+            // a fresh Veilid identity), and this needs to keep publishing
+            // whatever `node_id_tx` currently holds.
             let mut node_id_rx = node_id_tx.subscribe();
             let local_addrs = local_addrs.clone();
             tokio::spawn(async move {
                 loop {
                     if let Some(node_id) = node_id_rx.borrow_and_update().clone() {
                         local_addrs.set(vec![node_id_to_custom_addr(&node_id)]).ok();
-                        return;
                     }
                     if node_id_rx.changed().await.is_err() {
                         return;
@@ -349,7 +354,7 @@ impl CustomSender for VeilidCustomSender {
             Ok(id) => id,
             Err(e) => return Poll::Ready(Err(e)),
         };
-        let rc_id = self.shared.handle.rc_id;
+        let rc_id = self.shared.handle.rc_id();
         let payload = transmit.contents.to_vec();
         tracing::debug!(%node_id, len = payload.len(), "veilid-transport: poll_send invoked, sending app_message");
         // Fire-and-forget, matching UDP's own unreliable-send semantics --
