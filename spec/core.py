@@ -1514,6 +1514,23 @@ class VeilidCustomTransportMechanism(Requirement):
     while `SafetySelection::Unsafe` worked immediately. `veilid-transport`
     now explicitly selects `Unsafe`; see that crate's own module docs
     ("Routing mode") for the full rationale and accepted tradeoff.
+
+    UPDATE (2026-09-14): the premise above -- "no published
+    `veilid-server`/client crate exists on crates.io... embedding is the
+    only implementable path today" -- no longer holds. `tetron-veilid`
+    (a new sibling addon repo) builds and distributes a `veilid-server`
+    binary compiled with the one feature (`footgun-nodeid-target`) the
+    officially distributed package lacks, and live-verified this session
+    (real captured wire traffic, byte-for-byte payload match) that it
+    reliably delivers `AppMessage`s under exactly the `Unsafe` mode this
+    crate already depends on. `VeilidExternalDaemonProtocol` (VEILID-017)
+    and its dependents replace the embedded `veilid-core` node with a thin
+    client to that daemon -- the same shape `iroh-tor-transport` already
+    uses for Tor, correcting the one place this project deviated from
+    "do one thing well" rather than merely documenting the deviation. The
+    `NodeId`-vs-`RouteId` addressing choice and the `Unsafe`-routing
+    decision are both reasserted as-is under the new architecture, not
+    revisited -- see VEILID-017.
     """
     req_id = "VEILID-001"
 
@@ -2343,6 +2360,16 @@ class VeilidNodeIdTargetFootgunFeature(Requirement):
     `footgun-nodeid-target` fix this requirement made is unaffected and
     still required either way (`Unsafe` also needs it to accept a
     `Target::NodeId` at all).
+
+    UPDATE 3 (2026-09-14): superseded, not merely unaffected. Under
+    `VeilidExternalDaemonProtocol` (VEILID-017), `veilid-transport` no
+    longer depends on `veilid-core` at all -- there is no Cargo feature of
+    *this crate's own* left to enable. `footgun-nodeid-target` still
+    matters exactly as much as it ever did, but as a feature of
+    `tetron-veilid`'s own build (the external daemon this crate now talks
+    to), not this one. Kept as the historical record of how the actual
+    root cause was found; the fix itself moved, not the underlying need
+    for it.
     """
 
     req_id = "VEILID-011"
@@ -2671,6 +2698,86 @@ class VeilidBackupPathValidationRetry(Requirement):
     """
 
     req_id = "VEILID-016"
+
+
+class VeilidExternalDaemonProtocol(Requirement):
+    """REQUIREMENT-ID: VEILID-017 (depends on VEILID-001)
+
+    `veilid-transport` no longer embeds `veilid-core` in-process. Instead
+    it is a thin TCP/JSON client to a companion `tetron-veilid` daemon
+    (a separate addon repo: builds and distributes `veilid-server`
+    compiled with `--features footgun-nodeid-target`, the one thing the
+    officially distributed apt/brew package lacks) -- the same
+    architectural shape `iroh-tor-transport` already uses for Tor (a thin
+    client to a local Tor daemon's ControlPort), correcting the one place
+    this project previously deviated from "do one thing well." See
+    `VEILID-001`'s own UPDATE for why this is now implementable (it was
+    not, when VEILID-001 was written: no published `veilid-server`/client
+    crate existed to reuse).
+
+    `VeilidTransportBuilder::build()` connects to `127.0.0.1:5959`
+    (`veilid-server`'s own upstream-documented default,
+    `veilid-server/src/settings.rs`'s `client_api.listen_address` --
+    `tetron-veilid` adopts it rather than inventing a tetron-specific
+    port, matching how `iroh-tor-transport` hardcodes Tor's own
+    ControlPort 9051; not the "new tetron service picks an arbitrary
+    port" case a fixed default would otherwise be worth flagging), speaks
+    tetron-veilid's live-verified wire protocol (newline-delimited JSON,
+    `{"id":u32,"op":...}` requests, `{"type":"Response"|"Update",...}`
+    replies/pushes), and on connect issues `NewRoutingContext` then
+    `RoutingContext{WithSafety{Unsafe(PreferUnordered)}}` -- the exact
+    safety selection VEILID-001/007's UPDATE paragraphs already decided
+    and this requirement reasserts, not revisits. Own identity is
+    resolved the same way it always was: polling `GetState` for
+    `network.node_ids`, same bounded background-resolution contract
+    `own_node_id()`/`wait_for_own_node_id()` already had (`build()`
+    itself never blocks on it, matching VEILID-001's own daemon-startup
+    fix).
+
+    The crate's public API is unchanged on purpose:
+    `VeilidTransportBuilder::new().build()`, `.wait_for_own_node_id()`,
+    `.own_node_id()`/`.own_addr()`, `node_id_to_custom_addr`/
+    `parse_custom_addr`, and a `NodeId` type with the same
+    `"VLD0:<base64url-nopad>"` `FromStr`/`Display` round-trip -- now a
+    local opaque-string newtype (light validation: the `"VLD0:"` prefix
+    plus a 32-byte-decoding remainder) rather than a re-export of
+    `veilid_core::NodeId`, since this crate no longer depends on
+    `veilid-core` at all. `src/transport.rs` -- the crate's entire
+    integration surface with tetron core (constructing the transport,
+    parsing a roster peer's `veilid_node_id`) -- needs zero changes as a
+    result; VEILID-002 through VEILID-010, VEILID-012 through VEILID-016
+    (roster/identity propagation, the `--veilid` CLI surface, dial-path
+    injection, and every vendored-iroh custom-transport-path fix: backup
+    backfill, ping-at-open, concurrent-dial dedup, idle-timeout,
+    validation-retry, correct status labeling) are all transport-agnostic
+    and stay exactly as they are -- only VEILID-011's fix (enabling
+    `footgun-nodeid-target` as *this crate's own* Cargo feature) becomes
+    inapplicable, since there is no longer a `veilid-core` dependency of
+    this crate to enable it on (see VEILID-011's own UPDATE).
+
+    The `namespace()` builder method is removed: it partitioned on-disk
+    state for multiple embedded nodes in one process, was already dead
+    code (never called at the one call site in `src/transport.rs`), and
+    has no coherent meaning against a single external daemon.
+
+    Scope boundary, explicit: this requirement covers the first
+    connection and identity resolution only. No reconnect/liveness
+    handling for a dropped daemon connection (VEILID-019) and no
+    send/receive data path (VEILID-018) -- `poll_send`/`poll_recv` are
+    not touched here.
+
+    Verified by a scripted-mock-TCP-server unit test harness (no
+    live-server or public-network dependency needed for this
+    requirement's own tests): a fake `127.0.0.1:<random-port>` listener
+    plays the `NewRoutingContext`/`WithSafety`/`GetState` sequence,
+    asserting `wait_for_own_node_id()` resolves correctly and that
+    `build()` itself does not block on it; a second case where the mock
+    never accepts a connection asserts `build()` still succeeds with
+    `own_node_id()` staying `None` (matching the "not yet known, arrives
+    later" contract every other transport's local address already has).
+    """
+
+    req_id = "VEILID-017"
 
 
 # --------------------------------------------------------------------------

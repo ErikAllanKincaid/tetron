@@ -5,13 +5,14 @@ edition = "2024"
 rust-version = "1.91"
 authors = ["Dario", "ErikAllanKincaid"]
 license = "MPL-2.0"
-description = "iroh CustomTransport carrying QUIC traffic over an embedded Veilid node (VEILID-001, unshipped)"
+description = "iroh CustomTransport carrying QUIC traffic over a companion tetron-veilid daemon (VEILID-001, 017-019)"
 repository = "https://github.com/ErikAllanKincaid/tetron"
 
-# VEILID-001. Not yet a dependency of the `tetron` package itself -- see
-# spec/core.py's VeilidCustomTransportMechanism requirement for scope and
-# the explicitly-deferred follow-up work (automatic discovery, tetron core
-# wiring, tetron-testsuite coverage).
+# VEILID-001, 017-019. See spec/core.py's VeilidExternalDaemonProtocol
+# (VEILID-017) for the current architecture: a thin TCP/JSON client to an
+# external `tetron-veilid` companion daemon, not an embedded veilid-core
+# node (that was the pre-2026-09-14 design; VEILID-001's own UPDATE
+# explains why it changed).
 
 [dependencies]
 anyhow = "1"
@@ -23,33 +24,16 @@ n0-watcher = "1"
 # the *same* type iroh's own transport internals use, not a separately
 # resolved copy.
 noq-udp = { version = "1.1.0", default-features = false }
-tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net", "io-util"] }
 tracing = "0.1"
-# `test-util` pulls in veilid-core's own fixture config helpers
-# (`veilid_core::tests::fixture_veilid_core_with_namespace`), reused here
-# as a stand-in for a real production `VeilidConfig` (self-signed test TLS
-# certificate, insecure-fallback protected store). VEILID-001 explicitly
-# does not harden this -- see the requirement's docstring.
-#
-# `footgun-nodeid-target`: required for `RoutingContext::app_message` to
-# accept a `Target::NodeId` at all -- without it, `app_message` compiles to
-# a variant that unconditionally rejects `Target::NodeId` with
-# `InvalidTarget` (only `Target::RouteId` is permitted), which is exactly
-# what `VeilidCustomSender::poll_send` passes. Missing this feature meant
-# every send failed instantly, silently (the error is fire-and-forget
-# logged at `debug!` on this crate's own tracing target, which `tetron`'s
-# `"info,tetron=<level>"` file-log filter never promotes past `info` --
-# see LOG-003) -- this is the actual root cause behind VEILID-007's "opens
-# and pings but never carries traffic" mystery, not iroh connection
-# racing. Confirmed independently: `tailveil` (a sibling Veilid-mesh
-# project, /home/erik/code/tailveil, same veilid-core 0.5.7, identical
-# `Target::NodeId` + `app_message` call shape) enables this same feature
-# and works. Keeping the default `SafetySelection::Safe` (sender-privacy
-# via safety route) rather than tailveil's `Unsafe` choice -- this feature
-# alone is sufficient for `Safe`-mode `NodeId` targeting; switching to
-# `Unsafe` is a separate, independent tradeoff (lower overhead, no
-# safety-route sender-privacy) not made here.
-veilid-core = { version = "0.5.7", features = ["test-util", "footgun-nodeid-target"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# base64url-nopad codec for AppMessage payloads and NodeId validation
+# (veilid-core's own `as_human_base64` wire convention, confirmed live
+# 2026-09-14). Already resolved in the workspace lockfile at 0.22.1 via
+# iroh's own dependency chain -- this adds a direct edge, not a new crate
+# version.
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
