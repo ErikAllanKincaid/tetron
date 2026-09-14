@@ -2780,6 +2780,55 @@ class VeilidExternalDaemonProtocol(Requirement):
     req_id = "VEILID-017"
 
 
+class VeilidExternalDaemonDataPath(Requirement):
+    """REQUIREMENT-ID: VEILID-018 (depends on VEILID-017)
+
+    Wires `CustomTransport`/`CustomEndpoint`/`CustomSender` to the
+    connection VEILID-017 built. `VeilidCustomSender::poll_send` issues a
+    `RoutingContext{AppMessage}` request (target `{"NodeId":
+    "<string>"}`, payload base64url-nopad-encoded) over the connection
+    and -- matching the existing fire-and-forget, UDP-like contract
+    exactly -- still returns `Poll::Ready(Ok(()))` immediately without
+    waiting for the daemon's response; the response is awaited on a
+    spawned task purely for logging, same as the embedded design's
+    `tokio::spawn(routing_context.app_message(..))`. Inbound:
+    unsolicited `{"type":"Update","kind":"AppMessage",...}` pushes on the
+    same connection are decoded (fields confirmed live this session:
+    `sender`/`route_id` optional strings, `message` base64url-nopad) and
+    pushed into the same `mpsc` channel `poll_recv` already drains,
+    dropping (debug-logged) a push with `sender: null` exactly as the
+    embedded design's `UpdateCallback` already did for an anonymously-
+    routed message.
+
+    This is also where request/response multiplexing over the one
+    persistent connection is actually exercised for the first time: one
+    outbound request in flight, correlated back to its caller by `id`
+    when the daemon's response line arrives. A single connection actor
+    (`veilid-transport/src/client.rs`) is the sole owner of the socket,
+    the request-id counter, and the pending-request table -- every caller
+    (identity polling, `poll_send`) goes through it, so no lock is needed
+    anywhere.
+
+    Depends on VEILID-017 for a live `rc_id` (from `WithSafety`) and the
+    connection/request-id-allocation primitive to send on. Out of scope:
+    surviving a dropped/restarted daemon connection (VEILID-019) -- this
+    requirement's own tests assume the mock connection stays up
+    throughout.
+
+    Verified by extending VEILID-017's mock-server harness (no
+    `iroh::endpoint::transports::Transmit` construction from test code --
+    its `ecn` field is `pub(crate)` inside iroh, so it cannot be built
+    from outside that crate; tested one layer down, at the connection
+    actor `poll_send`/`poll_recv` delegate to, which is the same code
+    path either way): a well-formed `AppMessage` request arrives
+    server-side with the correct decoded payload/target; a scripted
+    `Update{AppMessage}` push is delivered to the inbound channel
+    `poll_recv` drains, and a push with `sender: null` is dropped.
+    """
+
+    req_id = "VEILID-018"
+
+
 # --------------------------------------------------------------------------
 # Transport path selection (RELAY-*, PATHPREF-*)
 #

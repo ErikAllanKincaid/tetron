@@ -1,19 +1,24 @@
 //! The connection actor: owns the TCP socket to `tetron-veilid`'s
-//! `client_api`, performs the initial handshake, and resolves this node's
-//! own identity. See `spec/core.py`'s `VeilidExternalDaemonProtocol`
-//! (VEILID-017).
+//! `client_api`, performs the initial handshake, then multiplexes ongoing
+//! requests (identity polling, `AppMessage` sends) and demultiplexes
+//! inbound `AppMessage` pushes over that one connection. See
+//! `spec/core.py`'s `VeilidExternalDaemonProtocol` (VEILID-017) and
+//! `VeilidExternalDaemonDataPath` (VEILID-018).
 
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use iroh_base::CustomAddr;
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::net::tcp::OwnedReadHalf;
-use tokio::sync::watch;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::NodeId;
 use crate::wire::{self, Incoming};
+use crate::{NodeId, node_id_to_custom_addr};
 
 /// `veilid-server`'s own upstream-documented default
 /// (`veilid-server/src/settings.rs`'s `client_api.listen_address`) --
@@ -21,23 +26,23 @@ use crate::wire::{self, Incoming};
 /// matching how `iroh-tor-transport` hardcodes Tor's own ControlPort 9051.
 pub(crate) const DEFAULT_DAEMON_ADDR: &str = "127.0.0.1:5959";
 
-/// How many times [`spawn_identity_watcher`] polls `GetState` before
-/// giving up, and the delay between attempts -- mirrors the embedded
-/// design's own bounded background-resolution contract
+/// How many times [`identity_poll_loop`] polls `GetState` before giving
+/// up, and the delay between attempts -- mirrors the embedded design's own
+/// bounded background-resolution contract
 /// (`spawn_identity_and_attach_watcher`, up to 5 minutes at 500ms
 /// intervals).
 const IDENTITY_POLL_ATTEMPTS: usize = 600;
 const IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// A single request/response round trip against a fresh connection --
-/// used only during the handshake sequence (`NewRoutingContext` ->
-/// `WithSafety` -> `GetState`), before the general-purpose actor/command
-/// channel exists (VEILID-018 introduces that for ongoing sends).
+/// A single request/response round trip against a fresh, not-yet-actored
+/// connection -- used only during the handshake sequence
+/// (`NewRoutingContext` -> `WithSafety`), before [`spawn_actor`] takes
+/// ownership of the connection for everything after.
 async fn call_once(
     reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-    request: serde_json::Value,
-) -> io::Result<serde_json::Value> {
+    request: Value,
+) -> io::Result<Value> {
     let id = request
         .get("id")
         .and_then(|v| v.as_u64())
@@ -90,15 +95,10 @@ async fn call_once(
 /// Connects to `addr` and runs the handshake: `NewRoutingContext` ->
 /// `WithSafety{Unsafe(PreferUnordered)}` (VEILID-001/007's decided safety
 /// selection, reasserted here). Returns the connection halves and the
-/// `Unsafe`-mode routing context id, ready for `poll_send`/reconnect logic
-/// (VEILID-018/019) to use.
+/// `Unsafe`-mode routing context id, ready for [`spawn_actor`].
 pub(crate) async fn connect_and_handshake(
     addr: SocketAddr,
-) -> io::Result<(
-    BufReader<OwnedReadHalf>,
-    tokio::net::tcp::OwnedWriteHalf,
-    u32,
-)> {
+) -> io::Result<(BufReader<OwnedReadHalf>, OwnedWriteHalf, u32)> {
     let stream = TcpStream::connect(addr).await?;
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -129,27 +129,207 @@ pub(crate) async fn connect_and_handshake(
     Ok((reader, write_half, unsafe_rc_id))
 }
 
-/// Polls `GetState` on an already-handshaken connection until this node's
-/// own identity resolves (`network.node_ids`'s first entry), updating
-/// `node_id_tx` the moment it does. Bounded the same way the embedded
-/// design's own identity watcher was -- a node that never resolves an
-/// identity doesn't leak a task that polls forever.
-pub(crate) async fn spawn_identity_watcher(
+/// One outstanding ask of the connection actor: send `body` (its `"id"`
+/// field is overwritten by the actor with a freshly allocated one -- a
+/// caller building `body` via `wire::req_*` can pass any placeholder) and
+/// deliver the correlated response (or a clean disconnected/daemon error)
+/// back through `reply`.
+enum Command {
+    Send {
+        body: Value,
+        reply: oneshot::Sender<io::Result<Value>>,
+    },
+}
+
+/// A cheap-to-clone handle to the connection actor. Every caller wanting
+/// to talk to the daemon (identity polling, `poll_send`) goes through
+/// this -- the actor is the sole owner of the socket, the request-id
+/// counter, and the pending-request table, so no lock is needed anywhere.
+#[derive(Clone)]
+pub(crate) struct ClientHandle {
+    cmd_tx: mpsc::UnboundedSender<Command>,
+    /// The `Unsafe`-mode routing context id from the handshake. Fixed for
+    /// VEILID-018's scope (no reconnect yet -- VEILID-019 will need to
+    /// make this reconnect-aware).
+    pub(crate) rc_id: u32,
+}
+
+impl ClientHandle {
+    /// Sends `body` and awaits the correlated response's `value`, or a
+    /// clean error (daemon-reported, or the connection/actor being gone).
+    pub(crate) async fn call(&self, body: Value) -> io::Result<Value> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Command::Send { body, reply: tx })
+            .map_err(|_| io::Error::other("veilid-transport: connection actor is gone"))?;
+        rx.await.map_err(|_| {
+            io::Error::other("veilid-transport: connection actor dropped the request")
+        })?
+    }
+
+    /// Fire-and-forget: sends `body` and spawns a task that awaits the
+    /// reply purely for logging, matching UDP's own unreliable-send
+    /// semantics (the embedded design's `poll_send` had the identical
+    /// contract: `tokio::spawn(routing_context.app_message(..))`, ignoring
+    /// the result beyond a debug log). Never blocks the caller.
+    pub(crate) fn send_fire_and_forget(&self, body: Value) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            match this.call(body).await {
+                Ok(_) => tracing::debug!("veilid-transport: app_message send succeeded"),
+                Err(e) => tracing::debug!("veilid-transport: app_message send failed: {e}"),
+            }
+        });
+    }
+}
+
+/// Takes ownership of an already-handshaken connection and turns it into
+/// an ongoing multiplexing actor: [`ClientHandle::call`]/
+/// `send_fire_and_forget` requests are written out with freshly allocated
+/// ids, correlated responses are routed back by id, and unsolicited
+/// `AppMessage` pushes are decoded and pushed into `inbound_tx` (the same
+/// channel [`crate::VeilidCustomEndpoint::poll_recv`] drains).
+pub(crate) fn spawn_actor(
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+    rc_id: u32,
+    inbound_tx: mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+) -> ClientHandle {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    tokio::spawn(actor_loop(reader, writer, cmd_rx, inbound_tx));
+    ClientHandle { cmd_tx, rc_id }
+}
+
+async fn actor_loop(
     mut reader: BufReader<OwnedReadHalf>,
-    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    mut writer: OwnedWriteHalf,
+    mut cmd_rx: mpsc::UnboundedReceiver<Command>,
+    inbound_tx: mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+) {
+    // 1/2 were used by the handshake (connect_and_handshake) before this
+    // actor existed -- start well clear of those.
+    let mut next_id: u32 = 100;
+    let mut pending: HashMap<u32, oneshot::Sender<io::Result<Value>>> = HashMap::new();
+    let mut line_buf = String::new();
+
+    loop {
+        tokio::select! {
+            cmd = cmd_rx.recv() => {
+                let Some(Command::Send { mut body, reply }) = cmd else {
+                    // Every ClientHandle dropped -- nothing left to serve.
+                    return;
+                };
+                let id = next_id;
+                next_id = next_id.wrapping_add(1);
+                body["id"] = serde_json::json!(id);
+                let mut line = match serde_json::to_string(&body) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = reply.send(Err(io::Error::other(format!("veilid-transport: failed to encode request: {e}"))));
+                        continue;
+                    }
+                };
+                line.push('\n');
+                if let Err(e) = writer.write_all(line.as_bytes()).await {
+                    let _ = reply.send(Err(io::Error::other(format!("veilid-transport: write failed: {e}"))));
+                    // VEILID-019 adds reconnect; for now a write failure ends the actor.
+                    return;
+                }
+                pending.insert(id, reply);
+            }
+            read_result = reader.read_line(&mut line_buf) => {
+                match read_result {
+                    Ok(0) => return, // EOF -- VEILID-019 adds reconnect.
+                    Ok(_) => {
+                        let trimmed = line_buf.trim();
+                        if !trimmed.is_empty() {
+                            handle_incoming_line(trimmed, &mut pending, &inbound_tx);
+                        }
+                        line_buf.clear();
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "veilid-transport: read failed, connection actor stopping");
+                        return; // VEILID-019 adds reconnect.
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_incoming_line(
+    line: &str,
+    pending: &mut HashMap<u32, oneshot::Sender<io::Result<Value>>>,
+    inbound_tx: &mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+) {
+    let incoming: Incoming = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(error = %e, line, "veilid-transport: unparseable line, skipping");
+            return;
+        }
+    };
+    match incoming {
+        Incoming::Response(r) => {
+            if let Some(reply) = pending.remove(&r.id) {
+                let result = match r.error {
+                    Some(err) => Err(io::Error::other(format!(
+                        "veilid-transport: daemon returned an error: {}",
+                        err.message
+                    ))),
+                    None => Ok(r.value),
+                };
+                let _ = reply.send(result);
+            } else {
+                tracing::debug!(
+                    id = r.id,
+                    "veilid-transport: response with no matching pending request, dropping"
+                );
+            }
+        }
+        Incoming::Update(u) if u.kind == "AppMessage" => {
+            let (Some(sender), Some(message_b64)) = (u.sender, u.message) else {
+                tracing::debug!(
+                    "veilid-transport: AppMessage received with no sender (routed anonymously), dropping -- this transport addresses by NodeId only"
+                );
+                return;
+            };
+            let node_id = match sender.parse::<NodeId>() {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::debug!(error = %e, sender, "veilid-transport: AppMessage push had an unparseable sender, dropping");
+                    return;
+                }
+            };
+            let payload = match wire::b64_decode(&message_b64) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::debug!(error = %e, "veilid-transport: AppMessage push had an undecodable payload, dropping");
+                    return;
+                }
+            };
+            tracing::debug!(%node_id, len = payload.len(), "veilid-transport: AppMessage received");
+            let _ = inbound_tx.send((node_id_to_custom_addr(&node_id), payload));
+        }
+        Incoming::Update(_) => {
+            // Anything else (Network, Attachment, ...) is not this
+            // transport's concern -- ignored, not an error.
+        }
+    }
+}
+
+/// Polls `GetState` via `handle` until this node's own identity resolves
+/// (`network.node_ids`'s first entry), updating `node_id_tx` the moment it
+/// does. Bounded the same way the embedded design's own identity watcher
+/// was -- a node that never resolves an identity doesn't leak a task that
+/// polls forever.
+pub(crate) async fn identity_poll_loop(
+    handle: ClientHandle,
     node_id_tx: watch::Sender<Option<NodeId>>,
 ) {
     let start = std::time::Instant::now();
-    let mut next_id: u64 = 100;
     for _ in 0..IDENTITY_POLL_ATTEMPTS {
-        next_id += 1;
-        match call_once(
-            &mut reader,
-            &mut writer,
-            wire::req_get_state(next_id as u32),
-        )
-        .await
-        {
+        match handle.call(wire::req_get_state(0)).await {
             Ok(value) => {
                 if let Some(id_str) = wire::extract_node_ids(&value).into_iter().next() {
                     match id_str.parse::<NodeId>() {
@@ -185,9 +365,9 @@ pub(crate) mod test_support {
 
     /// One step of a scripted mock daemon's behavior.
     ///
-    /// `Push`/`Close` are unused until VEILID-018/019's own tests need a
-    /// mid-script unsolicited push or disconnect -- lands correctly staged
-    /// here since the harness itself is written once, in VEILID-017.
+    /// `Close` is unused until VEILID-019's own disconnect tests -- lands
+    /// correctly staged here since the harness itself is written once, in
+    /// VEILID-017.
     #[allow(dead_code)]
     pub(crate) enum Step {
         /// Read one request line (ignored content) and write back `reply`
@@ -251,7 +431,7 @@ mod tests {
     use super::*;
     use tokio::sync::watch;
 
-    fn ok_response(id: u32, value: serde_json::Value) -> serde_json::Value {
+    fn ok_response(id: u32, value: Value) -> Value {
         serde_json::json!({"type": "Response", "id": id, "value": value})
     }
 
@@ -290,26 +470,39 @@ mod tests {
         assert!(connect_and_handshake(addr).await.is_err());
     }
 
+    /// Every test needs an inbound channel of this exact shape -- a type
+    /// alias keeps call sites terse without tripping clippy's
+    /// `type_complexity` on a bare tuple-of-generics return type.
+    type InboundChannel = (
+        mpsc::UnboundedSender<(CustomAddr, Vec<u8>)>,
+        mpsc::UnboundedReceiver<(CustomAddr, Vec<u8>)>,
+    );
+
+    fn unbounded_inbound() -> InboundChannel {
+        mpsc::unbounded_channel()
+    }
+
     #[tokio::test]
-    async fn identity_watcher_resolves_from_get_state() {
+    async fn identity_poll_loop_resolves_from_get_state() {
         let addr = spawn_scripted_daemon(vec![
             Step::Reply(ok_response(1, serde_json::json!(1))),
             Step::Reply(ok_response(2, serde_json::json!(2))),
             // First GetState: no identity yet.
-            Step::Reply(ok_response(101, serde_json::json!({"network": {"node_ids": []}}))),
+            Step::Reply(ok_response(100, serde_json::json!({"network": {"node_ids": []}}))),
             // Second GetState: identity resolved.
             Step::Reply(ok_response(
-                102,
+                101,
                 serde_json::json!({"network": {"node_ids": ["VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo"]}}),
             )),
         ])
         .await;
 
-        let (reader, writer, _rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, _inbound_rx) = unbounded_inbound();
+        let handle = spawn_actor(reader, writer, rc_id, inbound_tx);
         let (tx, mut rx) = watch::channel(None);
-        tokio::spawn(spawn_identity_watcher(reader, writer, tx));
+        tokio::spawn(identity_poll_loop(handle, tx));
 
-        // wait_for_own_node_id-equivalent: wait for the watch to change.
         let node_id = loop {
             if let Some(id) = rx.borrow_and_update().clone() {
                 break id;
@@ -323,20 +516,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_does_not_block_on_identity_resolution() {
-        // The mock never sends a GetState reply -- if anything here waited
-        // synchronously on identity, this test would hang and time out.
+    async fn app_message_send_reaches_the_daemon_well_formed() {
         let addr = spawn_scripted_daemon(vec![
             Step::Reply(ok_response(1, serde_json::json!(1))),
             Step::Reply(ok_response(2, serde_json::json!(2))),
+            // The actor's first request after handshake is id 100.
+            Step::Reply(ok_response(100, Value::Null)),
         ])
         .await;
 
-        let (reader, writer, _rc_id) = connect_and_handshake(addr).await.expect("handshake");
-        let (tx, rx) = watch::channel(None);
-        tokio::spawn(spawn_identity_watcher(reader, writer, tx));
-        // No await on identity here at all -- reaching this point without
-        // hanging is the assertion.
-        assert!(rx.borrow().is_none());
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, _inbound_rx) = unbounded_inbound();
+        let handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+
+        let target = "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo";
+        let result = handle
+            .call(wire::req_app_message(0, rc_id, target, b"hello"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "expected the mock's scripted Ok reply: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_message_push_is_delivered_to_inbound_channel() {
+        let target = "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo";
+        let addr = spawn_scripted_daemon(vec![
+            Step::Reply(ok_response(1, serde_json::json!(1))),
+            Step::Reply(ok_response(2, serde_json::json!(2))),
+            Step::Push(serde_json::json!({
+                "type": "Update", "kind": "AppMessage",
+                "sender": target, "route_id": null,
+                "message": wire::b64_encode(b"hello from the mock"),
+            })),
+        ])
+        .await;
+
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, mut inbound_rx) = unbounded_inbound();
+        let _handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+
+        let (from, payload) = inbound_rx.recv().await.expect("push delivered");
+        assert_eq!(from, node_id_to_custom_addr(&target.parse().unwrap()));
+        assert_eq!(payload, b"hello from the mock");
+    }
+
+    #[tokio::test]
+    async fn app_message_push_with_no_sender_is_dropped() {
+        let addr = spawn_scripted_daemon(vec![
+            Step::Reply(ok_response(1, serde_json::json!(1))),
+            Step::Reply(ok_response(2, serde_json::json!(2))),
+            Step::Push(serde_json::json!({
+                "type": "Update", "kind": "AppMessage",
+                "sender": null, "route_id": null,
+                "message": wire::b64_encode(b"anonymous"),
+            })),
+            // A second, real push proves the actor kept running past the
+            // dropped one rather than getting stuck on it.
+            Step::Push(serde_json::json!({
+                "type": "Update", "kind": "AppMessage",
+                "sender": "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo", "route_id": null,
+                "message": wire::b64_encode(b"named sender"),
+            })),
+        ])
+        .await;
+
+        let (reader, writer, rc_id) = connect_and_handshake(addr).await.expect("handshake");
+        let (inbound_tx, mut inbound_rx) = unbounded_inbound();
+        let _handle = spawn_actor(reader, writer, rc_id, inbound_tx);
+
+        let (_from, payload) = inbound_rx
+            .recv()
+            .await
+            .expect("the named-sender push should arrive");
+        assert_eq!(payload, b"named sender");
     }
 }

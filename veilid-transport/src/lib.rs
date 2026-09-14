@@ -153,11 +153,13 @@ impl VeilidTransportBuilder {
         self,
         addr: std::net::SocketAddr,
     ) -> anyhow::Result<VeilidCustomTransport> {
-        let (reader, writer, _rc_id) = client::connect_and_handshake(addr).await?;
+        let (reader, writer, rc_id) = client::connect_and_handshake(addr).await?;
+        let (inbound_tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
+        let handle = client::spawn_actor(reader, writer, rc_id, inbound_tx);
+
         let (node_id_tx, _) = tokio::sync::watch::channel(None);
-        let identity_task = tokio::spawn(client::spawn_identity_watcher(
-            reader,
-            writer,
+        let identity_task = tokio::spawn(client::identity_poll_loop(
+            handle.clone(),
             node_id_tx.clone(),
         ));
         let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
@@ -176,9 +178,9 @@ impl VeilidTransportBuilder {
                 }
             });
         }
-        let (_tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
         let shared = Arc::new(Shared {
             node_id_tx,
+            handle,
             identity_task,
         });
         Ok(VeilidCustomTransport {
@@ -191,10 +193,11 @@ impl VeilidTransportBuilder {
 
 struct Shared {
     node_id_tx: tokio::sync::watch::Sender<Option<NodeId>>,
-    /// Aborted on [`VeilidCustomTransport::shutdown`]. VEILID-018/019 will
-    /// replace this with a handle to the persistent connection actor's own
-    /// task once one exists; for VEILID-017 (identity resolution only)
-    /// this is the only background work to clean up.
+    /// The connection actor's own handle -- `poll_send` sends `AppMessage`
+    /// requests through this (VEILID-018); `identity_task` also used it to
+    /// poll `GetState` during identity resolution.
+    handle: client::ClientHandle,
+    /// Aborted on [`VeilidCustomTransport::shutdown`].
     identity_task: tokio::task::JoinHandle<()>,
 }
 
@@ -327,7 +330,6 @@ impl CustomEndpoint for VeilidCustomEndpoint {
 
 #[derive(Debug)]
 struct VeilidCustomSender {
-    #[allow(dead_code)]
     shared: Arc<Shared>,
 }
 
@@ -341,19 +343,21 @@ impl CustomSender for VeilidCustomSender {
         _cx: &mut Context,
         dst: &CustomAddr,
         _src: Option<&CustomAddr>,
-        _transmit: &Transmit<'_>,
+        transmit: &Transmit<'_>,
     ) -> Poll<io::Result<()>> {
-        if let Err(e) = parse_custom_addr(dst) {
-            return Poll::Ready(Err(e));
-        }
-        // VEILID-018 wires this up to a real AppMessage send over the
-        // connection actor; VEILID-017 only builds the connection and
-        // resolves identity. Matches this project's own precedent for a
-        // landed-but-not-yet-load-bearing intermediate state (VEILID-002:
-        // "structurally verified... but no peer dial actually used it yet").
-        Poll::Ready(Err(io::Error::other(
-            "veilid-transport: send path not yet wired (VEILID-018)",
-        )))
+        let node_id = match parse_custom_addr(dst) {
+            Ok(id) => id,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+        let rc_id = self.shared.handle.rc_id;
+        let payload = transmit.contents.to_vec();
+        tracing::debug!(%node_id, len = payload.len(), "veilid-transport: poll_send invoked, sending app_message");
+        // Fire-and-forget, matching UDP's own unreliable-send semantics --
+        // see ClientHandle::send_fire_and_forget's own doc comment.
+        self.shared
+            .handle
+            .send_fire_and_forget(wire::req_app_message(0, rc_id, &node_id.0, &payload));
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -394,9 +398,9 @@ mod tests {
         let addr = spawn_scripted_daemon(vec![
             Step::Reply(ok_response(1, serde_json::json!(1))),
             Step::Reply(ok_response(2, serde_json::json!(2))),
-            Step::Reply(ok_response(101, serde_json::json!({"network": {"node_ids": []}}))),
+            Step::Reply(ok_response(100, serde_json::json!({"network": {"node_ids": []}}))),
             Step::Reply(ok_response(
-                102,
+                101,
                 serde_json::json!({"network": {"node_ids": ["VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo"]}}),
             )),
         ])
