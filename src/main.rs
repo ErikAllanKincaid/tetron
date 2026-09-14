@@ -286,29 +286,40 @@ pub(crate) enum ConfigAction {
     /// Show settings (all, or one key)
     #[command(visible_alias = "ls")]
     Get {
-        /// relay, discovery-dns, subnet,
+        /// relay, discovery-dns, subnet, path-preference,
         /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
         /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
-        /// invite-default-expiry, selfcapture-mitigation, or log-level
+        /// invite-default-expiry, selfcapture-mitigation, log-level,
+        /// drop-monitor.<window|threshold|cooldown>,
+        /// path-flap.<threshold|window>, reconnect-log.<threshold|window>,
+        /// reconnect-cold.<threshold|backoff>, reconnect-frozen.<threshold|backoff>,
+        /// log-ratelimit.<threshold|window>, or status-cache.interval
         /// (omit for all)
         key: Option<String>,
     },
-    /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs;
-    /// `subnet` takes a single CIDR (e.g. 10.88.0.0/16); `ratelimit.*` takes a
-    /// whole number; durations (`nuke-proposal-ttl`/`invite-default-expiry`) take
-    /// a string like "24h"/"7d"; `listen-port`/`poller-interval`/`log-retention`
-    /// take a single whole number; `selfcapture-mitigation` takes on/off;
-    /// `log-level` takes trace/debug/info/warn/error. Applies on restart.
+    /// Set a key. Server keys take a comma list of presets (rayfish/n0)/URLs/IPs
+    /// (relay only also takes `off`, disabling it entirely); `subnet` takes a
+    /// single CIDR (e.g. 10.88.0.0/16); most numeric keys take a whole number;
+    /// durations (`nuke-proposal-ttl`/`invite-default-expiry`) take a string
+    /// like "24h"/"7d"; `selfcapture-mitigation` takes on/off;
+    /// `log-level` takes trace/debug/info/warn/error (live-reloads a running
+    /// daemon, no restart needed); `path-preference` takes
+    /// direct/relay/tor/veilid (also live-reloads). Applies on restart otherwise.
     Set {
-        /// relay, discovery-dns, subnet,
+        /// relay, discovery-dns, subnet, path-preference,
         /// ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|global-refill-per-sec|global-strike-limit>,
         /// nuke-proposal-ttl, listen-port, poller-interval, log-retention,
-        /// invite-default-expiry, selfcapture-mitigation, or log-level
+        /// invite-default-expiry, selfcapture-mitigation, log-level,
+        /// drop-monitor.<window|threshold|cooldown>,
+        /// path-flap.<threshold|window>, reconnect-log.<threshold|window>,
+        /// reconnect-cold.<threshold|backoff>, reconnect-frozen.<threshold|backoff>,
+        /// log-ratelimit.<threshold|window>, or status-cache.interval
         key: String,
-        /// Server keys: comma list of presets/URLs/IPv4s. subnet: a CIDR.
-        /// ratelimit.*/listen-port/poller-interval/log-retention: a whole number.
+        /// Server keys: comma list of presets/URLs/IPv4s, or `off` (relay only).
+        /// subnet: a CIDR. Most numeric keys: a whole number.
         /// nuke-proposal-ttl/invite-default-expiry: a duration ("24h"/"7d"/"30m").
         /// selfcapture-mitigation: on/off. log-level: trace/debug/info/warn/error.
+        /// path-preference: direct/relay/tor/veilid.
         /// Empty resets to the default.
         value: String,
         /// Replace the defaults instead of augmenting them (server keys only)
@@ -318,7 +329,8 @@ pub(crate) enum ConfigAction {
     /// Reset a key to its compiled default (server keys -> iroh n0; subnet ->
     /// 10.88.0.0/24; ratelimit.* -> compiled defaults; nuke-proposal-ttl -> 24h;
     /// listen-port -> 43737; poller-interval -> 60s; log-retention -> 7 days;
-    /// invite-default-expiry -> 7d; selfcapture-mitigation -> on; log-level -> info)
+    /// invite-default-expiry -> 7d; selfcapture-mitigation -> on; log-level ->
+    /// info; path-preference -> auto)
     #[command(visible_alias = "rm")]
     Unset {
         /// relay, discovery-dns, subnet,

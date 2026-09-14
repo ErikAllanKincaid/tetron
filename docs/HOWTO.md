@@ -95,13 +95,15 @@ tetron create --network-name mynet --hostname alice   # now defaults to 10.77.0.
 
 Two of *this node's own* networks sharing an overlapping subnet is refused by default — an explicit `--subnet` on `create`, or a network you `join` whose own subnet overlaps one you already have, both fail with an error naming the conflicting network. The same guard also checks the resolved subnet (even an auto-picked one) against your machine's own real network interfaces, so tetron's overlay can't accidentally collide with your actual LAN either. Pass `--force` if you understand the implications and want it anyway. An unspecified `--subnet` on `create` never hits the other-network check — it silently picks the next free range instead, always printed back in the command's own output — but the physical-LAN check still applies regardless.
 
-**Tor transport.** Route this network's traffic over Tor from the start:
+**Tor or Veilid transport.** Route this network's traffic over Tor or Veilid from the start (mutually exclusive):
 
 ```bash
 tetron create --network-name mynet --hostname alice --tor
+# or
+tetron create --network-name mynet --hostname alice --veilid   # requires --features veilid
 ```
 
-Requires a running Tor daemon with `ControlPort 9051` — see [Tor transport](#tor-transport) below.
+Tor requires a running Tor daemon with `ControlPort 9051`; Veilid starts an embedded node, nothing external to run. See [Tor transport](#tor-transport) / [Veilid transport](#veilid-transport-experimental) below — both rank as backups by default, see [Preferring a transport](#preferring-a-transport) to make one carry traffic deliberately.
 
 ---
 
@@ -169,6 +171,9 @@ tetron join t3tnR1vY3R... --hostname bob --alias homelab
 
 # Optional: route traffic through Tor
 tetron join t3tnR1vY3R... --hostname bob --tor
+
+# Optional: route traffic through Veilid (requires --features veilid)
+tetron join t3tnR1vY3R... --hostname bob --veilid
 ```
 
 The hostname is set once at join. The coordinator resolves collisions appending `-1`, `-2`, etc. if the name is already taken.
@@ -418,6 +423,10 @@ tetron config set relay 203.0.113.1:443 --replace
 # Custom pkarr discovery server
 tetron config set discovery-dns dns.example.com/pkarr
 
+# Disable relay entirely (distinct from resetting to defaults below --
+# no relay candidate at all, not even the n0 fallback)
+tetron config set relay off
+
 # Reset to defaults
 tetron config set relay
 tetron config set discovery-dns
@@ -474,6 +483,15 @@ tetron config set invite-default-expiry 3d
 # your own conflicting policy routing.
 tetron config set selfcapture-mitigation off
 
+# The daemon's file-log verbosity (console stays at info regardless).
+# Default: info. Live-reloads a running daemon -- no restart needed.
+tetron config set log-level debug
+
+# Force a specific transport to actually carry your traffic once it has
+# proven itself, instead of the automatic latency-based choice (PATHPREF-001,
+# see "Preferring a transport" below). Default: auto. Also live-reloads.
+tetron config set path-preference veilid
+
 # Inspect current values (all, or one key):
 tetron config get
 tetron config get ratelimit.capacity
@@ -496,6 +514,40 @@ tetron join <invite-key> --hostname bob --tor
 ```
 
 Mixing Tor and non-Tor nodes on the same network is supported — each peer uses whatever transport it specified.
+
+### Veilid transport (experimental)
+
+Requires building with `cargo build --features veilid`. Starts a real embedded Veilid node — no separate daemon or control port to run, unlike Tor:
+
+```bash
+# Create a network with Veilid transport
+tetron create --hostname alice --veilid
+
+# Join a network with Veilid transport
+tetron join <invite-key> --hostname bob --veilid
+```
+
+`--tor` and `--veilid` are mutually exclusive per network. Both enabled nodes' embedded transports only actually start on the *second* daemon boot for a given node — restart once after create/join (`sudo tetron restart`) if you don't see it come up.
+
+Veilid ranks below Direct, Relay, and Tor by default — it only actually carries traffic once those are all unreachable. To make it (or Tor) carry traffic deliberately instead of only as a last resort, see "Preferring a transport" below.
+
+### Preferring a transport
+
+By default tetron picks whichever path is fastest and working (Direct, then Relay, then Tor/Veilid as backups). To force one to actually carry data once it has proven itself — for example, routing over Veilid deliberately rather than only when everything else is down:
+
+```bash
+tetron config set path-preference veilid
+```
+
+Takes `direct`/`relay`/`tor`/`veilid`; requires the corresponding transport to already be enabled (`--tor`/`--veilid` at create/join). Never strands your connection on an unproven path — it only switches once a candidate of the preferred type has real, confirmed activity, falling back to the normal automatic choice otherwise. Live-reloads a running daemon (no restart needed):
+
+```bash
+# Check current setting
+tetron config get path-preference
+
+# Reset to automatic
+tetron config unset path-preference
+```
 
 ---
 
