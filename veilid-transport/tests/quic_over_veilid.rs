@@ -2,16 +2,26 @@
 //! actually come up and carry data over this crate's `CustomTransport`,
 //! with no IP/relay path available at all?
 //!
-//! `#[ignore]`d by default -- both nodes must attach to Veilid's public
-//! bootstrap network (`bootstrap-v1.veilid.net`), which is not reachable
-//! from every CI/sandbox environment (confirmed blocked inside Claude
-//! Code's own Bash tool while writing this crate, 2026-09-11 -- a plain
-//! `curl` to an unrelated host on port 443 timed out the same way, so this
-//! is an environment restriction, not a bug in this test). Run explicitly:
+//! `#[ignore]`d by default -- needs a real, reachable `tetron-veilid`
+//! daemon (VEILID-017) attached to Veilid's public bootstrap network,
+//! which is not available in every CI/sandbox environment. Run explicitly:
 //!
 //! ```text
 //! cargo test -p veilid-transport -- --ignored --nocapture
 //! ```
+//!
+//! **Not yet re-verified against the external-daemon architecture**
+//! (VEILID-017/018/019, 2026-09-14): this test's body still assumes two
+//! independent transport instances the way two independently-embedded
+//! Veilid nodes worked pre-rewrite. Under the external-daemon design both
+//! `VeilidTransportBuilder::build()` calls below connect to the *same*
+//! local `tetron-veilid` daemon and therefore resolve to the *same*
+//! Veilid identity -- this test needs a real rework (either accept that
+//! and test a single-identity loopback echo, or stand up two separate
+//! `tetron-veilid` instances on two different ports for a true two-node
+//! test) once VEILID-018's data path lands. `.namespace(...)` is removed
+//! here only so this file compiles; the test's own logic is not yet
+//! meaningful again.
 
 use std::time::{Duration, Instant};
 
@@ -37,21 +47,17 @@ impl ProtocolHandler for Echo {
 }
 
 #[tokio::test]
-#[ignore = "needs Veilid's public bootstrap network; see module docs"]
+#[ignore = "needs a real tetron-veilid daemon reachable from Veilid's public bootstrap network; not yet reworked for the external-daemon architecture, see module docs"]
 async fn quic_connection_over_veilid_only() -> anyhow::Result<()> {
     let t0 = Instant::now();
     let transport_a = timeout(
         Duration::from_secs(180),
-        VeilidTransportBuilder::new()
-            .namespace("veilid-transport-test-a")
-            .build(),
+        VeilidTransportBuilder::new().build(),
     )
     .await??;
     let transport_b = timeout(
         Duration::from_secs(180),
-        VeilidTransportBuilder::new()
-            .namespace("veilid-transport-test-b")
-            .build(),
+        VeilidTransportBuilder::new().build(),
     )
     .await??;
     eprintln!(

@@ -1,55 +1,48 @@
-//! An [`iroh`] `CustomTransport` (the `unstable-custom-transports` mechanism
-//! also used by `iroh-tor-transport`, tetron's `tor` feature) that carries
-//! QUIC traffic over an embedded [`veilid-core`] node instead of raw UDP.
+//! An [`iroh`] `CustomTransport` (the `unstable-custom-transports`
+//! mechanism also used by `iroh-tor-transport`, tetron's `tor` feature)
+//! carrying QUIC traffic over a companion `tetron-veilid` daemon.
 //!
-//! `spec/core.py`'s `VeilidCustomTransportMechanism` (`VEILID-001`) is the
-//! requirement this crate implements; read its docstring for the full
-//! rationale and the explicitly-deferred follow-up work. Summary of what is
-//! **not** built here:
-//!
-//! - **No automatic discovery.** There is no `AddressLookup` implementation
-//!   resolving an iroh [`iroh::EndpointId`] to a peer's Veilid [`NodeId`].
-//!   Callers must already know the peer's `NodeId` out of band (see
-//!   [`node_id_to_custom_addr`]) and build an `EndpointAddr` with it
-//!   directly, the way this crate's own integration test does.
-//! - **No hardened `VeilidConfig`.** [`VeilidTransportBuilder::build`] reuses
-//!   `veilid-core`'s own `test-util` fixture config (self-signed TLS
-//!   certificate, insecure-fallback protected store) as a placeholder.
-//! - **Not wired into tetron.** Nothing in `tetron`'s own `Cargo.toml`,
-//!   `src/transport.rs`, CLI, or config schema references this crate yet.
+//! `spec/core.py`'s `VeilidExternalDaemonProtocol` (`VEILID-017`) is the
+//! requirement this crate implements; read its docstring, and
+//! `VeilidCustomTransportMechanism`'s (`VEILID-001`) own UPDATE, for the
+//! full rationale. Summary: this crate used to embed a `veilid-core` node
+//! in-process; it is now a thin TCP/JSON client to `tetron-veilid` (a
+//! separate addon repo building `veilid-server` with
+//! `--features footgun-nodeid-target`), the same shape `iroh-tor-transport`
+//! already uses for Tor. The public API below is unchanged from the
+//! embedded design on purpose -- `src/transport.rs` (tetron core's entire
+//! integration surface with this crate) needs zero changes as a result.
 //!
 //! # Addressing
 //!
 //! Each Veilid node has a stable `NodeId` (unlike a private/safety route,
-//! which rotates). This transport addresses peers directly by `NodeId`
-//! (`veilid_core::Target::NodeId`) — see `VEILID-001`'s docstring for why
-//! receiver-anonymity (private routes) was intentionally not chosen for
-//! tetron's use case (mutually-known, invite-gated peers, not anonymous
-//! hidden services).
+//! which rotates). This transport addresses peers directly by `NodeId` --
+//! see `VEILID-001`'s docstring for why receiver-anonymity (private
+//! routes) was intentionally not chosen for tetron's use case
+//! (mutually-known, invite-gated peers, not anonymous hidden services).
 //!
 //! # Routing mode: `Unsafe`, not the library default `Safe`
 //!
-//! [`VeilidTransportBuilder::build`] explicitly selects
-//! `SafetySelection::Unsafe` — a direct send, no sender-anonymizing
-//! safety route. This is a deliberate product decision, not an oversight:
-//! `Safe` (the library default, and tetron's own original intent) never
-//! once delivered a message across the entire live investigation behind
-//! `VEILID-007`..`015` (`spec/core.py`), despite `poll_send`/`app_message`
-//! locally reporting success every time — safety-route allocation between
-//! two freshly-bootstrapped nodes was unreliable or too slow within every
-//! settle window tested. `Unsafe` worked immediately and reliably.
-//! Accepted tradeoff: within the Veilid network itself, a network-level
-//! observer can now tell which real Veilid node is talking to which — but
-//! tetron peers already know each other's identity directly (invite-gated
-//! mesh, not anonymous), and Veilid is a last-resort fallback ranked below
-//! Tor (`select.rs::choose_path_index`), which already provides the more
-//! mature anonymity property for whoever actually needs it. Revisiting
-//! `Safe` mode (e.g. after understanding why route allocation fails, or
-//! with a longer settle budget) is a separate, non-blocking follow-up, not
-//! required for this transport to be usable.
+//! The connection is put into `SafetySelection::Unsafe` on handshake — a
+//! direct send, no sender-anonymizing safety route. This is a deliberate
+//! product decision, reasserted from the embedded design, not revisited:
+//! `Safe` never once delivered a message across the entire live
+//! investigation behind `VEILID-007`..`015` (`spec/core.py`), despite
+//! `poll_send`/`app_message` locally reporting success every time.
+//! `Unsafe` worked immediately and reliably. Accepted tradeoff: within the
+//! Veilid network itself, a network-level observer can now tell which real
+//! Veilid node is talking to which — but tetron peers already know each
+//! other's identity directly (invite-gated mesh, not anonymous), and
+//! Veilid is a last-resort fallback ranked below Tor
+//! (`select.rs::choose_path_index`), which already provides the more
+//! mature anonymity property for whoever actually needs it.
+
+mod client;
+mod wire;
 
 use std::fmt;
 use std::io;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -58,9 +51,6 @@ use iroh::endpoint::transports::{
 };
 use iroh_base::CustomAddr;
 use tokio::sync::mpsc;
-pub use veilid_core::NodeId;
-use veilid_core::tests::fixture_veilid_core_with_namespace;
-use veilid_core::{RoutingContext, Target, VeilidAPI, VeilidUpdate, api_startup};
 
 /// Transport id for this crate's [`CustomAddr`]s.
 ///
@@ -69,11 +59,54 @@ use veilid_core::{RoutingContext, Target, VeilidAPI, VeilidUpdate, api_startup};
 /// feature.
 pub const VEILID_TRANSPORT_ID: u64 = u64::from_be_bytes(*b"\0\0veilid");
 
+/// A Veilid node id, in its wire string form (`"VLD0:<base64url-nopad>"`).
+///
+/// This is a local, opaque-string newtype -- not a re-export of
+/// `veilid_core::NodeId` -- since this crate no longer depends on
+/// `veilid-core` at all (VEILID-017). It carries no cryptographic
+/// operations of its own; every use in this crate is "pass this string to
+/// `tetron-veilid` verbatim, or parse a roster string enough to reject
+/// garbage cleanly."
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NodeId(String);
+
+/// Veilid's own node-id crypto-kind prefix (`VLD0` = the current default
+/// crypto kind) followed by a 32-byte public key, base64url-nopad encoded
+/// -- confirmed live against real captured node ids throughout this
+/// session (e.g. `VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo`).
+const NODE_ID_PREFIX: &str = "VLD0:";
+const NODE_ID_KEY_LEN: usize = 32;
+
+impl FromStr for NodeId {
+    type Err = io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let rest = s
+            .strip_prefix(NODE_ID_PREFIX)
+            .ok_or_else(|| io::Error::other("veilid NodeId missing 'VLD0:' prefix"))?;
+        let decoded = wire::b64_decode(rest)
+            .map_err(|e| io::Error::other(format!("veilid NodeId is not valid base64url: {e}")))?;
+        if decoded.len() != NODE_ID_KEY_LEN {
+            return Err(io::Error::other(format!(
+                "veilid NodeId decoded to {} bytes, expected {NODE_ID_KEY_LEN}",
+                decoded.len()
+            )));
+        }
+        Ok(NodeId(s.to_string()))
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Encodes a Veilid [`NodeId`] as the [`CustomAddr`] this transport
 /// understands, for manual, out-of-band address exchange (no discovery
-/// mechanism exists yet -- see the module docs).
+/// mechanism exists yet -- see `VEILID-001`'s module docs).
 pub fn node_id_to_custom_addr(node_id: &NodeId) -> CustomAddr {
-    CustomAddr::from_parts(VEILID_TRANSPORT_ID, node_id.to_string().as_bytes())
+    CustomAddr::from_parts(VEILID_TRANSPORT_ID, node_id.0.as_bytes())
 }
 
 fn parse_custom_addr(addr: &CustomAddr) -> io::Result<NodeId> {
@@ -83,139 +116,71 @@ fn parse_custom_addr(addr: &CustomAddr) -> io::Result<NodeId> {
     std::str::from_utf8(addr.data())
         .map_err(|_| io::Error::other("veilid custom address is not utf8"))?
         .parse::<NodeId>()
-        .map_err(|_| io::Error::other("invalid veilid node id"))
 }
 
-/// Builds a [`VeilidCustomTransport`] by starting an embedded Veilid node.
+/// Builds a [`VeilidCustomTransport`] by connecting to a companion
+/// `tetron-veilid` daemon.
 #[derive(Debug, Clone, Default)]
-pub struct VeilidTransportBuilder {
-    namespace: String,
-}
+pub struct VeilidTransportBuilder {}
 
 impl VeilidTransportBuilder {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Partitions `veilid-core`'s on-disk state (mirrors `veilid-core`'s own
-    /// `namespace` config field). Must be unique per node identity running
-    /// in the same process; defaults to the empty string.
-    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.namespace = namespace.into();
-        self
+    /// Connects to the companion daemon and returns a ready-to-use custom
+    /// transport immediately, **without** waiting for this node's own
+    /// identity to resolve first -- matching the embedded design's own
+    /// non-blocking `build()` contract (`bind_endpoint`,
+    /// `src/transport.rs`, awaits this synchronously while building the
+    /// one shared iroh `Endpoint` at daemon startup, before the IPC
+    /// socket, TUN, or any other network is even up).
+    pub async fn build(self) -> anyhow::Result<VeilidCustomTransport> {
+        self.build_with_addr(
+            client::DEFAULT_DAEMON_ADDR
+                .parse()
+                .expect("DEFAULT_DAEMON_ADDR is a valid socket address"),
+        )
+        .await
     }
 
-    /// Starts the embedded Veilid node and returns a ready-to-use custom
-    /// transport immediately, **without** waiting for it to attach to the
-    /// public Veilid network first -- or even for its own identity to be
-    /// knowable yet.
-    ///
-    /// This matters beyond mere latency: `bind_endpoint` (`tetron`'s
-    /// `src/transport.rs`) awaits this synchronously as part of binding the
-    /// one shared iroh `Endpoint` at daemon startup -- before the daemon's
-    /// IPC socket, TUN, or any *other*, unrelated network is even up. A
-    /// blocking wait here previously stalled the entire daemon's startup on
-    /// Veilid's own bootstrap.
-    ///
-    /// **Found live, not by inspection, via `tetron-testsuite`'s
-    /// `veilid-smoke` run (2026-09-11), across several iterations:** the
-    /// first cut only waited for *attachment* (`public_internet_ready`)
-    /// and assumed `own_node_id()` -- needed immediately, to construct
-    /// this node's own `CustomAddr` -- was cheap and instant, since
-    /// `veilid-core`'s own internal log (`rtab: Node Ids: [...]`) shows
-    /// the id within milliseconds of startup. That assumption was wrong
-    /// on its own terms (`get_state()`'s *public* snapshot of
-    /// `network.node_ids` reflects the internally-known id only once the
-    /// network layer makes attachment progress), but a much bigger bug
-    /// compounded it and was the real reason a bounded wait for
-    /// `public_internet_ready` never succeeded at any timeout tried, up
-    /// to 5 minutes: `build` called [`api_startup`] but never called
-    /// [`VeilidAPI::attach`], so the node never began attaching at all --
-    /// `attachment.state` stayed `Detached` forever and no veilid-core
-    /// bootstrap/attach log lines ever appeared. `api_startup` only
-    /// constructs the API context; `attach`'s own doc comment says so
-    /// explicitly ("Sets the attachment to maintain peers; the network
-    /// connect proceeds in the background tick loop"). With `attach`
-    /// actually called (see below), identity resolves in ~1-2s and full
-    /// `public_internet_ready` attachment in ~7s in live VM testing --
-    /// not the multi-minute-or-never figures observed before this fix.
-    /// Identity is still resolved asynchronously here rather than
-    /// awaited synchronously, since it is not truly instant and this
-    /// method must not block the one shared iroh `Endpoint`'s startup on
-    /// it (see above).
-    ///
-    /// Both are therefore resolved the same way: in the background, via
-    /// [`spawn_identity_and_attach_watcher`]. `own_node_id()`/`own_addr()`
-    /// return `None` until identity resolves, and `watch_local_addrs()`
-    /// starts empty and is updated once it does -- the same "not yet
-    /// known, arrives later" shape iroh's own IP/relay transports already
-    /// have for their own local addresses, not a special case invented
-    /// here. `poll_send`'s existing fire-and-forget `app_message` calls
-    /// (see [`VeilidCustomSender`]) already degrade gracefully in the
-    /// meantime -- they just fail and get logged, matching a not-yet-
-    /// reachable IP/relay path elsewhere.
-    ///
-    /// See the module docs for what else this deliberately does not do yet
-    /// (hardened config, automatic discovery).
-    pub async fn build(self) -> anyhow::Result<VeilidCustomTransport> {
-        let (_default_cb, mut config) = fixture_veilid_core_with_namespace(&self.namespace);
-        // IPv4-only: found live via the same `veilid-smoke` investigation,
-        // independently of the identity/attachment coupling above -- a
-        // default vagrant-libvirt VM network resolves
-        // `bootstrap-v1.veilid.net`'s IPv6 records fine via DNS but has no
-        // global IPv6 address or route at all (only link-local), so an
-        // IPv6-first/only attempt goes nowhere while the working IPv4
-        // records go untried. Not a rare VM-specific edge case: the same
-        // "IPv6 resolves, no route" shape is common in NAT'd VM networks,
-        // containers, and plenty of real IPv4-only hosts. Restricting to
-        // IPv4 avoids that black hole entirely; revisit (make configurable)
-        // once IPv6 attach is actually verified reliable somewhere.
-        config.network.address_types = vec![veilid_core::VeilidConfigAddressType::Ipv4];
-        let (tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
-        let update_cb: veilid_core::UpdateCallback = Arc::new(move |update| {
-            if let VeilidUpdate::AppMessage(msg) = update {
-                match msg.sender() {
-                    Some(sender) => {
-                        tracing::debug!(%sender, len = msg.message().len(), "veilid-transport: AppMessage received");
-                        let _ = tx.send((node_id_to_custom_addr(sender), msg.message().to_vec()));
+    /// Test-only hook so a mock daemon on a random port can stand in for
+    /// the real one -- the production `build()` above always uses the
+    /// hardcoded default, matching `iroh-tor-transport`'s own precedent of
+    /// not exposing the daemon address as a config knob (see
+    /// `VEILID-017`'s docstring).
+    async fn build_with_addr(
+        self,
+        addr: std::net::SocketAddr,
+    ) -> anyhow::Result<VeilidCustomTransport> {
+        let (reader, writer, _rc_id) = client::connect_and_handshake(addr).await?;
+        let (node_id_tx, _) = tokio::sync::watch::channel(None);
+        let identity_task = tokio::spawn(client::spawn_identity_watcher(
+            reader,
+            writer,
+            node_id_tx.clone(),
+        ));
+        let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
+        {
+            let mut node_id_rx = node_id_tx.subscribe();
+            let local_addrs = local_addrs.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Some(node_id) = node_id_rx.borrow_and_update().clone() {
+                        local_addrs.set(vec![node_id_to_custom_addr(&node_id)]).ok();
+                        return;
                     }
-                    None => {
-                        tracing::debug!(
-                            "veilid-transport: AppMessage received with no sender (routed anonymously), dropping -- this transport addresses by NodeId only"
-                        );
+                    if node_id_rx.changed().await.is_err() {
+                        return;
                     }
                 }
-            }
-        });
-        let api = api_startup(update_cb, config).await?;
-        // `api_startup` only constructs the API context -- it does not
-        // attach to the network on its own (`VeilidAPI::attach`'s own doc
-        // comment: "Sets the attachment to maintain peers; the network
-        // connect proceeds in the background tick loop"). Missing this
-        // call is why identity/attachment previously never progressed at
-        // all in live testing: no veilid-core bootstrap/attach log lines
-        // ever appeared, `attachment.state` stayed `Detached` forever, and
-        // `network.node_ids` never populated even though the node's id was
-        // already known internally (`rtab: Node Ids: [...]` logs
-        // immediately at startup, independent of attachment).
-        api.attach().await?;
-        // `Unsafe` routing, deliberately -- see the module docs' "Routing
-        // mode" section for the full rationale and the live investigation
-        // that led here (`Safe`, the library default, never once
-        // delivered a message across `VEILID-007`..`015`'s testing).
-        let routing_context =
-            api.routing_context()?
-                .with_safety(veilid_core::SafetySelection::Unsafe(
-                    veilid_core::Sequencing::PreferUnordered,
-                ))?;
-        let local_addrs = n0_watcher::Watchable::new(Vec::<CustomAddr>::new());
-        let (node_id_tx, _) = tokio::sync::watch::channel(None);
+            });
+        }
+        let (_tx, rx) = mpsc::unbounded_channel::<(CustomAddr, Vec<u8>)>();
         let shared = Arc::new(Shared {
-            api: api.clone(),
-            routing_context,
             node_id_tx,
+            identity_task,
         });
-        spawn_identity_and_attach_watcher(api, shared.clone(), local_addrs.clone());
         Ok(VeilidCustomTransport {
             shared,
             local_addrs,
@@ -224,62 +189,13 @@ impl VeilidTransportBuilder {
     }
 }
 
-/// Resolves this node's own identity and, separately, attachment
-/// readiness, in the background -- see [`VeilidTransportBuilder::build`]'s
-/// doc comment for why neither can be resolved synchronously and cheaply.
-/// Updates `shared.node_id` and `local_addrs` (waking any
-/// `watch_local_addrs()` watcher) the moment identity is known; logs once
-/// attachment separately completes. Bounded so a node that never attaches
-/// (no reachable network) doesn't leak a task that polls forever.
-fn spawn_identity_and_attach_watcher(
-    api: VeilidAPI,
-    shared: Arc<Shared>,
-    local_addrs: n0_watcher::Watchable<Vec<CustomAddr>>,
-) {
-    tokio::spawn(async move {
-        let start = std::time::Instant::now();
-        let mut identity_known = false;
-        for _ in 0..600 {
-            match api.get_state().await {
-                Ok(state) => {
-                    if !identity_known
-                        && let Some(node_id) = state.network.node_ids.into_iter().next()
-                    {
-                        tracing::info!(
-                            %node_id,
-                            elapsed = ?start.elapsed(),
-                            "veilid-transport: own identity resolved"
-                        );
-                        shared.node_id_tx.send_replace(Some(node_id.clone()));
-                        local_addrs.set(vec![node_id_to_custom_addr(&node_id)]).ok();
-                        identity_known = true;
-                    }
-                    if identity_known && state.attachment.public_internet_ready {
-                        tracing::info!(
-                            elapsed = ?start.elapsed(),
-                            "veilid-transport: attached to the public Veilid network"
-                        );
-                        return;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "veilid-transport: get_state failed while awaiting readiness");
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        tracing::warn!(
-            elapsed = ?start.elapsed(),
-            identity_known,
-            "veilid-transport: did not reach full readiness within 5 minutes"
-        );
-    });
-}
-
 struct Shared {
-    api: VeilidAPI,
-    routing_context: RoutingContext,
     node_id_tx: tokio::sync::watch::Sender<Option<NodeId>>,
+    /// Aborted on [`VeilidCustomTransport::shutdown`]. VEILID-018/019 will
+    /// replace this with a handle to the persistent connection actor's own
+    /// task once one exists; for VEILID-017 (identity resolution only)
+    /// this is the only background work to clean up.
+    identity_task: tokio::task::JoinHandle<()>,
 }
 
 impl fmt::Debug for Shared {
@@ -293,7 +209,7 @@ impl fmt::Debug for Shared {
 type InboundReceiver = mpsc::UnboundedReceiver<(CustomAddr, Vec<u8>)>;
 
 /// The [`CustomTransport`] entry point. Cheap to clone (shares the
-/// underlying embedded Veilid node via `Arc`).
+/// underlying connection state via `Arc`).
 #[derive(Debug, Clone)]
 pub struct VeilidCustomTransport {
     shared: Arc<Shared>,
@@ -304,9 +220,7 @@ pub struct VeilidCustomTransport {
 impl VeilidCustomTransport {
     /// This node's own address, for handing to peers out of band (no
     /// discovery mechanism exists yet -- see the module docs). `None`
-    /// until identity resolves in the background -- see
-    /// [`VeilidTransportBuilder::build`]'s doc comment for why this can't
-    /// be known synchronously at construction time.
+    /// until identity resolves in the background.
     pub fn own_addr(&self) -> Option<CustomAddr> {
         self.own_node_id().map(|id| node_id_to_custom_addr(&id))
     }
@@ -316,14 +230,8 @@ impl VeilidCustomTransport {
         self.shared.node_id_tx.borrow().clone()
     }
 
-    /// Waits until this node's own identity has resolved, how ever long
-    /// that takes (see [`VeilidTransportBuilder::build`]'s doc comment for
-    /// why this can't be bounded to something short and still be reliable).
-    /// Returns immediately if already known. For a caller that wants to
-    /// react to identity becoming available rather than poll
-    /// [`Self::own_node_id`] -- e.g. tetron's own `MeshManager`, which
-    /// needs to republish a coordinator's roster entry once a real value
-    /// exists, not just once at boot (VEILID-005's own known follow-up).
+    /// Waits until this node's own identity has resolved, however long
+    /// that takes. Returns immediately if already known.
     pub async fn wait_for_own_node_id(&self) -> NodeId {
         let mut rx = self.shared.node_id_tx.subscribe();
         loop {
@@ -338,12 +246,13 @@ impl VeilidCustomTransport {
         }
     }
 
-    /// Shuts down the embedded Veilid node. Best-effort; there is no way to
-    /// signal shutdown back through the `CustomTransport`/`CustomEndpoint`
-    /// traits themselves, so callers that need a clean stop (tests, in
-    /// particular) should call this explicitly.
+    /// Stops background work (identity resolution / the connection actor).
+    /// Best-effort; there is no way to signal shutdown back through the
+    /// `CustomTransport`/`CustomEndpoint` traits themselves, so callers
+    /// that need a clean stop (tests, in particular) should call this
+    /// explicitly.
     pub async fn shutdown(self) {
-        self.shared.api.clone().shutdown().await;
+        self.shared.identity_task.abort();
     }
 }
 
@@ -418,6 +327,7 @@ impl CustomEndpoint for VeilidCustomEndpoint {
 
 #[derive(Debug)]
 struct VeilidCustomSender {
+    #[allow(dead_code)]
     shared: Arc<Shared>,
 }
 
@@ -431,23 +341,91 @@ impl CustomSender for VeilidCustomSender {
         _cx: &mut Context,
         dst: &CustomAddr,
         _src: Option<&CustomAddr>,
-        transmit: &Transmit<'_>,
+        _transmit: &Transmit<'_>,
     ) -> Poll<io::Result<()>> {
-        let target = match parse_custom_addr(dst) {
-            Ok(node_id) => Target::NodeId(node_id),
-            Err(e) => return Poll::Ready(Err(e)),
-        };
-        let routing_context = self.shared.routing_context.clone();
-        let payload = transmit.contents.to_vec();
-        tracing::debug!(target = ?target, len = payload.len(), "veilid-transport: poll_send invoked, sending app_message");
-        // `app_message` is async; fire-and-forget, matching UDP's own
-        // unreliable-send semantics (no delivery confirmation here either).
-        tokio::spawn(async move {
-            match routing_context.app_message(target, payload).await {
-                Ok(()) => tracing::debug!("veilid-transport: app_message send succeeded"),
-                Err(e) => tracing::debug!("veilid-transport: app_message send failed: {e}"),
-            }
-        });
-        Poll::Ready(Ok(()))
+        if let Err(e) = parse_custom_addr(dst) {
+            return Poll::Ready(Err(e));
+        }
+        // VEILID-018 wires this up to a real AppMessage send over the
+        // connection actor; VEILID-017 only builds the connection and
+        // resolves identity. Matches this project's own precedent for a
+        // landed-but-not-yet-load-bearing intermediate state (VEILID-002:
+        // "structurally verified... but no peer dial actually used it yet").
+        Poll::Ready(Err(io::Error::other(
+            "veilid-transport: send path not yet wired (VEILID-018)",
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use client::test_support::{Step, spawn_scripted_daemon};
+
+    fn ok_response(id: u32, value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "Response", "id": id, "value": value})
+    }
+
+    #[test]
+    fn node_id_round_trip() {
+        let valid = "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo";
+        let node_id: NodeId = valid.parse().expect("valid node id");
+        assert_eq!(node_id.to_string(), valid);
+    }
+
+    #[test]
+    fn node_id_rejects_wrong_prefix() {
+        assert!("XYZ0:abc".parse::<NodeId>().is_err());
+    }
+
+    #[test]
+    fn node_id_rejects_bad_base64() {
+        assert!("VLD0:not-valid-base64!!!".parse::<NodeId>().is_err());
+    }
+
+    #[test]
+    fn node_id_rejects_wrong_length() {
+        // Valid base64url, wrong decoded length (not 32 bytes).
+        assert!("VLD0:aGVsbG8".parse::<NodeId>().is_err());
+    }
+
+    #[tokio::test]
+    async fn build_resolves_own_identity_without_blocking() {
+        let addr = spawn_scripted_daemon(vec![
+            Step::Reply(ok_response(1, serde_json::json!(1))),
+            Step::Reply(ok_response(2, serde_json::json!(2))),
+            Step::Reply(ok_response(101, serde_json::json!({"network": {"node_ids": []}}))),
+            Step::Reply(ok_response(
+                102,
+                serde_json::json!({"network": {"node_ids": ["VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo"]}}),
+            )),
+        ])
+        .await;
+
+        let transport = VeilidTransportBuilder::new()
+            .build_with_addr(addr)
+            .await
+            .expect("build should not require identity to be known yet");
+        assert!(transport.own_node_id().is_none());
+
+        let node_id = transport.wait_for_own_node_id().await;
+        assert_eq!(
+            node_id.to_string(),
+            "VLD0:GHK_QOS6VCvjxIaxkwvMU3kd-MmAlc8edzo-YmNqHLo"
+        );
+        assert_eq!(transport.own_addr(), Some(node_id_to_custom_addr(&node_id)));
+
+        transport.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn build_fails_cleanly_when_daemon_unreachable() {
+        let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        assert!(
+            VeilidTransportBuilder::new()
+                .build_with_addr(addr)
+                .await
+                .is_err()
+        );
     }
 }
