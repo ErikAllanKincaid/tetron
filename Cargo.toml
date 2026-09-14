@@ -1,6 +1,6 @@
 [package]
 name = "tetron"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.91"
 authors = ["Dario", "ErikAllanKincaid"]
@@ -60,7 +60,7 @@ tor = ["dep:iroh-tor-transport"]
 veilid = ["dep:veilid-transport"]
 
 [dependencies]
-tetron-proto = { path = "tetron-proto", version = "0.12.0" }
+tetron-proto = { path = "tetron-proto", version = "0.13.0" }
 anyhow = "1"
 blake3 = { version = "1", features = ["serde"] }
 bytes = "1"

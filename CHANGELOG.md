@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-14
+
 ### Changed
 
 - **Veilid transport (`--features veilid`) now talks to an external `tetron-veilid` companion daemon instead of embedding a Veilid node in the tetron daemon process** (`VEILID-017`..`019`). Same shape `--tor` already uses for Tor (a thin client to an external daemon), correcting the one place this project had deviated from "do one thing well." Requires the separate [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) addon installed and running (`127.0.0.1:5959`, the default `veilid-server` itself documents) — the officially distributed `veilid-server` package cannot be used directly, since it lacks the `footgun-nodeid-target` feature this transport's `SafetySelection::Unsafe` mode requires; `tetron-veilid` builds its own binary with that feature enabled. The `--veilid` CLI surface, roster propagation, and dial-path behavior are all unchanged — this only affects how the daemon reaches the Veilid network, not how a network using it is created or joined. Transparently reconnects (with backoff) if the companion daemon restarts or was briefly unreachable.
