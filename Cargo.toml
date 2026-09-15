@@ -49,6 +49,11 @@ iroh = { path = "vendor/iroh-1.0.3" }
 # and surfacing send failures via a log line instead of silently dropping
 # them. See vendor/iroh-tor-transport-0.1.0/PATCH.md.
 iroh-tor-transport = { path = "vendor/iroh-tor-transport-0.1.0" }
+# TOR-DIAL-001: local patch to torut (iroh-tor-transport's own Tor
+# control-protocol dependency, pulled in transitively) fixing its
+# `is_valid_event` validator, which rejected the genuinely valid `HS_DESC`
+# event name for containing an underscore. See vendor/torut-0.2.1/PATCH.md.
+torut = { path = "vendor/torut-0.2.1" }
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add

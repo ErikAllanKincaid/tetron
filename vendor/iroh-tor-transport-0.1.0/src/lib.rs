@@ -27,7 +27,7 @@ use tokio::{
 };
 use tokio_socks::tcp::Socks5Stream;
 use torut::{
-    control::{AuthenticatedConn, ConnError, UnauthenticatedConn},
+    control::{AsyncEvent, AuthenticatedConn, ConnError, UnauthenticatedConn},
     onion::{OnionAddressV3, TorPublicKeyV3, TorSecretKeyV3},
 };
 
@@ -273,6 +273,19 @@ impl TorStreamIo {
 /// get_or_connect`'s own comment for why this was previously unbounded.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// tetron-local patch (PATCH.md, Patch 2, TOR-DIAL-001 follow-up): how long
+/// `TorCustomTransportBuilder::build` waits for at least one `HS_DESC
+/// UPLOADED` confirmation before giving up and returning anyway. Chosen
+/// generously relative to the ~30s-120s range this project has observed
+/// v3 onion descriptor publication take in practice.
+const HS_DESC_PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// How often the publish-wait loop pumps `AuthenticatedConn`'s response
+/// read loop (via a cheap `noop()` round trip) to notice a buffered
+/// `HS_DESC` event promptly rather than only on some later, unrelated
+/// command.
+const HS_DESC_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Packet writer that reuses per-endpoint streams.
 pub(crate) struct TorPacketSender {
     io: Arc<TorStreamIo>,
@@ -470,9 +483,48 @@ impl TorCustomTransportBuilder {
         }
         let mut conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
 
+        // tetron-local patch (PATCH.md, Patch 2, TOR-DIAL-001 follow-up):
+        // register for HS_DESC events *before* creating the onion service,
+        // so a descriptor-uploaded confirmation that arrives immediately
+        // after ADD_ONION can't be missed. See `wait_for_hs_desc_uploaded`'s
+        // own doc comment for why this exists at all. `set_events` failing
+        // is treated as non-fatal (older Tor, or a control API this event
+        // isn't available on) -- degrade to the pre-patch behavior (build()
+        // returns immediately, no publish confirmation) rather than
+        // blocking hidden-service creation on it.
+        let upload_confirmations: Arc<std::sync::atomic::AtomicUsize> =
+            Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
         // Create the hidden service
         let tor_key = iroh_to_tor_secret_key(&secret_key);
         let onion_addr = tor_key.public().get_onion_address();
+        let target_hs_address = onion_addr.get_address_without_dot_onion().to_string();
+        {
+            let upload_confirmations = upload_confirmations.clone();
+            let target_hs_address = target_hs_address.clone();
+            let handler: EventHandler = Box::new(move |event: AsyncEvent<'static>| {
+                let upload_confirmations = upload_confirmations.clone();
+                let target_hs_address = target_hs_address.clone();
+                Box::pin(async move {
+                    if let Some(line) = event.lines.first()
+                        && let Some(rest) = line.strip_prefix("HS_DESC UPLOADED ")
+                        && rest.split(' ').next() == Some(target_hs_address.as_str())
+                    {
+                        upload_confirmations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Ok(())
+                })
+            });
+            conn.set_async_event_handler(Some(handler));
+        }
+        let hs_desc_events_enabled = match conn.set_events(false, &mut ["HS_DESC"].into_iter()).await {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(%err, "could not subscribe to HS_DESC events -- proceeding without a publish-confirmation wait");
+                false
+            }
+        };
+
         let listeners = [(self.onion_port, local_addr)];
         match conn
             .add_onion_v3(&tor_key, false, false, false, None, &mut listeners.iter())
@@ -490,6 +542,43 @@ impl TorCustomTransportBuilder {
             onion_addr.get_address_without_dot_onion(),
             self.onion_port
         );
+
+        // tetron-local patch (PATCH.md, Patch 2, TOR-DIAL-001 follow-up):
+        // `ADD_ONION`'s own `250 OK` only confirms the service was created
+        // *locally* -- Tor's control-spec documents the descriptor upload
+        // to the HSDir network as a genuinely separate, asynchronous step
+        // (the `HS_DESC` event's `UPLOADED` action), and callers that start
+        // dialing this service immediately have no guarantee it has
+        // reached the network at all yet. `AuthenticatedConn` has no
+        // dedicated "wait for the next event" call -- `noop()` is used
+        // purely to pump its response-read loop (which drains and
+        // dispatches any buffered `650` lines, including ours, before
+        // returning) at a steady interval instead.
+        if hs_desc_events_enabled {
+            let deadline = tokio::time::Instant::now() + HS_DESC_PUBLISH_TIMEOUT;
+            loop {
+                if upload_confirmations.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+                    tracing::info!(
+                        onion = %target_hs_address,
+                        "hidden service descriptor confirmed uploaded to at least one HSDir"
+                    );
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        onion = %target_hs_address,
+                        timeout = ?HS_DESC_PUBLISH_TIMEOUT,
+                        "no HS_DESC UPLOADED confirmation within the timeout; proceeding anyway (the service may still not be reachable yet)"
+                    );
+                    break;
+                }
+                // Any error here (including a transient one) just means this
+                // particular poll tick didn't confirm anything -- the loop
+                // retries until the deadline regardless.
+                let _ = conn.noop().await;
+                tokio::time::sleep(HS_DESC_POLL_INTERVAL).await;
+            }
+        }
 
         let socks_addr: std::net::SocketAddr =
             format!("127.0.0.1:{}", self.socks_port).parse().unwrap();
@@ -612,7 +701,12 @@ impl CustomTransport for TorCustomTransport {
                     Ok(stream) => {
                         let service = service.clone();
                         tokio::spawn(async move {
-                            let _ = service.handle_stream(stream).await;
+                            // tetron-local patch (PATCH.md, TOR-DIAL-001
+                            // follow-up): same silent-failure pattern as
+                            // poll_send's own fix above -- surface it.
+                            if let Err(err) = service.handle_stream(stream).await {
+                                tracing::warn!(%err, "Tor incoming stream handler failed");
+                            }
                         });
                     }
                     Err(err) => {

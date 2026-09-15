@@ -49,12 +49,65 @@ that could never arrive, until QUIC's own idle timeout eventually gave up.
   silently discarding it -- purely observability, no behavior change to
   the fire-and-forget contract itself.
 
-**Status: fix applied, not yet re-verified live** (see this project's own
-`DO-NOT-COMMIT/` for the pending re-run). If the connect genuinely was
-hanging, this should now surface a `warn!` within 30s per attempt instead
-of a silent 300s stall, and — if the underlying circuit build itself is
-otherwise capable of succeeding — let a subsequent retry get further.
-If a real onion-to-onion connect between two independent local Tor
-daemons is *itself* the blocker (e.g., consistently exceeding 30s in this
-test environment specifically), that will now show up as a repeating
-`warn!` rather than silence, which is itself the next diagnostic step.
+**Status: live-verified working as designed.** Once actually exercised,
+the connect consistently failed fast (a few seconds, well under the 30s
+bound) with `Host unreachable` rather than hanging -- the timeout itself
+was never actually needed to unstick anything in this environment, but
+the `warn!` visibility it came with directly enabled diagnosing Patch 2
+below. Kept as a real, independently-justified robustness fix regardless
+(an unbounded external-process connect with no visibility on failure is
+a latent bug on its own terms).
+
+## Patch 2: wait for `HS_DESC UPLOADED` before returning from `build()`
+
+**Files:** `src/lib.rs` -- `TorCustomTransportBuilder::build` (new
+`HS_DESC_PUBLISH_TIMEOUT`/`HS_DESC_POLL_INTERVAL` constants, an
+`AsyncEvent` handler registered via `set_async_event_handler`, a
+`set_events(false, &mut ["HS_DESC"].into_iter())` subscription, and a
+poll loop after `add_onion_v3` waiting for at least one matching
+`UPLOADED` line).
+
+**Found:** 2026-09-15, continuing Patch 1's investigation. With Patch 1's
+`warn!` in place, `Host unreachable` fired consistently within seconds of
+every single dial attempt, immediately after `Hidden service created` --
+too fast and too consistent for a slow circuit build. Researching Tor's
+own control-spec confirmed the mechanism: `ADD_ONION`'s `250 OK` only
+confirms the service was created *locally* on this Tor process; the
+descriptor upload to the HSDir network (what makes the service actually
+*findable* by another client) is a genuinely separate, asynchronous step,
+signaled by the `HS_DESC` control-protocol event's `UPLOADED` action.
+`build()` had no subscription to this event at all -- callers (this
+crate's own tests, `tetron`, and almost certainly `rayfish`'s original
+integration, which shares the identical gap) start dialing immediately
+after `build()` returns, with no guarantee the descriptor has reached the
+network yet.
+
+**Implementation notes:** `torut::control::AuthenticatedConn` has no
+dedicated "wait for the next async event" call -- events are only
+drained and dispatched to the registered handler as a side effect of
+reading a response to some other command. Since nothing else uses this
+connection after setup (it exists purely to keep the ephemeral service
+alive for as long as it's held), a `noop()` call every
+`HS_DESC_POLL_INTERVAL` (500ms) is used purely to pump that read loop
+promptly, up to `HS_DESC_PUBLISH_TIMEOUT` (180s, generous headroom over
+the single-digit-seconds this project has actually observed in practice).
+A failure to subscribe at all (e.g. an older Tor without this event) is
+non-fatal -- logs a `warn!` and falls back to the pre-patch behavior
+(return immediately, no confirmation) rather than blocking hidden-service
+creation on it.
+
+**Status: live-verified working, but insufficient on its own.** This
+patch initially appeared to silently no-op: `set_events` was failing
+every time with `ConnError::InvalidEventName`, a real bug in `torut`
+itself (see `vendor/torut-0.2.1/PATCH.md`) -- unrelated to this crate,
+but blocking this patch from ever actually subscribing. Once that was
+fixed, both nodes in a live two-VM test reliably
+confirmed `UPLOADED` within single-digit seconds of `ADD_ONION` -- far
+faster than the 180s budget, and far faster than this project originally
+assumed possible. However, `Host unreachable` **still occurred
+consistently** even with confirmed publication -- this fix closes a real
+gap (a caller could otherwise dial before publication with zero
+guarantee), but descriptor publication was not, in the end, the actual
+blocker in the environment this was tested in. See
+`tetron/spec/core.py`'s `TorDialPathWiring` for the fuller investigation
+and what was ultimately found.
