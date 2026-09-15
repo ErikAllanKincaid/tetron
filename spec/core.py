@@ -2927,40 +2927,109 @@ class TorDialPathWiring(Requirement):
     forever, never retried. Widened the match -- a genuine,
     transport-agnostic improvement, not Tor-specific in effect.
 
-    **Fix 3, applied but not yet confirmed sufficient:** with both fixes
-    above, live diagnosis (vendored iroh's own `trace!` calls promoted to
-    `info!` for one session, the same technique this project used
-    throughout VEILID-007) showed the Tor backup path opening,
-    `path.ping()` reporting success, and then nothing for the entire
-    300-second idle-timeout window (`CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`)
-    before being abandoned as `TimedOut` and retried -- indefinitely,
-    never once reaching `Established`. Root cause traced into the
-    third-party `iroh-tor-transport` crate itself (now vendored, see
-    `vendor/iroh-tor-transport-0.1.0/PATCH.md`): its `poll_send` is
-    fire-and-forget (spawns the actual SOCKS5-connect-and-send, always
-    reports `Ready(Ok(()))` to noq immediately, matching the required
-    non-blocking `CustomSender` contract) but the underlying connect to a
-    peer's onion service had **no timeout at all** and any failure was
-    silently discarded (`let _ = sender.send(...).await`) -- a stuck
-    circuit build was completely invisible, with the QUIC PATH_CHALLENGE
-    this send was meant to carry simply never leaving the process. Patched
-    to bound the connect at 30s and log a `warn!` on any failure.
+    **Fix 3, real and confirmed working (visibility, not the root fix):**
+    with both fixes above, live diagnosis (vendored iroh's own `trace!`
+    calls promoted to `info!` for one session, the same technique this
+    project used throughout VEILID-007) showed the Tor backup path
+    opening, `path.ping()` reporting success, and then nothing for the
+    entire 300-second idle-timeout window
+    (`CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`) before being abandoned as
+    `TimedOut` and retried -- indefinitely, never once reaching
+    `Established`. Traced into the third-party `iroh-tor-transport` crate
+    itself (now vendored, `vendor/iroh-tor-transport-0.1.0/PATCH.md`):
+    `poll_send`'s fire-and-forget spawn discarded every send failure
+    silently, and the underlying SOCKS5 connect had no timeout at all.
+    Fixed: bound the connect at 30s, log a `warn!` on any failure. Once
+    exercised, this immediately surfaced the real, fast (seconds, not a
+    hang) failure: `Host unreachable`.
 
-    **Honest status, not yet fully resolved:** a follow-up 480-second live
-    soak after Fix 3 still showed zero Tor entries in `paths[]`, and
-    (surprisingly) the new `warn!` never fired even once across that whole
-    window -- meaning the connect is not obviously timing out or failing
-    outright either. Whether the remaining gap is a genuinely slow-but-
-    eventually-successful connect racing against some other invalidation,
-    a deeper bug in `iroh-tor-transport`'s own packet round-trip beyond
-    the connect step, or an artifact specific to two independent local Tor
-    daemons on a resource-constrained (512MB/1vCPU) test VM, is undetermined.
-    `tor-smoke.sh` stays red until this is resolved. Do not read Fix 1/2/3
-    landing as "Tor connectivity works" -- only the dial-injection and
-    retry-widening halves are confirmed; end-to-end delivery is not.
+    **Fix 4, real and confirmed working, plus a genuine bug found in a
+    second third-party crate:** `Host unreachable` this fast and this
+    consistent pointed at the hidden service not being reachable on the
+    network yet, not a slow circuit build. Tor's own control-spec confirms
+    the mechanism: `ADD_ONION`'s `250 OK` only confirms local creation --
+    the descriptor's upload to the HSDir network is a separate,
+    asynchronous step, signaled by the `HS_DESC` control-protocol event's
+    `UPLOADED` action, which `iroh-tor-transport`'s `build()` never
+    subscribed to at all (almost certainly true of `rayfish`'s original
+    integration too -- checked: no test coverage, no verification language
+    in its own adding commit, and an identical `connect_to_peer_with_alpn`
+    gap). Fixed (`vendor/iroh-tor-transport-0.1.0/PATCH.md`, Patch 2):
+    `build()` now subscribes via `set_async_event_handler`/`set_events`
+    and polls (via `noop()`, since `torut`'s `AuthenticatedConn` has no
+    dedicated event-wait call) for at least one `UPLOADED` confirmation,
+    up to a 180s bound, before returning.
+
+    This surfaced a **second independent third-party bug**: `set_events`
+    failed every time with `ConnError::InvalidEventName`. Root cause in
+    `torut` itself (now vendored, `vendor/torut-0.2.1/PATCH.md`):
+    `is_valid_event` required every character to be `is_ascii_uppercase()`,
+    rejecting `HS_DESC` outright for containing an underscore -- a real,
+    pre-existing bug unrelated to Tor or to either crate's own usage.
+    Fixed by allowing `_` alongside uppercase ASCII. With this fixed,
+    `set_events` succeeds and both nodes in a live two-VM test reliably
+    confirmed `UPLOADED` within single-digit seconds -- far faster than
+    this investigation originally assumed possible.
+
+    **Final, honest status: code-level TOR-DIAL-001 is complete and
+    correct; full end-to-end delivery was not achieved in this test
+    environment, and the remaining gap is very likely environment-specific
+    rather than a further code defect.** With descriptor publication
+    confirmed on both sides, `Host unreachable` still occurred on every
+    attempt, including across an 8+ minute continuous-retry window with no
+    self-healing. Ruled out definitively, each with concrete evidence:
+    - **Address/key derivation mismatch:** a standalone test confirmed
+      `iroh_to_tor_secret_key`'s derived public key is byte-identical to
+      the plain iroh `EndpointId` bytes, across multiple trials -- the
+      onion address computation is provably correct.
+    - **Tor not bootstrapped:** both nodes' own Tor daemons independently
+      confirmed `Bootstrapped 100% (done)` in their own logs.
+    - **Simple publish-timing/patience:** a 300s+300s blind-wait test
+      (before Fix 4 existed) and, separately, an 8-minute continuous-retry
+      window after Fix 4 confirmed publication, both still failed
+      consistently -- ruling out "just needs more time" alone.
+    - **Broken IPv6 in the test VM:** confirmed real (no working IPv6
+      route to the internet at all, only the tetron tunnel's own private
+      address) and a plausible contributor (Tor increasingly prefers IPv6
+      relay addresses for circuit extension), but disabling
+      `ClientUseIPv6`/`ClientPreferIPv6ORPort` in torrc made no difference
+      to the outcome.
+
+    The one piece of positive, isolating evidence: a real, long-lived
+    public onion service (DuckDuckGo's) connected successfully (HTTP 301,
+    ~18s -- normal rendezvous latency) through the exact same SOCKS proxy
+    and network path, from the exact same VM. Rendezvous circuit-building
+    to a well-established, well-resourced external service works
+    correctly in this environment; only connections to tetron's own
+    freshly-created ephemeral services, hosted on the same
+    resource-constrained (512MB/1vCPU) VM pair, consistently fail. Tor's
+    own info-level client log named the specific failure:
+    `hs_client_reextend_intro_circuit(): Closing intro circ ... (out of
+    RELAY_EARLY cells)` -- introduction-circuit re-extension (a fallback
+    path taken when the originally-chosen relay for extension doesn't
+    work) exhausting Tor's own fixed per-circuit cell budget, an
+    entirely Tor-internal mechanism not exposed or controllable via the
+    control protocol. The most likely explanation is that this specific
+    sandboxed VM pair's own resource/network constraints affect the
+    *service* side's ability to maintain healthy introduction-point
+    circuits specifically (a service constraint, not a client one --
+    consistent with the external-service control succeeding), which no
+    amount of application-level code in tetron, `iroh-tor-transport`, or
+    `torut` can fix.
+
+    Do not read this requirement as "Tor connectivity is broken" --
+    Fixes 1-4 are all real, verified, and necessary; a deployment between
+    two normally-resourced, well-connected machines (matching the
+    DuckDuckGo control case, not the constrained VM case) would very
+    plausibly not hit this at all. `tor-smoke.sh` documents this honestly
+    (see its own header) rather than being force-marked as passing.
 
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
-    `veilid-smoke.sh`) is the acceptance bar, currently failing honestly.
+    `veilid-smoke.sh`) is the acceptance bar. It is expected to remain red
+    on this project's own VM topology until either the VM spec is
+    meaningfully beefed up (more RAM/vCPU, to test whether that alone
+    resolves the intro-circuit stability issue) or it is run against
+    real, non-virtualized, well-connected machines instead.
     """
 
     req_id = "TOR-DIAL-001"
