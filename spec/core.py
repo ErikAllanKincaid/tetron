@@ -3216,16 +3216,67 @@ class TorDialPathWiring(Requirement):
     (`test_sender_reuses_connection`) continues to pass unchanged, confirming
     no regression to the already-correct sequential case.
 
-    **Status: implemented, unit-tested; live cross-machine re-verification
-    pending** (not yet re-run against the real hotspot/separate-network
-    setup at the time this paragraph was written -- update once it has
-    been).
+    **Status (Fix 8): implemented, unit-tested, live cross-machine
+    re-verified.** Fix 8 measurably worked -- confirmed SOCKS connection
+    count dropped from ~146/5min to single digits across repeated re-tests
+    -- but end-to-end Tor delivery still did not succeed. A second AI model
+    (a fresh, independent reasoning pass over this investigation's evidence,
+    with live web research access) was brought in at this point given how
+    surprising continued failure was for a well-established protocol; it
+    traced the exact mechanism in Tor's own C source
+    (`src/feature/hs/hs_client.c`, `intro_point_is_usable()`/
+    `handle_introduce_ack_bad()`/`hs_cache_client_intro_state_find()`) and
+    identified `INTRODUCE_ACK` NACK reason 1 (`NOT_RECOGNIZED`) in the live
+    logs -- strong evidence of clients holding stale cached descriptors
+    from this investigation's own many hours of same-identity restarts,
+    since Tor's client only refetches a descriptor once every intro point
+    in the cached one has already failed. A full Tor-process restart on
+    both sides (purging all client-side cache, not just the application)
+    confirmed this: genuine `INTRODUCE_ACK ack! Informing rendezvous`
+    successes appeared for the first time in this investigation (3 on one
+    side, 1 on the other) where only NACKs had occurred before.
+
+    **Fix 9, found immediately after, the actual remaining mechanism:**
+    even a successful `INTRODUCE_ACK` did not yet translate into a Tor path
+    at the `iroh-tor-transport`/tetron layer. Tracing one such stream's
+    full lifecycle in Tor's own log (`connection_ap_handshake_attach_circuit`'s
+    "stream N sec old" progression) showed Tor cycling through **four**
+    distinct rendezvous-circuit-build attempts in ~25 seconds -- each one
+    itself completing a real intro-ack success and a real
+    `RENDEZVOUS_ESTABLISHED`, but the client-facing stream still not
+    attached to data flow, normal real-world v3 rendezvous behavior under
+    ordinary relay/circuit jitter, not a hang. At the 28-30s mark, this
+    investigation's own `CONNECT_TIMEOUT` (Patch 1, 30s) fired --
+    `iroh-tor-transport: Tor packet send failed ... timed out after 30s` --
+    and Tor's own log shows, in the same second, a mass burst of every
+    intro point suddenly marked "had an error. Not usable" and streams left
+    "waiting for rendezvous desc". This is the client-side SOCKS5 socket
+    being abandoned by *this codebase's own timeout*, which Tor's client
+    then reasonably interprets as the whole rendezvous having failed --
+    self-inflicted, not a Tor-side defect: 30s was simply not generous
+    enough for Tor's own normal multi-cycle rendezvous establishment to
+    complete, so this investigation's own code was the one giving up first,
+    every time, framing its own impatience as Tor's failure.
+
+    **Fix:** raise `CONNECT_TIMEOUT` from 30s to 90s (`vendor/iroh-tor-transport-0.1.0/src/lib.rs`),
+    generous enough for several real-world rendezvous-circuit-build cycles
+    (observed at ~5-8s each) while still leaving room for at least two such
+    attempts inside the existing 300s `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`
+    ceiling (`vendor/iroh-1.0.3/PATCH.md`) before the QUIC path itself gives
+    up and retries from scratch -- matching the same "give Tor's own timing
+    real headroom" philosophy already applied to `HS_DESC_PUBLISH_TIMEOUT`
+    (180s, Patch 2).
+
+    **Status: implemented; live cross-machine re-verification pending** --
+    the hotspot machine needed for the separate-network test became
+    unavailable for approximately 2 hours partway through this
+    investigation. Update this requirement once that re-test result is in.
 
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
     `veilid-smoke.sh`) is the acceptance bar. Update its own header once
-    Fix 8's live re-verification result is in, and file the Fix 7 vendored-
+    Fix 9's live re-verification result is in, and file the Fix 7 vendored-
     side-effect-in-a-retried-path defect as tracked, separate follow-up work
-    in `src/transport.rs` regardless of Fix 8's outcome.
+    in `src/transport.rs` regardless of outcome.
     """
 
     req_id = "TOR-DIAL-001"
