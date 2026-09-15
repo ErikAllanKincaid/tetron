@@ -3147,11 +3147,85 @@ class TorDialPathWiring(Requirement):
     *this* remaining intro-point-usability symptom; that has not been
     determined either way yet.
 
+    **Fix 7 (a real, independent bug, ruled out as THE cause but kept):**
+    while investigating the intro-point-usability symptom, live testing
+    also found that `bind_endpoint` (`src/transport.rs`) retries its
+    *entire* body -- including the stateful `TorCustomTransport::builder
+    ().build()` call (`ADD_ONION` + the quorum wait) -- on any QUIC socket
+    bind failure at the fixed listen port. When two tetron instances on one
+    host contend for the same port (as this investigation's own isolated
+    test-instance setup did, coexisting with the host's separate production
+    daemon), the fixed-port attempt's `bind_endpoint` call fully succeeds at
+    creating a Tor onion service and confirming HSDir quorum, then fails
+    only at the final QUIC bind step -- discarding that entire successful
+    result, dropping its live Tor control connection, and (confirmed via
+    Tor's own log: `hs_service_del_ephemeral`, `circuit_mark_for_close_`)
+    tearing down the ephemeral service and its introduction circuits before
+    the retry's fresh onion service has even had a chance to be evaluated
+    by anyone. Fixed by giving the isolated test instance its own
+    non-colliding `listen-port` and re-testing: confirmed via Tor's log
+    that "Hidden service created" now appears only once per daemon start,
+    with no `hs_service_del_ephemeral` churn. **This is a real,
+    independently-worth-fixing defect** (a stateful side effect should not
+    live inside a silently-retried code path) but re-testing with it worked
+    around showed the intro-point-usability symptom **unchanged** -- so it
+    was not the (or not the only) cause of that symptom. Not yet fixed in
+    `src/transport.rs` itself (only worked around in the test setup); left
+    as a known follow-up, not blocking this requirement's own resolution.
+
+    **Fix 8, the actual mechanism, found and fixed:** `iroh-tor-transport`'s
+    `TorPacketSender::get_or_connect` has no de-duplication for concurrent
+    connect attempts to the same peer. `poll_send` (the `CustomSender`
+    trait's non-blocking send hook) spawns a brand-new, independent,
+    fire-and-forget `tokio::spawn` task per outbound packet/chunk -- and
+    since `get_or_connect` only records a peer's connection in its cache
+    *after* a connect succeeds, every packet that needs to go out while a
+    previous connect for the same peer is still in flight (QUIC's own
+    PATH_CHALLENGE retransmission, or this project's own backup-path
+    probing, both fire well inside the many-second latency a real Tor
+    hidden-service rendezvous needs) independently kicks off its *own*
+    fresh `Socks5Stream::connect`, racing Tor's own connection-establishment
+    against itself. Confirmed via Tor's own log: 146 distinct "New SOCKS
+    connection opened" events in a single ~5-minute test window (roughly
+    one every 2 seconds) alongside repeated `Found unusable descriptor in
+    cache for [scrubbed]. Refetching..` -- Tor's own client invalidating and
+    re-fetching a descriptor that a competing, uncoordinated attempt had
+    just interrupted, a self-perpetuating cycle that can never let a single
+    attempt run long enough to complete Tor's own real-world rendezvous
+    latency (confirmed independently in this investigation's earlier control
+    test: ~18s for a real external onion service). This fully explains every
+    observed symptom -- the fast, dozens-deep `intro_point_is_usable():
+    ...had an error. Not usable` bursts, the occasional differently-shaped
+    error (`Host unreachable` vs. a 30s timeout vs. `unexpected end of
+    file`, all seen across different runs), and why a `rendezvous circuit
+    has opened` sometimes appears without ever completing -- as symptoms of
+    the same underlying stampede, not independent Tor-network flakiness.
+
+    **Fix:** `get_or_connect` now holds a per-peer `tokio::sync::Mutex`
+    slot (`streams: Mutex<HashMap<EndpointId, Arc<Mutex<Option<...>>>>>`,
+    replacing the prior `HashMap<EndpointId, Arc<Mutex<TcpStream>>>`) across
+    the entire connect attempt, so concurrent callers for the same peer
+    serialize on that slot: the first one through actually connects and
+    populates it, every other one waiting on the same slot sees it already
+    populated once unblocked and reuses it immediately, with zero additional
+    SOCKS5 connects. Unit tested (`vendor/iroh-tor-transport-0.1.0/src/tests/mod.rs`)
+    by firing several concurrent `send()` calls to the same peer against a
+    connector that blocks until released, asserting the connector was
+    invoked exactly once despite every call needing a connection
+    concurrently -- the existing sequential-reuse test
+    (`test_sender_reuses_connection`) continues to pass unchanged, confirming
+    no regression to the already-correct sequential case.
+
+    **Status: implemented, unit-tested; live cross-machine re-verification
+    pending** (not yet re-run against the real hotspot/separate-network
+    setup at the time this paragraph was written -- update once it has
+    been).
+
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
-    `veilid-smoke.sh`) is the acceptance bar. Still expected to fail
-    end-to-end until the intro-point-usability symptom above is understood
-    or resolved; update its own header to describe this specific remaining
-    symptom rather than the now-fixed HSDir-quorum one.
+    `veilid-smoke.sh`) is the acceptance bar. Update its own header once
+    Fix 8's live re-verification result is in, and file the Fix 7 vendored-
+    side-effect-in-a-retried-path defect as tracked, separate follow-up work
+    in `src/transport.rs` regardless of Fix 8's outcome.
     """
 
     req_id = "TOR-DIAL-001"

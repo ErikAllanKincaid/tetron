@@ -206,3 +206,89 @@ fn test_hs_desc_wait_stops_at_deadline_even_below_quorum() {
 fn test_hs_desc_wait_zero_confirmations_before_deadline_keeps_waiting() {
     assert!(!hs_desc_wait_should_stop(0, 8, false));
 }
+
+// tetron-local patch (PATCH.md, Patch 4, TOR-DIAL-001 follow-up): concurrent
+// sends to the same peer must not race independent SOCKS5 connects (Fix 8,
+// tetron/spec/core.py's TorDialPathWiring) -- each concurrent `send()` call
+// arriving before a prior connect for the same peer finishes must share
+// that one in-flight attempt, not each kick off its own.
+#[tokio::test]
+async fn test_sender_dedupes_concurrent_connects_to_same_peer() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+
+    // Accepts every incoming connection and holds it open in `held` (this
+    // test only cares how many connect ATTEMPTS were made, not the data
+    // path -- an accepted stream immediately dropped would close its
+    // client-side counterpart, failing the client's write with a broken
+    // pipe before the assertion is ever reached).
+    let server = tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => held.push(stream),
+                Err(_) => return,
+            }
+        }
+    });
+
+    let connects = Arc::new(AtomicUsize::new(0));
+    // Gates the connector so every concurrent `send()` call is guaranteed to
+    // arrive at `get_or_connect` before the first connect finishes -- a
+    // connector that resolves instantly could let calls race in a way that
+    // happens not to overlap, defeating the point of the test.
+    let (release_tx, _release_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let io = Arc::new(TorStreamIo::new(
+        || async { Err(std::io::Error::other("accept not used in this test")) },
+        {
+            let connects = connects.clone();
+            let release_tx = release_tx.clone();
+            move |_endpoint| {
+                let connects = connects.clone();
+                let mut release_rx = release_tx.subscribe();
+                async move {
+                    connects.fetch_add(1, Ordering::SeqCst);
+                    let _ = release_rx.recv().await;
+                    let stream = TcpStream::connect(addr).await?;
+                    Ok(stream)
+                }
+            }
+        },
+    ));
+    let sender = Arc::new(TorPacketSender::new(io));
+
+    let to = SecretKey::generate().public();
+    let from = SecretKey::generate().public();
+    let packet = TorPacket {
+        from,
+        data: Bytes::from_static(b"concurrent"),
+        segment_size: None,
+    };
+
+    let mut sends = tokio::task::JoinSet::new();
+    for _ in 0..5 {
+        let sender = sender.clone();
+        let packet = packet.clone();
+        sends.spawn(async move { sender.send(to, &packet).await });
+    }
+
+    // Give every spawned send a chance to reach (and block inside)
+    // `get_or_connect` before releasing the connector -- if de-duplication
+    // were missing, this is the window where each would have already
+    // kicked off its own independent connect.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = release_tx.send(());
+
+    while let Some(res) = sends.join_next().await {
+        res??;
+    }
+
+    assert_eq!(
+        connects.load(Ordering::SeqCst),
+        1,
+        "5 concurrent sends to the same peer should share one connect attempt"
+    );
+
+    server.abort();
+    Ok(())
+}
