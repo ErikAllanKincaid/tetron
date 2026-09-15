@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--tor` dial-path candidate injection** (`TOR-DIAL-001`): the Tor custom transport's own onion-address candidate was never actually offered to the mesh dial path, so `--tor` connected peers over Direct/Relay only and never carried real traffic over Tor, silently. `connect_to_peer_with_alpn` now injects it the same way it already does for Veilid's roster-carried identity. Also fixed a related gap in the vendored iroh copy where a backup path abandoned due to a local network change was never retried. **Known limitation, not yet resolved:** end-to-end delivery over the resulting Tor backup path is still not confirmed working end to end (`tetron-testsuite`'s `tor-smoke.sh` fails) — see `spec/core.py`'s `TorDialPathWiring` for the current, honest status.
+
 ## [0.13.0] - 2026-09-14
 
 ### Changed

@@ -93,6 +93,12 @@ pub(crate) struct JoinParams {
     /// alongside `my_hostname` in the join/reconnect handshake so the
     /// coordinator can seat it directly in the roster entry it constructs.
     pub(crate) my_veilid_node_id: Option<String>,
+    /// TOR-DIAL-001: the daemon-wide Tor candidate-address resolver, used
+    /// (unlike `my_veilid_node_id` above) purely as a dial-time input for
+    /// `transport::connect_to_peer_with_alpn` -- not sent over the wire, so
+    /// it isn't gated on this network's own transport preference the way
+    /// `my_veilid_node_id` is.
+    pub(crate) tor_addr_lookup: Option<crate::transport::TorAddrLookup>,
     pub(crate) net_pubkey: EndpointId,
     pub(crate) invite_secret: Option<Vec<u8>>,
     /// From the fetched blob: reusable join keys, so this node can validate
@@ -171,6 +177,7 @@ pub(crate) async fn join_mesh_shared(
     let JoinParams {
         my_hostname,
         my_veilid_node_id,
+        tor_addr_lookup,
         net_pubkey,
         invite_secret,
         reusable_keys,
@@ -281,6 +288,7 @@ pub(crate) async fn join_mesh_shared(
         token.clone(),
         network_subnet,
         my_veilid_node_id.clone(),
+        tor_addr_lookup.clone(),
     );
 
     let live_state = build_member_state(
@@ -518,6 +526,8 @@ fn spawn_roster_peer_dials(
     // This daemon's own Veilid NodeId (VEILID-003), sent in the MeshHello
     // each dialed peer receives.
     my_veilid_node_id: Option<String>,
+    // TOR-DIAL-001: dial-time candidate resolver, see `JoinParams::tor_addr_lookup`.
+    tor_addr_lookup: Option<transport::TorAddrLookup>,
 ) {
     tokio::spawn(async move {
         use futures::StreamExt;
@@ -532,6 +542,7 @@ fn spawn_roster_peer_dials(
             let (disconnect_tx, token) = (&disconnect_tx, &token);
             let network_name = &network_name;
             let my_veilid_node_id = &my_veilid_node_id;
+            let tor_addr_lookup = &tor_addr_lookup;
             dials.push(async move {
                 // VEILID-012: this node's own reconnect loop or (if we're
                 // the coordinator) dial-retry task may already be dialing
@@ -558,6 +569,7 @@ fn spawn_roster_peer_dials(
                             ep,
                             member.identity,
                             member.veilid_node_id.as_deref(),
+                            tor_addr_lookup.as_ref(),
                             alpn,
                         ),
                     ) => r,
@@ -945,6 +957,8 @@ pub(crate) fn spawn_reconnect_loop(
     // re-readable from per-network config (it's a daemon-session-scoped
     // value off `MeshManager::veilid_node_id`), so it's captured here.
     my_veilid_node_id: Option<String>,
+    // TOR-DIAL-001: dial-time candidate resolver, see `JoinParams::tor_addr_lookup`.
+    tor_addr_lookup: Option<transport::TorAddrLookup>,
 ) -> JoinHandle<()> {
     // The reconnect MeshHello reads the current hostname fresh from config
     // (`outgoing_hostname`), so no captured hostname is threaded through.
@@ -1053,6 +1067,7 @@ pub(crate) fn spawn_reconnect_loop(
             let pruned_peers = pruned_peers.clone();
             let dial_in_flight = dial_in_flight.clone();
             let my_veilid_node_id = my_veilid_node_id.clone();
+            let tor_addr_lookup = tor_addr_lookup.clone();
 
             tokio::spawn(async move {
                 let mut backoff = BACKOFF_INITIAL;
@@ -1199,6 +1214,7 @@ pub(crate) fn spawn_reconnect_loop(
                         &ep,
                         peer_id,
                         peer_veilid_node_id.as_deref(),
+                        tor_addr_lookup.as_ref(),
                         &alpn,
                     )
                     .await

@@ -2887,6 +2887,85 @@ class VeilidExternalDaemonReconnect(Requirement):
     req_id = "VEILID-019"
 
 
+class TorDialPathWiring(Requirement):
+    """REQUIREMENT-ID: TOR-DIAL-001
+
+    Mirrors `VeilidDialPathWiring`'s history (VEILID-002/003/007) but for
+    Tor: `--tor` connected peers over Direct/Relay fine, but the Tor
+    custom-transport candidate was never actually offered to iroh at dial
+    time, so it never carried real traffic -- confirmed live via
+    `tetron-testsuite`'s `tor-smoke.sh`, which showed zero Tor entries in
+    `tetron status --json`'s `paths[]` at all, not even an unvalidated
+    one. Found and worked on 2026-09-14/15, alongside adding `tor-smoke.sh`
+    itself (this repo's first Tor connectivity regression coverage).
+
+    **Fix 1, real and confirmed working:** `connect_to_peer_with_alpn`
+    (`src/transport.rs`, the single dial chokepoint) had a
+    `TransportAddr::Custom` injection branch for Veilid's roster-carried
+    `veilid_node_id` but none for Tor. Unlike Veilid, a Tor onion address
+    needs no roster field -- it is a pure, instant function of the peer's
+    own `EndpointId` (`iroh_tor_transport::TorAddressLookup::resolve`) --
+    so the fix is a new `TorAddrLookup` type alias (`Arc<dyn
+    iroh::address_lookup::AddressLookup>`), an always-present slot on
+    `MeshManager` mirroring `veilid_node_id`'s "empty when not
+    built/enabled" pattern (no `ArcSwap` needed, since unlike Veilid's
+    identity this never changes after `bind_endpoint` returns), threaded
+    into all 9 call sites of `connect_to_peer_with_alpn`
+    (`coordinator.rs`, `join.rs`, `create_join.rs`; `reconverge.rs`'s
+    single blob-fetch call site deliberately still passes `None` -- no
+    `MeshManager` handle available there and not the path `tor-smoke.sh`
+    exercises). Live-verified via debug logging: the candidate is now
+    correctly built and passed into `ep.connect()` on both a joiner's and
+    a coordinator's own outbound dial.
+
+    **Fix 2, real and confirmed working:** `PathAbandonReason::
+    UnusableAfterNetworkChange` was missing from the vendored iroh's own
+    stale-path retry match (`vendor/iroh-1.0.3/PATCH.md`'s VEILID-016
+    patch only covered `TimedOut`/`RemoteAbandoned{PATH_UNSTABLE_OR_POOR}`,
+    since Veilid's own failure modes never surfaced this reason). A Tor
+    backup path hit exactly this abandon reason and was silently dropped
+    forever, never retried. Widened the match -- a genuine,
+    transport-agnostic improvement, not Tor-specific in effect.
+
+    **Fix 3, applied but not yet confirmed sufficient:** with both fixes
+    above, live diagnosis (vendored iroh's own `trace!` calls promoted to
+    `info!` for one session, the same technique this project used
+    throughout VEILID-007) showed the Tor backup path opening,
+    `path.ping()` reporting success, and then nothing for the entire
+    300-second idle-timeout window (`CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`)
+    before being abandoned as `TimedOut` and retried -- indefinitely,
+    never once reaching `Established`. Root cause traced into the
+    third-party `iroh-tor-transport` crate itself (now vendored, see
+    `vendor/iroh-tor-transport-0.1.0/PATCH.md`): its `poll_send` is
+    fire-and-forget (spawns the actual SOCKS5-connect-and-send, always
+    reports `Ready(Ok(()))` to noq immediately, matching the required
+    non-blocking `CustomSender` contract) but the underlying connect to a
+    peer's onion service had **no timeout at all** and any failure was
+    silently discarded (`let _ = sender.send(...).await`) -- a stuck
+    circuit build was completely invisible, with the QUIC PATH_CHALLENGE
+    this send was meant to carry simply never leaving the process. Patched
+    to bound the connect at 30s and log a `warn!` on any failure.
+
+    **Honest status, not yet fully resolved:** a follow-up 480-second live
+    soak after Fix 3 still showed zero Tor entries in `paths[]`, and
+    (surprisingly) the new `warn!` never fired even once across that whole
+    window -- meaning the connect is not obviously timing out or failing
+    outright either. Whether the remaining gap is a genuinely slow-but-
+    eventually-successful connect racing against some other invalidation,
+    a deeper bug in `iroh-tor-transport`'s own packet round-trip beyond
+    the connect step, or an artifact specific to two independent local Tor
+    daemons on a resource-constrained (512MB/1vCPU) test VM, is undetermined.
+    `tor-smoke.sh` stays red until this is resolved. Do not read Fix 1/2/3
+    landing as "Tor connectivity works" -- only the dial-injection and
+    retry-widening halves are confirmed; end-to-end delivery is not.
+
+    ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
+    `veilid-smoke.sh`) is the acceptance bar, currently failing honestly.
+    """
+
+    req_id = "TOR-DIAL-001"
+
+
 # --------------------------------------------------------------------------
 # Transport path selection (RELAY-*, PATHPREF-*)
 #

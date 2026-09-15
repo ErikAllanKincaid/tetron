@@ -759,6 +759,23 @@ impl RemoteStateActor {
                         TransportErrorCode::from(error_code)
                             == TransportErrorCode::PATH_UNSTABLE_OR_POOR
                     }
+                    // tetron-local patch (PATCH.md, TOR-DIAL-001 follow-up):
+                    // "the path became unusable after a local network
+                    // change" (noq_proto's own doc comment) is the same
+                    // stale-validation category as `TimedOut` -- an
+                    // environmental condition, not a deliberate close --
+                    // confirmed live: a Tor custom-transport backup path
+                    // opened, pinged, and was immediately abandoned with
+                    // this exact reason during a settle window with no
+                    // application-level close involved, and (unlike
+                    // `TimedOut`/`RemoteAbandoned`) was never retried,
+                    // leaving zero Tor entries in `paths[]` at all rather
+                    // than an unvalidated one. Missing from VEILID-016's
+                    // original match because Veilid's own failure modes
+                    // (DHT resolution flakiness) never surfaced this
+                    // specific reason; Tor's TCP/SOCKS5-backed transport
+                    // does.
+                    PathAbandonReason::UnusableAfterNetworkChange => true,
                     _ => false,
                 };
                 if is_stale_validation_abandon

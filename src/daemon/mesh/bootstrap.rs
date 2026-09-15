@@ -176,7 +176,7 @@ async fn build_daemon(
     let path_preference: crate::path_selector::PathPreferenceSlot = Arc::new(
         arc_swap::ArcSwapOption::from(app_config.path_preference.clone().map(Arc::new)),
     );
-    let (ep, veilid_node_id) = transport::create_endpoint_with_alpns(
+    let (ep, veilid_node_id, tor_addr_lookup) = transport::create_endpoint_with_alpns(
         key.clone(),
         alpns,
         use_tor,
@@ -237,6 +237,7 @@ async fn build_daemon(
     let daemon = Arc::new(MeshManager {
         endpoint: ep,
         veilid_node_id,
+        tor_addr_lookup,
         path_preference,
         identity,
         stats: stats.clone(),

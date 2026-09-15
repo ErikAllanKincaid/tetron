@@ -31,6 +31,8 @@ pub(crate) struct CoordinatorCleanup {
     /// each redialed member receives. `None` unless this network's own
     /// `transport` is `TransportMode::Veilid`.
     pub(crate) my_veilid_node_id: Option<String>,
+    /// TOR-DIAL-001: dial-time candidate resolver, see `JoinParams::tor_addr_lookup`.
+    pub(crate) tor_addr_lookup: Option<transport::TorAddrLookup>,
 }
 
 pub(crate) fn spawn_peer_cleanup(
@@ -133,6 +135,7 @@ pub(crate) fn spawn_peer_cleanup(
                                         c.disconnect_tx.clone(),
                                         token.clone(),
                                         c.my_veilid_node_id.clone(),
+                                        c.tor_addr_lookup.clone(),
                                         c.blob_store.clone(),
                                         c.dht_notify.clone(),
                                     );
@@ -184,6 +187,8 @@ fn spawn_coordinator_dial_retry(
     disconnect_tx: mpsc::Sender<forward::DisconnectEvent>,
     token: CancellationToken,
     my_veilid_node_id: Option<String>,
+    // TOR-DIAL-001: dial-time candidate resolver, see `JoinParams::tor_addr_lookup`.
+    tor_addr_lookup: Option<transport::TorAddrLookup>,
     blob_store: FsStore,
     dht_notify: Option<Arc<tokio::sync::Notify>>,
 ) {
@@ -290,6 +295,7 @@ fn spawn_coordinator_dial_retry(
                 &endpoint,
                 peer_id,
                 peer_veilid_node_id.as_deref(),
+                tor_addr_lookup.as_ref(),
                 &alpn,
             )
             .await

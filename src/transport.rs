@@ -18,6 +18,18 @@ use std::sync::Arc;
 use crate::config::ServerOverride;
 use crate::path_selector::{PathPreferenceSlot, TetronPathSelector};
 
+/// TOR-DIAL-001: a type-erased handle to Tor's own peer-address resolution
+/// (`TorCustomTransport::discovery()`), kept regardless of the `tor` cargo
+/// feature (an empty `None` slot when not built/enabled) so callers like
+/// [`connect_to_peer_with_alpn`] and [`crate::daemon::MeshManager`] don't need
+/// their own `#[cfg(feature = "tor")]` gating just to hold this value --
+/// mirrors `veilid_node_id`'s "always-present slot" pattern just below.
+/// Unlike `veilid_node_id`, this never changes after `bind_endpoint` returns:
+/// a Tor onion address is a pure, instant function of the peer's own
+/// `EndpointId` (`TorAddressLookup::resolve`, `iroh-tor-transport`'s own
+/// source), not an asynchronously-resolved value, so no `ArcSwap` is needed.
+pub type TorAddrLookup = Arc<dyn iroh::address_lookup::AddressLookup>;
+
 /// Compiled-default fixed UDP port the endpoint binds so users can
 /// port-forward a stable, known port for guaranteed direct reachability
 /// (Tailscale-style). Unlike an ephemeral port, this stays the same across
@@ -69,13 +81,17 @@ pub async fn create_endpoint_with_alpns(
     discovery: &ServerOverride,
     listen_port: u16,
     path_preference: PathPreferenceSlot,
-) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
+) -> Result<(
+    Endpoint,
+    Arc<arc_swap::ArcSwapOption<String>>,
+    Option<TorAddrLookup>,
+)> {
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
     // that the daemon always starts even if the fixed port is already in use.
     let fixed = format!("0.0.0.0:{listen_port}");
-    let (ep, veilid_node_id) = match bind_endpoint(
+    let (ep, veilid_node_id, tor_addr_lookup) = match bind_endpoint(
         &secret_key,
         &alpns,
         tor,
@@ -111,7 +127,7 @@ pub async fn create_endpoint_with_alpns(
 
     tracing::info!(id = %ep.id().fmt_short(), "iroh endpoint ready");
 
-    Ok((ep, veilid_node_id))
+    Ok((ep, veilid_node_id, tor_addr_lookup))
 }
 
 /// Builds and binds an iroh endpoint at `bind` with the N0 preset and (when
@@ -128,7 +144,11 @@ async fn bind_endpoint(
     relay: &ServerOverride,
     discovery: &ServerOverride,
     path_preference: PathPreferenceSlot,
-) -> Result<(Endpoint, Arc<arc_swap::ArcSwapOption<String>>)> {
+) -> Result<(
+    Endpoint,
+    Arc<arc_swap::ArcSwapOption<String>>,
+    Option<TorAddrLookup>,
+)> {
     #[allow(unused_mut)]
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
@@ -169,24 +189,37 @@ async fn bind_endpoint(
     }
     builder = apply_discovery(builder, discovery)?;
 
+    // TOR-DIAL-001: `tor_addr_lookup` is `connect_to_peer_with_alpn`'s own
+    // source of a Tor candidate address at dial time -- see that function
+    // for why `.address_lookup(...)` alone (registered on the endpoint just
+    // below) is not sufficient. Always present as an empty slot, mirroring
+    // `veilid_node_id` below, so the caller doesn't need its own
+    // `#[cfg(feature = "tor")]` gating just to hold this value.
     #[cfg(feature = "tor")]
-    if tor {
+    let tor_addr_lookup: Option<TorAddrLookup> = if tor {
         let tor_transport = iroh_tor_transport::TorCustomTransport::builder()
             .build(secret_key.clone())
             .await
             .context("failed to create Tor transport — is Tor running with ControlPort 9051?")?;
+        let lookup: TorAddrLookup = Arc::new(tor_transport.discovery());
         builder = builder
             .add_custom_transport(
                 tor_transport.clone() as Arc<dyn iroh::endpoint::transports::CustomTransport>
             )
             .address_lookup(tor_transport.discovery());
         tracing::info!("Tor transport enabled");
-    }
+        Some(lookup)
+    } else {
+        None
+    };
 
     #[cfg(not(feature = "tor"))]
-    if tor {
-        anyhow::bail!("Tor support requires building with --features tor");
-    }
+    let tor_addr_lookup: Option<TorAddrLookup> = {
+        if tor {
+            anyhow::bail!("Tor support requires building with --features tor");
+        }
+        None
+    };
 
     // Unlike Tor, no `.address_lookup(...)` is registered here: a custom
     // transport's local address is NOT automatically included in what
@@ -240,7 +273,7 @@ async fn bind_endpoint(
         .bind()
         .await
         .context("failed to bind iroh endpoint")?;
-    Ok((ep, veilid_node_id))
+    Ok((ep, veilid_node_id, tor_addr_lookup))
 }
 
 /// Builds the [`QuicTransportConfig`] for tetron's data-plane shape (one stream
@@ -332,10 +365,22 @@ fn apply_discovery(mut builder: Builder, o: &ServerOverride) -> Result<Builder> 
 /// -- resolved here into a `TransportAddr::Custom` and appended, since a
 /// custom transport's address is not discoverable through iroh's normal
 /// discovery path (see `bind_endpoint`'s doc comment on the same point).
+///
+/// `tor_addr_lookup` (TOR-DIAL-001), when `Some`, is queried the same way for
+/// a Tor onion candidate. Unlike Veilid's, this doesn't need a per-peer
+/// roster field: a peer's onion address is a pure function of `id` itself
+/// (`TorAddressLookup::resolve`, `iroh-tor-transport`), so any node can
+/// derive any other node's Tor candidate unconditionally, the moment Tor is
+/// enabled locally -- the lookup is only ever consulted here (not via
+/// `.address_lookup(...)` on the endpoint) because `ep.connect()` never
+/// invokes the registered discovery hook when the caller already supplies
+/// known addresses via `EndpointAddr`, which the peercache above almost
+/// always does for an already-admitted mesh peer.
 pub async fn connect_to_peer_with_alpn(
     ep: &Endpoint,
     id: EndpointId,
     veilid_node_id: Option<&str>,
+    tor_addr_lookup: Option<&TorAddrLookup>,
     alpn: &[u8],
 ) -> Result<Connection> {
     #[cfg_attr(not(feature = "veilid"), allow(unused_mut))]
@@ -365,6 +410,25 @@ pub async fn connect_to_peer_with_alpn(
     }
     #[cfg(not(feature = "veilid"))]
     let _ = veilid_node_id;
+
+    if let Some(lookup) = tor_addr_lookup
+        && let Some(mut stream) = lookup.resolve(id)
+    {
+        use futures::StreamExt;
+        match stream.next().await {
+            Some(Ok(item)) => {
+                let tor_addr = item.into_endpoint_addr();
+                tracing::debug!(peer = %id.fmt_short(), "dialing with a Tor custom-transport candidate address");
+                addrs.get_or_insert_with(Vec::new).extend(tor_addr.addrs);
+            }
+            Some(Err(e)) => {
+                tracing::warn!(peer = %id.fmt_short(), error = %e, "Tor address lookup failed, dialing without a Tor candidate");
+            }
+            None => {
+                tracing::debug!(peer = %id.fmt_short(), "Tor address lookup returned no candidate");
+            }
+        }
+    }
 
     let addr: EndpointAddr = match addrs {
         Some(addrs) => EndpointAddr::from_parts(id, addrs),

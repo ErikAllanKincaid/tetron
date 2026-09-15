@@ -66,10 +66,22 @@ pub(crate) async fn fetch_verified_blob(
     peer_ids.dedup();
     for pid in &peer_ids {
         // No roster in scope to resolve a Veilid address from (this dial is
-        // itself how the roster gets (re-)fetched).
-        if let Ok(conn) =
-            transport::connect_to_peer_with_alpn(endpoint, *pid, None, iroh_blobs::protocol::ALPN)
-                .await
+        // itself how the roster gets (re-)fetched). TOR-DIAL-001: a Tor
+        // candidate could in principle still be derived here (it needs no
+        // roster), but this function has no `MeshManager` handle to read
+        // `tor_addr_lookup` from and isn't worth threading one through for
+        // a background blob-reconverge path that already has Direct/Relay
+        // candidates from `peers`/seeds in the common case -- unlike the
+        // main mesh dial path (`connect_to_peer_with_alpn`'s other
+        // callers), this isn't the path `tor-smoke.sh` exercises.
+        if let Ok(conn) = transport::connect_to_peer_with_alpn(
+            endpoint,
+            *pid,
+            None,
+            None,
+            iroh_blobs::protocol::ALPN,
+        )
+        .await
             && blob_store
                 .remote()
                 .fetch(conn, HashAndFormat::raw(blob_hash))
