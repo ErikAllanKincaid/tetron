@@ -206,10 +206,52 @@ an empty slot performs the real connect and fills it, every other
 concurrent caller -- once it acquires the same slot's lock -- finds it
 already filled and reuses it immediately, with zero additional connects.
 
-**Status: implemented, unit-tested** (`test_sender_dedupes_concurrent_connects_to_same_peer`:
-5 concurrent `send()` calls to the same peer against a connector gated to
-force real overlap, asserting exactly one underlying connect regardless;
-the existing sequential-reuse test continues to pass unchanged, confirming
-no regression there). Live cross-machine re-verification pending -- see
-`tetron/spec/core.py`'s `TorDialPathWiring`, Fix 8, for the full
+**Status: implemented, unit-tested, live cross-machine re-verified.**
+(`test_sender_dedupes_concurrent_connects_to_same_peer`: 5 concurrent
+`send()` calls to the same peer against a connector gated to force real
+overlap, asserting exactly one underlying connect regardless; the existing
+sequential-reuse test continues to pass unchanged, confirming no regression
+there.) Confirmed live: SOCKS connection count dropped from ~146/5min to
+single digits across repeated re-tests -- the stampede is fixed -- but this
+alone did not achieve end-to-end delivery; see Patch 5 below for the
+mechanism found immediately after. See `tetron/spec/core.py`'s
+`TorDialPathWiring`, Fix 8, for the full investigation.
+
+## Patch 5: raise CONNECT_TIMEOUT from 30s to 90s
+
+**Files:** `src/lib.rs` -- `CONNECT_TIMEOUT` constant only.
+
+**Found:** 2026-09-15, immediately after Patch 4. With the connect
+stampede fixed, live logs showed genuine Tor-protocol-level progress for
+the first time in this investigation: real `INTRODUCE_ACK ack! Informing
+rendezvous` successes (previously only NACKs, see `tetron/spec/core.py`'s
+`TorDialPathWiring`, Fix 8's account of a second AI model's research pass
+identifying stale client-side descriptor cache via `INTRODUCE_ACK` NACK
+reason 1). But even a successful introduction didn't yet surface as an
+active Tor path. Tracing one stream's full lifecycle in Tor's own log
+(`connection_ap_handshake_attach_circuit`'s "stream N sec old"
+progression) showed Tor cycling through four distinct rendezvous-circuit
+build attempts in ~25 seconds, each completing a real intro-ack success
+and `RENDEZVOUS_ESTABLISHED`, normal real-world v3 rendezvous behavior
+under ordinary relay/circuit jitter -- not a hang, not a Tor defect. At
+the 28-30s mark, `CONNECT_TIMEOUT` (Patch 1, 30s) fired, abandoning the
+SOCKS5 socket -- and Tor's own log shows, in the same second, a mass burst
+of every introduction point suddenly marked "had an error. Not usable".
+This codebase's own timeout was cutting Tor off mid-cycle and then
+(correctly, from Tor's point of view) having that abandonment interpreted
+as every intro point having failed -- self-inflicted, not independent
+Tor-network flakiness.
+
+**Fix:** raise `CONNECT_TIMEOUT` to 90s, generous enough for several
+real-world rendezvous-circuit-build cycles (~5-8s each, observed) while
+still leaving room for at least two full attempts inside the existing 300s
+`CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT` ceiling (`vendor/iroh-1.0.3/PATCH.md`)
+before the QUIC path itself gives up and retries -- matching the same
+"give Tor's own timing real headroom" philosophy already applied to
+`HS_DESC_PUBLISH_TIMEOUT` (180s, Patch 2).
+
+**Status: implemented; live cross-machine re-verification pending** -- the
+hotspot machine needed for the separate-network test became unavailable
+for approximately 2 hours partway through this investigation. See
+`tetron/spec/core.py`'s `TorDialPathWiring`, Fix 9, for the full
 investigation and the re-test result once run.

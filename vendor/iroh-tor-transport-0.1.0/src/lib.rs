@@ -268,10 +268,21 @@ impl TorStreamIo {
     }
 }
 
-/// tetron-local patch (PATCH.md, TOR-DIAL-001 follow-up): bounds a stuck
-/// SOCKS5 connect to a peer's onion service -- see `TorPacketSender::
-/// get_or_connect`'s own comment for why this was previously unbounded.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// tetron-local patch (PATCH.md, Patch 5, TOR-DIAL-001 follow-up, Fix 9):
+/// bounds a stuck SOCKS5 connect to a peer's onion service -- see
+/// `TorPacketSender::get_or_connect`'s own comment for why this was
+/// previously unbounded. Originally 30s; raised to 90s after live testing
+/// showed real-world v3 rendezvous establishment normally cycling through
+/// several (observed: 4 in ~25s) circuit-build attempts before completing
+/// -- 30s was cutting the connect off mid-cycle, and Tor's own client then
+/// (reasonably) treated *this codebase's own* abandoned SOCKS5 socket as
+/// every introduction point having failed, self-inflicted rather than a
+/// genuine Tor-side problem. 90s leaves room for at least two such full
+/// attempts inside the existing 300s `CUSTOM_TRANSPORT_PATH_MAX_IDLE_TIMEOUT`
+/// ceiling (`vendor/iroh-1.0.3/PATCH.md`) before the QUIC path itself gives
+/// up. See `tetron/spec/core.py`'s `TorDialPathWiring`, Fix 9, for the full
+/// investigation.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// tetron-local patch (PATCH.md, Patch 2, TOR-DIAL-001 follow-up): how long
 /// `TorCustomTransportBuilder::build` waits for `HS_DESC_UPLOAD_QUORUM`
