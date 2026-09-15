@@ -157,5 +157,59 @@ targets no longer occurs. A second, distinct failure remains after quorum
 is reached (a 30s connect timeout, traced to Tor's own client log showing
 every one of the target's introduction points marked unusable) -- not
 something this patch can address, since it happens after descriptor lookup
-succeeds. See `tetron/spec/core.py`'s `TorDialPathWiring`, Fix 6, for the
-full investigation.
+succeeds. Root-caused separately, see Patch 4 below. See
+`tetron/spec/core.py`'s `TorDialPathWiring`, Fix 6, for the full
+investigation.
+
+## Patch 4: de-duplicate concurrent connects to the same peer
+
+**Files:** `src/lib.rs` -- `TorPacketSender`'s `streams` map now holds a
+per-peer connect *slot* (`Mutex<HashMap<EndpointId, Arc<Mutex<Option<Arc<Mutex<TcpStream>>>>>>>`,
+was `Mutex<HashMap<EndpointId, Arc<Mutex<TcpStream>>>>`); `get_or_connect`
+locks that slot across the whole connect attempt instead of only inserting
+into the map after success; `close`/`close_all` updated for the new shape.
+
+**Found:** 2026-09-15, investigating why the introduction-point-usability
+failure (Patch 3's own status note) persisted even after ruling out every
+other candidate tried, including a real, independent bug found and worked
+around along the way (a fixed-listen-port collision causing tetron's own
+`bind_endpoint` retry to call this crate's `build()` -- and thus
+`ADD_ONION` -- twice, tearing down the first ephemeral service's intro
+circuits mid-flight; see `tetron/spec/core.py`'s `TorDialPathWiring`, Fix 7
+-- ruled out as *this* symptom's cause once worked around and re-tested).
+
+**Root cause:** `poll_send` (this crate's `CustomSender` hook) spawns a
+brand-new, independent, fire-and-forget `tokio::spawn` task per outbound
+packet/chunk. `get_or_connect` only recorded a peer's connection in its
+cache *after* a connect succeeded, so every packet that needed to go out
+while a previous connect for that same peer was still in flight
+independently started its *own* fresh `Socks5Stream::connect` -- and QUIC's
+own PATH_CHALLENGE retransmission (plus this project's own backup-path
+probing) fires well inside the many seconds a real Tor hidden-service
+rendezvous can take, so this wasn't a rare race but the common case under
+any real traffic. Confirmed live via Tor's own log: 146 distinct "New SOCKS
+connection opened" events in one ~5-minute test window (about one every 2
+seconds), interleaved with repeated `Found unusable descriptor in cache
+for [scrubbed]. Refetching..` -- Tor's own client invalidating and
+re-fetching a descriptor that a competing, uncoordinated attempt had just
+interrupted. A self-perpetuating stampede: no single attempt ever got to
+run uninterrupted long enough to complete Tor's own real-world rendezvous
+latency (independently confirmed elsewhere in this investigation at ~18s
+for a real external onion service). This explains every symptom variant
+seen across different test runs -- fast `intro_point_is_usable(): ...had
+an error` bursts, an occasional 30s timeout, an occasional `unexpected end
+of file` -- as different snapshots of the same underlying race, not
+independent flakiness.
+
+**Fix:** map each peer to a connect slot up front; the first caller to lock
+an empty slot performs the real connect and fills it, every other
+concurrent caller -- once it acquires the same slot's lock -- finds it
+already filled and reuses it immediately, with zero additional connects.
+
+**Status: implemented, unit-tested** (`test_sender_dedupes_concurrent_connects_to_same_peer`:
+5 concurrent `send()` calls to the same peer against a connector gated to
+force real overlap, asserting exactly one underlying connect regardless;
+the existing sequential-reuse test continues to pass unchanged, confirming
+no regression there). Live cross-machine re-verification pending -- see
+`tetron/spec/core.py`'s `TorDialPathWiring`, Fix 8, for the full
+investigation and the re-test result once run.

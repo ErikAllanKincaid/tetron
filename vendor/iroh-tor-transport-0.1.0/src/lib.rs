@@ -315,9 +315,16 @@ fn hs_desc_wait_should_stop(confirmations: usize, quorum: usize, deadline_passed
 }
 
 /// Packet writer that reuses per-endpoint streams.
+///
+/// tetron-local patch (PATCH.md, Patch 4, TOR-DIAL-001 follow-up, Fix 8):
+/// each peer maps to a per-peer connect *slot* (`Mutex<Option<...>>`), not
+/// directly to a stream. This is what lets concurrent `send()` calls for
+/// the same peer de-duplicate onto one connect attempt instead of racing
+/// independent ones -- see `get_or_connect`'s own doc comment for why that
+/// matters.
 pub(crate) struct TorPacketSender {
     io: Arc<TorStreamIo>,
-    streams: Mutex<HashMap<EndpointId, Arc<Mutex<TcpStream>>>>,
+    streams: Mutex<HashMap<EndpointId, Arc<Mutex<Option<Arc<Mutex<TcpStream>>>>>>>,
 }
 
 impl TorPacketSender {
@@ -343,9 +350,44 @@ impl TorPacketSender {
         }
     }
 
+    /// Get this peer's existing stream, or connect one -- de-duplicating
+    /// concurrent callers for the *same* peer onto a single connect
+    /// attempt (Fix 8).
+    ///
+    /// Before this patch, a peer was only recorded in `streams` *after* a
+    /// connect succeeded, so every caller that arrived while a connect for
+    /// that same peer was still in flight independently started its own.
+    /// `poll_send` spawns a fresh, independent, fire-and-forget task per
+    /// outbound packet/chunk with no coordination between them -- and QUIC's
+    /// own PATH_CHALLENGE retransmission (plus this project's own
+    /// backup-path probing) fires well inside the many seconds a real Tor
+    /// hidden-service rendezvous can take, so this was not a rare edge case
+    /// but the *common* case under any real load: confirmed live via Tor's
+    /// own log showing 146 distinct SOCKS connections in one ~5-minute
+    /// window (roughly one every 2 seconds) and repeatedly having to
+    /// invalidate and re-fetch a descriptor a competing attempt had just
+    /// interrupted -- a self-perpetuating stampede that could never let a
+    /// single attempt run long enough to complete. See
+    /// `tetron/spec/core.py`'s `TorDialPathWiring`, Fix 8, for the full
+    /// investigation.
+    ///
+    /// Now each peer maps to a connect *slot* up front; the first caller to
+    /// lock an empty slot performs the real connect and fills it, and every
+    /// other concurrent caller -- once it acquires the same slot's lock --
+    /// finds it already filled and reuses it immediately, with zero
+    /// additional connects.
     async fn get_or_connect(&self, to: EndpointId) -> io::Result<Arc<Mutex<TcpStream>>> {
-        if let Some(existing) = self.streams.lock().await.get(&to).cloned() {
-            return Ok(existing);
+        let slot = self
+            .streams
+            .lock()
+            .await
+            .entry(to)
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
+
+        let mut guard = slot.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            return Ok(existing.clone());
         }
 
         // tetron-local patch (PATCH.md, TOR-DIAL-001 follow-up): the
@@ -370,16 +412,17 @@ impl TorPacketSender {
                 )
             })??;
         let stream = Arc::new(Mutex::new(stream));
-
-        let mut guard = self.streams.lock().await;
-        Ok(guard.entry(to).or_insert_with(|| stream.clone()).clone())
+        *guard = Some(stream.clone());
+        Ok(stream)
     }
 
     /// Close and remove a cached stream for the given endpoint.
     #[allow(dead_code)]
     pub(crate) async fn close(&self, to: EndpointId) -> io::Result<()> {
-        let stream = self.streams.lock().await.remove(&to);
-        if let Some(stream) = stream {
+        let slot = self.streams.lock().await.remove(&to);
+        if let Some(slot) = slot
+            && let Some(stream) = slot.lock().await.take()
+        {
             let mut guard = stream.lock().await;
             guard.shutdown().await?;
         }
@@ -389,10 +432,12 @@ impl TorPacketSender {
     /// Close and remove all cached streams.
     #[allow(dead_code)]
     pub(crate) async fn close_all(&self) -> io::Result<()> {
-        let streams: Vec<_> = self.streams.lock().await.drain().map(|(_, v)| v).collect();
-        for stream in streams {
-            let mut guard = stream.lock().await;
-            guard.shutdown().await?;
+        let slots: Vec<_> = self.streams.lock().await.drain().map(|(_, v)| v).collect();
+        for slot in slots {
+            if let Some(stream) = slot.lock().await.take() {
+                let mut guard = stream.lock().await;
+                guard.shutdown().await?;
+            }
         }
         Ok(())
     }
