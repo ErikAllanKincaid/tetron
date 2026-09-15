@@ -3276,16 +3276,74 @@ class TorDialPathWiring(Requirement):
     real headroom" philosophy already applied to `HS_DESC_PUBLISH_TIMEOUT`
     (180s, Patch 2).
 
-    **Status: implemented; live cross-machine re-verification pending** --
-    the hotspot machine needed for the separate-network test became
-    unavailable for approximately 2 hours partway through this
-    investigation. Update this requirement once that re-test result is in.
+    **Status: implemented, live cross-machine re-verified -- confirmed
+    real and firing correctly, but not sufficient alone.** After the
+    hotspot machine became available again, multiple clean re-tests (fresh
+    Tor process on both sides, single onion-service build confirmed via
+    Fix 7, connect stampede confirmed fixed via Fix 8) were run. `Tor
+    transport enabled` and the 90s timeout both confirmed active and
+    correctly wired. **Result was inconsistent run to run**: one clean
+    restart produced genuine `INTRODUCE_ACK ack!` successes (the first all
+    investigation) after a full Tor-process restart purged stale client
+    cache; an immediately following, procedurally identical clean restart
+    produced zero successes. Both `Host unreachable` (fast) and genuine 90s
+    timeouts still occurred, recurring roughly every 60 seconds (matching
+    `reconverge.rs`'s own `group poller`/iroh's own backup-path
+    health-check cadence, not random jitter) -- consistent with Tor's own
+    per-attempt real-world variability for a brand-new service rather than
+    a further tetron-side defect. One contributing factor identified and
+    fixed separately: a daemon-shutdown hang (`sudo tetron restart` timing
+    out at the systemd `stop-sigterm` step, needing a `SIGKILL`) coincided
+    with one burst of failures -- real, distinct, tracked as its own
+    follow-up (see `DO-NOT-COMMIT` notes / a future requirement), not part
+    of this one's own resolution.
+
+    **Fix 10, found via research rather than more live cycles:** at the
+    user's own suggestion ("what are other Tor apps doing that we
+    aren't?"), research into OnionShare, Ricochet-Refresh, and Cwtch found
+    that none of them wait for anything beyond the *first* `HS_DESC
+    UPLOADED` event (Fix 6's quorum wait is, if anything, more
+    conservative than the field -- not the missing piece) -- but all of
+    this investigation's diagnosis so far had been limited to a small set
+    of generic SOCKS5 error names (`Host unreachable` most often), because
+    the vendored `tokio-socks` crate's CONNECT-reply parser only recognizes
+    the standard RFC 1928 reply codes (`0x00`-`0x08`) and collapses
+    anything else -- including every one of Tor's own SOCKS5 *extended*
+    error codes (`0xF0`-`0xF7`: descriptor not found, introduction failed,
+    rendezvous failed, introduction timed out, etc., see
+    <https://spec.torproject.org/socks-extensions.html>) -- into a single,
+    misleadingly-named `UnknownAuthMethod`. Every failure this entire
+    investigation diagnosed by generic error name alone was potentially
+    hiding this genuinely specific, actionable information. Fixed
+    (`vendor/tokio-socks-0.5.3/PATCH.md`): the byte-to-error mapping is now
+    a pure, unit-tested function preserving the raw byte via a new
+    `Error::ExtendedError(u8)` variant, whose `Display` message already
+    surfaces through this investigation's existing logging with no further
+    code changes needed elsewhere -- but only once `ExtendedErrors` is
+    enabled on both sides' Tor `SocksPort` (a deployment/torrc change, not
+    yet made as of this writing). The research also surfaced a second,
+    real, separate contributing cause not yet fixed: Tor's own client
+    holds a fetched descriptor as "usable" until every intro point in it
+    has failed (`can_client_refetch_desc()`), and once it does refetch, it
+    will not re-query any HSDir it already queried unsuccessfully within
+    the last 15 minutes (`REND_HID_SERV_DIR_REQUERY_PERIOD`,
+    <https://gitlab.torproject.org/tpo/core/tor/-/issues/25882>) -- this
+    investigation's own testing methodology (recreating each onion service
+    on nearly every restart, many dozens of times across a few hours,
+    across the same identities) is itself a plausible, real contributing
+    factor to inconsistent results, separate from anything in tetron's own
+    code.
+
+    **Status: implemented, unit-tested; live cross-machine re-verification
+    with `ExtendedErrors` enabled is the direct next step** -- this should
+    finally turn every future `Host unreachable`-style failure into a
+    specific, named Tor reason rather than a guess.
 
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
     `veilid-smoke.sh`) is the acceptance bar. Update its own header once
-    Fix 9's live re-verification result is in, and file the Fix 7 vendored-
-    side-effect-in-a-retried-path defect as tracked, separate follow-up work
-    in `src/transport.rs` regardless of outcome.
+    Fix 10's live re-verification result is in, and file the Fix 7
+    vendored-side-effect-in-a-retried-path defect as tracked, separate
+    follow-up work in `src/transport.rs` regardless of outcome.
     """
 
     req_id = "TOR-DIAL-001"
