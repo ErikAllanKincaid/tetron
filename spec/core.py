@@ -2994,6 +2994,16 @@ class TorDialPathWiring(Requirement):
       relay addresses for circuit extension), but disabling
       `ClientUseIPv6`/`ClientPreferIPv6ORPort` in torrc made no difference
       to the outcome.
+    - **VM resource constraints:** re-ran the identical create/join/restart
+      `--tor` flow on 2GB/2vCPU VMs (4x RAM, 2x vCPU over the suite's
+      512MB/1vCPU default) -- still failed on every attempt, no
+      `send completed OK` ever, zero Tor entries in `paths[]`. The failure
+      mode shifted slightly (a genuine 30s connect timeout rather than an
+      instant `Host unreachable`), but the outcome did not change. This
+      rules out resource constraints as *the* cause, though a large step
+      up in resources changing the failure's own character (instant
+      rejection -> timeout) suggests they are still *a* contributing
+      factor to something -- just not sufficient on their own to fix it.
 
     The one piece of positive, isolating evidence: a real, long-lived
     public onion service (DuckDuckGo's) connected successfully (HTTP 301,
@@ -3009,27 +3019,33 @@ class TorDialPathWiring(Requirement):
     path taken when the originally-chosen relay for extension doesn't
     work) exhausting Tor's own fixed per-circuit cell budget, an
     entirely Tor-internal mechanism not exposed or controllable via the
-    control protocol. The most likely explanation is that this specific
-    sandboxed VM pair's own resource/network constraints affect the
-    *service* side's ability to maintain healthy introduction-point
-    circuits specifically (a service constraint, not a client one --
-    consistent with the external-service control succeeding), which no
-    amount of application-level code in tetron, `iroh-tor-transport`, or
-    `torut` can fix.
+    control protocol. With resource constraints now directly tested and
+    ruled out as *the* sole cause, the remaining leading candidate is that
+    this specific sandboxed environment's own network path (both VMs
+    behind the same libvirt NAT on one physical host, sharing one
+    external IP, with confirmed-broken IPv6) affects the *service* side's
+    ability to maintain healthy introduction-point circuits specifically
+    -- a network-topology property of this test setup, not something
+    application-level code in tetron, `iroh-tor-transport`, or `torut`
+    can fix. This remains a hypothesis, not confirmed the way Fixes 1-4
+    and the ruled-out causes above are.
 
     Do not read this requirement as "Tor connectivity is broken" --
     Fixes 1-4 are all real, verified, and necessary; a deployment between
-    two normally-resourced, well-connected machines (matching the
-    DuckDuckGo control case, not the constrained VM case) would very
-    plausibly not hit this at all. `tor-smoke.sh` documents this honestly
-    (see its own header) rather than being force-marked as passing.
+    two normally-resourced, well-connected machines on separate networks
+    (matching the DuckDuckGo control case, not the constrained
+    single-host VM pair case) would very plausibly not hit this at all.
+    `tor-smoke.sh` documents this honestly (see its own header) rather
+    than being force-marked as passing.
 
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
     `veilid-smoke.sh`) is the acceptance bar. It is expected to remain red
-    on this project's own VM topology until either the VM spec is
-    meaningfully beefed up (more RAM/vCPU, to test whether that alone
-    resolves the intro-circuit stability issue) or it is run against
-    real, non-virtualized, well-connected machines instead.
+    on this project's own single-host VM topology; the diagnostic avenues
+    available in that environment are exhausted (address correctness,
+    bootstrap, publish timing, IPv6, and resource constraints have all
+    been directly tested and ruled out individually). The next real step,
+    if pursued, is testing against two genuinely separate machines/networks
+    rather than a further code change.
     """
 
     req_id = "TOR-DIAL-001"
