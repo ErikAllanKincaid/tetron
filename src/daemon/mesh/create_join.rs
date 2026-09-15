@@ -204,6 +204,7 @@ impl MeshManager {
                 my_ip,
                 disconnect_tx: disconnect_tx.clone(),
                 my_veilid_node_id,
+                tor_addr_lookup: self.tor_addr_lookup(),
             }),
         ));
 
@@ -1028,6 +1029,7 @@ impl MeshManager {
                 &self.endpoint,
                 *coordinator_id,
                 coordinator_veilid_node_id,
+                self.tor_addr_lookup().as_ref(),
                 ctx.alpn,
             )
             .await
@@ -1161,6 +1163,7 @@ impl MeshManager {
             &self.endpoint,
             coordinator_id,
             coordinator_veilid_node_id,
+            self.tor_addr_lookup().as_ref(),
             ctx.alpn,
         )
         .await
@@ -1292,6 +1295,7 @@ impl MeshManager {
             } else {
                 None
             },
+            self.tor_addr_lookup(),
         )
     }
 
@@ -1326,6 +1330,7 @@ impl MeshManager {
                 } else {
                     None
                 },
+                tor_addr_lookup: self.tor_addr_lookup(),
                 net_pubkey: ctx.net_pubkey,
                 invite_secret,
                 reusable_keys: data.reusable_keys.clone(),
@@ -1516,11 +1521,14 @@ impl MeshManager {
                 continue;
             }
             // No roster to resolve a Veilid address from yet -- fetching one
-            // is the whole point of this bootstrap dial.
+            // is the whole point of this bootstrap dial. Tor doesn't have
+            // this problem (TOR-DIAL-001): an onion candidate is a pure
+            // function of `peer_id` alone, so it's still offered here.
             let conn = match transport::connect_to_peer_with_alpn(
                 &self.endpoint,
                 *peer_id,
                 None,
+                self.tor_addr_lookup().as_ref(),
                 iroh_blobs::protocol::ALPN,
             )
             .await
@@ -1552,11 +1560,13 @@ impl MeshManager {
         blob_hash: iroh_blobs::Hash,
     ) -> Result<crate::membership::GroupBlob> {
         // Same rationale as `restore_roster_from_blob`'s dial: no roster
-        // fetched yet to resolve a Veilid address from.
+        // fetched yet to resolve a Veilid address from (Tor doesn't need
+        // one, TOR-DIAL-001, so it's still offered here).
         let conn = transport::connect_to_peer_with_alpn(
             &self.endpoint,
             peer_id,
             None,
+            self.tor_addr_lookup().as_ref(),
             iroh_blobs::protocol::ALPN,
         )
         .await?;
@@ -1624,6 +1634,10 @@ impl MeshManager {
             .and_then(|nc| nc.transport)
             .filter(|t| t.is_veilid())
             .and_then(|_| self.veilid_node_id());
+        // TOR-DIAL-001: daemon-wide and peer-independent (unlike
+        // `my_veilid_node_id` above), so captured unconditionally, not
+        // gated on this network's own transport preference.
+        let tor_addr_lookup = self.tor_addr_lookup();
         let mut dials = futures::stream::FuturesUnordered::new();
         for m in members {
             if m.identity == my_identity {
@@ -1637,6 +1651,7 @@ impl MeshManager {
             let stats = ctx.stats.clone();
             let dial_in_flight = ctx.dial_in_flight.clone();
             let my_veilid_node_id = my_veilid_node_id.clone();
+            let tor_addr_lookup = tor_addr_lookup.clone();
             dials.push(async move {
                 // VEILID-012: this node's own reconnect loop or dial-retry
                 // task may already be dialing this exact member
@@ -1661,6 +1676,7 @@ impl MeshManager {
                             &self.endpoint,
                             m.identity,
                             m.veilid_node_id.as_deref(),
+                            tor_addr_lookup.as_ref(),
                             alpn,
                         ),
                     ) => r,

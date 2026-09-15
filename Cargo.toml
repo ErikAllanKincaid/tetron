@@ -43,6 +43,12 @@ noq-proto = { path = "vendor/noq-proto-1.1.0" }
 # add MemoryMax=/Restart=always containment to a host under test until it
 # is (see vendor/iroh-1.0.3/PATCH.md's status note for why).
 iroh = { path = "vendor/iroh-1.0.3" }
+# TOR-DIAL-001: local patch bounding an unbounded SOCKS5 connect to a
+# peer's onion service (a stuck circuit build hung forever, invisibly,
+# since the fire-and-forget send that triggers it swallowed every error)
+# and surfacing send failures via a log line instead of silently dropping
+# them. See vendor/iroh-tor-transport-0.1.0/PATCH.md.
+iroh-tor-transport = { path = "vendor/iroh-tor-transport-0.1.0" }
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add

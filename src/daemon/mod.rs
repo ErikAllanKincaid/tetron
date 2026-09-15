@@ -551,6 +551,14 @@ pub struct MeshManager {
     /// *peer's* own `veilid_node_id` from their roster entry instead
     /// (`transport::connect_to_peer_with_alpn`).
     veilid_node_id: Arc<arc_swap::ArcSwapOption<String>>,
+    /// TOR-DIAL-001: `Some` when the shared endpoint started a Tor custom
+    /// transport (`tor` cargo feature + `--tor` requested by some joined
+    /// network). Unlike `veilid_node_id`, immutable after construction --
+    /// a Tor onion address is a pure function of the target peer's own
+    /// `EndpointId`, not an asynchronously-resolved value, so
+    /// `transport::connect_to_peer_with_alpn` queries it directly with no
+    /// per-peer roster field needed (see that function's doc comment).
+    tor_addr_lookup: Option<transport::TorAddrLookup>,
     /// PATHPREF-001: the live, daemon-wide transport preference this
     /// endpoint's `TetronPathSelector` reads on every selection. Seeded
     /// from the persisted config at startup; `Self::set_path_preference`
@@ -696,6 +704,13 @@ impl MeshManager {
     /// resolver in `transport.rs` fills it in, not just on the next boot.
     pub(crate) fn veilid_node_id(&self) -> Option<String> {
         self.veilid_node_id.load_full().map(|s| (*s).clone())
+    }
+
+    /// TOR-DIAL-001: `Some` for the rest of this process's life once the
+    /// Tor transport is up; cheap to call repeatedly (an `Arc` clone), same
+    /// calling convention as `veilid_node_id()` above.
+    pub(crate) fn tor_addr_lookup(&self) -> Option<transport::TorAddrLookup> {
+        self.tor_addr_lookup.clone()
     }
 
     /// Gracefully take the whole node offline: cancel the daemon-wide shutdown
