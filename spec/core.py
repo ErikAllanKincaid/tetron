@@ -2971,12 +2971,9 @@ class TorDialPathWiring(Requirement):
     confirmed `UPLOADED` within single-digit seconds -- far faster than
     this investigation originally assumed possible.
 
-    **Final, honest status: code-level TOR-DIAL-001 is complete and
-    correct; full end-to-end delivery was not achieved in this test
-    environment, and the remaining gap is very likely environment-specific
-    rather than a further code defect.** With descriptor publication
+    **Interim status (superseded below): with descriptor publication
     confirmed on both sides, `Host unreachable` still occurred on every
-    attempt, including across an 8+ minute continuous-retry window with no
+    attempt**, including across an 8+ minute continuous-retry window with no
     self-healing. Ruled out definitively, each with concrete evidence:
     - **Address/key derivation mismatch:** a standalone test confirmed
       `iroh_to_tor_secret_key`'s derived public key is byte-identical to
@@ -3038,14 +3035,123 @@ class TorDialPathWiring(Requirement):
     `tor-smoke.sh` documents this honestly (see its own header) rather
     than being force-marked as passing.
 
+    **2026-09-15, real cross-machine test: the "shared NAT / single external
+    IP" hypothesis RULED OUT.** Two genuinely separate physical machines on
+    two genuinely separate networks (aorus, home broadband, public IP
+    `76.103.76.37`; a laptop on a phone hotspot, public IP `174.195.83.228`
+    -- confirmed different before the test ran) ran the identical
+    `create --tor` / `join --tor` / restart flow. Direct and Relay both
+    worked correctly and carried real traffic throughout (Direct even
+    hole-punched successfully end to end), but the Tor path failed with the
+    exact same signature as the original two-VM sandbox:
+    `iroh_tor_transport: Tor packet send failed ... err=Host unreachable`.
+    Since this reproduces identically on two machines sharing no NAT, no
+    external IP, and no physical host, network topology is not the cause.
+    A same-day re-test with Tor upgraded to current stable (0.4.9.12, via
+    the Tor Project's own apt repo rather than each distro's own stale
+    package -- Ubuntu 24.04 shipped 0.4.8.10, Debian 12 shipped 0.4.9.11,
+    both old enough that their own bootstrap logs warned "at least one
+    protocol listed as recommended in the consensus is not supported... You
+    should upgrade") also ruled out an outdated client as the cause: the
+    identical `Host unreachable` fired again, immediately after "Tor
+    transport enabled", with the version-mismatch warning gone from both
+    sides' bootstrap logs.
+
+    **Fix 6, root cause found and fixed: `Host unreachable` is a v3 onion
+    descriptor quorum bug in `iroh-tor-transport`, not a Tor-internal or
+    environment-specific limitation.** Checking Tor's own daemon log
+    directly (`journalctl -u tor@default`, not `tetron`'s own log --
+    previously overlooked) during the cross-machine re-test showed the real
+    mechanism, and it is not the `RELAY_EARLY` intro-circuit exhaustion
+    guessed at previously (that symptom, seen once in the original two-VM
+    run, was most likely a downstream consequence of the same root cause,
+    not an independent Tor-internal wall):
+    ```
+    Closed 14 streams for service [scrubbed].onion for reason resolve
+    failed. Fetch status: No more HSDir available to query.
+    ```
+    This is a descriptor *lookup* failure: a dialing client could not find
+    the target's descriptor at any hidden-service directory (HSDir) it
+    queried. Tor's v3 onion service spec (`rend-spec-v3`) uploads each
+    descriptor to a deterministic set of roughly 8 distinct HSDirs (2
+    replicas x a spread of 4 per replica) computed from the service's
+    blinded key and the current time period -- a client computes the same
+    set independently and queries it directly, with no fallback beyond that
+    set. `iroh-tor-transport`'s own `TorCustomTransportBuilder::build`
+    (Fix 4/Patch 2 above) declared the descriptor "published" and returned
+    after confirming upload to just **one** HSDir
+    (`upload_confirmations.load(...) >= 1`, `vendor/iroh-tor-transport-0.1.0/src/lib.rs`).
+    A fresh onion service with only 1 of ~8 responsible directories holding
+    its descriptor will fail lookups from any client whose independently-
+    computed query set happens to include one of the other 7 -- exactly
+    matching every symptom observed: fast, consistent, reproducible on every
+    topology tried, and absent for DuckDuckGo's real service (long-lived
+    enough that all responsible directories converged).
+
+    **Fix:** raise the wait threshold from 1 to `HS_DESC_UPLOAD_QUORUM = 8`
+    (`vendor/iroh-tor-transport-0.1.0/PATCH.md`, Patch 3), matching
+    `rend-spec-v3`'s replica x spread count, with the existing 180s timeout
+    unchanged as a fallback -- so a pathological network that never reaches
+    quorum behaves exactly as before (proceeds anyway after 180s) rather
+    than hanging forever; this is strictly an improvement to the common
+    case, never a regression to the worst case. The confirmation-counting
+    decision itself was extracted into a pure, directly unit-testable
+    function (`hs_desc_wait_should_stop`, mirroring `forward.rs`'s
+    `path_flap_decision` pattern) rather than tested only by live network
+    behavior.
+
+    **Status: implemented, unit-tested, live re-verified -- confirmed real
+    and correct, but not sufficient alone.** Same real cross-machine
+    (separate-network) hardware re-ran the identical flow with Fix 6 in
+    place. The specific failure signature this fix targets --
+    `Host unreachable` immediately after dial, with Tor's own daemon log
+    showing `No more HSDir available to query` -- **did not recur** across
+    multiple fresh restarts; Tor's own log for the entire test window
+    contained no HSDir-lookup-failure line at all, confirmed absent by
+    direct inspection, not merely unobserved. Fix 6 is real and should be
+    kept regardless of what follows.
+
+    **But `Host unreachable` was never the only failure mode, and a second,
+    distinct one remains.** Once quorum was reliably reached (15
+    confirmations observed, well over the 8 required), dialing no longer
+    failed with the old fast, clean rejection -- it now hangs for the full
+    30s and fails with Patch 1's own `CONNECT_TIMEOUT` (`Tor connect to
+    ... timed out after 30s`). Checking Tor's own `info`-level client log
+    (bumped for this specific re-test, `Log info file ...` in torrc) during
+    that exact window showed the real mechanism, repeated dozens of times:
+    ```
+    intro_point_is_usable(): Intro point with auth key [scrubbed] had an
+    error. Not usable
+    ```
+    interleaved with a rendezvous circuit that *did* open successfully
+    (`client_rendezvous_circ_has_opened`, `RENDEZVOUS_ESTABLISHED`). So the
+    client-side half of a v3 onion connection (build a rendezvous circuit,
+    wait for the target to join it) works correctly; what fails is using
+    *any* of the target's advertised introduction points to actually
+    deliver the `INTRODUCE1` cell that would tell the target to complete
+    the rendezvous -- every one of them gets marked unusable. This is
+    consistent with, and likely the direct mechanism behind, the original
+    two-VM investigation's `RELAY_EARLY`-exhaustion observation (Fix 5's
+    era) -- now isolated cleanly, without the faster HSDir-lookup failure
+    masking it. Not yet root-caused to a specific tetron-controllable
+    cause; the leading open question is whether this is inherent Tor
+    network behavior for a freshly-created service with few, young
+    introduction-point circuits (which would improve simply by staying up
+    longer and building more predictive circuits, per Tor's own
+    `circuit_predict_and_launch_new` logic observed in the same log), or
+    something tunable via `HiddenServiceNumIntroductionPoints` or similar.
+
+    Do not read the earlier "Tor-internal, not something application code
+    can fix" language above as final for the *original* HSDir-lookup
+    symptom -- that one is fixed. It may still turn out to be accurate for
+    *this* remaining intro-point-usability symptom; that has not been
+    determined either way yet.
+
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
-    `veilid-smoke.sh`) is the acceptance bar. It is expected to remain red
-    on this project's own single-host VM topology; the diagnostic avenues
-    available in that environment are exhausted (address correctness,
-    bootstrap, publish timing, IPv6, and resource constraints have all
-    been directly tested and ruled out individually). The next real step,
-    if pursued, is testing against two genuinely separate machines/networks
-    rather than a further code change.
+    `veilid-smoke.sh`) is the acceptance bar. Still expected to fail
+    end-to-end until the intro-point-usability symptom above is understood
+    or resolved; update its own header to describe this specific remaining
+    symptom rather than the now-fixed HSDir-quorum one.
     """
 
     req_id = "TOR-DIAL-001"

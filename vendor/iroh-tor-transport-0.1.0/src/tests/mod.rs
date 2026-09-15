@@ -19,8 +19,8 @@ use tokio::{
 };
 
 use crate::{
-    TorPacket, TorPacketSender, TorPacketService, TorStreamIo, iroh_to_tor_secret_key,
-    read_tor_packet, write_tor_packet,
+    TorPacket, TorPacketSender, TorPacketService, TorStreamIo, hs_desc_wait_should_stop,
+    iroh_to_tor_secret_key, read_tor_packet, write_tor_packet,
 };
 
 /// Get the onion address for an iroh SecretKey (test helper).
@@ -177,4 +177,32 @@ fn test_onion_address_methods_match() {
         addr_via_endpoint.to_string(),
         "Onion addresses derived from secret key and endpoint ID must match!"
     );
+}
+
+// tetron-local patch (PATCH.md, Patch 3, TOR-DIAL-001 follow-up): pure
+// unit tests for the HS_DESC publish-wait quorum decision (Fix 6,
+// tetron/spec/core.py's TorDialPathWiring) -- no live Tor connection
+// needed, mirroring tetron core's own path_flap_decision test pattern.
+
+#[test]
+fn test_hs_desc_wait_keeps_waiting_below_quorum_before_deadline() {
+    assert!(!hs_desc_wait_should_stop(1, 8, false));
+    assert!(!hs_desc_wait_should_stop(7, 8, false));
+}
+
+#[test]
+fn test_hs_desc_wait_stops_at_quorum() {
+    assert!(hs_desc_wait_should_stop(8, 8, false));
+    assert!(hs_desc_wait_should_stop(9, 8, false));
+}
+
+#[test]
+fn test_hs_desc_wait_stops_at_deadline_even_below_quorum() {
+    assert!(hs_desc_wait_should_stop(0, 8, true));
+    assert!(hs_desc_wait_should_stop(3, 8, true));
+}
+
+#[test]
+fn test_hs_desc_wait_zero_confirmations_before_deadline_keeps_waiting() {
+    assert!(!hs_desc_wait_should_stop(0, 8, false));
 }

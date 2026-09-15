@@ -1,4 +1,5 @@
 /target
+vendor/*/target
 /docs/upstream
 .superpowers
 .claude/
