@@ -20,7 +20,7 @@ members = ["tetron-proto", "veilid-transport"]
 # owns) but nested under this root, so `cargo test --manifest-path` run
 # directly against one of them needs this to avoid Cargo's "believes it's
 # in a workspace" ambiguity error.
-exclude = ["vendor/iroh-tor-transport-0.1.0"]
+exclude = ["vendor/iroh-tor-transport-0.1.0", "vendor/tokio-socks-0.5.3"]
 
 # PORTABILITY-001: local patch for a real musl-target crash (`assertion
 # failed: align_of::<T>() <= align_of::<C>()` in noq-udp's cmsg handling,
@@ -59,6 +59,13 @@ iroh-tor-transport = { path = "vendor/iroh-tor-transport-0.1.0" }
 # `is_valid_event` validator, which rejected the genuinely valid `HS_DESC`
 # event name for containing an underscore. See vendor/torut-0.2.1/PATCH.md.
 torut = { path = "vendor/torut-0.2.1" }
+# TOR-DIAL-001: local patch to tokio-socks (iroh-tor-transport's own SOCKS5
+# client dependency, pulled in transitively) surfacing Tor's own extended
+# SOCKS5 error codes (0xF0-0xF7, socks-extensions.html) instead of
+# collapsing every reply byte outside the standard 0x00-0x08 RFC 1928
+# range into a single misleadingly-named `UnknownAuthMethod`. See
+# vendor/tokio-socks-0.5.3/PATCH.md.
+tokio-socks = { path = "vendor/tokio-socks-0.5.3" }
 
 # Strip debug symbols from release builds. This is what shrinks the Android
 # release .so from hundreds of MiB down to tens of MiB. Do not add
