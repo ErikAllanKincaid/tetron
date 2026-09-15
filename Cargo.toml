@@ -16,6 +16,11 @@ categories = ["network-programming", "command-line-utilities"]
 # root. `tetron-proto` is a member crate holding the shared IPC wire protocol.
 [workspace]
 members = ["tetron-proto", "veilid-transport"]
+# Not workspace members (they're `[patch]` path deps, not crates this repo
+# owns) but nested under this root, so `cargo test --manifest-path` run
+# directly against one of them needs this to avoid Cargo's "believes it's
+# in a workspace" ambiguity error.
+exclude = ["vendor/iroh-tor-transport-0.1.0"]
 
 # PORTABILITY-001: local patch for a real musl-target crash (`assertion
 # failed: align_of::<T>() <= align_of::<C>()` in noq-udp's cmsg handling,

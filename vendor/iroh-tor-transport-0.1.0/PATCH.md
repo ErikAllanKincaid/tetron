@@ -96,18 +96,66 @@ non-fatal -- logs a `warn!` and falls back to the pre-patch behavior
 (return immediately, no confirmation) rather than blocking hidden-service
 creation on it.
 
-**Status: live-verified working, but insufficient on its own.** This
-patch initially appeared to silently no-op: `set_events` was failing
-every time with `ConnError::InvalidEventName`, a real bug in `torut`
-itself (see `vendor/torut-0.2.1/PATCH.md`) -- unrelated to this crate,
-but blocking this patch from ever actually subscribing. Once that was
-fixed, both nodes in a live two-VM test reliably
-confirmed `UPLOADED` within single-digit seconds of `ADD_ONION` -- far
-faster than the 180s budget, and far faster than this project originally
-assumed possible. However, `Host unreachable` **still occurred
-consistently** even with confirmed publication -- this fix closes a real
-gap (a caller could otherwise dial before publication with zero
-guarantee), but descriptor publication was not, in the end, the actual
-blocker in the environment this was tested in. See
-`tetron/spec/core.py`'s `TorDialPathWiring` for the fuller investigation
-and what was ultimately found.
+**Status: live-verified working, but insufficient on its own -- see Patch 3
+below, which found and fixed why.** This patch initially appeared to
+silently no-op: `set_events` was failing every time with
+`ConnError::InvalidEventName`, a real bug in `torut` itself (see
+`vendor/torut-0.2.1/PATCH.md`) -- unrelated to this crate, but blocking
+this patch from ever actually subscribing. Once that was fixed, both nodes
+in a live two-VM test reliably confirmed `UPLOADED` within single-digit
+seconds of `ADD_ONION` -- far faster than the 180s budget, and far faster
+than this project originally assumed possible. However, `Host unreachable`
+**still occurred consistently** even with confirmed publication -- this
+fix closes a real gap (a caller could otherwise dial before publication
+with zero guarantee), but "at least one confirmation" turned out to be the
+wrong threshold, not merely an early return. See `tetron/spec/core.py`'s
+`TorDialPathWiring` for the fuller investigation.
+
+## Patch 3: wait for a quorum of `HS_DESC UPLOADED` confirmations, not just one
+
+**Files:** `src/lib.rs` -- new `HS_DESC_UPLOAD_QUORUM` constant and
+`hs_desc_wait_should_stop` pure function; `TorCustomTransportBuilder::build`'s
+publish-wait loop now checks confirmation count against the quorum instead
+of `>= 1`.
+
+**Found:** 2026-09-15, a real cross-machine test (`tetron/spec/core.py`'s
+`TorDialPathWiring`, Fix 6) ruled out every environment-level explanation
+tried so far (shared NAT, single external IP, outdated Tor client) for why
+`Host unreachable` persisted even with Patch 2's single-confirmation wait
+in place. Checking Tor's own daemon log directly (`journalctl -u
+tor@default`, not this crate's or tetron's own log) during that test
+showed the real mechanism: `Closed N streams for service [scrubbed].onion
+for reason resolve failed. Fetch status: No more HSDir available to
+query.` -- a descriptor *lookup* failure, not a circuit-extension one.
+
+**Root cause:** Tor's v3 onion service spec (`rend-spec-v3`) uploads each
+descriptor to a deterministic set of `hsdir_n_replicas` (2) x
+`hsdir_spread_store` (4) = 8 distinct HSDirs, computed from the service's
+blinded key and the current time period. A dialing client computes and
+queries that exact same set independently, with **no fallback beyond it**.
+Patch 2's wait returned as soon as *any one* of those 8 confirmed the
+upload -- so a caller could (and, empirically, reliably did) start dialing
+while only 1 of 8 responsible directories actually had the descriptor. Any
+client whose own query hit one of the other 7 got a clean, fast "not
+found" -- exactly matching the observed symptom's speed and consistency,
+and its absence for DuckDuckGo's real service (long-lived enough for all 8
+to have long since converged).
+
+**Fix:** raise the threshold from 1 to `HS_DESC_UPLOAD_QUORUM = 8`. The
+existing 180s timeout is unchanged as a fallback, so a network that never
+reaches quorum still proceeds anyway after 180s exactly as Patch 2 already
+did for zero confirmations -- this is strictly an improvement to the
+common case, never a regression to the worst case. The stop/continue
+decision itself was extracted into `hs_desc_wait_should_stop`, a pure
+function of `(confirmations, quorum, deadline_passed)`, directly unit
+tested (`src/tests/mod.rs`) without a live Tor connection.
+
+**Status: implemented, unit-tested, live-verified real and correct -- but
+not sufficient alone.** A cross-machine re-test confirmed the specific
+`Host unreachable`/`No more HSDir available to query` symptom this patch
+targets no longer occurs. A second, distinct failure remains after quorum
+is reached (a 30s connect timeout, traced to Tor's own client log showing
+every one of the target's introduction points marked unusable) -- not
+something this patch can address, since it happens after descriptor lookup
+succeeds. See `tetron/spec/core.py`'s `TorDialPathWiring`, Fix 6, for the
+full investigation.

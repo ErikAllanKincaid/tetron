@@ -274,10 +274,10 @@ impl TorStreamIo {
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// tetron-local patch (PATCH.md, Patch 2, TOR-DIAL-001 follow-up): how long
-/// `TorCustomTransportBuilder::build` waits for at least one `HS_DESC
-/// UPLOADED` confirmation before giving up and returning anyway. Chosen
-/// generously relative to the ~30s-120s range this project has observed
-/// v3 onion descriptor publication take in practice.
+/// `TorCustomTransportBuilder::build` waits for `HS_DESC_UPLOAD_QUORUM`
+/// `HS_DESC UPLOADED` confirmations before giving up and returning anyway.
+/// Chosen generously relative to the ~30s-120s range this project has
+/// observed v3 onion descriptor publication take in practice.
 const HS_DESC_PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// How often the publish-wait loop pumps `AuthenticatedConn`'s response
@@ -285,6 +285,34 @@ const HS_DESC_PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// `HS_DESC` event promptly rather than only on some later, unrelated
 /// command.
 const HS_DESC_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// tetron-local patch (PATCH.md, Patch 3, TOR-DIAL-001 follow-up): how many
+/// distinct `HS_DESC UPLOADED` confirmations `build` waits for before
+/// considering the descriptor published. Tor's v3 onion service spec
+/// (`rend-spec-v3`) uploads each descriptor to a deterministic set of
+/// `hsdir_n_replicas` (2) x `hsdir_spread_store` (4) = 8 distinct HSDirs; a
+/// dialing client computes and queries that same set independently, with
+/// no fallback beyond it. Waiting for only one (the pre-Patch-3 behavior)
+/// let dialing start before most of the responsible directories had the
+/// descriptor, producing `Host unreachable` / Tor's own "No more HSDir
+/// available to query" from any client whose independently-computed query
+/// set included one of the other 7 -- see `tetron/spec/core.py`'s
+/// `TorDialPathWiring`, Fix 6, for the full investigation.
+const HS_DESC_UPLOAD_QUORUM: usize = 8;
+
+/// Pure decision for `build`'s HS_DESC publish-wait loop (Patch 3): whether
+/// to stop waiting given the current confirmation count, the quorum
+/// required, and whether the deadline has passed. Extracted so the
+/// threshold/timeout logic is directly unit-testable without a live Tor
+/// control connection, mirroring tetron core's own `path_flap_decision`
+/// pattern (`src/forward.rs`). The deadline is always a fallback, never a
+/// requirement -- a pathological network that never reaches quorum still
+/// proceeds after `HS_DESC_PUBLISH_TIMEOUT`, exactly as the pre-Patch-3
+/// single-confirmation wait did, so this is strictly an improvement to the
+/// common case with no regression to the worst case.
+fn hs_desc_wait_should_stop(confirmations: usize, quorum: usize, deadline_passed: bool) -> bool {
+    confirmations >= quorum || deadline_passed
+}
 
 /// Packet writer that reuses per-endpoint streams.
 pub(crate) struct TorPacketSender {
@@ -557,19 +585,27 @@ impl TorCustomTransportBuilder {
         if hs_desc_events_enabled {
             let deadline = tokio::time::Instant::now() + HS_DESC_PUBLISH_TIMEOUT;
             loop {
-                if upload_confirmations.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
-                    tracing::info!(
-                        onion = %target_hs_address,
-                        "hidden service descriptor confirmed uploaded to at least one HSDir"
-                    );
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    tracing::warn!(
-                        onion = %target_hs_address,
-                        timeout = ?HS_DESC_PUBLISH_TIMEOUT,
-                        "no HS_DESC UPLOADED confirmation within the timeout; proceeding anyway (the service may still not be reachable yet)"
-                    );
+                let confirmations =
+                    upload_confirmations.load(std::sync::atomic::Ordering::SeqCst);
+                let deadline_passed = tokio::time::Instant::now() >= deadline;
+                if hs_desc_wait_should_stop(confirmations, HS_DESC_UPLOAD_QUORUM, deadline_passed)
+                {
+                    if confirmations >= HS_DESC_UPLOAD_QUORUM {
+                        tracing::info!(
+                            onion = %target_hs_address,
+                            confirmations,
+                            quorum = HS_DESC_UPLOAD_QUORUM,
+                            "hidden service descriptor confirmed uploaded to quorum of HSDirs"
+                        );
+                    } else {
+                        tracing::warn!(
+                            onion = %target_hs_address,
+                            confirmations,
+                            quorum = HS_DESC_UPLOAD_QUORUM,
+                            timeout = ?HS_DESC_PUBLISH_TIMEOUT,
+                            "HS_DESC UPLOADED quorum not reached within the timeout; proceeding anyway (the service may still not be fully reachable yet)"
+                        );
+                    }
                     break;
                 }
                 // Any error here (including a transient one) just means this
