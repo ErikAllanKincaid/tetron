@@ -56,6 +56,18 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
     format!("tetron/net/{MESH_PROTOCOL_VERSION}/{prefix}").into_bytes()
 }
 
+/// TOR-DIAL-001, Fix 7: the Tor transport's own build step (below) is a
+/// real, stateful side effect on the Tor daemon (`ADD_ONION` + the
+/// HSDir-quorum wait, TOR-DIAL-001) — not something safe to redo silently.
+/// This alias lets `create_endpoint_with_alpns` build it exactly once
+/// regardless of the `tor` cargo feature (`()` when not compiled in, so
+/// callers don't need their own `#[cfg]` gating), and thread the *same*
+/// already-built instance into every `bind_endpoint` attempt below.
+#[cfg(feature = "tor")]
+type TorTransportHandle = Option<Arc<iroh_tor_transport::TorCustomTransport>>;
+#[cfg(not(feature = "tor"))]
+type TorTransportHandle = ();
+
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
 /// When `tor`/`veilid` is true and the matching cargo feature is enabled, adds
 /// that custom transport alongside the default relay transport. `listen_port`
@@ -71,7 +83,16 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 /// been observed taking several minutes (VEILID-005/006, see
 /// `spec/core.py`) -- far too long to block on here, but also too long for
 /// a value captured once at boot to be useful in practice.
-#[allow(clippy::too_many_arguments)]
+// `TorTransportHandle` is `()` without the `tor` feature (see its own doc
+// comment) -- `let_unit_value`/`clone_on_copy` fire only in that build and
+// are the deliberate cost of keeping this function's body identical across
+// both feature configurations rather than duplicating it.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::let_unit_value,
+    clippy::clone_on_copy,
+    clippy::unit_arg
+)]
 pub async fn create_endpoint_with_alpns(
     secret_key: SecretKey,
     alpns: Vec<Vec<u8>>,
@@ -86,6 +107,36 @@ pub async fn create_endpoint_with_alpns(
     Arc<arc_swap::ArcSwapOption<String>>,
     Option<TorAddrLookup>,
 )> {
+    // TOR-DIAL-001, Fix 7: build the Tor transport exactly once, before
+    // either bind attempt below, and reuse this same instance for both.
+    // Building it fresh inside a *retried* bind_endpoint() call (the
+    // pre-Fix-7 shape) created a second ephemeral onion service every time
+    // the fixed port was unavailable, and — since the first attempt's
+    // whole successful result (control connection included) was discarded
+    // when only the later, unrelated QUIC `.bind()` step failed — tore the
+    // first one down mid-flight (Tor's `hs_service_del_ephemeral` +
+    // `circuit_mark_for_close_`, confirmed live). See spec/core.py's
+    // `TorDialPathWiring`, Fix 7, for the full investigation.
+    #[cfg(feature = "tor")]
+    let tor_transport: TorTransportHandle = if tor {
+        Some(
+            iroh_tor_transport::TorCustomTransport::builder()
+                .build(secret_key.clone())
+                .await
+                .context(
+                    "failed to create Tor transport — is Tor running with ControlPort 9051?",
+                )?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(feature = "tor"))]
+    let tor_transport: TorTransportHandle = {
+        if tor {
+            anyhow::bail!("Tor support requires building with --features tor");
+        }
+    };
+
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
     // it for the ephemeral fallback. Falling back keeps the `0.0.0.0:0` guarantee
@@ -94,7 +145,7 @@ pub async fn create_endpoint_with_alpns(
     let (ep, veilid_node_id, tor_addr_lookup) = match bind_endpoint(
         &secret_key,
         &alpns,
-        tor,
+        tor_transport.clone(),
         veilid,
         &fixed,
         relay,
@@ -113,7 +164,7 @@ pub async fn create_endpoint_with_alpns(
             bind_endpoint(
                 &secret_key,
                 &alpns,
-                tor,
+                tor_transport,
                 veilid,
                 "0.0.0.0:0",
                 relay,
@@ -133,12 +184,18 @@ pub async fn create_endpoint_with_alpns(
 /// Builds and binds an iroh endpoint at `bind` with the N0 preset and (when
 /// requested + compiled in) the Tor and/or Veilid custom transports. Factored
 /// out so the caller can retry with a different bind address after a port
-/// collision.
-#[allow(clippy::too_many_arguments)]
+/// collision -- safe to call more than once because every side-effecting
+/// build step (currently: Tor's `ADD_ONION`) already happened once in the
+/// caller and is only *wired onto* the builder here (Fix 7); Veilid's own
+/// `build()` call still happens inside this function on each attempt, since
+/// (unlike Tor's) it has no comparable externally-visible, non-idempotent
+/// side effect to worry about duplicating.
+// See `create_endpoint_with_alpns`'s identical allow for why.
+#[allow(clippy::too_many_arguments, clippy::let_unit_value)]
 async fn bind_endpoint(
     secret_key: &SecretKey,
     alpns: &[Vec<u8>],
-    tor: bool,
+    tor_transport: TorTransportHandle,
     veilid: bool,
     bind: &str,
     relay: &ServerOverride,
@@ -195,12 +252,13 @@ async fn bind_endpoint(
     // below) is not sufficient. Always present as an empty slot, mirroring
     // `veilid_node_id` below, so the caller doesn't need its own
     // `#[cfg(feature = "tor")]` gating just to hold this value.
+    //
+    // Fix 7: `tor_transport` is already built (by `create_endpoint_with_alpns`,
+    // once, before either bind attempt) -- registering it here is purely
+    // wiring onto this specific builder instance, with no side effect of
+    // its own, so it's safe for this whole function to be retried.
     #[cfg(feature = "tor")]
-    let tor_addr_lookup: Option<TorAddrLookup> = if tor {
-        let tor_transport = iroh_tor_transport::TorCustomTransport::builder()
-            .build(secret_key.clone())
-            .await
-            .context("failed to create Tor transport — is Tor running with ControlPort 9051?")?;
+    let tor_addr_lookup: Option<TorAddrLookup> = if let Some(tor_transport) = &tor_transport {
         let lookup: TorAddrLookup = Arc::new(tor_transport.discovery());
         builder = builder
             .add_custom_transport(
@@ -215,9 +273,7 @@ async fn bind_endpoint(
 
     #[cfg(not(feature = "tor"))]
     let tor_addr_lookup: Option<TorAddrLookup> = {
-        if tor {
-            anyhow::bail!("Tor support requires building with --features tor");
-        }
+        let _ = tor_transport;
         None
     };
 

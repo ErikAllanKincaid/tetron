@@ -3169,9 +3169,18 @@ class TorDialPathWiring(Requirement):
     independently-worth-fixing defect** (a stateful side effect should not
     live inside a silently-retried code path) but re-testing with it worked
     around showed the intro-point-usability symptom **unchanged** -- so it
-    was not the (or not the only) cause of that symptom. Not yet fixed in
-    `src/transport.rs` itself (only worked around in the test setup); left
-    as a known follow-up, not blocking this requirement's own resolution.
+    was not the (or not the only) cause of that symptom. **Fixed properly
+    in `src/transport.rs` itself** (not just worked around in the test
+    setup): the Tor custom transport is now built exactly once in
+    `create_endpoint_with_alpns`, before either bind attempt, behind a new
+    `TorTransportHandle` type alias (`Option<Arc<TorCustomTransport>>` with
+    the `tor` feature, `()` without it, so `bind_endpoint` keeps one
+    uniform signature either way); `bind_endpoint` itself now only *wires*
+    the already-built transport onto whichever builder instance is
+    currently being tried, with no side-effecting call left inside the
+    retried path. Full workspace build (with and without `--features tor`),
+    `cargo test --workspace`, and `cargo clippy --workspace --all-targets`
+    (both feature configurations) all clean; `reconcile.py` green.
 
     **Fix 8, the actual mechanism, found and fixed:** `iroh-tor-transport`'s
     `TorPacketSender::get_or_connect` has no de-duplication for concurrent
