@@ -250,8 +250,43 @@ before the QUIC path itself gives up and retries -- matching the same
 "give Tor's own timing real headroom" philosophy already applied to
 `HS_DESC_PUBLISH_TIMEOUT` (180s, Patch 2).
 
-**Status: implemented; live cross-machine re-verification pending** -- the
-hotspot machine needed for the separate-network test became unavailable
-for approximately 2 hours partway through this investigation. See
-`tetron/spec/core.py`'s `TorDialPathWiring`, Fix 9, for the full
-investigation and the re-test result once run.
+**Status: implemented, live cross-machine re-verified.** Confirmed firing
+correctly and needed -- see `tetron/spec/core.py`'s `TorDialPathWiring`,
+Fix 9, for the full result (real, but not sufficient alone).
+
+## Patch 6: wait for the descriptor to settle after quorum, not just reach it
+
+**Files:** `src/lib.rs` -- `HS_DESC_SETTLE_WINDOW`, `HS_DESC_SETTLE_TIMEOUT`,
+`hs_desc_settle_should_stop`, and the settle loop appended after Patch 3's
+quorum loop in `build()`.
+
+**Found:** 2026-09-16, live cross-machine re-test with `tokio-socks`'s
+extended-error surfacing (`vendor/tokio-socks-0.5.3/PATCH.md`) enabled for
+the first time. Every failure now returned a specific Tor SOCKS5 extended
+error, `0xf2`, which per Tor's own SOCKS extension spec means precisely
+"the descriptor was found but the service is not anymore at the
+introduction points" -- not a lookup failure (Patch 3/Fix 6 already fixed
+that), not the connect stampede (Patch 4/Fix 8), not this codebase's own
+impatience (Patch 5/Fix 9). Corroborated directly in Tor's own `info`-level
+client log: `handle_introduce_ack_bad(): ... Reason: 1` (rend-spec-v3's
+`INTRODUCE_ACK` status 1, "unknown ID" at the introduction-point relay
+itself) firing within seconds of `HS_DESC UPLOADED` quorum being reached,
+reproduced across multiple independent fresh-Tor-process restart cycles
+(ruling out stale client cache). Reaching quorum only proves 8 HSDirs
+have *a* copy of the descriptor -- it says nothing about whether the
+introduction points that descriptor lists have finished settling, and
+`HS_DESC UPLOADED` fires identically whether a HSDir is confirming an
+unchanged descriptor or a genuinely new generation after intro-point
+rotation.
+
+**Fix:** after quorum (Patch 3), keep polling; require confirmations to
+stop increasing for `HS_DESC_SETTLE_WINDOW` (20s) before trusting the
+descriptor, capped by an independent `HS_DESC_SETTLE_TIMEOUT` (60s) so a
+HSDir set that never goes quiet still proceeds rather than hanging
+forever -- same "deadline is a fallback, never a requirement" shape as
+Patch 3. This only adds one-time latency to `build()` at daemon/network-
+join startup, never to any later per-dial path.
+
+**Status: implemented, unit-tested; live cross-machine re-verification is
+the direct next step.** See `tetron/spec/core.py`'s `TorDialPathWiring`
+for the full investigation and the re-test result once run.

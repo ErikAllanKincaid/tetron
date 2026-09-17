@@ -3334,16 +3334,153 @@ class TorDialPathWiring(Requirement):
     factor to inconsistent results, separate from anything in tetron's own
     code.
 
-    **Status: implemented, unit-tested; live cross-machine re-verification
-    with `ExtendedErrors` enabled is the direct next step** -- this should
-    finally turn every future `Host unreachable`-style failure into a
-    specific, named Tor reason rather than a guess.
+    **2026-09-16, Fix 10 live re-verified -- and it worked exactly as
+    designed.** Same two genuinely separate-network real machines (aorus,
+    home broadband; xps15-1, Verizon hotspot, public IP `174.195.83.1`),
+    `ExtendedErrors 1` confirmed set on both sides' `SocksPort` beforehand,
+    `path-preference tor` (PATHPREF-001) forced on both daemons so a
+    confirmed-active Tor candidate would actually carry data rather than
+    stand by behind Direct/Relay. Multiple clean restart cycles (fresh Tor
+    process + fresh tetron daemon both sides each time) all produced the
+    same result: instead of the old generic `Host unreachable`, every
+    failure now surfaces as `Extended (non-standard) SOCKS5 reply code:
+    0xf2`, symmetric on both sides. Per Tor's own SOCKS extension proposal
+    (<https://spec.torproject.org/proposals/304-socks5-extending-hs-error-codes.html>),
+    `0xF2` means precisely: "client failed to introduce to the service
+    meaning the descriptor was found but the service is not anymore at the
+    introduction points" -- HSDir lookup (Fix 6) is confirmed working (no
+    more `No more HSDir available to query`); the remaining failure is
+    isolated exactly to introduction-point staleness, not lookup, not
+    stampede, not our own impatience.
+
+    Corroborated directly in Tor's own `info`-level client log
+    (`/var/log/tor/info.log`) for the same window:
+    `handle_introduce_ack_bad(): Received INTRODUCE_ACK nack ... Reason:
+    1` (rend-spec-v3's `INTRODUCE_ACK` status code `1`, "unknown ID" at the
+    introduction-point relay itself -- the relay does not recognize the
+    authorization key the client presented) firing repeatedly within a ~7s
+    window, cycling through every introduction point in the descriptor
+    (`intro_point_is_usable(): ... had an error. Not usable` x N),
+    exhausting all of them (`client_get_random_intro(): ... descriptor
+    doesn't have any usable intro points`), forcing a descriptor re-fetch
+    that hits the identical stale set again. This reproduced identically
+    across multiple independent clean-restart cycles (all with fresh Tor
+    processes, ruling out the stale-client-cache theory from Fix 8/9's
+    era) -- the descriptor tetron waits for and immediately uses (Fix 6's
+    quorum of 8) is, on this evidence, being invalidated by the service's
+    own introduction-circuit churn faster than any client can act on it.
+    One side-observation from the same session, kept for context but not
+    yet tied to root cause: xps15-1's Tor log independently showed a ~1
+    minute burst of `circuit_build_failed(): ... failed to get a response
+    from the first hop ... going to try to rotate to a better connection`
+    against the same two guard IPs, timestamped several minutes *before*
+    the introduction-failure window -- consistent with ordinary post-
+    network-switch guard churn on a fresh hotspot path, not (on the
+    timing) the same mechanism as the later `0xf2`s, but worth ruling out
+    explicitly rather than assuming irrelevant if this recurs.
+
+    **Status: Fix 10 confirmed real and working as designed** -- it
+    delivered exactly the specific, actionable diagnosis it was built for,
+    on the first live cross-machine run after landing. **The underlying
+    TOR-DIAL-001 defect is not yet resolved.**
+
+    **2026-09-16, Fix 11 implemented and live-verified -- real, but not
+    the cause.** Added a post-quorum settle wait to `iroh-tor-transport`'s
+    `build()` (`vendor/iroh-tor-transport-0.1.0/PATCH.md`, Patch 6):
+    require `HS_DESC UPLOADED` confirmations to stop increasing for 20s
+    (capped at 60s) before trusting the descriptor, on the theory that
+    quorum alone doesn't prove the listed introduction points have
+    stopped churning. Live cross-machine re-test showed the settle wait
+    firing exactly as designed on both sides -- confirmations climbed well
+    past the base quorum of 8 (to 15/16) before going quiet, proving the
+    hypothesis's premise (churn *does* continue past first quorum) was
+    correct. **But dialing after a fully settled descriptor still failed
+    with the identical `0xf2`.** Fix 11's mechanism is real and worth
+    keeping (a descriptor that settles is strictly better evidence than
+    one that merely reached quorum), but it does not explain the failure.
+
+    **Fix 12, the actual root cause, found immediately after by reading
+    Tor's own `hs_service`-side log lines, not just the client side.**
+    `iroh-tor-transport`'s own doc comment on `TorCustomTransport` already
+    said it plainly: "Keep the control connection alive to maintain the
+    ephemeral hidden service. The hidden service is removed when this
+    connection is dropped" -- `ADD_ONION` was called with `detach=false`
+    (`add_onion_v3(&tor_key, false, ...)`), and per Tor's control-spec a
+    non-detached ephemeral service is torn down automatically the instant
+    its creating control connection closes. Neither `bind_endpoint` nor
+    its caller `create_endpoint_with_alpns` (`src/transport.rs`) kept any
+    owning reference to the `Arc<TorCustomTransport>` (which holds that
+    connection) beyond registering a temporary clone with iroh's endpoint
+    builder -- only the separate, stateless `TorAddrLookup` handle was
+    threaded onward to `MeshManager` (Fix 1). Confirmed directly in Tor's
+    own `info`-level log on both sides: `hs_service_del_ephemeral():
+    Removed ephemeral v3 hidden service` firing in the *same second* as
+    this codebase's own `"Tor transport enabled"` log line, every time,
+    on both machines independently -- the service was deleting itself
+    the instant it finished starting up, regardless of how long Fix 11's
+    settle wait ran beforehand. This fully explains every `0xf2`
+    ("descriptor found but the service is not anymore at the introduction
+    points") observed across this entire investigation: by the time any
+    peer's `CONNECT_TIMEOUT` window (Fix 9) even began, the target service
+    no longer existed at all.
+
+    **Fix:** `create_endpoint_with_alpns` now clones its own keepalive
+    reference to the built `TorTransportHandle` before it's consumed by
+    either bind attempt, and returns it alongside `tor_addr_lookup`;
+    `MeshManager` gained a `tor_transport_keepalive` field
+    (`src/daemon/mod.rs`) that holds it for the daemon's entire lifetime,
+    read by nothing (`#[allow(dead_code)]`) -- its only job is to keep the
+    `Arc`'s refcount above zero. Full workspace build/test/clippy (both
+    feature configurations) and `reconcile.py` all clean.
+
+    **2026-09-16, Fix 12 live cross-machine re-verified -- TOR-DIAL-001
+    RESOLVED.** Same two genuinely separate-network real machines (aorus,
+    home broadband, public IP `76.103.76.37`; xps15-1, Verizon hotspot,
+    public IP `174.195.83.1`), fresh Tor processes and fresh tetron
+    daemons on both sides, Fix 11's settle wait still in place. Both
+    onion services settled cleanly (confirmations climbing past quorum to
+    15/16 before going quiet, ~20-30s after `ADD_ONION`), and this time
+    `hs_service_del_ephemeral()` did not fire at all in Tor's own log --
+    the keepalive fix held. Dialing succeeded on the very first attempt
+    after settling, on both sides, confirmed multiple ways:
+    - `tetron status --json`: `"conn_type": "Tor"`,
+      `"remote_addr": "custom:544f52_<peer-endpoint-id>"` (`544f52` is
+      literally the ASCII bytes "TOR"), `"is_selected": true` for the Tor
+      path in `paths[]`, Relay present but unselected.
+    - Real, growing byte counters over a sustained 60+ second window with
+      zero further failures: 134,137 -> 177,083 -> 230,764 bytes
+      transferred (aorus side alone), confirmed on both peers
+      independently.
+    - `rtt_ms` ~950-1030ms -- consistent with genuine Tor rendezvous-
+      circuit latency (matches this investigation's own earlier
+      DuckDuckGo control-case observation, ~18s for the *first* connect,
+      then normal ongoing circuit RTT), not a Direct/Relay path
+      misreporting its type.
+    - Zero `Tor packet send failed` warnings of any kind after the Fix-12
+      restart, on either side (the last `0xf2` on record is from the
+      *pre-restart* attempt, timestamped before the fix took effect).
+
+    Fixes 1-12 are all real, live-verified, and necessary -- this was
+    never one bug wearing different disguises; it was a genuine chain
+    (dial-path wiring, a vendored retry-gap, an unbounded fire-and-forget
+    connect, a missing publish-confirmation wait, a too-low HSDir quorum,
+    a stateful side effect inside a retried bind path, a connect
+    stampede, an impatient timeout, an insufficient settle window, and
+    finally a dropped keepalive reference silently deleting the very
+    service being dialed) that happened to keep presenting through the
+    same narrow SOCKS5-failure window until `ExtendedErrors` (Fix 10) and
+    Tor's own service-side log finally made each link legible on its own
+    terms.
 
     ENFORCEMENT: `tetron-testsuite`'s `tor-smoke.sh` (parallel structure to
-    `veilid-smoke.sh`) is the acceptance bar. Update its own header once
-    Fix 10's live re-verification result is in, and file the Fix 7
-    vendored-side-effect-in-a-retried-path defect as tracked, separate
-    follow-up work in `src/transport.rs` regardless of outcome.
+    `veilid-smoke.sh`) is the acceptance bar -- update its header to PASS
+    with this result once run against it directly (this investigation's
+    live verification used an isolated `tortest` network + hand-run
+    daemons, not that script itself). File the Fix 7 vendored-side-effect-
+    in-a-retried-path defect as tracked, separate follow-up work if not
+    already folded into Fix 12's own fix. **README.md and docs/HOWTO.md's
+    `--tor` documentation can now describe Tor transport as a real,
+    working, live-verified feature.**
     """
 
     req_id = "TOR-DIAL-001"

@@ -325,6 +325,42 @@ fn hs_desc_wait_should_stop(confirmations: usize, quorum: usize, deadline_passed
     confirmations >= quorum || deadline_passed
 }
 
+/// tetron-local patch (PATCH.md, Patch 5, TOR-DIAL-001 follow-up, Fix 11):
+/// once quorum is first reached (Patch 3), how long the wait loop must then
+/// see zero *further* `HS_DESC UPLOADED` confirmations before trusting the
+/// descriptor as settled. Bounded separately by `HS_DESC_SETTLE_TIMEOUT` so
+/// a HSDir set that never goes quiet (e.g. genuinely continuous churn)
+/// still proceeds rather than hanging indefinitely -- same "deadline is
+/// always a fallback, never a requirement" shape as Patch 3's own quorum
+/// wait. Chosen against this investigation's own observed introduction-
+/// circuit build time of ~5-8s (Fix 9), leaving comfortable margin for at
+/// least one full rebuild-and-republish cycle to complete and go quiet.
+const HS_DESC_SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// tetron-local patch (PATCH.md, Patch 5, TOR-DIAL-001 follow-up, Fix 11):
+/// hard cap on the settle wait above, independent of `HS_DESC_PUBLISH_TIMEOUT`
+/// (which only bounds reaching quorum in the first place). This only adds
+/// one-time latency to `build()` at daemon/network-join startup, never to
+/// any later per-dial path, so a generous cap costs nothing but a slower
+/// first `tetron create --tor`/`join --tor`.
+const HS_DESC_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Pure decision for `build`'s post-quorum settle wait (Patch 5): whether
+/// to stop waiting given how long it has been since the confirmation count
+/// last increased, and whether the settle deadline has passed. `HS_DESC
+/// UPLOADED` fires identically for a HSDir re-confirming an unchanged
+/// descriptor and for one confirming a genuinely new generation (e.g. after
+/// introduction-point rotation) -- `upload_confirmations` does not
+/// distinguish the two -- so a quiet period with no new increments is
+/// evidence no republish is currently in flight, not merely proof the
+/// first publish once succeeded. See `TorDialPathWiring`'s Fix 11
+/// investigation note (`tetron/spec/core.py`) for the live cross-machine
+/// evidence (`0xf2` / `INTRODUCE_ACK ... Reason: 1`) that reaching quorum
+/// alone was not sufficient.
+fn hs_desc_settle_should_stop(seconds_since_last_increment: f64, deadline_passed: bool) -> bool {
+    seconds_since_last_increment >= HS_DESC_SETTLE_WINDOW.as_secs_f64() || deadline_passed
+}
+
 /// Packet writer that reuses per-endpoint streams.
 ///
 /// tetron-local patch (PATCH.md, Patch 4, TOR-DIAL-001 follow-up, Fix 8):
@@ -640,6 +676,7 @@ impl TorCustomTransportBuilder {
         // returning) at a steady interval instead.
         if hs_desc_events_enabled {
             let deadline = tokio::time::Instant::now() + HS_DESC_PUBLISH_TIMEOUT;
+            let mut reached_quorum = false;
             loop {
                 let confirmations =
                     upload_confirmations.load(std::sync::atomic::Ordering::SeqCst);
@@ -647,6 +684,7 @@ impl TorCustomTransportBuilder {
                 if hs_desc_wait_should_stop(confirmations, HS_DESC_UPLOAD_QUORUM, deadline_passed)
                 {
                     if confirmations >= HS_DESC_UPLOAD_QUORUM {
+                        reached_quorum = true;
                         tracing::info!(
                             onion = %target_hs_address,
                             confirmations,
@@ -669,6 +707,46 @@ impl TorCustomTransportBuilder {
                 // retries until the deadline regardless.
                 let _ = conn.noop().await;
                 tokio::time::sleep(HS_DESC_POLL_INTERVAL).await;
+            }
+
+            // tetron-local patch (PATCH.md, Patch 5, TOR-DIAL-001 follow-up,
+            // Fix 11): reaching quorum alone was live-verified insufficient
+            // -- a peer dialing immediately after can still hit `0xf2`
+            // (`INTRODUCE_ACK ... Reason: 1`, an introduction point that no
+            // longer recognizes the descriptor's authorization key), because
+            // the freshly-quorum-confirmed descriptor may already be stale
+            // relative to introduction-circuit churn still in flight. Only
+            // run this if quorum was actually reached above -- if it was
+            // not, the service is already proceeding in degraded mode and
+            // waiting further here would just add latency with no signal to
+            // act on.
+            if reached_quorum {
+                let settle_deadline = tokio::time::Instant::now() + HS_DESC_SETTLE_TIMEOUT;
+                let mut last_confirmations =
+                    upload_confirmations.load(std::sync::atomic::Ordering::SeqCst);
+                let mut last_increment_at = tokio::time::Instant::now();
+                loop {
+                    let confirmations =
+                        upload_confirmations.load(std::sync::atomic::Ordering::SeqCst);
+                    let now = tokio::time::Instant::now();
+                    if confirmations > last_confirmations {
+                        last_confirmations = confirmations;
+                        last_increment_at = now;
+                    }
+                    let seconds_since_last_increment = (now - last_increment_at).as_secs_f64();
+                    let deadline_passed = now >= settle_deadline;
+                    if hs_desc_settle_should_stop(seconds_since_last_increment, deadline_passed) {
+                        tracing::info!(
+                            onion = %target_hs_address,
+                            confirmations,
+                            settled_for_secs = seconds_since_last_increment,
+                            "hidden service descriptor settled (no further HS_DESC UPLOADED for the settle window)"
+                        );
+                        break;
+                    }
+                    let _ = conn.noop().await;
+                    tokio::time::sleep(HS_DESC_POLL_INTERVAL).await;
+                }
             }
         }
 

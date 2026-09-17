@@ -19,8 +19,8 @@ use tokio::{
 };
 
 use crate::{
-    TorPacket, TorPacketSender, TorPacketService, TorStreamIo, hs_desc_wait_should_stop,
-    iroh_to_tor_secret_key, read_tor_packet, write_tor_packet,
+    TorPacket, TorPacketSender, TorPacketService, TorStreamIo, hs_desc_settle_should_stop,
+    hs_desc_wait_should_stop, iroh_to_tor_secret_key, read_tor_packet, write_tor_packet,
 };
 
 /// Get the onion address for an iroh SecretKey (test helper).
@@ -205,6 +205,32 @@ fn test_hs_desc_wait_stops_at_deadline_even_below_quorum() {
 #[test]
 fn test_hs_desc_wait_zero_confirmations_before_deadline_keeps_waiting() {
     assert!(!hs_desc_wait_should_stop(0, 8, false));
+}
+
+// tetron-local patch (PATCH.md, Patch 5, TOR-DIAL-001 follow-up): pure unit
+// tests for the post-quorum settle-wait decision (Fix 11,
+// tetron/spec/core.py's TorDialPathWiring) -- reaching quorum alone was
+// live-verified insufficient (0xf2 / INTRODUCE_ACK Reason 1), so `build()`
+// now also waits for confirmations to stop increasing before trusting the
+// descriptor.
+
+#[test]
+fn test_hs_desc_settle_keeps_waiting_while_still_incrementing() {
+    assert!(!hs_desc_settle_should_stop(0.0, false));
+    assert!(!hs_desc_settle_should_stop(5.0, false));
+    assert!(!hs_desc_settle_should_stop(19.9, false));
+}
+
+#[test]
+fn test_hs_desc_settle_stops_once_quiet_for_the_settle_window() {
+    assert!(hs_desc_settle_should_stop(20.0, false));
+    assert!(hs_desc_settle_should_stop(45.0, false));
+}
+
+#[test]
+fn test_hs_desc_settle_stops_at_deadline_even_if_still_incrementing() {
+    assert!(hs_desc_settle_should_stop(0.0, true));
+    assert!(hs_desc_settle_should_stop(5.0, true));
 }
 
 // tetron-local patch (PATCH.md, Patch 4, TOR-DIAL-001 follow-up): concurrent

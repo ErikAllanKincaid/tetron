@@ -64,9 +64,9 @@ pub fn network_alpn(network_pubkey: &EndpointId) -> Vec<u8> {
 /// callers don't need their own `#[cfg]` gating), and thread the *same*
 /// already-built instance into every `bind_endpoint` attempt below.
 #[cfg(feature = "tor")]
-type TorTransportHandle = Option<Arc<iroh_tor_transport::TorCustomTransport>>;
+pub type TorTransportHandle = Option<Arc<iroh_tor_transport::TorCustomTransport>>;
 #[cfg(not(feature = "tor"))]
-type TorTransportHandle = ();
+pub type TorTransportHandle = ();
 
 /// Creates an iroh endpoint with the N0 preset (NAT traversal + relay fallback).
 /// When `tor`/`veilid` is true and the matching cargo feature is enabled, adds
@@ -106,6 +106,7 @@ pub async fn create_endpoint_with_alpns(
     Endpoint,
     Arc<arc_swap::ArcSwapOption<String>>,
     Option<TorAddrLookup>,
+    TorTransportHandle,
 )> {
     // TOR-DIAL-001, Fix 7: build the Tor transport exactly once, before
     // either bind attempt below, and reuse this same instance for both.
@@ -136,6 +137,23 @@ pub async fn create_endpoint_with_alpns(
             anyhow::bail!("Tor support requires building with --features tor");
         }
     };
+
+    // TOR-DIAL-001, Fix 12: `TorCustomTransport` owns the live Tor control
+    // connection that its own `ADD_ONION` (non-detached) is scoped to --
+    // its doc comment says so explicitly: "the hidden service is removed
+    // when this connection is dropped". Neither `bind_endpoint` below nor
+    // its caller previously kept any owning reference to this value once
+    // endpoint setup finished (only the separate, stateless
+    // `TorAddrLookup` was threaded onward) -- live-verified via Tor's own
+    // `hs_service_del_ephemeral()` firing in the same second as "Tor
+    // transport enabled" on both sides of a real cross-machine test,
+    // regardless of whether iroh's own custom-transport registration keeps
+    // a clone alive internally. Clone the keepalive handle now, before
+    // `tor_transport` is consumed below, and return it so the caller can
+    // store it for the life of the daemon (mirrors `tor_addr_lookup`'s own
+    // "always-present slot on MeshManager" pattern). See
+    // `TorDialPathWiring`, Fix 12, for the full investigation.
+    let tor_transport_keepalive: TorTransportHandle = tor_transport.clone();
 
     // Bind the fixed port so the daemon is reachable on a known, forwardable UDP
     // port across restarts. The builder is consumed by `.bind()`, so we rebuild
@@ -178,7 +196,7 @@ pub async fn create_endpoint_with_alpns(
 
     tracing::info!(id = %ep.id().fmt_short(), "iroh endpoint ready");
 
-    Ok((ep, veilid_node_id, tor_addr_lookup))
+    Ok((ep, veilid_node_id, tor_addr_lookup, tor_transport_keepalive))
 }
 
 /// Builds and binds an iroh endpoint at `bind` with the N0 preset and (when

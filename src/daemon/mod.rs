@@ -559,6 +559,19 @@ pub struct MeshManager {
     /// `transport::connect_to_peer_with_alpn` queries it directly with no
     /// per-peer roster field needed (see that function's doc comment).
     tor_addr_lookup: Option<transport::TorAddrLookup>,
+    /// TOR-DIAL-001, Fix 12: kept alive for the daemon's whole lifetime and
+    /// never read otherwise (`#[allow(dead_code)]`) -- `TorCustomTransport`
+    /// owns the live Tor control connection its own `ADD_ONION` (non-
+    /// detached) is scoped to, and Tor tears the ephemeral hidden service
+    /// down the moment that connection closes. Dropping the last clone of
+    /// this value at any point after construction silently kills Tor
+    /// connectivity for every peer from that moment on, live-verified via
+    /// Tor's own `hs_service_del_ephemeral()` firing the instant the
+    /// pre-Fix-12 code path let its only reference go out of scope. See
+    /// `spec/core.py`'s `TorDialPathWiring`, Fix 12, for the full
+    /// investigation.
+    #[allow(dead_code)]
+    tor_transport_keepalive: transport::TorTransportHandle,
     /// PATHPREF-001: the live, daemon-wide transport preference this
     /// endpoint's `TetronPathSelector` reads on every selection. Seeded
     /// from the persisted config at startup; `Self::set_path_preference`
