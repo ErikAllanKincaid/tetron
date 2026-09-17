@@ -134,8 +134,17 @@ jobs:
           shared-key: "release-${{ matrix.target }}"
           cache-on-failure: true
 
+      # `tor`/`veilid` are opt-in Cargo features (off by default so a plain
+      # `cargo build` stays minimal), but most users install this release
+      # binary rather than building from source -- shipping without them
+      # means `--tor`/`--veilid` are documented and in `--help` but silently
+      # unreachable ("requires building with --features tor") for everyone
+      # who didn't build it themselves. Both are still off at *runtime*
+      # unless a user explicitly passes `--tor`/`--veilid` at `create`/
+      # `join`; compiling them in costs ~1MB of binary size and no measured
+      # idle RAM when unused (verified locally, RELEASE-FEATURES-001, spec/core.py).
       - name: Build binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --features tor,veilid
 
       - name: Package for release
         run: |
@@ -201,8 +210,17 @@ jobs:
           shared-key: "release-${{ matrix.target }}"
           cache-on-failure: true
 
+      # `tor`/`veilid` are opt-in Cargo features (off by default so a plain
+      # `cargo build` stays minimal), but most users install this release
+      # binary rather than building from source -- shipping without them
+      # means `--tor`/`--veilid` are documented and in `--help` but silently
+      # unreachable ("requires building with --features tor") for everyone
+      # who didn't build it themselves. Both are still off at *runtime*
+      # unless a user explicitly passes `--tor`/`--veilid` at `create`/
+      # `join`; compiling them in costs ~1MB of binary size and no measured
+      # idle RAM when unused (verified locally, RELEASE-FEATURES-001, spec/core.py).
       - name: Build binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --features tor,veilid
 
       - name: Package for release
         run: |

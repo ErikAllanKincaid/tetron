@@ -3486,6 +3486,72 @@ class TorDialPathWiring(Requirement):
     req_id = "TOR-DIAL-001"
 
 
+class ReleaseBinaryOptionalTransports(Requirement):
+    """REQUIREMENT-ID: RELEASE-FEATURES-001
+
+    `tor`/`veilid` are opt-in Cargo compile-time features (`cargo build
+    --features tor,veilid`), off by default so a plain `cargo build` stays
+    minimal for anyone building from source. But `.github/workflows/
+    release.yml`'s distributed binaries (the actual artifact most users
+    install, per the project's own README/HOWTO) were built with plain
+    `cargo build --release --locked`, no feature flags at all, on every
+    platform target. `--tor`/`--veilid` are documented in `README.md`/
+    `docs/HOWTO.md` and appear in `tetron --help`, but were silently
+    unreachable for anyone running the actual release binary --
+    `tetron create --tor` on that binary hits `anyhow::bail!("Tor support
+    requires building with --features tor")` immediately. Found 2026-09-16
+    immediately after `TorDialPathWiring` (TOR-DIAL-001) finally made the
+    underlying mechanism itself work end to end -- fixing the mechanism
+    alone left the documentation still overclaiming, for exactly the users
+    the docs are written for (most people install the release binary, they
+    do not build from source).
+
+    **Decision: ship both features compiled into every distributed
+    binary, still off by default at runtime.** Measured before deciding,
+    not assumed:
+    - Binary size: default (no features) 28.64 MB; `--features tor` 29.25
+      MB (+0.61 MB, +2.1%); `--features tor,veilid` 29.74 MB (+1.09 MB,
+      +3.8%).
+    - Idle RAM: a daemon built with both features compiled in but with no
+      network actually requesting `--tor`/`--veilid` measured 34.5 MB RSS
+      against 36.0 MB RSS for the plain default build -- no measurable
+      increase (`create_endpoint_with_alpns` only enters either transport's
+      build path `if tor`/`if veilid`; neither allocates, connects, nor
+      spawns anything when unrequested).
+    - Cross-compilation: both new vendored Tor crates (`torut`,
+      `iroh-tor-transport`, `tokio-socks`) and the in-tree `veilid-transport`
+      workspace member (a thin TCP/JSON client to the external
+      `tetron-veilid` companion daemon, not an embedded node -- see
+      `VeilidExternalDaemonProtocol`, VEILID-017) are pure Rust with no
+      OS-specific or C-linked dependencies. `--features tor,veilid` builds
+      clean, real (not just `cargo check`), for the native host target and
+      for `x86_64-unknown-linux-musl` via `cross` (statically linked,
+      confirmed via `file`). `aarch64-unknown-linux-musl` via `cross` hit a
+      pre-existing, already-documented local Docker-toolchain glibc
+      mismatch on this dev machine (unrelated to this change -- the same
+      gap `release.yml`'s own comment already notes for the *baseline*
+      build, before any feature flags) -- real CI runs on native
+      `ubuntu-22.04-arm` hardware for that target, not this local cross
+      path, so this local-only gap does not apply there.
+
+    **Fix:** `.github/workflows/release.yml`'s `build` (Linux, 4 targets)
+    and `build-macos` (2 targets) jobs' `Build binary` step now passes
+    `--features tor,veilid`. No runtime behavior changes for anyone not
+    passing `--tor`/`--veilid` at `create`/`join` -- this only changes what
+    the *binary* can do when asked, not what it does unasked.
+
+    **Not yet independently verified:** `aarch64-unknown-linux-gnu`,
+    `aarch64-unknown-linux-musl`, and both macOS targets with the new
+    flags -- no local toolchain for the first two beyond the `cross`
+    gap noted above, no macOS hardware available in this session. All are
+    pure-Rust dependency chains with no known platform-specific code, so
+    failure is not expected, but the actual CI run against a real tag is
+    the first true confirmation for those four targets.
+    """
+
+    req_id = "RELEASE-FEATURES-001"
+
+
 # --------------------------------------------------------------------------
 # Transport path selection (RELAY-*, PATHPREF-*)
 #
