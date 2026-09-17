@@ -527,7 +527,7 @@ tetron create --hostname alice --veilid
 tetron join <invite-key> --hostname bob --veilid
 ```
 
-`--tor` and `--veilid` are mutually exclusive per network. Both enabled nodes' embedded transports only actually start on the *second* daemon boot for a given node — restart once after create/join (`sudo tetron restart`) if you don't see it come up.
+`--tor` and `--veilid` are mutually exclusive per network. Tor starts on the first boot (`ADD_ONION` + a settle wait for the hidden-service descriptor complete before the daemon finishes starting, live-verified TOR-DIAL-001). Veilid's own embedded node only actually starts on the *second* daemon boot for a given node — restart once after create/join (`sudo tetron restart`) if you don't see it come up.
 
 Veilid ranks below Direct, Relay, and Tor by default — it only actually carries traffic once those are all unreachable. To make it (or Tor) carry traffic deliberately instead of only as a last resort, see "Preferring a transport" below.
 
