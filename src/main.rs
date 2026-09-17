@@ -66,9 +66,9 @@ pub(crate) enum Command {
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long, conflicts_with = "veilid")]
         tor: bool,
-        /// Route traffic over an embedded Veilid node (experimental: not yet
-        /// verified against a live network; requires building with --features
-        /// veilid)
+        /// Route traffic through a tetron-veilid companion daemon
+        /// (127.0.0.1:5959; see the tetron-veilid addon repo). Live-verified
+        /// end to end (VEILID-007)
         #[arg(long, conflicts_with = "tor")]
         veilid: bool,
         /// Bypass the subnet-collision guard: allow an explicit --subnet that
@@ -91,9 +91,9 @@ pub(crate) enum Command {
         /// Route traffic through Tor (requires running Tor daemon with ControlPort 9051)
         #[arg(long, conflicts_with = "veilid")]
         tor: bool,
-        /// Route traffic over an embedded Veilid node (experimental: not yet
-        /// verified against a live network; requires building with --features
-        /// veilid)
+        /// Route traffic through a tetron-veilid companion daemon
+        /// (127.0.0.1:5959; see the tetron-veilid addon repo). Live-verified
+        /// end to end (VEILID-007)
         #[arg(long, conflicts_with = "tor")]
         veilid: bool,
         /// Bypass the subnet-collision guard: allow joining a network whose
