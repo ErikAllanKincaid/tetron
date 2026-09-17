@@ -103,7 +103,7 @@ tetron create --network-name mynet --hostname alice --tor
 tetron create --network-name mynet --hostname alice --veilid   # requires --features veilid
 ```
 
-Tor requires a running Tor daemon with `ControlPort 9051`; Veilid starts an embedded node, nothing external to run. See [Tor transport](#tor-transport) / [Veilid transport](#veilid-transport-experimental) below — both rank as backups by default, see [Preferring a transport](#preferring-a-transport) to make one carry traffic deliberately.
+Tor requires a running Tor daemon with `ControlPort 9051`; Veilid requires a running [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) companion daemon. See [Tor transport](#tor-transport) / [Veilid transport](#veilid-transport) below — both rank as backups by default, see [Preferring a transport](#preferring-a-transport) to make one carry traffic deliberately.
 
 ---
 
@@ -515,9 +515,9 @@ tetron join <invite-key> --hostname bob --tor
 
 Mixing Tor and non-Tor nodes on the same network is supported — each peer uses whatever transport it specified.
 
-### Veilid transport (experimental)
+### Veilid transport
 
-Requires building with `cargo build --features veilid`. Starts a real embedded Veilid node — no separate daemon or control port to run, unlike Tor:
+Compiled into the release binary (`--features veilid` only matters building from source without it, VEILID-001..019). Talks to a separate [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) companion daemon (`127.0.0.1:5959` by default) — a running daemon or control port to manage, same external-daemon shape as Tor, not an embedded node. Live-verified end to end (VEILID-007):
 
 ```bash
 # Create a network with Veilid transport
@@ -527,7 +527,7 @@ tetron create --hostname alice --veilid
 tetron join <invite-key> --hostname bob --veilid
 ```
 
-`--tor` and `--veilid` are mutually exclusive per network. Tor starts on the first boot (`ADD_ONION` + a settle wait for the hidden-service descriptor complete before the daemon finishes starting, live-verified TOR-DIAL-001). Veilid's own embedded node only actually starts on the *second* daemon boot for a given node — restart once after create/join (`sudo tetron restart`) if you don't see it come up.
+`--tor` and `--veilid` are mutually exclusive per network. Tor starts on the first boot (`ADD_ONION` + a settle wait for the hidden-service descriptor complete before the daemon finishes starting, live-verified TOR-DIAL-001). Veilid's identity/attach resolution against its companion daemon happens in the background and can take up to a few minutes — no restart needed, it live-updates into the roster once resolved (VEILID-006).
 
 Veilid ranks below Direct, Relay, and Tor by default — it only actually carries traffic once those are all unreachable. To make it (or Tor) carry traffic deliberately instead of only as a last resort, see "Preferring a transport" below.
 
