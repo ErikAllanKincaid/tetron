@@ -176,17 +176,18 @@ async fn build_daemon(
     let path_preference: crate::path_selector::PathPreferenceSlot = Arc::new(
         arc_swap::ArcSwapOption::from(app_config.path_preference.clone().map(Arc::new)),
     );
-    let (ep, veilid_node_id, tor_addr_lookup) = transport::create_endpoint_with_alpns(
-        key.clone(),
-        alpns,
-        use_tor,
-        use_veilid,
-        &app_config.relay,
-        &app_config.discovery_dns,
-        listen_port,
-        path_preference.clone(),
-    )
-    .await?;
+    let (ep, veilid_node_id, tor_addr_lookup, tor_transport_keepalive) =
+        transport::create_endpoint_with_alpns(
+            key.clone(),
+            alpns,
+            use_tor,
+            use_veilid,
+            &app_config.relay,
+            &app_config.discovery_dns,
+            listen_port,
+            path_preference.clone(),
+        )
+        .await?;
 
     // SELFCAPTURE-ROUTE-001: route iroh's own outbound traffic around every
     // overlay subnet route, daemon-wide, once, before any network's TUN
@@ -238,6 +239,7 @@ async fn build_daemon(
         endpoint: ep,
         veilid_node_id,
         tor_addr_lookup,
+        tor_transport_keepalive,
         path_preference,
         identity,
         stats: stats.clone(),
