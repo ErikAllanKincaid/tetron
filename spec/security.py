@@ -772,6 +772,50 @@ class InstallSuiteUpgradesByDefault(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-005: tetron-messageboard added as an opt-in-only component
+# --------------------------------------------------------------------------
+
+class InstallSuiteMessageboardComponent(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-005
+
+    Adds `tetron-messageboard` (a new addon: a mesh-hosted browser message
+    board bound to one network's mesh IP -- see the `tetron-messageboard`
+    repo's own README for the full design) to `install-tetron-suite.sh`.
+    Follows `ADDONS-SUITE-002`'s selection logic exactly (a
+    `--install-messageboard` flag, `component_binary`/`component_repo` table
+    entries, the generic release-binary install path with its `install`
+    subcommand -- not `backup`'s special raw-script path), at the same
+    privilege tier and picker default as `sync-receiver`:
+
+    **Per-user service, opt-in-only, defaults to `N` in the picker.** Like
+    `webui`/`systray`/`sync-receiver`, the board runs as a `systemd --user`
+    unit / launchd LaunchAgent with no elevated runtime privilege
+    (`component_service_needs_sudo` returns `0`; only placing the binary in
+    root-owned `/usr/local/bin` needs sudo). Like `sync-receiver`/`backup`,
+    it is never in any tier's default set -- it is a specific product
+    feature, not something every tetron install wants -- so it is added only
+    via `--install-messageboard`, the interactive picker (default `N`, or
+    pre-answered `Y` when already installed, per `ADDONS-SUITE-004`), or
+    `--install-all` (which now includes it:
+    `core webui systray hosts sync-receiver messageboard backup`).
+
+    **The normal install path is tetron-webui, not this script.** Only a
+    host with a browser can use the board, so in practice it is installed
+    through tetron-webui's Add-ons panel; the `--install-messageboard` flag
+    here exists for parity and headless/scripted setups, matching how every
+    other suite addon is reachable both ways.
+
+    Deliberately not spec-governed elsewhere: `sync-receiver` was added to
+    this script without its own requirement class (drift, not license);
+    this requirement backfills the pattern rather than repeating that gap.
+    Like `relay`/`testsuite`, the board is out of scope for anything beyond
+    this script's own component table -- it has its own repo and release.
+    """
+
+    req_id = "ADDONS-SUITE-005"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

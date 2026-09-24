@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # install-tetron-suite.sh: install or upgrade tetron, tetron-webui,
-# tetron-systray, tetron-hosts, tetron-sync-receiver, and tetron-backup.sh
-# to their latest GitHub releases in one pass. Idempotent -- a component
-# already at the latest release version is left untouched.
+# tetron-systray, tetron-hosts, tetron-sync-receiver, tetron-messageboard,
+# and tetron-backup.sh to their latest GitHub releases in one pass.
+# Idempotent -- a component already at the latest release version is left
+# untouched.
 # Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
 # this repo first is not required.
 #
 # Usage:
 #   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
 #       [--core-only | --install-webui] [--install-systray] [--install-hosts]
-#       [--install-sync-receiver] [--install-backup] [--install-all]
+#       [--install-sync-receiver] [--install-messageboard] [--install-backup]
+#       [--install-all]
 #
 #   --check           report installed vs. latest versions only, change nothing
 #   --no-core         leave `core` alone -- upgrade/install only the addons.
@@ -47,10 +49,19 @@
 #                      something every tetron install wants. Registers a
 #                      per-user service, same privilege tier as webui/
 #                      systray, not hosts' root-level one.
+#   --install-messageboard  include messageboard (core is always included) --
+#                      the mesh-hosted browser message board. Like
+#                      hosts/sync-receiver/backup, never in the default set,
+#                      opt-in only. Registers a per-user service, same
+#                      privilege tier as webui/systray. The normal way to
+#                      install it is tetron-webui's Add-ons panel (only a
+#                      host with a browser can use the board); this flag is
+#                      for parity and headless/scripted setups.
 #   --install-backup   include backup (core is always included). Unlike
 #                      webui/systray, backup is never in the default set --
 #                      opt-in only, via this flag or the interactive picker.
-#   --install-all      core + webui + systray + hosts + sync-receiver + backup.
+#   --install-all      core + webui + systray + hosts + sync-receiver +
+#                      messageboard + backup.
 #
 #   With none of the above selection flags, the script picks components
 #   itself. Prompts (below) read from /dev/tty, not stdin, so the
@@ -123,6 +134,7 @@ INSTALL_WEBUI=0
 INSTALL_SYSTRAY=0
 INSTALL_HOSTS=0
 INSTALL_SYNC_RECEIVER=0
+INSTALL_MESSAGEBOARD=0
 INSTALL_BACKUP=0
 INSTALL_ALL=0
 SELECTION_FLAG_GIVEN=0
@@ -143,18 +155,19 @@ for arg in "$@"; do
 	--install-systray) INSTALL_SYSTRAY=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-hosts) INSTALL_HOSTS=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-sync-receiver) INSTALL_SYNC_RECEIVER=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-messageboard) INSTALL_MESSAGEBOARD=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-backup) INSTALL_BACKUP=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-all) INSTALL_ALL=1; SELECTION_FLAG_GIVEN=1 ;;
 	-h | --help)
-		sed -n '2,94p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,105p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
 	esac
 done
 
-[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
-	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-backup/--install-all"
+[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
+	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all"
 
 # --core-only says "core and nothing else"; --no-core says "everything
 # except core". Together they select nothing at all, which is always a
@@ -196,7 +209,7 @@ have_tty() {
 # is always upgraded" rule below has to consult it while building the
 # component set, and bash resolves function names at call time, so the
 # definition has to precede the first call.
-component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; backup) echo tetron-backup.sh ;; esac; }
+component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; messageboard) echo tetron-messageboard ;; backup) echo tetron-backup.sh ;; esac; }
 
 # True when this component's binary is already on this host. Uses PATH
 # rather than the default install dir so a copy installed somewhere
@@ -214,13 +227,14 @@ DECLINED=""
 
 COMPONENTS=(core)
 if [ "$INSTALL_ALL" -eq 1 ]; then
-	COMPONENTS=(core webui systray hosts sync-receiver backup)
+	COMPONENTS=(core webui systray hosts sync-receiver messageboard backup)
 elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 	[ "$CORE_ONLY" -eq 1 ] || {
 		[ "$INSTALL_WEBUI" -eq 1 ] && COMPONENTS+=(webui)
 		[ "$INSTALL_SYSTRAY" -eq 1 ] && COMPONENTS+=(systray)
 		[ "$INSTALL_HOSTS" -eq 1 ] && COMPONENTS+=(hosts)
 		[ "$INSTALL_SYNC_RECEIVER" -eq 1 ] && COMPONENTS+=(sync-receiver)
+		[ "$INSTALL_MESSAGEBOARD" -eq 1 ] && COMPONENTS+=(messageboard)
 		[ "$INSTALL_BACKUP" -eq 1 ] && COMPONENTS+=(backup)
 	}
 elif [ "$CHECK_ONLY" -eq 1 ]; then
@@ -233,7 +247,7 @@ elif ! have_tty; then
 	# No controlling terminal at all (cron, CI, a container run without
 	# -it) -- nothing to prompt on. Default to core-only and tell the
 	# user how to get addons instead of guessing.
-	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
+	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
 else
 	if host_has_display; then
 		DEFAULT_COMPONENTS=(core webui systray)
@@ -283,12 +297,20 @@ else
 		# product feature (accepting phone photo-backup uploads), not
 		# something every tetron install wants, so it is opt-in only
 		# the same way hosts/backup are.
-		hosts_default=0; sync_receiver_default=0; backup_default=0
+		# messageboard (the mesh-hosted browser message board) is a per-user
+		# service like webui/systray but defaults to "N" regardless of
+		# display, same as sync-receiver: a specific product feature, not
+		# something every install wants, and its normal install path is
+		# tetron-webui's Add-ons panel anyway (only a host with a browser
+		# can use it).
+		hosts_default=0; sync_receiver_default=0; messageboard_default=0; backup_default=0
 		component_installed hosts && hosts_default=1
 		component_installed sync-receiver && sync_receiver_default=1
+		component_installed messageboard && messageboard_default=1
 		component_installed backup && backup_default=1
 		ask_addon hosts "$hosts_default" && COMPONENTS+=(hosts) || DECLINED="$DECLINED hosts"
 		ask_addon sync-receiver "$sync_receiver_default" && COMPONENTS+=(sync-receiver) || DECLINED="$DECLINED sync-receiver"
+		ask_addon messageboard "$messageboard_default" && COMPONENTS+=(messageboard) || DECLINED="$DECLINED messageboard"
 		ask_addon backup "$backup_default" && COMPONENTS+=(backup) || DECLINED="$DECLINED backup"
 	fi
 fi
@@ -305,7 +327,7 @@ fi
 # --check is included deliberately: reporting the version of something
 # installed but unselected is exactly what a status check is for.
 if [ "$CORE_ONLY" -ne 1 ]; then
-	for comp in core webui systray hosts sync-receiver backup; do
+	for comp in core webui systray hosts sync-receiver messageboard backup; do
 		component_installed "$comp" || continue
 		in_list "$comp" "$DECLINED" && continue
 		in_list "$comp" "${COMPONENTS[*]}" && continue
@@ -392,7 +414,7 @@ musl_reason() {
 # --- per-component config ---
 # component_binary() / component_installed() are defined further up, ahead
 # of the component-selection logic that has to call them.
-component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
+component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
 # All five components install to the same root-owned /usr/local/bin and
 # need sudo -- webui/systray run as per-user services (systemd --user /
 # launchd LaunchAgent) with no elevated runtime privilege of their own,
