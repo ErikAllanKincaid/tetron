@@ -52,11 +52,12 @@
 #   --install-messageboard  include messageboard (core is always included) --
 #                      the mesh-hosted browser message board. Like
 #                      hosts/sync-receiver/backup, never in the default set,
-#                      opt-in only. Registers a per-user service, same
-#                      privilege tier as webui/systray. The normal way to
-#                      install it is tetron-webui's Add-ons panel (only a
-#                      host with a browser can use the board); this flag is
-#                      for parity and headless/scripted setups.
+#                      opt-in only. This only *places the binary* (needs root
+#                      for /usr/local/bin); it does not start a board. A board
+#                      is per tetron network (it binds that network's own mesh
+#                      IP), so several run at once on a multi-network node --
+#                      start each from tetron-webui's Add-ons panel, or with
+#                      `tetron-messageboard install --network <name>`.
 #   --install-backup   include backup (core is always included). Unlike
 #                      webui/systray, backup is never in the default set --
 #                      opt-in only, via this flag or the interactive picker.
@@ -439,6 +440,15 @@ component_needs_sudo() { echo 1; }
 # `install --port` (see that repo's src/config.rs).
 component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 ;; esac; }
 
+# A release binary this script places but must NOT start via `$dest install`.
+# messageboard registers one per-user service *per tetron network* (a board
+# binds that network's own mesh IP), so there is no single network to start at
+# install time -- on a multi-network node `tetron-messageboard install` with no
+# --network cannot even resolve one, and used to abort the whole suite install.
+# The binary is placed here; boards are started per network from tetron-webui's
+# Add-ons panel (or `tetron-messageboard install --network <name>` by hand).
+component_binary_only() { case "$1" in messageboard) echo 1 ;; *) echo 0 ;; esac; }
+
 # systemd unit name per component -- matches the binary name for the
 # systemd --user services (also what tetron-webui's own addons.rs
 # `linux_unit` field uses for its is-active check), except hosts, whose
@@ -601,9 +611,16 @@ install_component() {
 	$sudo_prefix install -m 0755 "$tmpdir/$asset" "$dest" \
 		|| fatal "$comp: failed to install binary to $dest"
 
-	log_info "$comp: running '$dest install' to register/restart its service..."
-	$service_sudo_prefix "$dest" install \
-		|| fatal "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"
+	if [ "$(component_binary_only "$comp")" -eq 1 ]; then
+		log_info "$comp: binary placed -- start a board per network from tetron-webui's Add-ons panel (or '$dest install --network <name>')"
+		# A freshly upgraded binary: nudge any boards already running to
+		# pick it up. No-op (and harmless) when none are installed.
+		$service_sudo_prefix "$dest" restart-all >/dev/null 2>&1 || true
+	else
+		log_info "$comp: running '$dest install' to register/restart its service..."
+		$service_sudo_prefix "$dest" install \
+			|| fatal "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"
+	fi
 
 	log_pass "$comp: installed/upgraded successfully"
 	ver="$(installed_version "$dest")"
@@ -679,6 +696,13 @@ for comp in "${COMPONENTS[@]}"; do
 
 	status="$comp: installed=${current:-none} latest=$latest"
 	if [ -n "$current" ] && [ "$current" = "$latest" ]; then
+		# Binary-only components (messageboard) have no single service to
+		# poll -- boards are per-network, started from the webui -- so an
+		# up-to-date binary is all this step is responsible for.
+		if [ "$(component_binary_only "$comp")" -eq 1 ]; then
+			log_pass "$status (up to date)"
+			continue
+		fi
 		if component_service_active "$comp"; then
 			log_pass "$status (up to date)"
 			continue
