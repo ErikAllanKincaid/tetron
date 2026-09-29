@@ -2882,6 +2882,14 @@ class VeilidExternalDaemonReconnect(Requirement):
     failure logs at `info`, a second failure inside the window is quiet,
     a failure after the window elapses resets and logs at `info` again),
     mirroring `join.rs::reconnect_log_decision_tests`'s own shape.
+
+    UPDATE (USER-reported live verification, exact date not recorded): the
+    full external-daemon stack (VEILID-017/018/019, `tetron-veilid`
+    installed and running on both sides) carried real traffic end to end
+    between two genuinely separate real machines on separate networks, one
+    on a cellular hotspot -- not VMs, and not just the mock-server unit
+    tests above. No `tetron-testsuite` VM run or CI-built release has been
+    recorded for this; see `tetron-veilid`'s own README `## Status`.
     """
 
     req_id = "VEILID-019"
