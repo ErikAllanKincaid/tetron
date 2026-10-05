@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install-tetron-suite.sh: install or upgrade tetron, tetron-webui,
-# tetron-systray, tetron-hosts, tetron-sync-receiver, tetron-messageboard,
-# and tetron-backup.sh to their latest GitHub releases in one pass.
+# tetron-tui, tetron-systray, tetron-hosts, tetron-sync-receiver,
+# tetron-messageboard, and tetron-backup.sh to their latest GitHub releases
+# in one pass.
 # Idempotent -- a component already at the latest release version is left
 # untouched.
 # Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
@@ -34,6 +35,9 @@
 #   --core-only        install/upgrade core only, no addons. Errors if
 #                      combined with any --install-* flag below.
 #   --install-webui    include webui (core is always included).
+#   --install-tui      include tui, the tetron-tui terminal dashboard (core
+#                      is always included). In the default set regardless of
+#                      display -- it is a terminal app, useful headless too.
 #   --install-systray  include systray (core is always included).
 #   --install-hosts    include hosts (core is always included). Like
 #                      backup, never in the default set -- opt-in only,
@@ -61,7 +65,7 @@
 #   --install-backup   include backup (core is always included). Unlike
 #                      webui/systray, backup is never in the default set --
 #                      opt-in only, via this flag or the interactive picker.
-#   --install-all      core + webui + systray + hosts + sync-receiver +
+#   --install-all      core + webui + tui + systray + hosts + sync-receiver +
 #                      messageboard + backup.
 #
 #   With none of the above selection flags, the script picks components
@@ -76,7 +80,7 @@
 #       addons that are not installed yet -- that would be guessing.
 #     - a controlling terminal is reachable: detects a display
 #       ($DISPLAY/$WAYLAND_DISPLAY) and prints the resulting default
-#       (core alone if headless; core+webui+systray with a display), then
+#       (core+tui if headless; core+webui+systray+tui with a display), then
 #       asks "Use defaults? [Y/n]" -- enter accepts it, "n" drops into a
 #       yes/no prompt per addon (each still pre-filled with the same
 #       display-aware default; hosts/sync-receiver/backup default to "N" in
@@ -132,6 +136,7 @@ NO_CORE=0
 MUSL_OVERRIDE=0
 CORE_ONLY=0
 INSTALL_WEBUI=0
+INSTALL_TUI=0
 INSTALL_SYSTRAY=0
 INSTALL_HOSTS=0
 INSTALL_SYNC_RECEIVER=0
@@ -153,6 +158,7 @@ for arg in "$@"; do
 	--musl) MUSL_OVERRIDE=1 ;;
 	--core-only) CORE_ONLY=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-webui) INSTALL_WEBUI=1; SELECTION_FLAG_GIVEN=1 ;;
+	--install-tui) INSTALL_TUI=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-systray) INSTALL_SYSTRAY=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-hosts) INSTALL_HOSTS=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-sync-receiver) INSTALL_SYNC_RECEIVER=1; SELECTION_FLAG_GIVEN=1 ;;
@@ -210,7 +216,7 @@ have_tty() {
 # is always upgraded" rule below has to consult it while building the
 # component set, and bash resolves function names at call time, so the
 # definition has to precede the first call.
-component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; messageboard) echo tetron-messageboard ;; backup) echo tetron-backup.sh ;; esac; }
+component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; tui) echo tetron-tui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; messageboard) echo tetron-messageboard ;; backup) echo tetron-backup.sh ;; esac; }
 
 # True when this component's binary is already on this host. Uses PATH
 # rather than the default install dir so a copy installed somewhere
@@ -228,10 +234,11 @@ DECLINED=""
 
 COMPONENTS=(core)
 if [ "$INSTALL_ALL" -eq 1 ]; then
-	COMPONENTS=(core webui systray hosts sync-receiver messageboard backup)
+	COMPONENTS=(core webui systray tui hosts sync-receiver messageboard backup)
 elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 	[ "$CORE_ONLY" -eq 1 ] || {
 		[ "$INSTALL_WEBUI" -eq 1 ] && COMPONENTS+=(webui)
+		[ "$INSTALL_TUI" -eq 1 ] && COMPONENTS+=(tui)
 		[ "$INSTALL_SYSTRAY" -eq 1 ] && COMPONENTS+=(systray)
 		[ "$INSTALL_HOSTS" -eq 1 ] && COMPONENTS+=(hosts)
 		[ "$INSTALL_SYNC_RECEIVER" -eq 1 ] && COMPONENTS+=(sync-receiver)
@@ -241,20 +248,27 @@ elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 elif [ "$CHECK_ONLY" -eq 1 ]; then
 	# Read-only status check: use the display-aware default set with no
 	# prompt at all -- there is nothing to confirm before just reporting.
-	# hosts/sync-receiver/backup are opt-in only (see below), so excluded
-	# here too.
-	host_has_display && COMPONENTS=(core webui systray)
+	# tui is in the default set regardless of display (a headless-friendly
+	# TUI). hosts/sync-receiver/backup are opt-in only (see below), so
+	# excluded here too.
+	COMPONENTS=(core tui)
+	host_has_display && COMPONENTS=(core webui systray tui)
 elif ! have_tty; then
 	# No controlling terminal at all (cron, CI, a container run without
-	# -it) -- nothing to prompt on. Default to core-only and tell the
-	# user how to get addons instead of guessing.
-	log_info "no controlling terminal detected -- defaulting to core-only (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all, or run this script with a terminal attached, to include addons)"
+	# -it) -- nothing to prompt on. Default to core + tui (tetron-tui is
+	# headless-friendly and has no service to disrupt, so it belongs on an
+	# unattended/imaged install such as TetronOS); display-only addons
+	# stay opt-in. Tell the user how to get the rest instead of guessing.
+	COMPONENTS=(core tui)
+	log_info "no controlling terminal detected -- defaulting to core + tui (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all, or run this script with a terminal attached, to include more addons)"
 else
 	if host_has_display; then
-		DEFAULT_COMPONENTS=(core webui systray)
+		DEFAULT_COMPONENTS=(core webui systray tui)
 		log_info "display detected"
 	else
-		DEFAULT_COMPONENTS=(core)
+		# tui (tetron-tui) defaults in even headless: it is a terminal
+		# app, the headless dashboard for a CLI-first tool.
+		DEFAULT_COMPONENTS=(core tui)
 		log_info "no display detected (headless)"
 	fi
 	log_info "default install: ${DEFAULT_COMPONENTS[*]}"
@@ -276,6 +290,9 @@ else
 		}
 		webui_default=0; systray_default=0
 		host_has_display && { webui_default=1; systray_default=1; }
+		# tui defaults to "yes" regardless of display -- it is a terminal
+		# app, useful on a headless host too.
+		tui_default=1
 		# An addon already installed here is being *upgraded*, not
 		# installed, so it is pre-answered "yes" no matter what the
 		# display heuristic says -- declining an upgrade is still
@@ -283,6 +300,7 @@ else
 		component_installed webui && webui_default=1
 		component_installed systray && systray_default=1
 		ask_addon webui "$webui_default" && COMPONENTS+=(webui) || DECLINED="$DECLINED webui"
+		ask_addon tui "$tui_default" && COMPONENTS+=(tui) || DECLINED="$DECLINED tui"
 		ask_addon systray "$systray_default" && COMPONENTS+=(systray) || DECLINED="$DECLINED systray"
 		# hosts registers a new root-level scheduled system service (not
 		# purely additive the way webui/systray's own per-user services
@@ -328,7 +346,7 @@ fi
 # --check is included deliberately: reporting the version of something
 # installed but unselected is exactly what a status check is for.
 if [ "$CORE_ONLY" -ne 1 ]; then
-	for comp in core webui systray hosts sync-receiver messageboard backup; do
+	for comp in core webui systray tui hosts sync-receiver messageboard backup; do
 		component_installed "$comp" || continue
 		in_list "$comp" "$DECLINED" && continue
 		in_list "$comp" "${COMPONENTS[*]}" && continue
@@ -415,7 +433,7 @@ musl_reason() {
 # --- per-component config ---
 # component_binary() / component_installed() are defined further up, ahead
 # of the component-selection logic that has to call them.
-component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
+component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; tui) echo ErikAllanKincaid/tetron-tui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
 # All five components install to the same root-owned /usr/local/bin and
 # need sudo -- webui/systray run as per-user services (systemd --user /
 # launchd LaunchAgent) with no elevated runtime privilege of their own,
@@ -447,7 +465,16 @@ component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 
 # --network cannot even resolve one, and used to abort the whole suite install.
 # The binary is placed here; boards are started per network from tetron-webui's
 # Add-ons panel (or `tetron-messageboard install --network <name>` by hand).
-component_binary_only() { case "$1" in messageboard) echo 1 ;; *) echo 0 ;; esac; }
+#
+# tui (tetron-tui) is also binary-only for the purposes of this check: it has
+# no service at all to poll, so an up-to-date binary is the whole story.
+component_binary_only() { case "$1" in messageboard | tui) echo 1 ;; *) echo 0 ;; esac; }
+
+# A release binary this script just *places* -- no service to register and no
+# `install`/`restart-all` subcommand to call afterward (tetron-tui is a plain
+# interactive TUI). Distinct from messageboard's binary_only, which still has a
+# `restart-all` to nudge running boards.
+component_no_service() { case "$1" in tui) echo 1 ;; *) echo 0 ;; esac; }
 
 # systemd unit name per component -- matches the binary name for the
 # systemd --user services (also what tetron-webui's own addons.rs
@@ -611,7 +638,10 @@ install_component() {
 	$sudo_prefix install -m 0755 "$tmpdir/$asset" "$dest" \
 		|| fatal "$comp: failed to install binary to $dest"
 
-	if [ "$(component_binary_only "$comp")" -eq 1 ]; then
+	if [ "$(component_no_service "$comp")" -eq 1 ]; then
+		# A plain binary (tetron-tui): placed on PATH, nothing to start.
+		log_info "$comp: binary placed at $dest -- run '$(component_binary "$comp")'"
+	elif [ "$(component_binary_only "$comp")" -eq 1 ]; then
 		log_info "$comp: binary placed -- start a board per network from tetron-webui's Add-ons panel (or '$dest install --network <name>')"
 		# A freshly upgraded binary: nudge any boards already running to
 		# pick it up. No-op (and harmless) when none are installed.
