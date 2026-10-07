@@ -1,6 +1,6 @@
 # tetron
 
-<img src="images/icon.png" alt="tetron logo" width="320">
+<img src="images/icon.png" alt="tetron logo">
 
 
 **Tetron turns any group of machines into one private network, wherever they are.**
