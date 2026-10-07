@@ -1,8 +1,7 @@
 # tetron
 
-<img src="images/torpedo2.png" alt="Electric ray (Torpedo californica)" width="320">
+<img src="images/icon.png" alt="tetron logo" width="320">
 
-Electric ray *Tetronarce californica*
 
 **Tetron turns any group of machines into one private network, wherever they are.**
 
@@ -16,6 +15,11 @@ It's a standalone P2P mesh VPN: every device gets a stable, identity-derived add
 - **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client for glanceable status and quick per-network toggling.
 
 Both are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
+
+**Name**
+
+<img src="images/torpedo2.png" alt="Electric ray (Torpedo californica)" width="320">
+Electric ray *Tetronarce californica*
 
 **Want more?** This README covers getting started. For detailed walkthroughs, troubleshooting, and less-common scenarios (custom subnets, Tor transport, multi-machine deployment scripts), see **[docs/HOWTO.md](docs/HOWTO.md)**. For the ideas tetron is built on -- iroh, QUIC, WireGuard -- see **[docs/BACKGROUND.md](docs/BACKGROUND.md)**.
 
