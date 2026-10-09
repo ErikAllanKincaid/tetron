@@ -176,6 +176,13 @@ impl GlobalRateLimiter {
             Ok(()) => {
                 // Best-effort decay: a lost race just leaves strikes one
                 // higher than ideal for a moment, corrected by the next Allow.
+                // `fetch_update` is deprecated on newer stable Rust (renamed
+                // `try_update`), but `try_update` is not yet stable on the
+                // older Rust this repo also builds with, so switching outright
+                // would break those. Allow the deprecation so CI's `-D
+                // warnings` (which tracks the newest stable) passes on both,
+                // until an MSRV bump lets us move to `try_update`.
+                #[allow(deprecated)]
                 let _ = self
                     .strikes
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
