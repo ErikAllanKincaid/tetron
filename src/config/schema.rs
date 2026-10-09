@@ -309,6 +309,31 @@ pub struct ReconnectFrozenConfig {
     pub backoff_secs: Option<u64>,
 }
 
+/// Reconnect-storm hold-down policy (RECONNECT-STORM-001/002). `None` means
+/// "use the compiled default". Set via `tetron config set
+/// reconnect-holddown.<key> <value>`; unset (or set to 0/empty) to return to
+/// the default. Governs reconnect *behavior* (unlike the logging-only
+/// `path-flap`/`reconnect-log` knobs): a connection that lives less than
+/// `min-uptime` after a successful dial is treated as a flap/failure that
+/// escalates the per-peer backoff, instead of resetting it to the 1s floor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReconnectHolddownConfig {
+    /// A reconnected connection that drops in under this many seconds of
+    /// establishing counts as a flap (escalates backoff), not a success.
+    /// Default 5 (`RECONNECT_HOLDDOWN_MIN_UPTIME_SECS`). A healthy
+    /// connection that lives at least this long clears the peer's flap
+    /// streak, so the cost to a briefly-glitchy peer is one normal cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_uptime_secs: Option<u64>,
+    /// Anti-stampede jitter on the reconnect sleep, as a percentage
+    /// (RECONNECT-STORM-003): each retry waits its backoff lengthened by a
+    /// random `0..=jitter_pct` percent, so a fleet of nodes all reconnecting
+    /// to the same peer desynchronize instead of re-dialing in lockstep.
+    /// Default 20 (`RECONNECT_HOLDDOWN_JITTER_PCT`); 0 disables jitter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jitter_pct: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Local UID authorized to control the daemon without root (Tailscale's
@@ -361,6 +386,10 @@ pub struct AppConfig {
     /// See [`ReconnectFrozenConfig`].
     #[serde(default)]
     pub reconnect_frozen: ReconnectFrozenConfig,
+    /// Reconnect-storm hold-down overrides (RECONNECT-STORM-001/002). See
+    /// [`ReconnectHolddownConfig`].
+    #[serde(default)]
+    pub reconnect_holddown: ReconnectHolddownConfig,
     /// Status-snapshot cache overrides (STATUS-CACHE-001). See
     /// [`StatusCacheConfig`].
     #[serde(default)]

@@ -1622,6 +1622,161 @@ class ColdCadenceFrozenTier(Requirement):
     req_id = "CONVERGE-013"
 
 
+class ShortLivedConnectionHoldDown(Requirement):
+    """REQUIREMENT-ID: RECONNECT-STORM-001
+
+    CONVERGE-011/013's cold/frozen escalation governs dials that *never
+    connect* (an offline or unreachable peer): the per-peer retry task
+    counts its own consecutive failed dials (`failed_attempts`) and raises
+    the backoff cap accordingly. It is blind to the opposite pathology, a
+    peer that connects *successfully* and then drops the connection almost
+    immediately, over and over.
+
+    `spawn_reconnect_loop` (`join.rs`) spawns one fresh tokio task per
+    disconnect event, and that task starts `backoff = BACKOFF_INITIAL` (1s)
+    and `failed_attempts = 0`, then `return`s the moment a dial succeeds
+    (handshake done, reader respawned). A connection that then dies in tens
+    of milliseconds produces a new disconnect event, a new task, and the
+    backoff is reset to the 1s floor again -- so a peer that accepts and
+    then immediately closes every connection is redialed at ~1 Hz forever,
+    with no escalation, because no single task ever records more than zero
+    failures. Observed live (fleet check 2026-10-09): a node logging ~29k
+    reconnects/day against one peer that closed each connection ~40ms after
+    it opened (`error=closed by peer: 0`), dominating that node's log volume
+    and exercising the iroh connection/path churn the OOM investigation tied
+    to `pending_open_paths` amplification. The far peer's cause (a buggy or
+    old build) is deliberately NOT a precondition here: tetron must be
+    resilient against *any* peer that flaps, regardless of why -- a node
+    that survives arbitrary peer flapping is strictly more robust than one
+    that depends on every peer behaving.
+
+    This requirement is the judgment and its inputs; RECONNECT-STORM-002
+    makes it persist and take effect, RECONNECT-STORM-003 adds jitter.
+
+    1. **Measure connection uptime.** `spawn_peer_reader` (`forward.rs`)
+       records when the reader starts and stamps the resulting
+       `DisconnectEvent` with how long the connection lived
+       (`uptime: Option<Duration>`; `None` only for the synthetic
+       cold-restore kick-start, which no live connection backs).
+
+    2. **Classify short-lived drops (pure).** `reconnect_storm_decision`
+       (`select.rs`, PURE-LOGIC-001, unit-tested) treats a connection that
+       lived less than `min_uptime` as a FAILURE rather than a
+       backoff-resetting success: it increments a per-peer short-lived
+       streak and returns an escalated starting backoff (the warm floor
+       climbed as if `streak` attempts had failed, clamped by the same
+       `backoff_cap` CONVERGE-011/013 use, so the value is always bounded).
+       A drop at or above `min_uptime` resets the streak to zero and returns
+       the warm floor, so a peer that flapped once and then held a real
+       connection returns to normal at zero cost. A `None` uptime (synthetic
+       seed) preserves the existing streak and starts warm. `min_uptime` is
+       the compiled default `RECONNECT_HOLDDOWN_MIN_UPTIME_SECS` (5s) until
+       RECONNECT-STORM-002 makes it the configurable `reconnect-holddown.
+       min-uptime` knob.
+
+    Membership authority is untouched (CONVERGE-007): the decision bounds
+    outbound dial *rate* against a flapping peer, never roster membership.
+
+    Found: 2026-10-09 fleet investigation, `DO-NOT-COMMIT/PLAN_tetron_lazy-
+    resilient-peer-connectivity_2026-10-08.md` section 9a.
+    """
+
+    req_id = "RECONNECT-STORM-001"
+
+
+class PerPeerFlapGovernancePersists(Requirement):
+    """REQUIREMENT-ID: RECONNECT-STORM-002
+
+    RECONNECT-STORM-001 defines "a connection that died within `min_uptime`
+    counts as a failure", but the bug it targets is precisely that the
+    judgment is *thrown away* every cycle: `spawn_reconnect_loop` spawns a
+    fresh task per disconnect event whose `backoff`/`failed_attempts` are
+    task-local, so a flapping peer is redialed at the 1s floor forever no
+    matter how many times it has flapped. This requirement makes the
+    short-lived-drop streak persist across reconnect cycles and actually
+    govern the backoff, mirroring how `path-flap` (PATH-DIAG-006) and
+    `reconnect-log` (LOG-005) keep per-peer debounce state rather than
+    resetting it per event.
+
+    1. **Persistent per-peer health.** A process-global, `(network, peer)`-
+       keyed map (`MeshCtx::reconnect_health`, same `Arc<DashMap>` daemon-
+       wide shape as `pruned_peers`/`dial_in_flight`) holds each peer's
+       current short-lived-drop streak. Daemon-wide (not task-local or
+       even outer-loop-local) so it survives across the per-disconnect
+       tasks on the member path AND across `spawn_peer_cleanup`
+       invocations on the coordinator path.
+
+    2. **Read / seed / persist at each retry task's start.** The disconnect
+       event's `uptime` (RECONNECT-STORM-001) plus the peer's prior streak
+       feed `reconnect_storm_decision`; its result sets the new task's
+       starting `backoff` and seeds its `failed_attempts` with the streak,
+       so a chronic flapper escalates toward CONVERGE-011/013's cold then
+       frozen caps on the same schedule a chronically-offline peer does --
+       one unified escalation path. The new streak is written back before
+       dialing.
+
+    3. **Bounded cardinality.** The entry is removed when the peer holds a
+       healthy connection (streak resets to zero) or leaves the roster
+       (the same abandon points CONVERGE-010 already has), and swept per-
+       network by the same GC as `pruned_peers` (CONVERGE-009), so the map
+       stays bounded by roster size.
+
+    4. **Configurable hold-down window.** `min_uptime` becomes
+       `reconnect-holddown.min-uptime` (`tetron config set`, compiled
+       default `RECONNECT_HOLDDOWN_MIN_UPTIME_SECS` = 5s, same plumbing
+       family as `reconnect-cold.*`/`reconnect-frozen.*`), read once at task
+       start per the codebase's established config-at-task-start pattern.
+
+    Applies to both the member loop (`join.rs`) and the coordinator redial
+    (`coordinator.rs::spawn_coordinator_dial_retry`), since both spawn a
+    fresh per-disconnect dial task that must not reset a flapping peer to
+    the floor. Live verification: `tetron-testsuite`'s `reconnect-storm.sh`
+    (a peer that accepts then immediately closes with code 0) asserts the
+    dialer escalates off the 1s floor instead of storming.
+
+    Found: 2026-10-09 fleet investigation, section 9a of the plan doc.
+    """
+
+    req_id = "RECONNECT-STORM-002"
+
+
+class ReconnectFloorJitter(Requirement):
+    """REQUIREMENT-ID: RECONNECT-STORM-003
+
+    Anti-stampede companion to RECONNECT-STORM-001/002, and the member-path
+    half of the live-route guard CONVERGE-011 established for the
+    coordinator path. Two parts:
+
+    1. **Jitter the reconnect sleep.** Each retry task lengthens its backoff
+       sleep by a random `0..=reconnect-holddown.jitter-pct` percent
+       (compiled default `RECONNECT_HOLDDOWN_JITTER_PCT` = 20, i.e. up to
+       +20%; 0 disables), via a pure `jitter_backoff(backoff, frac, sample)`
+       (`select.rs`, PURE-LOGIC-001, unit-tested; `sample` in `[0,1)`
+       supplied by the caller's rng). Jitter only ever *adds* delay and is
+       applied to the sleep, not to the stored backoff the escalation math
+       uses. This desynchronizes a fleet of nodes all reconnecting to the
+       same misbehaving peer, so they do not re-dial in lockstep and form a
+       thundering herd -- the same anti-stampede reasoning as TOR-DIAL-001's
+       connect-stampede fix and DIAL-JITTER-001 in the lazy-connectivity
+       plan. Applied on both the member (`join.rs`) and coordinator
+       (`coordinator.rs`) retry sleeps.
+
+    2. **Recognize a live route before redialing (member-path parity).**
+       CONVERGE-011 already makes the coordinator path exit when a live
+       connection for `(peer, network)` is already registered (the peer
+       dialed in while the task slept); the member loop has the equivalent
+       `peers_for_network_with_conn` guard before every dial. This
+       requirement pins that parity so neither path clobbers a healthy
+       inbound connection with a redundant outbound redial during a flap.
+
+    Found: 2026-10-09 fleet investigation, section 9a of the plan doc
+    (RECONNECT-STORM-003 "fold in": jitter the floor; recognize an existing
+    live route before redialing).
+    """
+
+    req_id = "RECONNECT-STORM-003"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 
