@@ -8,6 +8,8 @@
 
 use super::super::*;
 use crate::config::TransportMode;
+// RECONNECT-STORM-003: `random_range` for reconnect-sleep jitter.
+use rand::RngExt as _;
 
 /// Compiled default for `reconnect-log.threshold` (LOG-005): reconnect
 /// attempts for one peer within one window before further ones in that same
@@ -1151,6 +1153,13 @@ pub(crate) fn spawn_reconnect_loop(
                 }
                 let mut backoff = start_backoff;
                 let mut failed_attempts: u32 = new_streak;
+                // RECONNECT-STORM-003: anti-stampede jitter fraction, read once
+                // at task start (same config-at-task-start pattern as above).
+                let jitter_frac =
+                    cfg.reconnect_holddown
+                        .jitter_pct
+                        .unwrap_or(RECONNECT_HOLDDOWN_JITTER_PCT) as f64
+                        / 100.0;
                 loop {
                     if token.is_cancelled() {
                         return;
@@ -1172,9 +1181,14 @@ pub(crate) fn spawn_reconnect_loop(
                             count_in_window = reconnect_log_count, "reconnecting in (debounced)"
                         );
                     }
+                    // RECONNECT-STORM-003: jitter the sleep (never the stored
+                    // `backoff` used for the escalation math), so a fresh draw
+                    // spreads this dial out each iteration.
+                    let sleep_for =
+                        jitter_backoff(backoff, jitter_frac, rand::rng().random_range(0.0..1.0));
                     tokio::select! {
                         _ = token.cancelled() => return,
-                        _ = tokio::time::sleep(backoff) => {}
+                        _ = tokio::time::sleep(sleep_for) => {}
                     }
                     // CONVERGE-011/013: the cap escalates once this peer has
                     // failed `cold_threshold` consecutive attempts, then again

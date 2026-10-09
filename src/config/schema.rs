@@ -344,6 +344,13 @@ pub struct ReconnectHolddownConfig {
     /// streak, so the cost to a briefly-glitchy peer is one normal cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_uptime_secs: Option<u64>,
+    /// Anti-stampede jitter on the reconnect sleep, as a percentage
+    /// (RECONNECT-STORM-003): each retry waits its backoff lengthened by a
+    /// random `0..=jitter_pct` percent, so a fleet of nodes all reconnecting
+    /// to the same peer desynchronize instead of re-dialing in lockstep.
+    /// Default 20 (`RECONNECT_HOLDDOWN_JITTER_PCT`); 0 disables jitter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jitter_pct: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

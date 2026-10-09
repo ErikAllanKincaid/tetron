@@ -144,6 +144,13 @@ const BACKOFF_FROZEN_MAX: Duration = Duration::from_secs(86400);
 /// long clears the peer's flap streak (`MeshCtx::reconnect_health`).
 const RECONNECT_HOLDDOWN_MIN_UPTIME_SECS: u64 = 5;
 
+/// Compiled default for `reconnect-holddown.jitter-pct` (RECONNECT-STORM-003):
+/// each reconnect sleep is lengthened by a random `0..=jitter_pct` percent of
+/// itself, so a fleet of nodes all reconnecting to the same peer desynchronize
+/// instead of re-dialing in lockstep (anti-stampede, the same reasoning as
+/// TOR-DIAL-001's connect-stampede fix). 0 disables jitter.
+const RECONNECT_HOLDDOWN_JITTER_PCT: u32 = 20;
+
 /// Shared handles for one network's accept handlers and background tasks.
 /// Every field is a cheap `Clone` — an `Arc`-backed handle, a channel sender,
 /// or a small wrapper — so the whole bundle is cloned by value instead of
@@ -2390,6 +2397,33 @@ mod reconnect_tests {
         assert!(!is_flap);
         assert_eq!(streak, 4);
         assert_eq!(backoff, STORM_INIT);
+    }
+
+    // RECONNECT-STORM-003: anti-stampede jitter only ever lengthens the sleep,
+    // bounded by `frac`.
+    #[test]
+    fn jitter_zero_sample_is_unchanged() {
+        let b = Duration::from_secs(30);
+        assert_eq!(jitter_backoff(b, 0.2, 0.0), b);
+    }
+
+    #[test]
+    fn jitter_adds_up_to_frac() {
+        let b = Duration::from_secs(100);
+        // sample just under 1.0 approaches +frac but never reaches it.
+        let j = jitter_backoff(b, 0.2, 0.999);
+        assert!(j > b, "jitter must add delay");
+        assert!(j < b.mul_f64(1.2), "jitter must stay under +frac");
+        // Midpoint sample gives +frac/2.
+        assert_eq!(jitter_backoff(b, 0.2, 0.5), Duration::from_secs(110));
+    }
+
+    #[test]
+    fn jitter_disabled_or_invalid_is_unchanged() {
+        let b = Duration::from_secs(30);
+        assert_eq!(jitter_backoff(b, 0.0, 0.5), b); // disabled
+        assert_eq!(jitter_backoff(b, f64::NAN, 0.5), b); // non-finite
+        assert_eq!(jitter_backoff(b, -0.2, 0.5), b); // negative
     }
 }
 

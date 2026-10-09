@@ -537,3 +537,22 @@ pub(crate) fn reconnect_storm_decision(
         }
     }
 }
+
+/// Lengthens a reconnect backoff by anti-stampede jitter (RECONNECT-STORM-003,
+/// PURE-LOGIC-001). `frac` is the maximum fractional increase (e.g. 0.2 for up
+/// to +20%), `sample` a uniform draw in `[0, 1)` from the caller's rng. The
+/// result is in `[backoff, backoff * (1 + frac))`: jitter only ever *adds*
+/// delay, never shortening the floor, so a fleet of nodes all reconnecting to
+/// the same peer spread out instead of re-dialing in lockstep. A non-positive
+/// or non-finite `frac`/`sample` degrades to no jitter.
+pub(crate) fn jitter_backoff(
+    backoff: std::time::Duration,
+    frac: f64,
+    sample: f64,
+) -> std::time::Duration {
+    if !(frac.is_finite() && frac > 0.0 && sample.is_finite() && sample >= 0.0) {
+        return backoff;
+    }
+    let extra = backoff.mul_f64((frac * sample).clamp(0.0, frac));
+    backoff.saturating_add(extra)
+}

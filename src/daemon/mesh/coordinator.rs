@@ -3,6 +3,8 @@
 //! send helpers.
 
 use super::super::*;
+// RECONNECT-STORM-003: `random_range` for reconnect-sleep jitter.
+use rand::RngExt as _;
 
 /// Extra context a coordinator needs to prune the canonical member list when a
 /// peer leaves deliberately (`tetron leave`). Members pass `None` and only ever
@@ -260,14 +262,24 @@ fn spawn_coordinator_dial_retry(
         }
         let mut backoff = start_backoff;
         let mut failed_attempts: u32 = new_streak;
+        // RECONNECT-STORM-003: anti-stampede jitter fraction, read once at task
+        // start (same config-at-task-start pattern as the member path).
+        let jitter_frac = cfg
+            .reconnect_holddown
+            .jitter_pct
+            .unwrap_or(RECONNECT_HOLDDOWN_JITTER_PCT) as f64
+            / 100.0;
         loop {
             if token.is_cancelled() {
                 return;
             }
             tracing::debug!(peer = %peer_id.fmt_short(), secs = backoff.as_secs(), "coordinator reconnecting in");
+            // RECONNECT-STORM-003: jitter the sleep, not the stored `backoff`.
+            let sleep_for =
+                jitter_backoff(backoff, jitter_frac, rand::rng().random_range(0.0..1.0));
             tokio::select! {
                 _ = token.cancelled() => return,
-                _ = tokio::time::sleep(backoff) => {}
+                _ = tokio::time::sleep(sleep_for) => {}
             }
             backoff = next_backoff(
                 backoff,

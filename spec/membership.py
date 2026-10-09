@@ -1740,6 +1740,43 @@ class PerPeerFlapGovernancePersists(Requirement):
     req_id = "RECONNECT-STORM-002"
 
 
+class ReconnectFloorJitter(Requirement):
+    """REQUIREMENT-ID: RECONNECT-STORM-003
+
+    Anti-stampede companion to RECONNECT-STORM-001/002, and the member-path
+    half of the live-route guard CONVERGE-011 established for the
+    coordinator path. Two parts:
+
+    1. **Jitter the reconnect sleep.** Each retry task lengthens its backoff
+       sleep by a random `0..=reconnect-holddown.jitter-pct` percent
+       (compiled default `RECONNECT_HOLDDOWN_JITTER_PCT` = 20, i.e. up to
+       +20%; 0 disables), via a pure `jitter_backoff(backoff, frac, sample)`
+       (`select.rs`, PURE-LOGIC-001, unit-tested; `sample` in `[0,1)`
+       supplied by the caller's rng). Jitter only ever *adds* delay and is
+       applied to the sleep, not to the stored backoff the escalation math
+       uses. This desynchronizes a fleet of nodes all reconnecting to the
+       same misbehaving peer, so they do not re-dial in lockstep and form a
+       thundering herd -- the same anti-stampede reasoning as TOR-DIAL-001's
+       connect-stampede fix and DIAL-JITTER-001 in the lazy-connectivity
+       plan. Applied on both the member (`join.rs`) and coordinator
+       (`coordinator.rs`) retry sleeps.
+
+    2. **Recognize a live route before redialing (member-path parity).**
+       CONVERGE-011 already makes the coordinator path exit when a live
+       connection for `(peer, network)` is already registered (the peer
+       dialed in while the task slept); the member loop has the equivalent
+       `peers_for_network_with_conn` guard before every dial. This
+       requirement pins that parity so neither path clobbers a healthy
+       inbound connection with a redundant outbound redial during a flap.
+
+    Found: 2026-10-09 fleet investigation, section 9a of the plan doc
+    (RECONNECT-STORM-003 "fold in": jitter the floor; recognize an existing
+    live route before redialing).
+    """
+
+    req_id = "RECONNECT-STORM-003"
+
+
 class LeaveAcceptsNetworkKey(Requirement):
     """REQUIREMENT-ID: LEAVE-NETWORK-KEY-001
 

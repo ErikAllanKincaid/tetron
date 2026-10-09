@@ -261,7 +261,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              log-ratelimit.<threshold|window>, \
              reconnect-cold.<threshold|backoff>, \
              reconnect-frozen.<threshold|backoff>, \
-             reconnect-holddown.min-uptime, status-cache.interval, or \
+             reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -463,10 +463,11 @@ fn set_reconnect_frozen_key(
 }
 
 /// Parse and apply one `reconnect-holddown.<key>` entry
-/// (RECONNECT-STORM-001/002). `reset` (empty value or "0") clears the field
-/// back to `None` (compiled default of 5s). Same shape as the reconnect-cold
-/// / reconnect-frozen knobs above. The key is spelled `min-uptime` on the CLI
-/// (hyphen), mapping to `min_uptime_secs`.
+/// (RECONNECT-STORM-001/002/003). `reset` (empty value or "0") clears the
+/// field back to `None` (compiled default). Same shape as the reconnect-cold
+/// / reconnect-frozen knobs above. Keys are spelled with hyphens on the CLI:
+/// `min-uptime` (seconds) maps to `min_uptime_secs`, `jitter-pct` (percent)
+/// maps to `jitter_pct`.
 fn set_reconnect_holddown_key(
     rh: &mut ReconnectHolddownConfig,
     key: &str,
@@ -479,16 +480,18 @@ fn set_reconnect_holddown_key(
     if reset {
         match sub {
             "min-uptime" => rh.min_uptime_secs = None,
+            "jitter-pct" => rh.jitter_pct = None,
             other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
         }
         return Ok(());
     }
     anyhow::ensure!(
         entries.len() == 1,
-        "reconnect-holddown.{sub} takes a single numeric value (seconds)"
+        "reconnect-holddown.{sub} takes a single numeric value"
     );
     match sub {
         "min-uptime" => rh.min_uptime_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
+        "jitter-pct" => rh.jitter_pct = Some(parse_ratelimit_value::<u32>(&entries[0])?),
         other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
     }
     Ok(())
