@@ -214,6 +214,14 @@ pub struct DisconnectEvent {
     /// the old one's idle timeout fires. Without this id, the stale connection's
     /// delayed disconnect would evict the fresh connection and drop the peer.
     pub conn_stable_id: Option<usize>,
+    /// How long this connection lived, from the reader starting to the drop
+    /// (RECONNECT-STORM-001). The reconnect loop treats a connection that
+    /// lived less than `reconnect-holddown.min-uptime` as a flap/failure
+    /// rather than a backoff-resetting success, so a peer that accepts then
+    /// immediately closes every connection escalates its backoff instead of
+    /// being redialed at the 1s floor forever. `None` for a synthetic
+    /// cold-restore kick-start, which no live connection backs.
+    pub uptime: Option<std::time::Duration>,
 }
 
 /// Shared data-plane handles threaded into every per-peer reader. All fields are
@@ -494,6 +502,12 @@ pub fn spawn_peer_reader(
         log_path_events(conn.clone(), peer_id, network.clone(), subnet).instrument(span.clone()),
     );
     let reader = async move {
+        // RECONNECT-STORM-001: when this connection drops, the disconnect
+        // event reports how long it lived, so the reconnect loop can tell a
+        // healthy connection apart from a peer that accepts then immediately
+        // closes. Reader start is a close proxy for connection establishment
+        // (it is spawned right after the handshake).
+        let established = std::time::Instant::now();
         // FRAG-002: per-connection IPv6 reassembly state. Lives for the
         // reader task's lifetime; never shared across peers, so no locking.
         let mut reassembler = packet::Ipv6Reassembler::new();
@@ -537,6 +551,7 @@ pub fn spawn_peer_reader(
                                 network: network.clone(),
                                 reason,
                                 conn_stable_id: Some(conn.stable_id()),
+                                uptime: Some(established.elapsed()),
                             })
                             .await;
                         return;

@@ -10,7 +10,8 @@ use std::net::Ipv4Addr;
 
 use super::schema::{
     AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
-    ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride, StatusCacheConfig,
+    ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig, ServerOverride,
+    StatusCacheConfig,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -155,6 +156,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         frozen_key if frozen_key.starts_with("reconnect-frozen.") => {
             set_reconnect_frozen_key(&mut cfg.reconnect_frozen, frozen_key, &entries, reset)?;
         }
+        holddown_key if holddown_key.starts_with("reconnect-holddown.") => {
+            set_reconnect_holddown_key(&mut cfg.reconnect_holddown, holddown_key, &entries, reset)?;
+        }
         sc_key if sc_key.starts_with("status-cache.") => {
             set_status_cache_key(&mut cfg.status_cache, sc_key, &entries, reset)?;
         }
@@ -252,7 +256,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              path-flap.<threshold|window>, \
              reconnect-log.<threshold|window>, \
              reconnect-cold.<threshold|backoff>, \
-             reconnect-frozen.<threshold|backoff>, status-cache.interval, or \
+             reconnect-frozen.<threshold|backoff>, \
+             reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -417,6 +422,41 @@ fn set_reconnect_frozen_key(
         "threshold" => rf.threshold = Some(parse_ratelimit_value(raw)?),
         "backoff" => rf.backoff_secs = Some(parse_ratelimit_value(raw)?),
         other => anyhow::bail!("unknown reconnect-frozen config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `reconnect-holddown.<key>` entry
+/// (RECONNECT-STORM-001/002/003). `reset` (empty value or "0") clears the
+/// field back to `None` (compiled default). Same shape as the reconnect-cold
+/// / reconnect-frozen knobs above. Keys are spelled with hyphens on the CLI:
+/// `min-uptime` (seconds) maps to `min_uptime_secs`, `jitter-pct` (percent)
+/// maps to `jitter_pct`.
+fn set_reconnect_holddown_key(
+    rh: &mut ReconnectHolddownConfig,
+    key: &str,
+    entries: &[String],
+    reset: bool,
+) -> Result<()> {
+    let sub = key
+        .strip_prefix("reconnect-holddown.")
+        .expect("checked by caller");
+    if reset {
+        match sub {
+            "min-uptime" => rh.min_uptime_secs = None,
+            "jitter-pct" => rh.jitter_pct = None,
+            other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "reconnect-holddown.{sub} takes a single numeric value"
+    );
+    match sub {
+        "min-uptime" => rh.min_uptime_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
+        "jitter-pct" => rh.jitter_pct = Some(parse_ratelimit_value::<u32>(&entries[0])?),
+        other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
     }
     Ok(())
 }

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::schema::{
     AppConfig, DropMonitorConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
-    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
-    StatusCacheConfig,
+    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig,
+    ServerOverride, StatusCacheConfig,
 };
 
 // ---- Storage layout -------------------------------------------------------
@@ -67,6 +67,8 @@ struct Settings {
     reconnect_cold: ReconnectColdConfig,
     #[serde(default)]
     reconnect_frozen: ReconnectFrozenConfig,
+    #[serde(default)]
+    reconnect_holddown: ReconnectHolddownConfig,
     #[serde(default)]
     status_cache: StatusCacheConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -521,6 +523,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             reconnect_log: ReconnectLogConfig::default(),
             reconnect_cold: ReconnectColdConfig::default(),
             reconnect_frozen: ReconnectFrozenConfig::default(),
+            reconnect_holddown: ReconnectHolddownConfig::default(),
             status_cache: StatusCacheConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
@@ -569,6 +572,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         reconnect_log: settings.reconnect_log,
         reconnect_cold: settings.reconnect_cold,
         reconnect_frozen: settings.reconnect_frozen,
+        reconnect_holddown: settings.reconnect_holddown,
         status_cache: settings.status_cache,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
@@ -648,6 +652,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         reconnect_log: config.reconnect_log.clone(),
         reconnect_cold: config.reconnect_cold.clone(),
         reconnect_frozen: config.reconnect_frozen.clone(),
+        reconnect_holddown: config.reconnect_holddown.clone(),
         status_cache: config.status_cache.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
