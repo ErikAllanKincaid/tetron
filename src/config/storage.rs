@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, LogRatelimitConfig, NetworkConfig, PathFlapConfig,
-    RateLimitConfig, ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig,
-    ServerOverride, StatusCacheConfig,
+    AppConfig, DropMonitorConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
+    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectLogConfig, ServerOverride,
+    StatusCacheConfig,
 };
 
 // ---- Storage layout -------------------------------------------------------
@@ -69,8 +69,6 @@ struct Settings {
     reconnect_frozen: ReconnectFrozenConfig,
     #[serde(default)]
     status_cache: StatusCacheConfig,
-    #[serde(default)]
-    log_ratelimit: LogRatelimitConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,17 +349,69 @@ struct CacheEntry {
     config: AppConfig,
 }
 
+// Prod: one process-global cache. Test: thread-local, so `cargo test`'s
+// parallel test threads (each test runs on its own thread, and `load_cached_in`
+// is synchronous on the caller) cannot evict one another's single-slot entry
+// and thereby race the cache tests' exact hit/miss assertions.
+#[cfg(not(test))]
 static CONFIG_CACHE: std::sync::RwLock<Option<CacheEntry>> = std::sync::RwLock::new(None);
 
-/// Counts full (cache-missing) loads so tests can assert the cache is
-/// actually being used rather than merely returning correct values. Compiled
-/// out entirely otherwise.
 #[cfg(test)]
-static FULL_LOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static CONFIG_CACHE_TL: std::cell::RefCell<Option<CacheEntry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Return the cached config for `dir` if one is present and still
+/// fingerprint-valid.
+fn cache_lookup(dir: &Path) -> Option<AppConfig> {
+    let check = |e: &CacheEntry| -> Option<AppConfig> {
+        (e.dir == dir && fingerprint_still_valid(dir, &e.fingerprint)).then(|| e.config.clone())
+    };
+    #[cfg(not(test))]
+    {
+        CONFIG_CACHE
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(check))
+    }
+    #[cfg(test)]
+    {
+        CONFIG_CACHE_TL.with(|c| c.borrow().as_ref().and_then(check))
+    }
+}
+
+/// Store a freshly loaded config.
+fn cache_store(entry: CacheEntry) {
+    #[cfg(not(test))]
+    {
+        if let Ok(mut g) = CONFIG_CACHE.write() {
+            *g = Some(entry);
+        }
+    }
+    #[cfg(test)]
+    {
+        CONFIG_CACHE_TL.with(|c| *c.borrow_mut() = Some(entry));
+    }
+}
+
+// Counts full (cache-missing) loads so tests can assert the cache is actually
+// being used rather than merely returning correct values. Compiled out entirely
+// otherwise.
+#[cfg(test)]
+thread_local! {
+    /// Per-thread full-load counter. Thread-local rather than a global atomic
+    /// so the cache tests' exact-delta assertions are not raced by config loads
+    /// that OTHER test threads perform in parallel (`cargo test` runs tests
+    /// concurrently, and only the cache tests take `CACHE_TEST_LOCK`).
+    /// `load_cached_in` runs synchronously on the calling thread, so every
+    /// increment lands on the same thread that reads the count back.
+    static FULL_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn note_full_load() {
     #[cfg(test)]
-    FULL_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    FULL_LOADS.with(|c| c.set(c.get() + 1));
 }
 
 fn stat_file(p: &Path) -> Option<(std::time::SystemTime, u64)> {
@@ -427,13 +477,7 @@ pub fn load() -> Result<AppConfig> {
 /// `load()`'s body, with the directory injected and the legacy migration
 /// optional so tests can exercise the cache against a tempdir.
 fn load_cached_in(dir: &Path, migrate: bool) -> Result<AppConfig> {
-    let hit = CONFIG_CACHE.read().ok().and_then(|guard| {
-        guard
-            .as_ref()
-            .filter(|e| e.dir == dir && fingerprint_still_valid(dir, &e.fingerprint))
-            .map(|e| e.config.clone())
-    });
-    if let Some(config) = hit {
+    if let Some(config) = cache_lookup(dir) {
         return Ok(config);
     }
 
@@ -451,13 +495,11 @@ fn load_cached_in(dir: &Path, migrate: bool) -> Result<AppConfig> {
     let config = load_in(dir)?;
     note_full_load();
 
-    if let Ok(mut guard) = CONFIG_CACHE.write() {
-        *guard = Some(CacheEntry {
-            dir: dir.to_path_buf(),
-            fingerprint,
-            config: config.clone(),
-        });
-    }
+    cache_store(CacheEntry {
+        dir: dir.to_path_buf(),
+        fingerprint,
+        config: config.clone(),
+    });
     Ok(config)
 }
 
@@ -480,7 +522,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             reconnect_cold: ReconnectColdConfig::default(),
             reconnect_frozen: ReconnectFrozenConfig::default(),
             status_cache: StatusCacheConfig::default(),
-            log_ratelimit: LogRatelimitConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -529,7 +570,6 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         reconnect_cold: settings.reconnect_cold,
         reconnect_frozen: settings.reconnect_frozen,
         status_cache: settings.status_cache,
-        log_ratelimit: settings.log_ratelimit,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -609,7 +649,6 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         reconnect_cold: config.reconnect_cold.clone(),
         reconnect_frozen: config.reconnect_frozen.clone(),
         status_cache: config.status_cache.clone(),
-        log_ratelimit: config.log_ratelimit.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,
@@ -708,21 +747,22 @@ mod tests {
     // never consulted still returns correct results, so correctness alone
     // would pass whether or not the feature works.
 
-    /// Serializes the cache tests against each other. They share one
-    /// process-global cache and one global `FULL_LOADS` counter, so running
-    /// two at once would make both flaky.
+    /// Serializes the cache tests against each other. The cache and the
+    /// `FULL_LOADS` counter are both thread-local in test builds (so parallel
+    /// tests cannot race them), but these tests still assume they run one at a
+    /// time on a given thread; the lock keeps that guarantee defensively and
+    /// documents the intent.
     static CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn full_loads() -> usize {
-        FULL_LOADS.load(std::sync::atomic::Ordering::Relaxed)
+        FULL_LOADS.with(|c| c.get())
     }
 
     /// Drops the cache so a test starts from a known state regardless of what
-    /// ran before it.
+    /// ran before it. The cache is thread-local in test builds, so this clears
+    /// only the running test's own thread.
     fn clear_cache() {
-        if let Ok(mut g) = CONFIG_CACHE.write() {
-            *g = None;
-        }
+        CONFIG_CACHE_TL.with(|c| *c.borrow_mut() = None);
     }
 
     #[test]

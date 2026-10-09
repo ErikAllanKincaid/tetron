@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **The generic console log rate limiter (LOG-006) and its `log-ratelimit.*` config keys are removed.** It was meant to cap repetitive console/journal lines, but a filter-ordering defect made it emit one "N event(s) suppressed for `<callsite>`" summary per noisy dependency callsite per window — for `trace`/`debug` events that were never displayed in the first place. Measured live, this accounted for ~99% of the daemon's journal volume (hundreds of MB/day on busy hosts): the limiter was the spam, not a cure for it. The real repetitive-line problems it was added to cover are already handled at the source (LOG-003 decoupled console/file levels, LOG-005's per-peer reconnect/path-flap debounces), and the remaining journal volume traces to peer-discovery churn addressed separately. Existing `log-ratelimit.*` entries in `settings.toml` are simply ignored.
+
 ### Added
 
 - **`install-tetron-suite.sh` can now install `tetron-tui`**, the interactive terminal UI, as a new `tui` component. It is in the default set on every host — including headless and fully unattended installs — because it is a plain terminal binary with no display or service requirement (`--install-tui`, included in `--install-all`, and kept current by the already-installed sweep).
