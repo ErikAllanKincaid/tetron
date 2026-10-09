@@ -545,6 +545,7 @@ impl MeshManager {
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
             dial_in_flight: self.dial_in_flight.clone(),
+            reconnect_health: self.reconnect_health.clone(),
         };
         let (tasks, disconnect_tx) = self.spawn_coordinator_background_tasks(
             &name,
@@ -838,6 +839,7 @@ impl MeshManager {
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
             dial_in_flight: self.dial_in_flight.clone(),
+            reconnect_health: self.reconnect_health.clone(),
         };
         let ctx = JoinContext {
             display_name,
@@ -1244,6 +1246,9 @@ impl MeshManager {
                         // live connection backs it, so it must always proceed.
                         reason: forward::CloseReason::Other,
                         conn_stable_id: None,
+                        // Synthetic seed: no connection lived, so there is no
+                        // uptime to judge (RECONNECT-STORM-001).
+                        uptime: None,
                     })
                     .await;
             }
@@ -1770,6 +1775,8 @@ async fn seed_coordinator_reconnect(
             network: network_name.to_string(),
             reason: forward::CloseReason::Other,
             conn_stable_id: None,
+            // Synthetic seed: no connection lived (RECONNECT-STORM-001).
+            uptime: None,
         })
         .await;
 }

@@ -135,6 +135,15 @@ const BACKOFF_FROZEN_THRESHOLD: u32 = 154;
 /// latency.
 const BACKOFF_FROZEN_MAX: Duration = Duration::from_secs(86400);
 
+/// Compiled default for `reconnect-holddown.min-uptime` (RECONNECT-STORM-001):
+/// a reconnected connection that drops in under this many seconds of
+/// establishing is treated as a flap/failure (escalates the per-peer backoff)
+/// rather than a backoff-resetting success, so a peer that accepts then
+/// immediately closes every connection no longer locks the reconnect loop at
+/// the 1s [`BACKOFF_INITIAL`] floor. A connection that lives at least this
+/// long clears the peer's flap streak (`MeshCtx::reconnect_health`).
+const RECONNECT_HOLDDOWN_MIN_UPTIME_SECS: u64 = 5;
+
 /// Shared handles for one network's accept handlers and background tasks.
 /// Every field is a cheap `Clone` — an `Arc`-backed handle, a channel sender,
 /// or a small wrapper — so the whole bundle is cloned by value instead of
@@ -186,6 +195,20 @@ pub(crate) struct MeshCtx {
     /// to a dial attempt on this set so only one of this node's own dial
     /// call sites is ever in flight to a given peer at a time.
     dial_in_flight: Arc<DashSet<(String, EndpointId)>>,
+    /// Per-peer short-lived-drop streak, keyed by `(network, peer)` like
+    /// `pruned_peers`/`dial_in_flight` above (RECONNECT-STORM-002). A reconnect
+    /// loop spawns a FRESH task per disconnect event, so a flapping peer (one
+    /// that accepts a dial then closes the connection within
+    /// `reconnect-holddown.min-uptime`) would otherwise have its backoff reset
+    /// to the 1s floor every cycle and be redialed at ~1 Hz forever. This map
+    /// carries the flap streak across those task boundaries (and across the
+    /// coordinator path's `spawn_peer_cleanup` invocations), so the backoff
+    /// escalates globally, mirroring how `path-flap`/`reconnect-log` persist
+    /// their per-peer debounce state. An entry is cleared when the peer holds a
+    /// healthy connection or leaves the roster, and swept per-network by the
+    /// same GC as `pruned_peers` (CONVERGE-009); cardinality stays bounded by
+    /// roster size.
+    reconnect_health: Arc<DashMap<(String, EndpointId), u32>>,
 }
 
 /// RAII claim on `MeshCtx::dial_in_flight`, held for the duration of one
@@ -597,6 +620,10 @@ pub struct MeshManager {
     /// Shared into [`MeshCtx::dial_in_flight`]; see that field for the
     /// mechanism (VEILID-012).
     dial_in_flight: Arc<DashSet<(String, EndpointId)>>,
+    /// Per-peer short-lived-drop streak. Shared into
+    /// [`MeshCtx::reconnect_health`]; see that field for the mechanism
+    /// (RECONNECT-STORM-002).
+    reconnect_health: Arc<DashMap<(String, EndpointId), u32>>,
     /// STATUS-CACHE-001: cached per-network/per-peer status, so answering
     /// `IpcMessage::Status` does not walk iroh's path machinery
     /// (`conn.paths()` + `p.stats()` per path per peer) once per request.
@@ -777,6 +804,7 @@ impl MeshManager {
             global_gate: self.global_gate.clone(),
             status_cache: self.status_snapshot.clone(),
             dial_in_flight: self.dial_in_flight.clone(),
+            reconnect_health: self.reconnect_health.clone(),
         })
     }
 
@@ -806,6 +834,10 @@ impl MeshManager {
         const PRUNED_PEERS_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
         let networks = self.networks.clone();
         let pruned_peers = self.pruned_peers.clone();
+        // RECONNECT-STORM-002: the per-peer flap-streak map is swept on the
+        // same cadence and by the same liveness rule as `pruned_peers` -- an
+        // entry for a network the daemon has left can never be consumed again.
+        let reconnect_health = self.reconnect_health.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(PRUNED_PEERS_GC_INTERVAL);
             loop {
@@ -814,6 +846,9 @@ impl MeshManager {
                         let live: std::collections::HashSet<String> =
                             networks.iter().map(|e| e.key().clone()).collect();
                         pruned_peers.retain(|(network_name, _)| {
+                            pruned_peer_entry_is_live(&live, network_name)
+                        });
+                        reconnect_health.retain(|(network_name, _), _| {
                             pruned_peer_entry_is_live(&live, network_name)
                         });
                     }
@@ -1558,6 +1593,7 @@ mod accept_handler_tests {
             global_gate: Arc::new(crate::ratelimit::GlobalRateLimiter::with_params(10, 3, 50)),
             status_cache: Arc::new(std::sync::RwLock::new(None)),
             dial_in_flight: Arc::new(DashSet::new()),
+            reconnect_health: Arc::new(DashMap::new()),
         }
     }
 
@@ -2290,6 +2326,70 @@ mod reconnect_tests {
             seen.push(b.as_secs());
         }
         assert_eq!(seen, vec![60, 120, 240, 480, 600, 600]);
+    }
+
+    // RECONNECT-STORM-001: a connection that dies within `min_uptime` of
+    // establishing counts as a failure and escalates the backoff across
+    // reconnect cycles, instead of resetting to the 1s floor every time.
+    const STORM_MIN: Duration = Duration::from_secs(5);
+    const STORM_INIT: Duration = Duration::from_secs(1);
+    const STORM_WARM: Duration = Duration::from_secs(30);
+    const STORM_COLD: Duration = Duration::from_secs(600);
+    const STORM_FROZEN: Duration = Duration::from_secs(86400);
+
+    fn storm(uptime: Option<Duration>, prior: u32) -> (bool, u32, Duration) {
+        reconnect_storm_decision(
+            uptime,
+            prior,
+            STORM_MIN,
+            STORM_INIT,
+            10,
+            154,
+            STORM_WARM,
+            STORM_COLD,
+            STORM_FROZEN,
+        )
+    }
+
+    #[test]
+    fn healthy_connection_resets_streak_to_warm_floor() {
+        // Lived at/above the floor: not a flap, streak cleared, back to 1s.
+        let (is_flap, streak, backoff) = storm(Some(Duration::from_secs(5)), 7);
+        assert!(!is_flap);
+        assert_eq!(streak, 0);
+        assert_eq!(backoff, STORM_INIT);
+    }
+
+    #[test]
+    fn short_lived_connection_is_a_flap_and_escalates() {
+        // The 40ms-lived "closed by peer: 0" case: a flap, streak climbs,
+        // and the next attempt is no longer at the 1s floor.
+        let (is_flap, streak, backoff) = storm(Some(Duration::from_millis(40)), 0);
+        assert!(is_flap);
+        assert_eq!(streak, 1);
+        assert_eq!(backoff, Duration::from_secs(2)); // 1s * 2^1
+        let (_, streak, backoff) = storm(Some(Duration::from_millis(40)), 3);
+        assert_eq!(streak, 4);
+        assert_eq!(backoff, Duration::from_secs(16)); // 1s * 2^4
+    }
+
+    #[test]
+    fn chronic_flap_climbs_into_cold_then_frozen_caps() {
+        // Once the streak crosses the cold/frozen thresholds the climb is
+        // clamped by the same caps the offline-peer path uses -- no 1 Hz
+        // storm, and no unbounded backoff value either.
+        let (_, _, backoff) = storm(Some(Duration::ZERO), 9); // new_streak 10 == cold threshold
+        assert_eq!(backoff, STORM_COLD);
+        let (_, _, backoff) = storm(Some(Duration::ZERO), 200); // well past frozen
+        assert_eq!(backoff, STORM_FROZEN);
+    }
+
+    #[test]
+    fn synthetic_seed_preserves_streak_and_starts_warm() {
+        let (is_flap, streak, backoff) = storm(None, 4);
+        assert!(!is_flap);
+        assert_eq!(streak, 4);
+        assert_eq!(backoff, STORM_INIT);
     }
 }
 

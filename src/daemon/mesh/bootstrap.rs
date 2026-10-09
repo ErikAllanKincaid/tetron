@@ -250,6 +250,7 @@ async fn build_daemon(
         promote_rx: std::sync::Mutex::new(Some(promote_rx)),
         pruned_peers: Arc::new(DashSet::new()),
         dial_in_flight: Arc::new(DashSet::new()),
+        reconnect_health: Arc::new(DashMap::new()),
         status_snapshot: Arc::new(std::sync::RwLock::new(None)),
         global_gate,
         active: active.clone(),

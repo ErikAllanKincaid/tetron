@@ -474,3 +474,66 @@ pub(crate) fn dial_retry_decision(in_roster: bool, was_pruned_locally: bool) -> 
     }
     DialRetryDecision::KeepDialing
 }
+
+/// Classifies the connection that just dropped as a flap or a healthy drop,
+/// and returns the starting state for the next reconnect task against this
+/// peer (RECONNECT-STORM-001, PURE-LOGIC-001).
+///
+/// CONVERGE-011/013 only escalates dials that *never connect* (counted by a
+/// task's own `failed_attempts`); a peer that connects then drops the
+/// connection almost immediately resets a fresh task back to the warm floor
+/// every cycle, so it is redialed at the 1s floor forever. This closes that
+/// gap: a connection that lived less than `min_uptime` counts as a failure.
+///
+/// `uptime` is how long the dropped connection lived (`None` for the
+/// synthetic cold-restore seed, which no live connection backs).
+/// `prior_streak` is this peer's persisted short-lived-drop streak (see
+/// `MeshCtx::reconnect_health`). Returns `(is_flap, new_streak,
+/// start_backoff)`:
+/// - `uptime >= min_uptime`: a healthy connection; streak resets to 0 and
+///   the next task starts at the warm floor (`initial`).
+/// - `uptime < min_uptime`: a flap; the streak increments and `start_backoff`
+///   is the warm floor climbed as if `new_streak` attempts had failed,
+///   capped by the same `backoff_cap` the offline-peer path uses, so a
+///   chronic flapper escalates toward the cold then frozen caps on the same
+///   schedule a chronically-offline peer does (the caller also seeds the new
+///   task's `failed_attempts` with `new_streak`, unifying the two paths).
+/// - `None`: a seed, not a flap; the streak is preserved and the next task
+///   starts warm.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconnect_storm_decision(
+    uptime: Option<std::time::Duration>,
+    prior_streak: u32,
+    min_uptime: std::time::Duration,
+    initial: std::time::Duration,
+    cold_threshold: u32,
+    frozen_threshold: u32,
+    warm_max: std::time::Duration,
+    cold_max: std::time::Duration,
+    frozen_max: std::time::Duration,
+) -> (bool, u32, std::time::Duration) {
+    match uptime {
+        None => (false, prior_streak, initial),
+        Some(lived) if lived >= min_uptime => (false, 0, initial),
+        Some(_) => {
+            let new_streak = prior_streak.saturating_add(1);
+            let cap = backoff_cap(
+                new_streak,
+                cold_threshold,
+                frozen_threshold,
+                warm_max,
+                cold_max,
+                frozen_max,
+            );
+            // Climb from the warm floor as if `new_streak` attempts had
+            // failed: initial * 2^new_streak, clamped by the cap in effect.
+            // `min(20)` on the exponent keeps the shift well clear of
+            // overflow (2^20 * 1s already dwarfs any cap); `checked_mul`
+            // falls back to the cap on the off chance it still overflows.
+            let climbed = initial
+                .checked_mul(1u32 << new_streak.min(20))
+                .unwrap_or(cap);
+            (true, new_streak, climbed.min(cap))
+        }
+    }
+}

@@ -970,6 +970,7 @@ pub(crate) fn spawn_reconnect_loop(
         global_gate,
         status_cache,
         dial_in_flight,
+        reconnect_health,
         ..
     } = ctx;
     use tracing::Instrument as _;
@@ -1066,11 +1067,14 @@ pub(crate) fn spawn_reconnect_loop(
             let global_gate = global_gate.clone();
             let pruned_peers = pruned_peers.clone();
             let dial_in_flight = dial_in_flight.clone();
+            let reconnect_health = reconnect_health.clone();
+            // RECONNECT-STORM-001: how long the connection that just dropped
+            // lived, so the task can tell a flap from a healthy drop.
+            let event_uptime = event.uptime;
             let my_veilid_node_id = my_veilid_node_id.clone();
             let tor_addr_lookup = tor_addr_lookup.clone();
 
             tokio::spawn(async move {
-                let mut backoff = BACKOFF_INITIAL;
                 let net_name = network_name.clone();
                 // LOG-005: per-peer reconnect-log debounce state. A fresh task
                 // per disconnect, so this is a plain local -- no shared/global
@@ -1111,7 +1115,42 @@ pub(crate) fn spawn_reconnect_loop(
                         .backoff_secs
                         .unwrap_or(BACKOFF_FROZEN_MAX.as_secs()),
                 );
-                let mut failed_attempts: u32 = 0;
+                // RECONNECT-STORM-001/002: classify the connection that just
+                // dropped. A connection that lived less than
+                // `reconnect-holddown.min-uptime` counts as a flap/failure
+                // rather than a backoff-resetting success, and the per-peer
+                // streak persists across these fresh-per-disconnect tasks via
+                // `reconnect_health`, so a peer that accepts then immediately
+                // closes every connection escalates its backoff instead of
+                // being redialed at the 1s floor forever. The streak also
+                // seeds `failed_attempts`, so a chronic flapper reaches
+                // CONVERGE-011/013's cold/frozen caps on the same schedule a
+                // chronically-offline peer does.
+                let min_uptime = std::time::Duration::from_secs(
+                    cfg.reconnect_holddown
+                        .min_uptime_secs
+                        .unwrap_or(RECONNECT_HOLDDOWN_MIN_UPTIME_SECS),
+                );
+                let health_key = (net_name.clone(), peer_id);
+                let prior_streak = reconnect_health.get(&health_key).map(|r| *r).unwrap_or(0);
+                let (_is_flap, new_streak, start_backoff) = reconnect_storm_decision(
+                    event_uptime,
+                    prior_streak,
+                    min_uptime,
+                    BACKOFF_INITIAL,
+                    cold_threshold,
+                    frozen_threshold,
+                    BACKOFF_MAX,
+                    cold_max,
+                    frozen_max,
+                );
+                if new_streak == 0 {
+                    reconnect_health.remove(&health_key);
+                } else {
+                    reconnect_health.insert(health_key.clone(), new_streak);
+                }
+                let mut backoff = start_backoff;
+                let mut failed_attempts: u32 = new_streak;
                 loop {
                     if token.is_cancelled() {
                         return;
@@ -1170,6 +1209,8 @@ pub(crate) fn spawn_reconnect_loop(
                             peer = %peer_id.fmt_short(), ip = %peer_ip,
                             "peer no longer in roster, stopping reconnect attempts"
                         );
+                        // RECONNECT-STORM-002: peer gone, drop its flap state.
+                        reconnect_health.remove(&health_key);
                         return;
                     }
                     // CONVERGE-011: if the peer came back and dialed us

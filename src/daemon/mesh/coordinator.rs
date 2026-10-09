@@ -126,6 +126,7 @@ pub(crate) fn spawn_peer_cleanup(
                                     spawn_coordinator_dial_retry(
                                         member_id,
                                         ev.ip,
+                                        ev.uptime,
                                         c.endpoint.clone(),
                                         c.network_name.clone(),
                                         c.my_identity,
@@ -178,6 +179,9 @@ pub(crate) fn spawn_peer_cleanup(
 fn spawn_coordinator_dial_retry(
     peer_id: EndpointId,
     peer_ip: Ipv4Addr,
+    // RECONNECT-STORM-001: how long the dropped connection lived (`None` for a
+    // synthetic seed), so this task can tell a flap from a healthy drop.
+    event_uptime: Option<std::time::Duration>,
     endpoint: Endpoint,
     network_name: String,
     my_identity: EndpointId,
@@ -200,12 +204,12 @@ fn spawn_coordinator_dial_retry(
         network_key,
         global_gate,
         dial_in_flight,
+        reconnect_health,
         ..
     } = ctx;
     tokio::spawn(async move {
         let peer_ipv6 = derive_ipv6(&peer_id, &network_key);
         let alpn = transport::network_alpn(&network_key);
-        let mut backoff = BACKOFF_INITIAL;
         let cfg = crate::config::load().unwrap_or_default();
         let cold_threshold = cfg
             .reconnect_cold
@@ -225,7 +229,37 @@ fn spawn_coordinator_dial_retry(
                 .backoff_secs
                 .unwrap_or(BACKOFF_FROZEN_MAX.as_secs()),
         );
-        let mut failed_attempts: u32 = 0;
+        // RECONNECT-STORM-001/002: same hold-down the member path uses
+        // (`join::spawn_reconnect_loop`). A member that this coordinator
+        // keeps re-dialing, where the connection dies within
+        // `reconnect-holddown.min-uptime` each time, escalates the backoff
+        // across these fresh-per-disconnect tasks via `reconnect_health`
+        // rather than resetting to the 1s floor.
+        let min_uptime = std::time::Duration::from_secs(
+            cfg.reconnect_holddown
+                .min_uptime_secs
+                .unwrap_or(RECONNECT_HOLDDOWN_MIN_UPTIME_SECS),
+        );
+        let health_key = (network_name.clone(), peer_id);
+        let prior_streak = reconnect_health.get(&health_key).map(|r| *r).unwrap_or(0);
+        let (_is_flap, new_streak, start_backoff) = reconnect_storm_decision(
+            event_uptime,
+            prior_streak,
+            min_uptime,
+            BACKOFF_INITIAL,
+            cold_threshold,
+            frozen_threshold,
+            BACKOFF_MAX,
+            cold_max,
+            frozen_max,
+        );
+        if new_streak == 0 {
+            reconnect_health.remove(&health_key);
+        } else {
+            reconnect_health.insert(health_key.clone(), new_streak);
+        }
+        let mut backoff = start_backoff;
+        let mut failed_attempts: u32 = new_streak;
         loop {
             if token.is_cancelled() {
                 return;
@@ -257,6 +291,8 @@ fn spawn_coordinator_dial_retry(
                 .is_some();
             if dial_retry_decision(in_roster, was_pruned) == DialRetryDecision::AbandonPeerGone {
                 tracing::info!(peer = %peer_id.fmt_short(), ip = %peer_ip, "peer no longer in roster, stopping coordinator reconnect attempts");
+                // RECONNECT-STORM-002: peer gone, drop its flap state.
+                reconnect_health.remove(&health_key);
                 return;
             }
             // CONVERGE-011's live-route guard, reused verbatim: the peer may
