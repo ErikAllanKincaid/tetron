@@ -43,6 +43,14 @@ pub(crate) async fn resolve_signed(
     dht::resolve_network(&client, net_pubkey).await.ok()
 }
 
+/// BLOB-FETCH-BOUND-001: longest one peer may take (connect + blob fetch +
+/// verify) before `fetch_verified_blob` moves on to the next.
+const BLOB_FETCH_PEER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// BLOB-FETCH-BOUND-001: no further peer is started once a fetch has been
+/// running this long.
+const BLOB_FETCH_BUDGET: Duration = Duration::from_secs(45);
+
 /// Fetch the group blob for `signed` from any connected peer or seed, and verify
 /// its bytes against `signed`. Returns the verified blob, or `None` if no source
 /// could serve a blob matching the signed hash. The blob is content-addressed by
@@ -64,36 +72,45 @@ pub(crate) async fn fetch_verified_blob(
     peer_ids.extend_from_slice(seeds);
     peer_ids.sort_by_key(|id| id.to_string());
     peer_ids.dedup();
-    for pid in &peer_ids {
-        // No roster in scope to resolve a Veilid address from (this dial is
-        // itself how the roster gets (re-)fetched). TOR-DIAL-001: a Tor
-        // candidate could in principle still be derived here (it needs no
-        // roster), but this function has no `MeshManager` handle to read
-        // `tor_addr_lookup` from and isn't worth threading one through for
-        // a background blob-reconverge path that already has Direct/Relay
-        // candidates from `peers`/seeds in the common case -- unlike the
-        // main mesh dial path (`connect_to_peer_with_alpn`'s other
-        // callers), this isn't the path `tor-smoke.sh` exercises.
-        if let Ok(conn) = transport::connect_to_peer_with_alpn(
-            endpoint,
-            *pid,
-            None,
-            None,
-            iroh_blobs::protocol::ALPN,
-        )
-        .await
-            && blob_store
-                .remote()
-                .fetch(conn, HashAndFormat::raw(blob_hash))
+    // BLOB-FETCH-BOUND-001: each peer is bounded (connect + fetch + verify) and
+    // a stalled or dead peer is skipped, so one unreachable seed that sorts
+    // ahead of a live one can not stall the whole roster fetch.
+    first_some_bounded(
+        &peer_ids,
+        BLOB_FETCH_PEER_TIMEOUT,
+        BLOB_FETCH_BUDGET,
+        |pid| {
+            let pid = *pid;
+            async move {
+                // No roster in scope to resolve a Veilid address from (this dial is
+                // itself how the roster gets (re-)fetched). TOR-DIAL-001: a Tor
+                // candidate could in principle still be derived here (it needs no
+                // roster), but this function has no `MeshManager` handle to read
+                // `tor_addr_lookup` from and isn't worth threading one through for
+                // a background blob-reconverge path that already has Direct/Relay
+                // candidates from `peers`/seeds in the common case -- unlike the
+                // main mesh dial path (`connect_to_peer_with_alpn`'s other
+                // callers), this isn't the path `tor-smoke.sh` exercises.
+                let conn = transport::connect_to_peer_with_alpn(
+                    endpoint,
+                    pid,
+                    None,
+                    None,
+                    iroh_blobs::protocol::ALPN,
+                )
                 .await
-                .is_ok()
-            && let Ok(bytes) = blob_store.blobs().get_bytes(blob_hash).await
-            && let Ok(data) = crate::membership::verify_group_blob(&bytes, &signed)
-        {
-            return Some(data);
-        }
-    }
-    None
+                .ok()?;
+                blob_store
+                    .remote()
+                    .fetch(conn, HashAndFormat::raw(blob_hash))
+                    .await
+                    .ok()?;
+                let bytes = blob_store.blobs().get_bytes(blob_hash).await.ok()?;
+                crate::membership::verify_group_blob(&bytes, &signed).ok()
+            }
+        },
+    )
+    .await
 }
 
 /// Reconverge the live network state from the signed pkarr record and apply it

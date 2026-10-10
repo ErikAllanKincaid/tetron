@@ -77,6 +77,33 @@ where
     RestoreWalk::Exhausted
 }
 
+/// BLOB-FETCH-BOUND-001: try each of `items` in order, giving each at most
+/// `per_item`, and return the first `Some`. A stalled or failing item is
+/// skipped. No new item is started once `budget` has elapsed since the walk
+/// began (an attempt already running still ends within `per_item`). Used by
+/// `fetch_verified_blob` so one dead peer cannot block a roster fetch.
+pub(crate) async fn first_some_bounded<I, T, F, Fut>(
+    items: &[I],
+    per_item: Duration,
+    budget: Duration,
+    mut f: F,
+) -> Option<T>
+where
+    F: FnMut(&I) -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let started = std::time::Instant::now();
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 && started.elapsed() >= budget {
+            break;
+        }
+        if let Ok(Some(found)) = tokio::time::timeout(per_item, f(item)).await {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Outcome of a single coordinator dial attempt during the join fallback loop.
 /// Used as a unit-testable specification of the loop termination policy.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -728,5 +755,117 @@ mod restore_coordinator_walk_tests {
         };
         let members = [mk(1, false), mk(2, true), mk(9, true), mk(3, true)];
         assert_eq!(coordinator_dial_order(me, &members, me), vec![id(2), id(3)]);
+    }
+}
+
+#[cfg(test)]
+mod first_some_bounded_tests {
+    //! BLOB-FETCH-BOUND-001: a stalled or dead peer must not block a roster
+    //! fetch from the live peers behind it.
+    use super::*;
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_stalled_first_peer_is_skipped_for_the_next() {
+        let tried = RefCell::new(Vec::new());
+        let started = std::time::Instant::now();
+        let got = first_some_bounded(
+            &[1u8, 2, 3],
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+            |n| {
+                tried.borrow_mut().push(*n);
+                let n = *n;
+                async move {
+                    if n == 1 {
+                        // The dead peer: never completes.
+                        std::future::pending::<Option<u8>>().await
+                    } else {
+                        Some(n)
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(got, Some(2));
+        assert_eq!(*tried.borrow(), vec![1, 2], "the third peer is never tried");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must not wait on the dead peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_peer_is_skipped_for_the_next() {
+        let got = first_some_bounded(
+            &[1u8, 2],
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            |n| {
+                let n = *n;
+                async move { (n == 2).then_some(n) }
+            },
+        )
+        .await;
+        assert_eq!(got, Some(2));
+    }
+
+    #[tokio::test]
+    async fn first_success_ends_the_walk() {
+        let tried = RefCell::new(0usize);
+        let got = first_some_bounded(
+            &[1u8, 2, 3],
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            |n| {
+                *tried.borrow_mut() += 1;
+                let n = *n;
+                async move { Some(n) }
+            },
+        )
+        .await;
+        assert_eq!(got, Some(1));
+        assert_eq!(*tried.borrow(), 1);
+    }
+
+    #[tokio::test]
+    async fn all_peers_stalled_returns_none_within_the_budget() {
+        let tried = RefCell::new(0usize);
+        let started = std::time::Instant::now();
+        let got: Option<u8> = first_some_bounded(
+            &[1u8, 2, 3, 4, 5, 6, 7, 8],
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+            |_| {
+                *tried.borrow_mut() += 1;
+                std::future::pending::<Option<u8>>()
+            },
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(
+            *tried.borrow() < 8,
+            "the budget stops new attempts: tried {}",
+            tried.borrow()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn no_peers_is_none_without_any_attempt() {
+        let tried = RefCell::new(0usize);
+        let got: Option<u8> = first_some_bounded(
+            &[] as &[u8],
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            |_| {
+                *tried.borrow_mut() += 1;
+                async { None }
+            },
+        )
+        .await;
+        assert_eq!(got, None);
+        assert_eq!(*tried.borrow(), 0);
     }
 }

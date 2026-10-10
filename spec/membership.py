@@ -417,6 +417,55 @@ class RestoreCoordinatorFallthrough(Requirement):
     req_id = "RESTORE-COORD-FALLTHROUGH-001"
 
 
+# --------------------------------------------------------------------------
+# BLOB-FETCH-BOUND-001: fetch_verified_blob dials peers with no timeout, so a
+# dead peer stalls roster recovery
+# --------------------------------------------------------------------------
+
+class BlobFetchBound(Requirement):
+    """REQUIREMENT-ID: BLOB-FETCH-BOUND-001
+
+    Found 2026-10-10 while verifying RESTORE-COORD-FALLTHROUGH-001 on a 3-VM
+    network. With the first coordinator's daemon stopped, node3 restarted, fell
+    through to the live co-coordinator and completed the greeting
+    (`reconnected via peer; reconverging from signed record`), but then never
+    registered the network (`state standby`, `no active networks`) for the rest
+    of a 40 s observation. A second run, where the dead node happened not to be
+    reached first, registered in 15 s.
+
+    Cause: after a `MemberSync` greeting the restore fetches the signed roster
+    with `reconverge::fetch_verified_blob`. That function builds a list of
+    every connected peer plus the record's seed peers (sorted by id string, so
+    the order is arbitrary) and tries them one after another with NO timeout on
+    the connect and none on the blob fetch itself. iroh keeps trying an
+    unreachable peer for a long time, so one dead peer that sorts ahead of a
+    live one stalls the whole fetch, and with it the restore. The same function
+    backs the reconverge worker and the group poller, so a dead seed also
+    stalls every later roster refresh.
+
+    Requirement: each peer attempt in `fetch_verified_blob` (connect, blob
+    fetch, read, signature check) is bounded by `BLOB_FETCH_PEER_TIMEOUT`
+    (15 s), and no further peer is started once `BLOB_FETCH_BUDGET` (45 s) has
+    elapsed since the first attempt began. A peer that stalls or fails is
+    skipped and the next one is tried; the first attempt that yields a verified
+    blob wins. When every attempt fails or the budget is spent the function
+    returns `None`, exactly as it does today when no peer has the blob, so
+    callers keep their existing fallbacks (the restore falls back to the
+    persisted roster).
+
+    The bounded sequential walk is a pure generic helper
+    (`first_some_bounded`, `select.rs`) so its stall-skipping, budget and
+    early-exit behavior is unit-tested without a network.
+
+    Dependency: none. Complements RESTORE-HS-TIMEOUT-001 and
+    RESTORE-COORD-FALLTHROUGH-001, which bound the greeting wait and the
+    coordinator walk; this bounds the roster fetch that follows the greeting.
+    Peer order is deliberately left unchanged (preferring peers with a live
+    connection is a separate optimization).
+    """
+    req_id = "BLOB-FETCH-BOUND-001"
+
+
 class InviteStore(Requirement):
     """REQUIREMENT-ID: INVITE-001
 
