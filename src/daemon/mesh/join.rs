@@ -919,10 +919,13 @@ fn spawn_member_control_listener(
                                     }
                                     let key = SecretKey::from(secret_key);
                                     // Persist + take local publish capability.
-                                    if let Ok(Some(mut net)) = config::load_network(&network_name) {
+                                    // ROSTER-PERSIST-001: through the locked
+                                    // read-modify-write so a concurrent roster
+                                    // persist can not overwrite the new key.
+                                    let _ = config::update_network(&network_name, |net| {
                                         net.network_secret_key = Some(key.clone());
-                                        let _ = config::save_network(&net);
-                                    }
+                                        true
+                                    });
                                     let endpoint_id = endpoint_c.id();
                                     {
                                         let mut s = live_state.write().unwrap();

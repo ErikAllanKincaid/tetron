@@ -466,6 +466,70 @@ class BlobFetchBound(Requirement):
     req_id = "BLOB-FETCH-BOUND-001"
 
 
+# --------------------------------------------------------------------------
+# ROSTER-PERSIST-001: a member's on-disk roster only changes at a handshake, so
+# its fallback roster (and coordinator flags) go stale
+# --------------------------------------------------------------------------
+
+class VerifiedRosterPersisted(Requirement):
+    """REQUIREMENT-ID: ROSTER-PERSIST-001
+
+    Found 2026-10-10 investigating why a restoring member's coordinator list was
+    wrong. xps-17-9720's saved `noise-school.toml` flagged only usb-os and
+    xeon40 as coordinators, while the live signed record already flagged sneak
+    (both xps and gpu2 picked sneak as the coordinator to dial). The saved file
+    had last been written at the previous daemon start.
+
+    The on-disk roster (`NetworkConfig.members` / `.approved`) is written only
+    by `persist_join_config` (a fresh join or a member restore handshake), by
+    network creation, and by a coordinator restore. A member that applies a
+    newer verified roster later -- `reconverge_and_apply` (a hint from a peer)
+    or the group poller -- updates only its in-memory state. The saved copy
+    therefore stays as old as the last handshake: stale coordinator flags,
+    members who have since left, members who joined. That copy is the fallback
+    whenever the signed record can not be fetched (`fallback_blob_from_config`,
+    `persisted_roster`), so a restart during a DHT or network hiccup, exactly
+    when a fallback matters, restores from stale data.
+
+    Requirement:
+    1. Whenever a node applies a verified roster at either site, it persists
+       that roster's members and approved entries to the network's config. Only
+       those two fields change: `network_secret_key`, `admins`, `my_hostname`,
+       `my_ip`, `transport`, `direct`, `subnet` and the rest are preserved.
+    2. The write happens only when the roster differs from what is already
+       saved, so a poll that learns nothing new does not touch the disk, and
+       the entries are written in the signed blob's own order so an unchanged
+       roster compares equal. An empty member list is never persisted (a
+       verified roster always contains at least its coordinator; an empty one
+       would erase the only fallback).
+    3. The read-modify-write is serialized by `config::update_network`, a
+       process-wide lock held across load, modify and save, because
+       `save_network` itself is an unlocked atomic file write and two
+       load-modify-save sequences can lose one another's update. The
+       `AdminGrant` handler's key save uses the same primitive: a roster write
+       that raced a freshly granted key could otherwise overwrite the key with
+       the stale copy it loaded first, which would silently demote a new
+       co-coordinator on its next restart.
+    4. A failed write is logged and ignored; the in-memory roster, which is
+       authoritative at runtime, is unaffected.
+
+    Verified not reachable, so deliberately NOT changed: `persist_join_config`
+    writes `network_secret_key: None` and `admins: []`, but it runs only for a
+    fresh join and a restore as a member, and a node holding the key restores
+    through the coordinator path and never reaches it; the reconnect loop does
+    not re-handshake.
+
+    Dependency: none. Improves the fallback used by RESTORE-COORD-FALLTHROUGH-001
+    (a fresher saved roster means a better coordinator list when the signed
+    record is unreachable).
+
+    Not covered here: the signed roster being wrong at the source (a grant
+    publishing a flag for a node that holds no key) and how slowly a granted
+    flag reaches members; both are separate.
+    """
+    req_id = "ROSTER-PERSIST-001"
+
+
 class InviteStore(Requirement):
     """REQUIREMENT-ID: INVITE-001
 

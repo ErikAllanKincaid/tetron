@@ -113,6 +113,49 @@ pub(crate) async fn fetch_verified_blob(
     .await
 }
 
+/// ROSTER-PERSIST-001: write a verified roster into `net`'s saved copy. Only
+/// `members` and `approved` change (key, admins, hostname, ip, transport... are
+/// left alone). Returns whether anything changed; an empty member list is never
+/// persisted, since a verified roster always has its coordinator and an empty
+/// one would erase the only fallback.
+fn merge_verified_roster(
+    net: &mut config::NetworkConfig,
+    members: &[Member],
+    approved: &[ApprovedEntry],
+) -> bool {
+    if members.is_empty() {
+        return false;
+    }
+    let new_members = to_member_entries(members.iter());
+    let new_approved = to_approved_entries(approved.iter());
+    if net.members == new_members && net.approved == new_approved {
+        return false;
+    }
+    net.members = new_members;
+    net.approved = new_approved;
+    true
+}
+
+/// ROSTER-PERSIST-001: persist the roster this node just applied so the saved
+/// fallback copy tracks it. Serialized with the other config writers by
+/// `config::update_network`; a failure is logged and ignored (the in-memory
+/// roster is authoritative at runtime).
+pub(crate) fn persist_verified_roster(
+    network_name: &str,
+    members: &[Member],
+    approved: &[ApprovedEntry],
+) {
+    match config::update_network(network_name, |net| {
+        merge_verified_roster(net, members, approved)
+    }) {
+        Ok(true) => tracing::debug!(network = %network_name, "saved refreshed roster to config"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(network = %network_name, error = %e, "could not save refreshed roster to config")
+        }
+    }
+}
+
 /// Reconverge the live network state from the signed pkarr record and apply it
 /// (roster + DNS). Invoked when a peer sends a `MemberSync`
 /// or `BlobUpdated` *hint* — the hint is only a trigger; the roster comes
@@ -202,7 +245,7 @@ pub(crate) async fn reconverge_and_apply(
     let roster = {
         let mut s = state.write().unwrap();
         s.generation = data.generation;
-        s.members = MemberList::from_members(tiebroken);
+        s.members = MemberList::from_members(tiebroken.clone());
         s.approved = ApprovedList::from_entries(data.approved.clone());
         // NUKE-CONSENSUS: synced purely for `tetron status` visibility. Nothing
         // reconverge-driven acts on this — the only place a nuke ever executes
@@ -211,6 +254,8 @@ pub(crate) async fn reconverge_and_apply(
         s.refresh_snapshot();
         s.roster()
     };
+    // ROSTER-PERSIST-001: keep the saved fallback roster in step.
+    persist_verified_roster(network_name, &tiebroken, &data.approved);
     reconcile_local_hostname(&roster, network_name, my_identity);
     // Drop any live connection to a peer the signed roster no longer lists (it was
     // kicked, or left while we were offline). Removing it from the roster alone
@@ -438,6 +483,8 @@ pub(crate) fn spawn_group_poller(
                 s.nuke_proposals = data.nuke_proposals.clone();
                 s.refresh_snapshot();
             }
+            // ROSTER-PERSIST-001: keep the saved fallback roster in step.
+            persist_verified_roster(&network_name, &data.members, &data.approved);
         }
     })
 }
@@ -485,5 +532,97 @@ mod tests {
     #[test]
     fn poller_fetches_when_no_local_snapshot_yet() {
         assert!(poller_should_fetch(5, h(1), 5, None));
+    }
+}
+
+#[cfg(test)]
+mod roster_persist_tests {
+    //! ROSTER-PERSIST-001: persisting a verified roster changes only the roster
+    //! fields, only when they differ, and never to an empty list.
+    use super::*;
+    use iroh::SecretKey;
+
+    fn id(n: u8) -> EndpointId {
+        SecretKey::from_bytes(&[n; 32]).public()
+    }
+    fn member(n: u8, coord: bool) -> Member {
+        Member {
+            identity: id(n),
+            ip: std::net::Ipv4Addr::new(10, 0, 0, n),
+            is_coordinator: coord,
+            hostname: Some(format!("h{n}")),
+            collision_index: 0,
+            last_seen: None,
+            veilid_node_id: None,
+        }
+    }
+    fn net() -> config::NetworkConfig {
+        config::NetworkConfig {
+            name: "n".into(),
+            group_mode: GroupMode::Restricted,
+            my_ip: Some(std::net::Ipv4Addr::new(10, 0, 0, 9)),
+            my_hostname: Some("me".into()),
+            members: vec![],
+            approved: vec![],
+            network_secret_key: Some(SecretKey::generate()),
+            network_public_key: None,
+            transport: None,
+            admins: vec![id(7)],
+            direct: true,
+            subnet: None,
+            nuke_consensus_threshold: crate::membership::default_nuke_consensus_threshold(),
+        }
+    }
+
+    #[test]
+    fn a_changed_coordinator_flag_is_persisted() {
+        let mut n = net();
+        n.members = to_member_entries(&[member(1, true), member(2, false)]);
+        let fresh = [member(1, true), member(2, true)];
+        assert!(merge_verified_roster(&mut n, &fresh, &[]));
+        assert!(
+            n.members.iter().all(|m| m.is_coordinator),
+            "the new flag is saved"
+        );
+    }
+
+    #[test]
+    fn identical_roster_reports_no_change() {
+        let mut n = net();
+        let roster = [member(1, true), member(2, false)];
+        n.members = to_member_entries(&roster);
+        assert!(!merge_verified_roster(&mut n, &roster, &[]));
+    }
+
+    #[test]
+    fn everything_but_the_roster_is_preserved() {
+        let mut n = net();
+        let key = n.network_secret_key.clone().unwrap().to_bytes();
+        assert!(merge_verified_roster(&mut n, &[member(1, true)], &[]));
+        assert_eq!(n.network_secret_key.unwrap().to_bytes(), key);
+        assert_eq!(n.admins, vec![id(7)]);
+        assert_eq!(n.my_hostname.as_deref(), Some("me"));
+        assert_eq!(n.my_ip, Some(std::net::Ipv4Addr::new(10, 0, 0, 9)));
+        assert!(n.direct);
+    }
+
+    #[test]
+    fn an_empty_roster_is_never_persisted() {
+        let mut n = net();
+        n.members = to_member_entries(&[member(1, true)]);
+        assert!(!merge_verified_roster(&mut n, &[], &[]));
+        assert_eq!(n.members.len(), 1, "the only fallback must not be erased");
+    }
+
+    #[test]
+    fn a_departed_member_is_dropped_from_the_saved_roster() {
+        let mut n = net();
+        n.members = to_member_entries(&[member(1, true), member(2, false), member(3, false)]);
+        assert!(merge_verified_roster(
+            &mut n,
+            &[member(1, true), member(3, false)],
+            &[]
+        ));
+        assert_eq!(n.members.len(), 2);
     }
 }

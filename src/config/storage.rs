@@ -701,6 +701,39 @@ fn load_network_in(dir: &Path, name: &str) -> Result<Option<NetworkConfig>> {
     ))
 }
 
+/// ROSTER-PERSIST-001: serializes every [`update_network`] read-modify-write.
+/// `save_network` is an unlocked atomic file write, so two independent
+/// load-modify-save sequences on different fields can lose one another's
+/// update (a roster write racing a freshly granted key would overwrite the key
+/// with the stale copy it loaded first).
+static NETWORK_UPDATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Load `name`'s config, let `f` modify it, and save it back, all under one
+/// process-wide lock. `f` returns whether it changed anything; the file is
+/// written only then. Returns whether a write happened. A network with no saved
+/// config is a no-op (`Ok(false)`), not an error.
+pub fn update_network(name: &str, f: impl FnOnce(&mut NetworkConfig) -> bool) -> Result<bool> {
+    update_network_in(&config_dir()?, name, f)
+}
+
+fn update_network_in(
+    dir: &Path,
+    name: &str,
+    f: impl FnOnce(&mut NetworkConfig) -> bool,
+) -> Result<bool> {
+    let _guard = NETWORK_UPDATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let Some(mut net) = load_network_in(dir, name)? else {
+        return Ok(false);
+    };
+    if !f(&mut net) {
+        return Ok(false);
+    }
+    save_network_in(dir, &net)?;
+    Ok(true)
+}
+
 /// Delete a single network's config file. Returns true if it existed.
 pub fn delete_network(name: &str) -> Result<bool> {
     delete_network_in(&config_dir()?, name)
@@ -726,6 +759,7 @@ pub(crate) static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MemberEntry;
     use crate::membership::GroupMode;
     use iroh::SecretKey;
 
@@ -1029,5 +1063,108 @@ mod tests {
         let dir = tmp.path();
         assert!(save_network_in(dir, &net("../escape")).is_err());
         assert!(load_network_in(dir, "a/b").is_err());
+    }
+
+    // --- ROSTER-PERSIST-001 -------------------------------------------
+
+    fn member_entry(n: u8, coord: bool) -> MemberEntry {
+        MemberEntry {
+            identity: SecretKey::from_bytes(&[n; 32]).public(),
+            ip: std::net::Ipv4Addr::new(10, 0, 0, n),
+            is_coordinator: coord,
+            hostname: Some(format!("h{n}")),
+        }
+    }
+
+    #[test]
+    fn update_network_changes_only_what_the_closure_touches() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut n = net("keep");
+        n.my_hostname = Some("me".into());
+        n.admins = vec![SecretKey::from_bytes(&[9; 32]).public()];
+        let key_before = n.network_secret_key.clone().unwrap().to_bytes();
+        save_network_in(dir.path(), &n).unwrap();
+
+        let saved = update_network_in(dir.path(), "keep", |net| {
+            net.members = vec![member_entry(1, true)];
+            true
+        })
+        .unwrap();
+        assert!(saved, "closure reported a change, so it must be saved");
+
+        let got = load_network_in(dir.path(), "keep").unwrap().unwrap();
+        assert_eq!(got.members, vec![member_entry(1, true)]);
+        assert_eq!(
+            got.network_secret_key.unwrap().to_bytes(),
+            key_before,
+            "key preserved"
+        );
+        assert_eq!(got.admins.len(), 1, "admins preserved");
+        assert_eq!(got.my_hostname.as_deref(), Some("me"), "hostname preserved");
+    }
+
+    #[test]
+    fn update_network_skips_the_write_when_nothing_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        save_network_in(dir.path(), &net("quiet")).unwrap();
+        let path = dir.path().join(NETWORKS_SUBDIR).join("quiet.toml");
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let saved = update_network_in(dir.path(), "quiet", |_| false).unwrap();
+        assert!(!saved);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn update_network_on_a_missing_network_is_a_noop_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = update_network_in(dir.path(), "ghost", |_| panic!("must not run")).unwrap();
+        assert!(!saved);
+        assert!(load_network_in(dir.path(), "ghost").unwrap().is_none());
+    }
+
+    /// The reason the primitive exists: two writers doing load-modify-save on
+    /// different fields must not lose each other's update (a roster write
+    /// racing a freshly granted key must never erase the key).
+    #[test]
+    fn concurrent_updates_to_different_fields_both_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut n = net("race");
+        n.network_secret_key = None;
+        save_network_in(dir.path(), &n).unwrap();
+        let granted = SecretKey::generate();
+        let granted_bytes = granted.to_bytes();
+        let path = dir.path().to_path_buf();
+        std::thread::scope(|sc| {
+            for i in 0..40u8 {
+                let p = path.clone();
+                let g = granted.clone();
+                sc.spawn(move || {
+                    if i % 2 == 0 {
+                        update_network_in(&p, "race", |net| {
+                            net.members = vec![member_entry(i, false)];
+                            true
+                        })
+                        .unwrap();
+                    } else {
+                        update_network_in(&p, "race", |net| {
+                            net.network_secret_key = Some(g.clone());
+                            true
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        let got = load_network_in(dir.path(), "race").unwrap().unwrap();
+        assert_eq!(
+            got.network_secret_key
+                .expect("granted key must survive roster writes")
+                .to_bytes(),
+            granted_bytes
+        );
     }
 }
