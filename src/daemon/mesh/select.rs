@@ -27,6 +27,56 @@ pub(crate) fn coordinator_dial_order(
     order
 }
 
+/// RESTORE-COORD-FALLTHROUGH-001: result of one coordinator attempt during a
+/// boot-restore walk. `Joined` carries whatever the caller needs to finish
+/// (the handshake's live state), so the walker stays free of I/O types.
+pub(crate) enum RestoreAttempt<T> {
+    /// This coordinator completed the handshake.
+    Joined(T),
+    /// This coordinator queued the request for operator approval: stop here,
+    /// as on a fresh join.
+    Pending,
+    /// Connect failed or the handshake errored/timed out: try the next one.
+    Failed,
+}
+
+/// RESTORE-COORD-FALLTHROUGH-001: how a restore walk ended.
+pub(crate) enum RestoreWalk<T> {
+    Joined(T),
+    Pending,
+    /// No coordinator completed (all failed, budget spent, or none to try).
+    /// The caller registers the network from the verified blob.
+    Exhausted,
+}
+
+/// RESTORE-COORD-FALLTHROUGH-001: walk `order` (see [`coordinator_dial_order`])
+/// calling `attempt` for each coordinator until one joins. No new attempt is
+/// started once `budget` has elapsed since the walk began; an attempt already in
+/// flight finishes within its own bounds. `attempt` is expected to bound its own
+/// connect and handshake (`DIAL_TIMEOUT`, `RESTORE_HANDSHAKE_TIMEOUT`).
+pub(crate) async fn walk_restore_coordinators<T, F, Fut>(
+    order: &[EndpointId],
+    budget: Duration,
+    mut attempt: F,
+) -> RestoreWalk<T>
+where
+    F: FnMut(EndpointId) -> Fut,
+    Fut: std::future::Future<Output = RestoreAttempt<T>>,
+{
+    let started = std::time::Instant::now();
+    for (i, coordinator) in order.iter().enumerate() {
+        if i > 0 && started.elapsed() >= budget {
+            break;
+        }
+        match attempt(*coordinator).await {
+            RestoreAttempt::Joined(t) => return RestoreWalk::Joined(t),
+            RestoreAttempt::Pending => return RestoreWalk::Pending,
+            RestoreAttempt::Failed => {}
+        }
+    }
+    RestoreWalk::Exhausted
+}
+
 /// Outcome of a single coordinator dial attempt during the join fallback loop.
 /// Used as a unit-testable specification of the loop termination policy.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -555,4 +605,128 @@ pub(crate) fn jitter_backoff(
     }
     let extra = backoff.mul_f64((frac * sample).clamp(0.0, frac));
     backoff.saturating_add(extra)
+}
+
+#[cfg(test)]
+mod restore_coordinator_walk_tests {
+    //! RESTORE-COORD-FALLTHROUGH-001: the restore dial walks every flagged
+    //! coordinator instead of giving up after the first.
+    use super::*;
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    fn id(n: u8) -> EndpointId {
+        iroh::SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    const BUDGET: Duration = Duration::from_secs(30);
+
+    #[tokio::test]
+    async fn first_coordinator_joins_and_the_rest_are_never_tried() {
+        let tried = RefCell::new(Vec::new());
+        let order = [id(1), id(2), id(3)];
+        let res = walk_restore_coordinators(&order, BUDGET, |c| {
+            tried.borrow_mut().push(c);
+            async move { RestoreAttempt::Joined(c) }
+        })
+        .await;
+        assert!(matches!(res, RestoreWalk::Joined(c) if c == id(1)));
+        assert_eq!(*tried.borrow(), vec![id(1)]);
+    }
+
+    #[tokio::test]
+    async fn a_silent_first_coordinator_falls_through_to_the_next() {
+        // The 2026-10-10 failure: the first flagged coordinator never greets.
+        let tried = RefCell::new(Vec::new());
+        let order = [id(1), id(2), id(3)];
+        let res = walk_restore_coordinators(&order, BUDGET, |c| {
+            tried.borrow_mut().push(c);
+            async move {
+                if c == id(1) {
+                    RestoreAttempt::Failed
+                } else {
+                    RestoreAttempt::Joined(c)
+                }
+            }
+        })
+        .await;
+        assert!(matches!(res, RestoreWalk::Joined(c) if c == id(2)));
+        assert_eq!(*tried.borrow(), vec![id(1), id(2)]);
+    }
+
+    #[tokio::test]
+    async fn every_coordinator_failing_is_exhausted_so_the_caller_falls_back() {
+        let tried = RefCell::new(0usize);
+        let order = [id(1), id(2), id(3)];
+        let res: RestoreWalk<()> = walk_restore_coordinators(&order, BUDGET, |_| {
+            *tried.borrow_mut() += 1;
+            async { RestoreAttempt::Failed }
+        })
+        .await;
+        assert!(matches!(res, RestoreWalk::Exhausted));
+        assert_eq!(*tried.borrow(), 3, "every coordinator is tried once");
+    }
+
+    #[tokio::test]
+    async fn no_coordinators_is_exhausted_without_any_attempt() {
+        let tried = RefCell::new(0usize);
+        let res: RestoreWalk<()> = walk_restore_coordinators(&[], BUDGET, |_| {
+            *tried.borrow_mut() += 1;
+            async { RestoreAttempt::Failed }
+        })
+        .await;
+        assert!(matches!(res, RestoreWalk::Exhausted));
+        assert_eq!(*tried.borrow(), 0);
+    }
+
+    #[tokio::test]
+    async fn pending_verdict_stops_the_walk() {
+        let tried = RefCell::new(Vec::new());
+        let order = [id(1), id(2)];
+        let res: RestoreWalk<()> = walk_restore_coordinators(&order, BUDGET, |c| {
+            tried.borrow_mut().push(c);
+            async { RestoreAttempt::Pending }
+        })
+        .await;
+        assert!(matches!(res, RestoreWalk::Pending));
+        assert_eq!(
+            *tried.borrow(),
+            vec![id(1)],
+            "a queued request is not retried elsewhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn spent_budget_stops_starting_new_attempts() {
+        let tried = RefCell::new(0usize);
+        let order = [id(1), id(2), id(3)];
+        // The first attempt alone outlasts the budget, so none follow it.
+        let res: RestoreWalk<()> =
+            walk_restore_coordinators(&order, Duration::from_millis(20), |_| {
+                *tried.borrow_mut() += 1;
+                async {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    RestoreAttempt::Failed
+                }
+            })
+            .await;
+        assert!(matches!(res, RestoreWalk::Exhausted));
+        assert_eq!(*tried.borrow(), 1);
+    }
+
+    #[test]
+    fn restore_order_skips_self_and_keeps_every_other_flagged_coordinator() {
+        let me = id(9);
+        let mk = |n: u8, coord: bool| Member {
+            identity: id(n),
+            ip: std::net::Ipv4Addr::new(10, 0, 0, n),
+            is_coordinator: coord,
+            hostname: None,
+            collision_index: 0,
+            last_seen: None,
+            veilid_node_id: None,
+        };
+        let members = [mk(1, false), mk(2, true), mk(9, true), mk(3, true)];
+        assert_eq!(coordinator_dial_order(me, &members, me), vec![id(2), id(3)]);
+    }
 }

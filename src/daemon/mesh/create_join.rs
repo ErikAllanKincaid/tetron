@@ -13,6 +13,11 @@ use crate::config::TransportMode;
 /// it comes back online.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// RESTORE-COORD-FALLTHROUGH-001: total time a boot-restore walk over the
+/// roster's coordinators may spend before it stops starting new attempts and
+/// registers the network from the verified blob.
+const RESTORE_COORDINATOR_BUDGET: Duration = Duration::from_secs(30);
+
 /// Borrowed bundle of the per-join inputs threaded through the dial + finalize
 /// phases of `join_network_inner`, so each phase takes one argument instead of a
 /// dozen. The references point at locals that live for the whole join.
@@ -1103,12 +1108,12 @@ impl MeshManager {
         ctx: &JoinContext<'_>,
         data: &crate::membership::GroupBlob,
     ) -> Result<Option<EstablishedMesh>> {
-        let coordinator_id = data
-            .members
-            .iter()
-            .find(|m| m.is_coordinator)
-            .map(|m| m.identity)
-            .context("no coordinator found in network record")?;
+        // RESTORE-COORD-FALLTHROUGH-001: every flagged coordinator except us,
+        // in roster order (same helper as the fresh join), not just the first.
+        // The roster's coordinator flags are not guaranteed to be backed by a
+        // live key-holder, so one bad flag must not be fatal.
+        let my_id = self.identity.local_identity();
+        let order = coordinator_dial_order(my_id, &data.members, my_id);
 
         // The reconnect loop is spawned unconditionally and up front. A member
         // already holds the verified blob, so being *in* the network does not
@@ -1119,7 +1124,6 @@ impl MeshManager {
         // state until a lucky restart.
         let cancel = self.shutdown_token.child_token();
         let (disconnect_tx, disconnect_rx) = mpsc::channel::<forward::DisconnectEvent>(64);
-        let my_id = self.identity.local_identity();
         let (live_state_tx, live_state_rx) = tokio::sync::oneshot::channel();
         let (reconverge_notify_tx, reconverge_notify_rx) = tokio::sync::oneshot::channel();
         let tasks = vec![self.spawn_join_reconnect(
@@ -1154,32 +1158,47 @@ impl MeshManager {
             Arc::new(std::sync::RwLock::new(ns))
         };
 
-        tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
         let mut seed_from_blob = false;
-        let coordinator_veilid_node_id = data
-            .members
-            .iter()
-            .find(|m| m.identity == coordinator_id)
-            .and_then(|m| m.veilid_node_id.as_deref());
-        let (state, state_notify) = match transport::connect_to_peer_with_alpn(
-            &self.endpoint,
-            coordinator_id,
-            coordinator_veilid_node_id,
-            self.tor_addr_lookup().as_ref(),
-            ctx.alpn,
-        )
-        .await
-        {
-            Ok(conn) => {
-                let mut joined_state: Option<(SharedNetworkState, Arc<tokio::sync::Notify>)> = None;
+        let walk = walk_restore_coordinators(&order, RESTORE_COORDINATOR_BUDGET, |coordinator_id| {
+            let disconnect_tx = &disconnect_tx;
+            let cancel = &cancel;
+            async move {
+                tracing::info!(coordinator = %coordinator_id.fmt_short(), "connecting to coordinator");
+                let coordinator_veilid_node_id = data
+                    .members
+                    .iter()
+                    .find(|m| m.identity == coordinator_id)
+                    .and_then(|m| m.veilid_node_id.as_deref());
+                let conn = match tokio::time::timeout(
+                    DIAL_TIMEOUT,
+                    transport::connect_to_peer_with_alpn(
+                        &self.endpoint,
+                        coordinator_id,
+                        coordinator_veilid_node_id,
+                        self.tor_addr_lookup().as_ref(),
+                        ctx.alpn,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(conn)) => conn,
+                    Ok(Err(e)) => {
+                        tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator offline on restore; trying the next one");
+                        return RestoreAttempt::Failed;
+                    }
+                    Err(_) => {
+                        tracing::warn!(coordinator = %coordinator_id.fmt_short(), timeout_secs = DIAL_TIMEOUT.as_secs(), "coordinator dial timed out on restore; trying the next one");
+                        return RestoreAttempt::Failed;
+                    }
+                };
                 match self
                     .run_join_handshake(
                         ctx,
                         data,
                         conn,
                         false,
-                        &disconnect_tx,
-                        &cancel,
+                        disconnect_tx,
+                        cancel,
                         ctx.invite.clone(),
                     )
                     .await
@@ -1189,33 +1208,38 @@ impl MeshManager {
                     // to the fresh-join collision path) -- ignored here,
                     // `ctx.my_ip` is used directly below.
                     Ok(JoinResult::Joined(state, reconverge_notify, _my_ip)) => {
-                        joined_state = Some((state, reconverge_notify));
+                        RestoreAttempt::Joined((state, reconverge_notify))
                     }
-                    Ok(JoinResult::Pending) => {
-                        // Closed network: queued for live approval. Stop the just-
-                        // spawned reconnect loop (nothing connected yet); caller
-                        // retries on a backoff until `tetron accept` lets us in.
-                        abort_join_tasks(&cancel, tasks);
-                        return Ok(None);
-                    }
+                    Ok(JoinResult::Pending) => RestoreAttempt::Pending,
                     Err(e) => {
-                        // Dialed the coordinator but the handshake failed. We still
-                        // hold the verified blob, so register from it and let the
-                        // reconnect loop recover rather than dropping the network.
-                        tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator handshake failed on restore; registering from blob, reconnect loop will retry");
-                        seed_from_blob = true;
+                        // A failed attempt leaves nothing running (every
+                        // fallible handshake step precedes join_mesh_shared's
+                        // first spawn), so the next coordinator can reuse the
+                        // same cancel token and disconnect channel.
+                        tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator handshake failed on restore; trying the next one");
+                        RestoreAttempt::Failed
                     }
                 }
-                joined_state.unwrap_or_else(|| {
-                    let fb = state_from_blob();
-                    (fb, Arc::new(tokio::sync::Notify::new()))
-                })
             }
-            Err(e) => {
-                // Coordinator offline at restore: register from the blob so the
-                // network stays live; the reconnect loop dials it back once it
-                // returns.
-                tracing::warn!(coordinator = %coordinator_id.fmt_short(), error = %e, "coordinator offline on restore; registering from blob, reconnect loop will retry");
+        })
+        .await;
+        let (state, state_notify) = match walk {
+            RestoreWalk::Joined(joined) => joined,
+            RestoreWalk::Pending => {
+                // Closed network: queued for live approval. Stop the just-
+                // spawned reconnect loop (nothing connected yet); caller
+                // retries on a backoff until `tetron accept` lets us in.
+                abort_join_tasks(&cancel, tasks);
+                return Ok(None);
+            }
+            RestoreWalk::Exhausted => {
+                // No coordinator completed the handshake (or none is flagged).
+                // We still hold the verified blob, so register from it and let
+                // the reconnect loop recover rather than dropping the network.
+                tracing::warn!(
+                    tried = order.len(),
+                    "no coordinator completed the restore handshake; registering from blob, reconnect loop will retry"
+                );
                 seed_from_blob = true;
                 (state_from_blob(), Arc::new(tokio::sync::Notify::new()))
             }

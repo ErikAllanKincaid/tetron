@@ -356,6 +356,67 @@ class RestoreHandshakeTimeout(Requirement):
     req_id = "RESTORE-HS-TIMEOUT-001"
 
 
+# --------------------------------------------------------------------------
+# RESTORE-COORD-FALLTHROUGH-001: restore dials only the first flagged
+# coordinator, so one bad flag takes the whole network down
+# --------------------------------------------------------------------------
+
+class RestoreCoordinatorFallthrough(Requirement):
+    """REQUIREMENT-ID: RESTORE-COORD-FALLTHROUGH-001
+
+    Found 2026-10-10 alongside RESTORE-HS-TIMEOUT-001. `dial_reconnect` (the
+    member boot-restore dial) chooses ONE coordinator, the first roster entry
+    with `is_coordinator` (`find(|m| m.is_coordinator)`), and gives up on
+    coordinators entirely if that one does not answer: it registers the network
+    from the verified blob and leaves recovery to the reconnect loop. The fresh
+    join path (`dial_join`) instead walks every coordinator in
+    `coordinator_dial_order` and takes the first that admits it.
+
+    The asymmetry made one bad coordinator flag fatal on restart. On two
+    members (xps-17-9720, gpu2) the signed noise-school roster flagged `sneak`
+    as a coordinator while its node did not serve the network as one; it was
+    the first flagged entry, so every restore dialed only it, got no greeting,
+    and never tried the other flagged coordinators (usb-os, xeon40), which were
+    healthy. The roster's coordinator flags are not guaranteed to be backed by a
+    live key-holder (the grant publishes the flag after a best-effort send, with
+    no acknowledgement), so a restore must not assume the first flag is good.
+
+    Requirement: the restore dial walks the roster's coordinators in
+    `coordinator_dial_order(me, members, me)` (every flagged coordinator except
+    this node, roster order, de-duplicated), the same helper the fresh join uses.
+    For each: connect, bounded by `DIAL_TIMEOUT` (10 s), then the restore
+    handshake (itself bounded by `RESTORE_HANDSHAKE_TIMEOUT`, per
+    RESTORE-HS-TIMEOUT-001). The first coordinator that completes the handshake
+    wins. A connect failure or handshake error moves on to the next. A
+    `Pending` verdict (closed network, queued for approval) stops the walk, as
+    on a fresh join.
+
+    The walk is bounded in total: no further coordinator is started once
+    `RESTORE_COORDINATOR_BUDGET` (30 s) has elapsed since the walk began, so a
+    roster full of unresponsive coordinators can not keep the network
+    unregistered indefinitely. An attempt already in flight still finishes
+    within its own bounds. If no coordinator completes (all failed, budget
+    spent, or the roster flags no coordinator other than this node), the
+    network is registered from the verified blob exactly as today and the
+    reconnect loop recovers it; a restore never drops a joined network because
+    its coordinator list is empty or wrong.
+
+    Safe to retry on shared channels: every fallible step of the restore
+    handshake (greeting, config persist, reconnect hello) runs before
+    `join_mesh_shared` spawns any task, so a failed attempt leaves nothing
+    running and the next attempt reuses the same cancel token and disconnect
+    channel.
+
+    Dependency: RESTORE-HS-TIMEOUT-001 must land first (each attempt needs the
+    bounded greeting wait, or one silent coordinator would still hang the walk).
+    Independent of the persistence and grant-delivery follow-ups.
+
+    Not covered here: why a flag can exist without a live key-holder, and the
+    on-disk roster going stale (separate requirements).
+    """
+    req_id = "RESTORE-COORD-FALLTHROUGH-001"
+
+
 class InviteStore(Requirement):
     """REQUIREMENT-ID: INVITE-001
 
