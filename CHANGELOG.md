@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-10-10
+
 ### Fixed
 
 - **`tetron admin add` now tells members straight away and no longer loses the new coordinator flag** (`GRANT-PUBLISH-001`). After sending the key, the grant published the new coordinator flag without telling connected members, so they only learned it at their next 60-second poll (48 to 140 seconds in testing). It also wrote the record without checking whether the network record had moved ahead, which could leave the signed roster without the flag while the new coordinator held the key. The grant now checks the network record first; if it is ahead, it adopts it, re-applies the flag on top, and tries again (up to three times), then notifies members immediately. If it can not land the flag it says so plainly, that the key was delivered, and that repeating the command is safe.
