@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install-tetron-suite.sh` no longer hangs when a component binary mishandles `--version`.** The installer reads each component's installed version by running `<binary> --version`; a pre-0.14.1 `tetron-tui` treated that as "launch the TUI", opening the controlling terminal and blocking a piped `curl | bash` install indefinitely (the `tui` component is in the default set). The version probe now detaches the controlling terminal (`setsid`) and is bounded by a `timeout`, so a misbehaving or outdated binary fails fast and is treated as "version unknown" (i.e. upgraded) instead of freezing the run.
+
 ## [0.14.1] - 2026-10-10
 
 ### Removed

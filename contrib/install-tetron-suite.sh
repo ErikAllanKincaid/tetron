@@ -550,6 +550,27 @@ latest_tag() {
 	printf '%s\n' "${tag#v}"
 }
 
+# Probe a binary for its version without ever letting it hang the installer
+# or take over the terminal. A pre-0.14.1 tetron-tui treated `--version` as
+# "launch the TUI": it opened the controlling terminal and blocked a piped
+# `curl | bash` install forever (found live on xps-17, 2026-10-10). Detach the
+# controlling terminal with `setsid` so an `open("/dev/tty")` fails fast
+# instead of hijacking the install, and bound the call with `timeout` as a
+# backstop against any other way a probe might block. Both are best-effort:
+# where they are absent (e.g. macOS, which ships neither by default) fall back
+# to a plain invocation -- the binaries we probe there do not misbehave this
+# way. Output still flows through the command substitution regardless.
+probe_version() {
+	local dest="$1" arg="$2"
+	if command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+		setsid timeout 5 "$dest" "$arg" </dev/null 2>/dev/null
+	elif command -v timeout >/dev/null 2>&1; then
+		timeout 5 "$dest" "$arg" </dev/null 2>/dev/null
+	else
+		"$dest" "$arg" </dev/null 2>/dev/null
+	fi
+}
+
 # Prints the installed semver (e.g. "0.8.2"), or nothing if the binary is
 # missing or predates the `--version`/`-V`/`version` support all three
 # gained 2026-07-25 -- an unparseable/missing version is treated as
@@ -558,7 +579,7 @@ latest_tag() {
 installed_version() {
 	local dest="$1" out
 	[ -x "$dest" ] || return 0
-	out="$("$dest" --version 2>/dev/null)" || out="$("$dest" version 2>/dev/null)" || true
+	out="$(probe_version "$dest" --version)" || out="$(probe_version "$dest" version)" || true
 	# clap's default `--version` output is "<bin-name> <version> (<sha>)".
 	printf '%s\n' "$out" | awk 'NF>=2{print $2}'
 }
