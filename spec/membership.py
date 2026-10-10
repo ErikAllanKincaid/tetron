@@ -530,6 +530,69 @@ class VerifiedRosterPersisted(Requirement):
     req_id = "ROSTER-PERSIST-001"
 
 
+# --------------------------------------------------------------------------
+# GRANT-PUBLISH-001: `tetron admin add` publishes the coordinator flag without
+# checking the DHT and without telling members, so a flag can be lost or late
+# --------------------------------------------------------------------------
+
+class GrantPublishesFlagSafely(Requirement):
+    """REQUIREMENT-ID: GRANT-PUBLISH-001
+
+    Found 2026-10-10 while tracing why sneak and gpu2, granted the noise-school
+    key about two days earlier, were not flagged as coordinators on the nodes
+    that were checked. `grant_admin_key` (`admin.rs`) sends the key, then marks
+    the grantee `is_coordinator` in the grantor's roster, bumps the generation
+    and calls `store_and_publish_group`. Two gaps, compared with how an admit or
+    a kick publishes:
+
+    1. No hint to members. Admit and kick call `broadcast_member_sync` after the
+       mutation; the grant does not. Connected members therefore learn the new
+       flag only from their own 60 s DHT poll. Measured on a 3-VM network: the
+       flag reached a member 48 s, 71 s and 140 s after `tetron admin add` in
+       three runs.
+    2. No generation check. `store_and_publish_group` writes the record
+       unconditionally, unlike the notify-driven publisher, which runs
+       `dht_read_before_write` (CONVERGE-005). Generations are per-node counters
+       and every coordinator bumps its own on every mutation, including a peer
+       disconnect stamping `last_seen`, so on a busy network coordinators
+       routinely sit at different generations. A grantor that is behind
+       publishes a record other nodes consider older and ignore ("fetched blob
+       is older than local state"), and its own next reconverge adopts the
+       DHT's roster wholesale, silently dropping the flag it just minted. The
+       grantee still holds the key; the signed roster does not flag it. This is
+       inferred from the code and the observed symptom; it was not reproduced,
+       because the grantor's logs were not available.
+
+    Requirement: after the key has been sent, `grant_admin_key` publishes the
+    flag as follows, up to `GRANT_PUBLISH_ATTEMPTS` (3) times:
+    - Mark the grantee a coordinator on the current roster and bump the
+      generation.
+    - Read the DHT record and decide with the pure `grant_publish_action`:
+      publish when our generation is higher than the DHT's (or the DHT has no
+      record); treat as already published when the generation is equal and the
+      hash identical; otherwise (the DHT is ahead, or equal with different
+      content) reconverge from the signed record first and go round again, so
+      the flag is re-asserted on top of the latest roster instead of being lost.
+    - On a successful publish, or an already-identical record, broadcast
+      `MemberSync` to connected peers so they reconverge now rather than at the
+      next poll.
+    If every attempt finds the DHT ahead, the grant returns an error that says
+    plainly the key was delivered but the coordinator flag was not published,
+    and that repeating `tetron admin add` is safe (it resends the key and
+    re-asserts the flag). The key delivery itself is unchanged and is never
+    rolled back.
+
+    Dependency: none. Independent of the restore and roster-persistence work,
+    though a flag that actually reaches the signed record is what makes
+    RESTORE-COORD-FALLTHROUGH-001's coordinator list correct.
+
+    Not covered here: acknowledging that the grantee actually received and
+    saved the key (it needs a message older nodes can not send, so it must be
+    designed for a mixed fleet), and the publish race in the other publishers.
+    """
+    req_id = "GRANT-PUBLISH-001"
+
+
 class InviteStore(Requirement):
     """REQUIREMENT-ID: INVITE-001
 

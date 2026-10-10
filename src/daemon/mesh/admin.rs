@@ -3,6 +3,10 @@
 
 use super::super::*;
 
+/// GRANT-PUBLISH-001: rounds a grant may take to land its coordinator flag on a
+/// DHT record that keeps moving ahead of this node.
+const GRANT_PUBLISH_ATTEMPTS: usize = 3;
+
 impl MeshManager {
     /// Coordinator-only: grant the per-network secret key to a member over an
     /// authenticated mesh stream, making it a co-coordinator (can publish the
@@ -92,26 +96,112 @@ impl MeshManager {
             }
         }
 
-        // Publish the grantee as a coordinator in the signed group blob so
-        // joiners can discover co-coordinators to dial.
-        {
-            let Some(handle) = self.networks.get(network) else {
-                return Err(format!("network '{network}' not active"));
-            };
-            let mut s = handle.state.write().unwrap();
-            crate::membership::mark_coordinator(&mut s.members, &identity);
-            s.bump_generation_and_refresh();
-        }
-        self.store_and_publish_group(network).await;
-
-        // Record the grant locally (coordinator's record; not verifiable).
+        // Record the grant locally (coordinator's record; not verifiable). Done
+        // before publishing: the key is already delivered and can not be
+        // rolled back, so the record must hold even if the publish below fails.
         if let Ok(Some(mut net)) = config::load_network(network)
             && !net.admins.contains(&identity)
         {
             net.admins.push(identity);
             let _ = config::save_network(&net);
         }
-        Ok(())
+
+        // Publish the grantee as a coordinator in the signed group blob so
+        // joiners can discover co-coordinators to dial, and tell members now.
+        self.publish_grant(network, identity, net_pubkey).await
+    }
+
+    /// GRANT-PUBLISH-001: flag `grantee` as a coordinator and publish it without
+    /// losing it to a newer DHT record. Each round re-asserts the flag on the
+    /// current roster, bumps the generation, and checks the DHT first
+    /// ([`grant_publish_action`]): publish if ahead, accept if identical, and
+    /// otherwise reconverge from the signed record and go round again. On
+    /// success connected members are nudged with `MemberSync` so they learn the
+    /// flag now instead of at their next poll (as admit and kick already do).
+    async fn publish_grant(
+        &self,
+        network: &str,
+        grantee: EndpointId,
+        net_pubkey: EndpointId,
+    ) -> Result<(), String> {
+        for attempt in 1..=GRANT_PUBLISH_ATTEMPTS {
+            let (generation, hash) = {
+                let Some(handle) = self.networks.get(network) else {
+                    return Err(format!("network '{network}' not active"));
+                };
+                let mut s = handle.state.write().unwrap();
+                crate::membership::mark_coordinator(&mut s.members, &grantee);
+                s.bump_generation_and_refresh();
+                let Some(snapshot) = s.snapshot.as_ref() else {
+                    return Err(format!("network '{network}' has no snapshot to publish"));
+                };
+                (s.generation, snapshot.hash)
+            };
+            let dht_state = match dht::create_pkarr_client(&self.endpoint) {
+                Ok(client) => dht::resolve_network(&client, net_pubkey)
+                    .await
+                    .ok()
+                    .map(|(dht_hash, dht_generation, _)| (dht_generation, dht_hash)),
+                Err(_) => None,
+            };
+            match grant_publish_action(generation, hash, dht_state) {
+                GrantPublish::Publish => {
+                    self.store_and_publish_group(network).await;
+                    self.nudge_members(network).await;
+                    return Ok(());
+                }
+                GrantPublish::AlreadyPublished => {
+                    self.nudge_members(network).await;
+                    return Ok(());
+                }
+                GrantPublish::Reconverge => {
+                    tracing::info!(
+                        network = %network,
+                        attempt,
+                        local_generation = generation,
+                        dht_generation = ?dht_state.map(|(g, _)| g),
+                        "DHT record is ahead of this grant; reconverging before re-asserting the coordinator flag"
+                    );
+                    self.reconverge_now(network, net_pubkey).await;
+                }
+            }
+        }
+        Err(format!(
+            "the key was delivered to {}, but its coordinator flag could not be published: \
+             the network record kept moving ahead of this node. Run the same `tetron admin \
+             add` again; it is safe to repeat (it resends the key and re-asserts the flag)",
+            grantee.fmt_short()
+        ))
+    }
+
+    /// GRANT-PUBLISH-001: adopt the signed record's roster now (the same step
+    /// the poller and the `MemberSync` worker run).
+    async fn reconverge_now(&self, network: &str, net_pubkey: EndpointId) {
+        let (Some(ctx), Some(state)) = (
+            self.mesh_ctx_for(network),
+            self.networks.get(network).map(|h| h.state.clone()),
+        ) else {
+            return;
+        };
+        super::reconverge::reconverge_and_apply(
+            &self.endpoint,
+            &ctx,
+            net_pubkey,
+            network,
+            &state,
+            self.endpoint.id(),
+            &[],
+            std::net::Ipv4Addr::UNSPECIFIED,
+            &self.left_tx,
+        )
+        .await;
+    }
+
+    /// GRANT-PUBLISH-001: tell every connected peer to reconverge now.
+    async fn nudge_members(&self, network: &str) {
+        if let Some(ctx) = self.mesh_ctx_for(network) {
+            broadcast_member_sync(&ctx.peers, None).await;
+        }
     }
 
     /// List this network's key-holders: the local node (if it holds the key) plus

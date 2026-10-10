@@ -104,6 +104,39 @@ where
     None
 }
 
+/// GRANT-PUBLISH-001: what a grantor should do with the roster it just flagged,
+/// given what the DHT currently holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantPublish {
+    /// Our record is newer than the DHT's (or the DHT has none): publish it.
+    Publish,
+    /// The DHT already holds exactly this record: nothing to write.
+    AlreadyPublished,
+    /// The DHT is ahead of us, or tied with different content: our flag would
+    /// be ignored or overwritten. Adopt the DHT's roster, re-assert the flag on
+    /// top of it, and go round again.
+    Reconverge,
+}
+
+/// GRANT-PUBLISH-001: decide from our `(generation, hash)` and the DHT's
+/// `(generation, hash)` (`None` when it has no record). Mirrors
+/// `dht_read_before_write`, but keeps "already identical" apart from "ahead of
+/// us" so a grant can reconverge and retry instead of giving up.
+pub(crate) fn grant_publish_action(
+    local_generation: u64,
+    local_hash: blake3::Hash,
+    dht: Option<(u64, blake3::Hash)>,
+) -> GrantPublish {
+    match dht {
+        None => GrantPublish::Publish,
+        Some((dht_generation, dht_hash)) => match local_generation.cmp(&dht_generation) {
+            std::cmp::Ordering::Greater => GrantPublish::Publish,
+            std::cmp::Ordering::Equal if dht_hash == local_hash => GrantPublish::AlreadyPublished,
+            _ => GrantPublish::Reconverge,
+        },
+    }
+}
+
 /// Outcome of a single coordinator dial attempt during the join fallback loop.
 /// Used as a unit-testable specification of the loop termination policy.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -867,5 +900,54 @@ mod first_some_bounded_tests {
         .await;
         assert_eq!(got, None);
         assert_eq!(*tried.borrow(), 0);
+    }
+}
+
+#[cfg(test)]
+mod grant_publish_action_tests {
+    //! GRANT-PUBLISH-001: a grant never publishes a roster the DHT is ahead of.
+    use super::*;
+
+    fn h(n: u8) -> blake3::Hash {
+        blake3::hash(&[n])
+    }
+
+    #[test]
+    fn no_dht_record_means_publish() {
+        assert_eq!(grant_publish_action(5, h(1), None), GrantPublish::Publish);
+    }
+
+    #[test]
+    fn higher_local_generation_publishes() {
+        assert_eq!(
+            grant_publish_action(6, h(1), Some((5, h(2)))),
+            GrantPublish::Publish
+        );
+    }
+
+    #[test]
+    fn identical_record_is_already_published() {
+        assert_eq!(
+            grant_publish_action(5, h(1), Some((5, h(1)))),
+            GrantPublish::AlreadyPublished
+        );
+    }
+
+    #[test]
+    fn a_dht_that_is_ahead_forces_a_reconverge_not_a_publish() {
+        // The case that loses a grant: our bumped generation is still behind.
+        assert_eq!(
+            grant_publish_action(5, h(1), Some((9, h(2)))),
+            GrantPublish::Reconverge
+        );
+    }
+
+    #[test]
+    fn a_tie_with_different_content_forces_a_reconverge() {
+        // Two coordinators mutated from the same base: ours is not the record.
+        assert_eq!(
+            grant_publish_action(5, h(1), Some((5, h(2)))),
+            GrantPublish::Reconverge
+        );
     }
 }
