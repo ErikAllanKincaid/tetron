@@ -294,6 +294,68 @@ class MemberRestoreConfigFallback(Requirement):
     req_id = "CONVERGE-006"
 
 
+# --------------------------------------------------------------------------
+# RESTORE-HS-TIMEOUT-001: the member restore handshake has no timeout, so a
+# coordinator that accepts the connection but never speaks silently drops a
+# joined network
+# --------------------------------------------------------------------------
+
+class RestoreHandshakeTimeout(Requirement):
+    """REQUIREMENT-ID: RESTORE-HS-TIMEOUT-001
+
+    Found 2026-10-10 after a fleet upgrade: a second network (`noise-school`)
+    vanished from `tetron status` on two independent members (xps-17-9720 and
+    gpu2) while their other network restored normally. The persisted
+    `networks/<name>.toml` was intact; the network was simply never
+    registered (no TUN, no ALPN handler) for that daemon's whole runtime.
+    Both logs show the same signature: `connecting to coordinator` ->
+    `connected to peer ... alpn=tetron/net/1/<net>` -> silence. No
+    `welcomed to network` / `reconnected via peer` / `joined network (legacy)`
+    (the three handshake-success logs) and no `coordinator handshake failed on
+    restore` / `coordinator offline on restore` (the two fallback logs) were
+    ever emitted, for at least 16 minutes. The same coordinator was the common
+    factor on both machines.
+
+    Cause (in the member's own code, independent of why the coordinator was
+    silent): `perform_join_handshake`'s restore branch (`initial = false`)
+    awaits `accept_bi()` and then `recv_msg()` with no timeout, whereas the
+    fresh-join branch bounds its read at 30 s. Unchanged since the original
+    implementation (`691f7ccf`, 2026-06-29). `dial_reconnect` already handles
+    a failed handshake correctly -- it registers the network from the verified
+    blob and lets the per-peer reconnect loop retry ("coordinator handshake
+    failed on restore; registering from blob") -- but that arm is only
+    reachable if the handshake returns. A coordinator that completes the QUIC
+    connect and then never opens the greeting stream makes it never return, so
+    the existing fallback is dead code for exactly the case it exists for.
+
+    Requirement: the restore handshake's wait for the coordinator's greeting
+    (`accept_bi` plus reading the first control message) is bounded by
+    `RESTORE_HANDSHAKE_TIMEOUT` (15 s). Expiry is an `Err`, which flows into
+    `dial_reconnect`'s existing handshake-failure arm, so the network is
+    registered from the blob and recovers through the reconnect loop once the
+    coordinator speaks. A member must never lose a network it already belongs
+    to because a coordinator is slow, wedged, or mid-restart.
+
+    15 s rather than the fresh join's 30 s: a fresh join is a human-initiated
+    request that may legitimately wait on a coordinator; a restore has a
+    complete, verified blob to fall back to, so a failed wait is cheap and a
+    long one only delays the network coming up. The bound covers only the
+    greeting wait, which runs before any forward reader or reconnect task is
+    spawned inside `join_mesh_shared`, so cancelling it leaves nothing
+    half-started.
+
+    Dependency: none. Builds on the existing handshake-failure arm of
+    `dial_reconnect` (unchanged) and sits beside CONVERGE-006, which covers
+    the earlier resolve/fetch step of the same restore path.
+
+    Not covered here (separate follow-ups): why the coordinator did not speak
+    (its accept path logs `no handler for ALPN` and drops a connection that
+    arrives before its per-network handler is registered), and the other
+    network-lifecycle waits in the restore path.
+    """
+    req_id = "RESTORE-HS-TIMEOUT-001"
+
+
 class InviteStore(Requirement):
     """REQUIREMENT-ID: INVITE-001
 

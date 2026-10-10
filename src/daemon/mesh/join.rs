@@ -629,6 +629,36 @@ fn spawn_roster_peer_dials(
     });
 }
 
+/// RESTORE-HS-TIMEOUT-001: how long a restoring member waits for its
+/// coordinator's greeting before giving up and registering from the verified
+/// blob. Tighter than the fresh join's 30 s: a restore has a blob to fall back
+/// to, so a failed wait is cheap while a long one only delays the network.
+const RESTORE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// RESTORE-HS-TIMEOUT-001: bound `fut` (the wait for the coordinator's
+/// greeting on a restore) by `limit`. Expiry is an `Err` naming the timeout;
+/// an error from `fut` itself is propagated unchanged.
+async fn bound_restore_greeting<T>(
+    limit: Duration,
+    fut: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(limit, fut)
+        .await
+        .context("timeout awaiting coordinator greeting on restore")?
+}
+
+/// The coordinator speaks first on a restore: accept its control stream and
+/// read the first message. Unbounded on its own; callers wrap it in
+/// [`bound_restore_greeting`] (RESTORE-HS-TIMEOUT-001). The send half is
+/// returned so the caller keeps it alive for the rest of the handshake.
+async fn await_coordinator_greeting(
+    conn: &Connection,
+) -> Result<(iroh::endpoint::SendStream, ControlMsg)> {
+    let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
+    let msg = control::recv_msg(&mut recv).await?;
+    Ok((send, msg))
+}
+
 /// Run one coordinator handshake. A fresh join (`initial`) opens a stream, sends
 /// a `JoinRequest` (invite secret + hostname), and reads the verdict on the same
 /// stream. A reconnect/restore keeps the legacy handshake where the coordinator
@@ -691,11 +721,17 @@ async fn perform_join_handshake(
             other => anyhow::bail!("expected Welcome or JoinPending, got {other:?}"),
         }
     } else {
-        let (_send, mut recv) = initial_conn
-            .accept_bi()
-            .await
-            .context("accept control stream")?;
-        let msg = control::recv_msg(&mut recv).await?;
+        // RESTORE-HS-TIMEOUT-001: bound the wait for the coordinator's
+        // greeting. Unbounded, a coordinator that completes the QUIC connect
+        // but never opens the stream hangs here forever, so `dial_reconnect`'s
+        // register-from-blob fallback is never reached and the network is
+        // silently dropped. `_send` stays alive for the rest of the branch,
+        // exactly as before.
+        let (_send, msg) = bound_restore_greeting(
+            RESTORE_HANDSHAKE_TIMEOUT,
+            await_coordinator_greeting(initial_conn),
+        )
+        .await?;
         let (members, approved) = match msg {
             ControlMsg::Welcome { members, approved } => {
                 tracing::info!(network = %network_name, "welcomed to network");
@@ -1411,5 +1447,101 @@ mod reconnect_log_decision_tests {
         assert!(log_at_info);
         assert_eq!(count, 1);
         assert_eq!(new_window_start, now);
+    }
+}
+
+#[cfg(test)]
+mod restore_handshake_timeout_tests {
+    //! RESTORE-HS-TIMEOUT-001: the member restore handshake's wait for the
+    //! coordinator's greeting is bounded, so a coordinator that connects but
+    //! never speaks becomes an `Err` (-> register-from-blob) instead of a hang.
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn silent_coordinator_times_out_instead_of_hanging() {
+        let started = std::time::Instant::now();
+        let res: Result<()> = bound_restore_greeting(
+            Duration::from_millis(50),
+            std::future::pending::<Result<()>>(),
+        )
+        .await;
+        let err = res.expect_err("a peer that never speaks must error, not hang");
+        assert!(
+            format!("{err:#}").contains("timeout"),
+            "error should name the timeout: {err:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "must give up promptly once the bound elapses"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_coordinator_passes_through_unchanged() {
+        let res = bound_restore_greeting(Duration::from_secs(5), async {
+            Ok::<_, anyhow::Error>(7u8)
+        })
+        .await
+        .expect("a prompt greeting must not be affected by the bound");
+        assert_eq!(res, 7);
+    }
+
+    #[tokio::test]
+    async fn inner_error_is_propagated_not_masked_as_timeout() {
+        let err = bound_restore_greeting(Duration::from_secs(5), async {
+            Err::<(), _>(anyhow::anyhow!("connection lost"))
+        })
+        .await
+        .expect_err("inner error must surface");
+        assert!(format!("{err:#}").contains("connection lost"));
+        assert!(!format!("{err:#}").contains("timeout"));
+    }
+
+    /// The real failure mode, not a synthetic `pending()`: a coordinator
+    /// whose QUIC endpoint accepts the connection (so the member's connect
+    /// succeeds and `dial_reconnect` sees no connect error) but never opens
+    /// the greeting stream. Without the bound the member waits forever.
+    #[tokio::test]
+    async fn real_connection_to_silent_coordinator_does_not_hang() {
+        use iroh::endpoint::presets;
+        let alpn = b"tetron/net/1/restore-hs-timeout-test".to_vec();
+        let server = iroh::Endpoint::builder(presets::Minimal)
+            .alpns(vec![alpn.clone()])
+            .bind()
+            .await
+            .expect("bind server");
+        let client = iroh::Endpoint::builder(presets::Minimal)
+            .bind()
+            .await
+            .expect("bind client");
+        let server_addr = server.addr();
+        let silent = tokio::spawn(async move {
+            let incoming = server.accept().await.expect("incoming");
+            let _conn = incoming.await.expect("server-side handshake");
+            // Hold the connection open, never open a stream.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let conn = client
+            .connect(server_addr, &alpn)
+            .await
+            .expect("connect to the silent coordinator succeeds");
+        let started = std::time::Instant::now();
+        let res = bound_restore_greeting(
+            Duration::from_millis(500),
+            await_coordinator_greeting(&conn),
+        )
+        .await;
+        let err = res.expect_err("a silent coordinator must error, not hang");
+        assert!(format!("{err:#}").contains("timeout"), "got: {err:#}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        silent.abort();
+    }
+
+    #[test]
+    fn restore_bound_is_tighter_than_fresh_join_bound() {
+        // Documented in the requirement: a restore can fall back to the
+        // verified blob, so it waits less than a human-initiated fresh join.
+        assert_eq!(RESTORE_HANDSHAKE_TIMEOUT, Duration::from_secs(15));
     }
 }

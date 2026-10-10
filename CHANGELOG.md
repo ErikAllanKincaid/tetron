@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A network no longer silently disappears after a daemon restart when its coordinator connects but does not respond** (`RESTORE-HS-TIMEOUT-001`). On restart a member reconnects to each network's coordinator, which speaks first. That wait had no timeout, so a coordinator that completed the connection but never sent its greeting (seen after a fleet upgrade, with several nodes restarting together) left the member waiting forever: the network was never registered, so it vanished from `tetron status` for the daemon's whole runtime even though its config was intact. The wait is now bounded to 15 seconds; on expiry the member registers the network from its verified roster, as it already does when the coordinator is offline, and the reconnect loop re-establishes the link when the coordinator responds.
+
 - **`install-tetron-suite.sh` no longer hangs when a component binary mishandles `--version`.** The installer reads each component's installed version by running `<binary> --version`; a pre-0.14.1 `tetron-tui` treated that as "launch the TUI", opening the controlling terminal and blocking a piped `curl | bash` install indefinitely (the `tui` component is in the default set). The version probe now detaches the controlling terminal (`setsid`) and is bounded by a `timeout`, so a misbehaving or outdated binary fails fast and is treated as "version unknown" (i.e. upgraded) instead of freezing the run.
 
 ## [0.14.1] - 2026-10-10
