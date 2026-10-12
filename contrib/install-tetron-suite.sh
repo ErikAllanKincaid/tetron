@@ -233,8 +233,9 @@ component_installed() {
 DECLINED=""
 
 COMPONENTS=(core)
+	# tui before systray: the tray builds its "Open tui" item once at start, only if tetron-tui is already on disk
 if [ "$INSTALL_ALL" -eq 1 ]; then
-	COMPONENTS=(core webui systray tui hosts sync-receiver messageboard backup)
+	COMPONENTS=(core webui tui systray hosts sync-receiver messageboard backup)
 elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 	[ "$CORE_ONLY" -eq 1 ] || {
 		[ "$INSTALL_WEBUI" -eq 1 ] && COMPONENTS+=(webui)
@@ -252,7 +253,7 @@ elif [ "$CHECK_ONLY" -eq 1 ]; then
 	# TUI). hosts/sync-receiver/backup are opt-in only (see below), so
 	# excluded here too.
 	COMPONENTS=(core tui)
-	host_has_display && COMPONENTS=(core webui systray tui)
+	host_has_display && COMPONENTS=(core webui tui systray)
 elif ! have_tty; then
 	# No controlling terminal at all (cron, CI, a container run without
 	# -it) -- nothing to prompt on. Default to core + tui (tetron-tui is
@@ -263,7 +264,7 @@ elif ! have_tty; then
 	log_info "no controlling terminal detected -- defaulting to core + tui (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all, or run this script with a terminal attached, to include more addons)"
 else
 	if host_has_display; then
-		DEFAULT_COMPONENTS=(core webui systray tui)
+		DEFAULT_COMPONENTS=(core webui tui systray)
 		log_info "display detected"
 	else
 		# tui (tetron-tui) defaults in even headless: it is a terminal
@@ -346,7 +347,7 @@ fi
 # --check is included deliberately: reporting the version of something
 # installed but unselected is exactly what a status check is for.
 if [ "$CORE_ONLY" -ne 1 ]; then
-	for comp in core webui systray tui hosts sync-receiver messageboard backup; do
+	for comp in core webui tui systray hosts sync-receiver messageboard backup; do
 		component_installed "$comp" || continue
 		in_list "$comp" "$DECLINED" && continue
 		in_list "$comp" "${COMPONENTS[*]}" && continue
