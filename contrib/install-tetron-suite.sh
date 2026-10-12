@@ -195,6 +195,9 @@ in_list() {
 # never function without one, and webui defaults follow it too (a remote
 # port-forward to webui is possible but rare, not worth defaulting on).
 host_has_display() {
+	# macOS uses Quartz/Aqua, never X11/Wayland, so $DISPLAY is always unset
+	# there; a Mac counts as having a display (the prompts still allow "n").
+	[ "$(uname -s)" = Darwin ] && return 0
 	[ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
 }
 
@@ -223,7 +226,14 @@ component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui 
 # nonstandard still counts as installed -- the same reasoning, and the
 # same lookup, as component_dest() further down.
 component_installed() {
-	command -v "$(component_binary "$1")" >/dev/null 2>&1
+	command -v "$(component_binary "$1")" >/dev/null 2>&1 && return 0
+	# Older installers put per-user addons off $PATH (macOS app bundle,
+	# ~/.local/bin). Unseen, the stale sweep skipped them and a 0.8.2 systray
+	# kept talking to a 0.14 daemon ("daemon unreachable"). They are
+	# re-placed in /usr/local/bin and their service re-registered.
+	[ -x "$HOME/.local/bin/$(component_binary "$1")" ] && return 0
+	[ "$1" = systray ] && [ -x "$HOME/Applications/TetronSystray.app/Contents/MacOS/tetron-systray" ] && return 0
+	return 1
 }
 
 # Addons explicitly turned down at the interactive picker. They are held
