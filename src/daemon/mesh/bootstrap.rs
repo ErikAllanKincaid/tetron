@@ -295,8 +295,19 @@ async fn serve_ipc(
         ipc_cfg.reserved_clients_or_default(),
     );
 
+    // IPC-ADMISSION-003: accept-error pause. A gated `select!` branch, not an
+    // inline sleep: this loop also services shutdown, promotion and
+    // left-network events, which a backoff must never delay.
+    let mut accept_errors: u32 = 0;
+    let mut accept_repeats: u32 = 0;
+    let mut accept_paused_until: Option<tokio::time::Instant> = None;
+
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(accept_paused_until.unwrap_or_else(tokio::time::Instant::now)),
+                if accept_paused_until.is_some() => {
+                accept_paused_until = None;
+            }
             _ = token.cancelled() => {
                 tracing::info!("daemon shutting down");
                 daemon.deactivate(None).await;
@@ -316,8 +327,15 @@ async fn serve_ipc(
             Some(net) = left_rx.recv() => {
                 daemon.handle_removed_from_network(&net).await;
             }
-            result = listener.accept() => match result {
+            result = listener.accept(), if accept_paused_until.is_none() => match result {
                 Ok((stream, _)) => {
+                    if accept_errors > 0 {
+                        if accept_repeats > 0 {
+                            tracing::warn!(repeats = accept_repeats, "IPC accept recovered");
+                        }
+                        accept_errors = 0;
+                        accept_repeats = 0;
+                    }
                     let uid = stream.peer_cred().ok().map(|c| c.uid());
                     let permit = slots.try_admit(|| {
                         // Only read on a full general pool: root needs no
@@ -342,7 +360,17 @@ async fn serve_ipc(
                         }
                     });
                 }
-                Err(e) => tracing::warn!(error = %e, "IPC accept error"),
+                Err(e) => {
+                    // First error of a run is logged; repeats are counted.
+                    if accept_errors == 0 {
+                        tracing::warn!(error = %e, "IPC accept error");
+                    } else {
+                        accept_repeats += 1;
+                    }
+                    accept_errors = accept_errors.saturating_add(1);
+                    accept_paused_until =
+                        Some(tokio::time::Instant::now() + accept_backoff(accept_errors));
+                }
             }
         }
     }
@@ -421,6 +449,22 @@ async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Res
     let resp = daemon.handle_request(req, peer_cred).await;
     send_reply_bounded(&mut framed, resp, limits.response_timeout()).await?;
     Ok(())
+}
+
+/// IPC-ADMISSION-003: how long the IPC accept loop stops accepting after
+/// `consecutive_errors` accept failures in a row: none for zero, then 50 ms
+/// doubling to a 1 second cap. Out of file descriptors, accept fails at once
+/// every time, so without a pause the loop spins and floods the journal.
+fn accept_backoff(consecutive_errors: u32) -> std::time::Duration {
+    use std::time::Duration;
+    const FIRST: Duration = Duration::from_millis(50);
+    const CAP: Duration = Duration::from_secs(1);
+    if consecutive_errors == 0 {
+        return Duration::ZERO;
+    }
+    // 50 ms * 2^(n-1); the shift is clamped well before it could overflow.
+    let shift = (consecutive_errors - 1).min(10);
+    (FIRST * (1u32 << shift)).min(CAP)
 }
 
 /// IPC-ADMISSION-002: concurrent IPC handler slots. `general` is open to every
@@ -526,6 +570,23 @@ mod tests {
     // bounded, so a client that stalls cannot park a task and a descriptor.
 
     const SHORT: std::time::Duration = std::time::Duration::from_millis(80);
+
+    // IPC-ADMISSION-003: after an accept error the loop pauses, briefly and
+    // growing, instead of spinning.
+
+    #[test]
+    fn accept_backoff_starts_small_doubles_and_caps() {
+        use std::time::Duration;
+        assert_eq!(accept_backoff(0), Duration::ZERO);
+        assert_eq!(accept_backoff(1), Duration::from_millis(50));
+        assert_eq!(accept_backoff(2), Duration::from_millis(100));
+        assert_eq!(accept_backoff(3), Duration::from_millis(200));
+        assert_eq!(accept_backoff(5), Duration::from_millis(800));
+        assert_eq!(accept_backoff(6), Duration::from_secs(1));
+        // Far past the cap, and no shift overflow.
+        assert_eq!(accept_backoff(40), Duration::from_secs(1));
+        assert_eq!(accept_backoff(u32::MAX), Duration::from_secs(1));
+    }
 
     // IPC-ADMISSION-002: a bounded number of concurrent handlers, with a
     // reserve only root or the operator can use.
