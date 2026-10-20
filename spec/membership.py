@@ -2212,3 +2212,59 @@ class InviteListRevokedNotUsed(Requirement):
     `active`/`expired` unchanged), and `docs/HOWTO.md`'s `jq` example.
     """
     req_id = "INVITE-STATUS-001"
+
+
+class InviteRedemptionAtomic(Requirement):
+    """REQUIREMENT-ID: INVITE-ATOMIC-001
+
+    Independent of the PEER-IP-BIND and timeout requirements in
+    `security.py`; lands after them on the same branch only because it edits
+    the same file (`accept.rs`).
+
+    Reported as GitHub issue #56 and verified 2026-10-20.
+    `CoordinatorAcceptState::redeem_invite_and_admit` validates an invite
+    under `state.read()`, releases the lock, and then removes it under a
+    separate `state.write()`, ignoring whether the removal found the entry.
+    Two joins presenting the same single-use secret can both pass the
+    validation and both be admitted: one invitation becomes several
+    memberships. This reproduces against a single coordinator; the separate
+    cross-coordinator replay window is out of scope (see the limitation
+    below).
+
+    **The fix:** a pure function `consume_invite(&mut invites, secret, now)
+    -> Option<InviteEntry>` (`membership.rs`) checks `revoked` and `expires`,
+    removes the entry and returns it, all inside one `state.write()` section
+    together with the generation bump. Admission proceeds only when it
+    returned `Some`; the loser of a race gets the existing "invite rejected"
+    reply.
+
+    **Restore on failed admission (USER decision, 2026-10-20):** an invite is
+    good until it is used or it expires. `admit_peer` already documents that
+    callers restore a burned credential when admission is denied (hostname or
+    IP collision) and returns `false` for that, but
+    `redeem_invite_and_admit` ignores the result today. It now re-inserts the
+    consumed entry when `admit_peer` returns `false`, with its original
+    `expires`, so a denied or dropped join does not cost the holder the
+    invite. The restore bumps the generation and notifies the publisher like
+    the consume does. An invite whose `expires` passed during admission is
+    not restored. An admin revoke that arrives while the entry is consumed
+    reports "no invite matching"; the restored entry is then live, which is
+    the same outcome as revoking a moment later.
+
+    No `std` lock guard is held across an `await`: the consume and the
+    restore are each synchronous write sections, and admission runs between
+    them.
+
+    **Known limitation, not fixed here:** `reconverge` never copies
+    `invites` between coordinators (`reconverge.rs`), so a burned invite
+    stays redeemable on a second coordinator until that coordinator
+    restarts. The existing comment that gives this window as 30 to 60 seconds
+    understates it. Tracked as a separate item.
+
+    **Tests:** unit tests of `consume_invite` (second call returns `None`;
+    revoked and expired are not consumed); a concurrency test in which many
+    tasks race one secret and exactly one succeeds, repeated; a restore test
+    (failed admission leaves the invite valid, an expired one is not
+    restored).
+    """
+    req_id = "INVITE-ATOMIC-001"

@@ -476,6 +476,40 @@ pub fn validate_invite<'a>(
     Some(entry)
 }
 
+/// INVITE-ATOMIC-001: validate a presented single-use invite secret and burn
+/// it in one step. The caller holds the table's write lock across this call,
+/// so two joins presenting the same secret cannot both succeed: exactly one
+/// gets `Some`. Revoked, expired and unknown secrets leave the table as it was.
+pub fn consume_invite(
+    invites: &mut BTreeMap<String, InviteEntry>,
+    secret: &[u8],
+    now: u64,
+) -> Option<InviteEntry> {
+    validate_invite(invites, secret, now)?;
+    invites.remove(&blake3::hash(secret).to_hex().to_string())
+}
+
+/// INVITE-ATOMIC-001: put back an invite [`consume_invite`] burned when the
+/// join it was spent on did not complete (denied or dropped), so the holder
+/// keeps the invite until it is used or expires. Skipped, returning `false`,
+/// if it has expired in the meantime or the slot was refilled.
+pub fn restore_invite(
+    invites: &mut BTreeMap<String, InviteEntry>,
+    secret: &[u8],
+    entry: InviteEntry,
+    now: u64,
+) -> bool {
+    if entry.expires > 0 && now >= entry.expires {
+        return false;
+    }
+    let key = blake3::hash(secret).to_hex().to_string();
+    if invites.contains_key(&key) {
+        return false;
+    }
+    invites.insert(key, entry);
+    true
+}
+
 impl GroupBlob {
     /// Convenience wrapper over [`validate_reusable_key`] for a decoded blob.
     #[allow(dead_code)] // used in tests; the daemon calls the free function on NetworkState
@@ -1517,6 +1551,83 @@ mod tests {
         assert!(mk(100, true).validate_reusable(&secret, 50).is_none());
         // Unknown secret.
         assert!(mk(100, false).validate_reusable(&[0u8; 16], 50).is_none());
+    }
+
+    // -- consume_invite / restore_invite (INVITE-ATOMIC-001) -----------------
+
+    fn invite_map(secret: &[u8], now: u64, ttl: u64) -> BTreeMap<String, InviteEntry> {
+        let (key, entry) = InviteEntry::from_secret(secret, now, ttl);
+        BTreeMap::from([(key, entry)])
+    }
+
+    #[test]
+    fn consume_invite_is_single_use() {
+        let secret = [7u8; 16];
+        let mut invites = invite_map(&secret, 100, 1000);
+        assert!(consume_invite(&mut invites, &secret, 200).is_some());
+        assert!(invites.is_empty());
+        assert!(consume_invite(&mut invites, &secret, 200).is_none());
+    }
+
+    #[test]
+    fn consume_invite_leaves_revoked_and_expired_entries_alone() {
+        let secret = [7u8; 16];
+        let mut revoked = invite_map(&secret, 100, 1000);
+        revoked.values_mut().for_each(|e| e.revoked = true);
+        assert!(consume_invite(&mut revoked, &secret, 200).is_none());
+        assert_eq!(revoked.len(), 1);
+
+        let mut expired = invite_map(&secret, 100, 50);
+        assert!(consume_invite(&mut expired, &secret, 200).is_none());
+        assert_eq!(expired.len(), 1);
+
+        let mut unknown = invite_map(&secret, 100, 1000);
+        assert!(consume_invite(&mut unknown, &[8u8; 16], 200).is_none());
+    }
+
+    #[test]
+    fn consume_invite_is_atomic_under_a_race() {
+        // Many threads present the same single-use secret to one shared
+        // table; exactly one may win. Repeated so a lost race is likely to
+        // show if consume were split into check-then-remove.
+        use std::sync::{Arc, RwLock};
+        for round in 0..200u8 {
+            let secret = [round; 16];
+            let table = Arc::new(RwLock::new(invite_map(&secret, 100, 1000)));
+            let wins: usize = (0..8)
+                .map(|_| {
+                    let table = table.clone();
+                    std::thread::spawn(move || {
+                        consume_invite(&mut table.write().unwrap(), &secret, 200).is_some()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap() as usize)
+                .sum();
+            assert_eq!(wins, 1, "round {round}");
+        }
+    }
+
+    #[test]
+    fn restore_invite_makes_a_denied_join_cost_nothing() {
+        let secret = [7u8; 16];
+        let mut invites = invite_map(&secret, 100, 1000);
+        let consumed = consume_invite(&mut invites, &secret, 200).unwrap();
+        assert!(restore_invite(&mut invites, &secret, consumed.clone(), 300));
+        // Restored with its original expiry, redeemable again.
+        assert_eq!(invites.values().next().unwrap(), &consumed);
+        assert!(consume_invite(&mut invites, &secret, 400).is_some());
+    }
+
+    #[test]
+    fn restore_invite_skips_an_invite_that_expired_meanwhile() {
+        let secret = [7u8; 16];
+        let mut invites = invite_map(&secret, 100, 100);
+        let consumed = consume_invite(&mut invites, &secret, 150).unwrap();
+        // Expiry is 200; by 250 it is no longer redeemable, so it stays gone.
+        assert!(!restore_invite(&mut invites, &secret, consumed, 250));
+        assert!(invites.is_empty());
     }
 
     // -- resolve_hello_ip (PEER-IP-BIND-001) ---------------------------------

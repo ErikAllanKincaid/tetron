@@ -161,11 +161,14 @@ impl CoordinatorAcceptState {
     /// validation logic here (product-agnostic: it just checks a presented
     /// secret against the blob) already supports without changes.
     ///
-    /// **Replay race:** there is a narrow window between removing the invite from
-    /// our local blob copy and the updated blob propagating to other coordinators
-    /// (~30-60s DHT poll interval). A second coordinator that hasn't received the
-    /// update could also accept the same secret. This is accepted for the initial
-    /// implementation; a local reject cache will close the window in a follow-up.
+    /// Validation and burn are one write-locked step (INVITE-ATOMIC-001), so two
+    /// concurrent joins on this coordinator cannot both redeem one secret; if the
+    /// join is then denied, the invite is restored.
+    ///
+    /// **Cross-coordinator replay (known limitation):** `reconverge` does not copy
+    /// `invites` between coordinators, so a second coordinator that still holds the
+    /// entry can accept the same secret until it restarts. This is not closed by
+    /// INVITE-ATOMIC-001; a reject cache or invite reconvergence is a follow-up.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     async fn redeem_invite_and_admit(
@@ -178,19 +181,18 @@ impl CoordinatorAcceptState {
         veilid_node_id: Option<String>,
         secret: Vec<u8>,
     ) {
-        // Phase 1: check blob invite table.
-        let invite_valid = {
-            let s = self.state.read().unwrap();
-            crate::membership::validate_invite(&s.invites, &secret, now_secs()).is_some()
-        };
-        if invite_valid {
-            // Burn the invite: remove from blob, refresh snapshot, notify publisher.
-            let hash = blake3::hash(&secret).to_hex().to_string();
-            {
-                let mut s = self.state.write().unwrap();
-                s.invites.remove(&hash);
+        // Phase 1: check blob invite table. INVITE-ATOMIC-001: validate and burn
+        // in one write-locked step (no await inside), so two joins presenting
+        // the same single-use secret cannot both pass.
+        let consumed = {
+            let mut s = self.state.write().unwrap();
+            let c = crate::membership::consume_invite(&mut s.invites, &secret, now_secs());
+            if c.is_some() {
                 s.bump_generation_and_refresh();
             }
+            c
+        };
+        if let Some(entry) = consumed {
             // Pulse the publisher so the updated blob is signed + published.
             if let Some(ref notify) = self.dht_notify {
                 notify.notify_one();
@@ -199,16 +201,43 @@ impl CoordinatorAcceptState {
                 peer = %remote_id.fmt_short(),
                 "invite redeemed from blob"
             );
-            self.admit_peer(
-                conn,
-                send,
-                remote_id,
-                peer_ip,
-                hostname,
-                veilid_node_id,
-                false,
-            )
-            .await;
+            let admitted = self
+                .admit_peer(
+                    conn,
+                    send,
+                    remote_id,
+                    peer_ip,
+                    hostname,
+                    veilid_node_id,
+                    false,
+                )
+                .await;
+            if !admitted {
+                // The join was denied (hostname or IP collision): the holder
+                // keeps the invite until it is used or expires.
+                let restored = {
+                    let mut s = self.state.write().unwrap();
+                    let r = crate::membership::restore_invite(
+                        &mut s.invites,
+                        &secret,
+                        entry,
+                        now_secs(),
+                    );
+                    if r {
+                        s.bump_generation_and_refresh();
+                    }
+                    r
+                };
+                if restored {
+                    if let Some(ref notify) = self.dht_notify {
+                        notify.notify_one();
+                    }
+                    tracing::info!(
+                        peer = %remote_id.fmt_short(),
+                        "join denied; invite restored"
+                    );
+                }
+            }
             return;
         }
 
