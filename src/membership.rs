@@ -235,6 +235,10 @@ impl ApprovedList {
         self.entries.contains_key(identity)
     }
 
+    pub fn get(&self, identity: &EndpointId) -> Option<&ApprovedEntry> {
+        self.entries.get(identity)
+    }
+
     pub fn remove(&mut self, identity: &EndpointId) -> Option<ApprovedEntry> {
         self.entries.remove(identity)
     }
@@ -620,6 +624,19 @@ pub fn validate_approved(entry: &ApprovedEntry, subnet: Subnet) -> Result<()> {
         expected,
     );
     ensure_in_cgnat_range(entry.ip, subnet)
+}
+
+/// PEER-IP-BIND-001: the authoritative overlay IPv4 for a peer that sends a
+/// `MeshHello`. The roster member's address wins, then the approved entry's;
+/// with neither there is no authoritative address and the connection is
+/// rejected. The address the peer put in `MeshHello.ip` is deliberately not a
+/// parameter: it keys the route table and the ingress anti-spoof check, so it
+/// must never be taken on the peer's word.
+pub fn resolve_hello_ip(
+    member: Option<&Member>,
+    approved: Option<&ApprovedEntry>,
+) -> Option<Ipv4Addr> {
+    member.map(|m| m.ip).or_else(|| approved.map(|a| a.ip))
 }
 
 /// Returns `Err` if any two members share the same IPv4 address.
@@ -1500,6 +1517,55 @@ mod tests {
         assert!(mk(100, true).validate_reusable(&secret, 50).is_none());
         // Unknown secret.
         assert!(mk(100, false).validate_reusable(&[0u8; 16], 50).is_none());
+    }
+
+    // -- resolve_hello_ip (PEER-IP-BIND-001) ---------------------------------
+
+    fn roster_member(id: EndpointId, ip: Ipv4Addr) -> Member {
+        Member {
+            identity: id,
+            ip,
+            is_coordinator: false,
+            hostname: None,
+            collision_index: 0,
+            last_seen: None,
+            veilid_node_id: None,
+        }
+    }
+
+    fn approved_entry(id: EndpointId, ip: Ipv4Addr) -> ApprovedEntry {
+        ApprovedEntry {
+            identity: id,
+            ip,
+            hostname: None,
+            collision_index: 0,
+        }
+    }
+
+    #[test]
+    fn resolve_hello_ip_prefers_roster_member() {
+        let id = test_id(3);
+        let roster_ip = Ipv4Addr::new(10, 88, 0, 20);
+        let approved_ip = Ipv4Addr::new(10, 88, 0, 21);
+        let m = roster_member(id, roster_ip);
+        let a = approved_entry(id, approved_ip);
+        assert_eq!(resolve_hello_ip(Some(&m), Some(&a)), Some(roster_ip));
+        assert_eq!(resolve_hello_ip(Some(&m), None), Some(roster_ip));
+    }
+
+    #[test]
+    fn resolve_hello_ip_falls_back_to_approved_entry() {
+        let id = test_id(3);
+        let approved_ip = Ipv4Addr::new(10, 88, 0, 21);
+        let a = approved_entry(id, approved_ip);
+        assert_eq!(resolve_hello_ip(None, Some(&a)), Some(approved_ip));
+    }
+
+    #[test]
+    fn resolve_hello_ip_rejects_unknown_identity() {
+        // Neither roster member nor approved entry: there is no authoritative
+        // address, and a peer-supplied one must never fill the gap.
+        assert_eq!(resolve_hello_ip(None, None), None);
     }
 
     // -- validate_member / validate_approved ---------------------------------

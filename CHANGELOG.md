@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A mesh member can no longer claim another member's address when it connects** (`PEER-IP-BIND-001`). When a member reconnected to another member, the receiving node took the overlay IPv4 address from the connecting peer's own greeting instead of from the signed roster, and used it both to route traffic to that peer and to check the source address of packets coming from it. A compromised or malicious member could therefore claim a victim's address, receive traffic meant for the victim, and send packets that looked like the victim's. The receiving node now always uses the address recorded in the roster (or at approval) and logs a warning when the greeting disagrees. No change for honest peers and no wire change.
 - **TLS libraries updated to clear four published security advisories** (`CON-013`). `rustls` 0.23.45 to 0.23.46 fixes RUSTSEC-2026-0349, where an unauthenticated server reply could downgrade later resumed connections from hybrid post-quantum key exchange to classical-only, plus three advisories in code paths tetron does not enable (0346, 0347, 0348). `rustls-webpki`, `webpki-roots` and `webpki-root-certs` are updated with it to clear three further advisories (0381, 0382, 0383). No configuration change or wire change.
 
 ## [0.14.2] - 2026-10-10
