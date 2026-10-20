@@ -2056,3 +2056,29 @@ class IpcClientSlotsWithPrivilegedReserve(Requirement):
     for both keys.
     """
     req_id = "IPC-ADMISSION-002"
+
+
+class IpcAcceptErrorBackoff(Requirement):
+    """REQUIREMENT-ID: IPC-ADMISSION-003
+
+    Independent of IPC-ADMISSION-001 and 002.
+
+    `serve_ipc` (`bootstrap.rs`) logs `IPC accept error` at `warn!` and loops
+    straight back to `listener.accept()`. When the daemon is out of file
+    descriptors (`EMFILE`), accept fails immediately every time, so the loop
+    spins at full speed and writes a warning on each pass: a busy loop plus
+    a journal flood, the same shape as the LOG-006 history.
+
+    **The fix:** after an accept error the loop stops accepting for a short,
+    growing pause (`accept_backoff(consecutive_errors)`: 50 ms doubling to a
+    1 second cap) and resets on the next successful accept. The pause is a
+    `tokio::time::sleep` branch gated into the same `select!`, **not** an
+    inline `sleep().await`: the loop also services daemon shutdown, admin
+    promotion (`promote_rx`) and left-network events (`left_rx`), and none of
+    those may be delayed by a backoff. The warning is logged for the first
+    error of a run only, with a count of repeats logged when the run ends.
+
+    **Tests:** pure unit tests of `accept_backoff` (starts at 50 ms, doubles,
+    caps at 1 s, zero errors means no pause).
+    """
+    req_id = "IPC-ADMISSION-003"
