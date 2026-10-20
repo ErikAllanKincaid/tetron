@@ -370,23 +370,153 @@ fn truncate_decode_error(s: &str) -> String {
 async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Result<()> {
     let peer_cred = stream.peer_cred().ok().map(|c| (c.uid(), c.gid()));
     let mut framed = ipc::framed(stream);
-    let req = match ipc::recv(&mut framed).await {
+    // IPC-ADMISSION-001: read per connection, so a change applies to the next
+    // client without a restart.
+    let limits = config::load().map(|c| c.ipc).unwrap_or_default();
+    let req = match recv_request_bounded(&mut framed, limits.request_timeout()).await {
         Ok(req) => req,
+        Err(e) if e.downcast_ref::<RequestTimedOut>().is_some() => {
+            // The client is not speaking; there is nobody to reply to.
+            tracing::debug!("IPC client sent no complete request in time; dropping");
+            return Ok(());
+        }
         Err(e) => {
             tracing::debug!(error = %e, "undecodable IPC request");
             let message = truncate_decode_error(&format!("{e:#}"));
-            let _ = ipc::send(&mut framed, IpcMessage::Error { message }).await;
+            let _ = send_reply_bounded(
+                &mut framed,
+                IpcMessage::Error { message },
+                limits.response_timeout(),
+            )
+            .await;
             return Ok(());
         }
     };
+    // No deadline around the request itself: Join/Create and others
+    // legitimately run for a long time.
     let resp = daemon.handle_request(req, peer_cred).await;
-    ipc::send(&mut framed, resp).await?;
+    send_reply_bounded(&mut framed, resp, limits.response_timeout()).await?;
     Ok(())
+}
+
+/// The client did not deliver a complete request within `ipc.request-timeout`.
+#[derive(Debug)]
+struct RequestTimedOut;
+
+impl std::fmt::Display for RequestTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "timed out waiting for IPC request")
+    }
+}
+
+impl std::error::Error for RequestTimedOut {}
+
+/// IPC-ADMISSION-001: read the first request, giving up after `timeout`. Covers
+/// a client that sends nothing, a partial length prefix, or a partial body.
+async fn recv_request_bounded(
+    framed: &mut ipc::IpcFramed,
+    timeout: std::time::Duration,
+) -> Result<IpcMessage> {
+    match tokio::time::timeout(timeout, ipc::recv(framed)).await {
+        Ok(r) => r,
+        Err(_) => Err(RequestTimedOut.into()),
+    }
+}
+
+/// IPC-ADMISSION-001: write a reply, giving up after `timeout`. Stops a client
+/// that never reads from holding the handler task and its descriptor.
+async fn send_reply_bounded(
+    framed: &mut ipc::IpcFramed,
+    msg: IpcMessage,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, ipc::send(framed, msg)).await {
+        Ok(r) => r,
+        Err(_) => anyhow::bail!("timed out sending IPC reply"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    // IPC-ADMISSION-001: the first request read and the reply write are
+    // bounded, so a client that stalls cannot park a task and a descriptor.
+
+    const SHORT: std::time::Duration = std::time::Duration::from_millis(80);
+
+    #[tokio::test]
+    async fn silent_client_times_out_instead_of_parking_the_handler() {
+        let (server, _client) = UnixStream::pair().unwrap();
+        let mut framed = ipc::framed(server);
+        let err = recv_request_bounded(&mut framed, SHORT).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn partial_length_prefix_times_out() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        client.write_all(&[0, 0]).await.unwrap();
+        let mut framed = ipc::framed(server);
+        assert!(recv_request_bounded(&mut framed, SHORT).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn partial_body_times_out() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        // Declares a 100 byte body, delivers 10.
+        client.write_all(&[0, 0, 0, 100]).await.unwrap();
+        client.write_all(&[1u8; 10]).await.unwrap();
+        let mut framed = ipc::framed(server);
+        assert!(recv_request_bounded(&mut framed, SHORT).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn prompt_request_is_returned() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut client = ipc::framed(client);
+        ipc::send(&mut client, IpcMessage::Status).await.unwrap();
+        let mut framed = ipc::framed(server);
+        let req = recv_request_bounded(&mut framed, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(matches!(req, IpcMessage::Status));
+    }
+
+    #[tokio::test]
+    async fn reply_to_a_client_that_never_reads_times_out() {
+        let (server, _client) = UnixStream::pair().unwrap();
+        let mut framed = ipc::framed(server);
+        // Larger than any socket buffer, and nobody reads it.
+        let big = IpcMessage::Ok {
+            message: "x".repeat(900_000),
+        };
+        let err = send_reply_bounded(&mut framed, big, SHORT)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn reply_to_a_reading_client_succeeds() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut framed = ipc::framed(server);
+        let mut client = ipc::framed(client);
+        send_reply_bounded(
+            &mut framed,
+            IpcMessage::Ok {
+                message: "hi".into(),
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            ipc::recv(&mut client).await.unwrap(),
+            IpcMessage::Ok { .. }
+        ));
+    }
 
     /// IPC-DECODE-ERR-001: the decode-error reply is bounded however long
     /// the triggering request/error text was — what keeps a client that

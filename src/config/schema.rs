@@ -306,6 +306,49 @@ impl JoinConfig {
     }
 }
 
+/// Compiled default for `ipc.request-timeout`, in seconds (IPC-ADMISSION-001).
+pub const IPC_REQUEST_TIMEOUT_SECS: u64 = 10;
+/// Compiled default for `ipc.response-timeout`, in seconds (IPC-ADMISSION-001).
+pub const IPC_RESPONSE_TIMEOUT_SECS: u64 = 10;
+
+/// IPC server overrides (IPC-ADMISSION-001). Set via `tetron config set
+/// ipc.<key> <value>`; unset (or set to 0/empty) to return to the default.
+/// The IPC socket is world-connectable by design, so these bound what a
+/// client that stalls can cost the daemon.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IpcConfig {
+    /// How long the daemon waits for a client's first request, in seconds.
+    /// Default 10. Every in-tree client sends its request immediately after
+    /// connecting; the bound is not on the handling of the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+    /// How long the daemon waits to write a reply to a client, in seconds.
+    /// Default 10. Stops a client that sends a request and never reads the
+    /// answer from holding a task and a descriptor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_timeout_secs: Option<u64>,
+}
+
+impl IpcConfig {
+    /// The resolved request wait: override if set and non-zero, else the default.
+    pub fn request_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.request_timeout_secs
+                .filter(|s| *s > 0)
+                .unwrap_or(IPC_REQUEST_TIMEOUT_SECS),
+        )
+    }
+
+    /// The resolved reply-write wait: override if set and non-zero, else the default.
+    pub fn response_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.response_timeout_secs
+                .filter(|s| *s > 0)
+                .unwrap_or(IPC_RESPONSE_TIMEOUT_SECS),
+        )
+    }
+}
+
 /// Compiled default for `hello.timeout`, in seconds (HELLO-TIMEOUT-001).
 pub const HELLO_TIMEOUT_SECS: u64 = 30;
 
@@ -457,6 +500,9 @@ pub struct AppConfig {
     /// Member-accept overrides (HELLO-TIMEOUT-001). See [`HelloConfig`].
     #[serde(default)]
     pub hello: HelloConfig,
+    /// IPC server overrides (IPC-ADMISSION-001). See [`IpcConfig`].
+    #[serde(default)]
+    pub ipc: IpcConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).
