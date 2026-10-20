@@ -503,13 +503,32 @@ impl MemberAcceptState {
             return;
         };
         let _ = effective_user_id;
-        let (is_member, is_approved) = {
+        // PEER-IP-BIND-001: the overlay address comes from the roster (or the
+        // approved entry), never from `MeshHello.ip`. One guard covers the
+        // membership flags and the address so a concurrent roster change
+        // cannot split them.
+        let (is_member, is_approved, roster_ip) = {
             let s = self.state.read().unwrap();
             (
                 s.members.is_member(&peer_identity),
                 s.approved.is_approved(&peer_identity),
+                crate::membership::resolve_hello_ip(
+                    s.members.get(&peer_identity),
+                    s.approved.get(&peer_identity),
+                ),
             )
         };
+        let Some(roster_ip) = roster_ip else {
+            return;
+        };
+        if roster_ip != ip {
+            tracing::warn!(
+                peer = %peer_identity.fmt_short(),
+                claimed = %ip,
+                roster = %roster_ip,
+                "MeshHello ip differs from the roster; using the roster address"
+            );
+        }
         // Resolve hostname collisions
         let final_hostname = if let Some(desired) = hostname {
             let taken = self.state.read().unwrap().taken_hostnames(peer_identity);
@@ -519,7 +538,7 @@ impl MemberAcceptState {
             None
         };
         if is_approved {
-            self.admit_approved_member(conn, peer_identity, ip, final_hostname, veilid_node_id)
+            self.admit_approved_member(conn, peer_identity, final_hostname, veilid_node_id)
                 .await;
         } else if is_member {
             if final_hostname.is_some() || veilid_node_id.is_some() {
@@ -533,7 +552,7 @@ impl MemberAcceptState {
                     }
                 }
             }
-            self.register_peer(conn, peer_identity, ip);
+            self.register_peer(conn, peer_identity, roster_ip);
         }
     }
 
@@ -545,29 +564,38 @@ impl MemberAcceptState {
         &self,
         conn: Connection,
         peer_identity: EndpointId,
-        ip: Ipv4Addr,
         final_hostname: Option<String>,
         veilid_node_id: Option<String>,
     ) {
         let (snap_bytes, ip) = {
             let mut s = self.state.write().unwrap();
             let approved_entry = s.approved.remove(&peer_identity);
-            // Trust the authoritative IP + collision index recorded when the
-            // peer was approved, not the peer-supplied MeshHello.ip.
-            let (member_ip, member_idx) = approved_entry
-                .as_ref()
-                .map(|e| (e.ip, e.collision_index))
-                .unwrap_or((ip, 0));
-            let _ = s.members.add(Member {
-                identity: peer_identity,
-                ip: member_ip,
-                is_coordinator: false,
-                hostname: final_hostname.clone(),
-                collision_index: member_idx,
-                last_seen: Some(crate::membership::now_secs()),
-                veilid_node_id: veilid_node_id.clone(),
-            });
-            s.bump_generation_and_refresh();
+            // PEER-IP-BIND-001: only the authoritative IP + collision index
+            // recorded in the roster or at approval is used; `MeshHello.ip` is
+            // not an input here. If a second concurrent connection from the
+            // same identity finds the approved entry already consumed, the
+            // identity is on the roster by now and keeps its roster address
+            // (nothing to re-seat); with neither, there is no address and the
+            // connection is dropped.
+            let Some(member_ip) = crate::membership::resolve_hello_ip(
+                s.members.get(&peer_identity),
+                approved_entry.as_ref(),
+            ) else {
+                return;
+            };
+            if let (false, Some(e)) = (s.members.is_member(&peer_identity), approved_entry.as_ref())
+            {
+                let _ = s.members.add(Member {
+                    identity: peer_identity,
+                    ip: e.ip,
+                    is_coordinator: false,
+                    hostname: final_hostname.clone(),
+                    collision_index: e.collision_index,
+                    last_seen: Some(crate::membership::now_secs()),
+                    veilid_node_id: veilid_node_id.clone(),
+                });
+                s.bump_generation_and_refresh();
+            }
             (
                 s.snapshot.as_ref().map(|snap| snap.msgpack_bytes.clone()),
                 member_ip,

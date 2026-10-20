@@ -1806,3 +1806,61 @@ class IpcDecodeErrorBoundedReply(Requirement):
     """
 
     req_id = "IPC-DECODE-ERR-001"
+
+
+# --------------------------------------------------------------------------
+# PEER-IP-BIND / timeouts: submitted issues #57 (route trusts peer IP) and the
+# member-side hello wait; see DO-NOT-COMMIT/TRACKER_tetron_security_issues_56-60_2026-10-20.md
+#
+# Dependency ordering (stated per docs/tetron-workflow.md step 3):
+#   PEER-IP-BIND-001  -> PEER-IP-BIND-002  (002 reuses the roster-IP resolver 001 introduces)
+#   PEER-IP-BIND-001  -> HELLO-TIMEOUT-001 (both edit MemberAcceptState::handle_connection; land 001 first)
+#   JOIN-TIMEOUT-001 is independent of every other requirement here.
+#   INVITE-ATOMIC-001 (membership.py) is independent of every other requirement here.
+# --------------------------------------------------------------------------
+
+class PeerRouteBoundToRosterIp(Requirement):
+    """REQUIREMENT-ID: PEER-IP-BIND-001
+
+    Reported as GitHub issue #57 and verified against the source
+    2026-10-20. `MemberAcceptState::handle_connection` (`accept.rs`) checks
+    that `MeshHello.identity` equals the transport identity and that the
+    identity is on the roster, and then registers the peer with the
+    **peer-supplied** `MeshHello.ip`. That address keys `PeerTable::add`
+    (the outbound route) and becomes the expected source address in
+    `forward::evaluate_inbound` (the ingress anti-spoof check), so the
+    anti-spoof property -- identity-from-source-IP stays trustworthy -- is
+    defeated for any admitted member. A second hole in the same function:
+    `admit_approved_member` falls back to the peer-supplied IP when the
+    approved entry is already gone (a second concurrent connection from the
+    same approved identity).
+
+    **The fix:** `MeshHello.ip` is never used to choose a route or a source
+    check anywhere in `handle_connection` or `admit_approved_member`. One
+    pure resolver, `resolve_hello_ip(roster_member, approved_entry)`
+    (`membership.rs`, unit-tested), picks the authoritative address: the
+    roster member's `ip`, else the approved entry's `ip`, else reject the
+    connection. The lookup and the decision happen inside one state guard so
+    a concurrent change to the roster cannot split them. A hello whose `ip`
+    differs from the resolved address is logged at `warn!` and the
+    connection is registered with the resolved address (not closed), so a
+    peer with a stale view of its own address does not cause reconnect churn.
+
+    **No wire change.** `MeshHello.ip` stays on the wire (older peers and
+    the dial side still send it); only the member accept path stops trusting
+    it. No `tetron-proto` change, so no addon dependency bump.
+
+    **Tests:** unit tests of `resolve_hello_ip` (roster wins over the claim;
+    approved entry used when no roster member; neither present is rejected;
+    a claimed address inside the subnet but belonging to another member is
+    ignored). A testsuite case is not feasible because the VM suite runs
+    real binaries and cannot forge a hello; the regression pass is
+    `core-smoke`, `coordinator-reconnect`, `reconnect-storm` and
+    `join-ip-collision-repro`.
+
+    **Known limit, tracked separately:** a node re-assigned by an IP
+    tiebreak never updates its own TUN address; its traffic is already
+    dropped by the coordinator and dial paths. This requirement makes the
+    member accept path consistent with them and does not fix that.
+    """
+    req_id = "PEER-IP-BIND-001"
