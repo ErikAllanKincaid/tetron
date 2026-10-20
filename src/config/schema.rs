@@ -278,6 +278,34 @@ pub struct ReconnectColdConfig {
 /// a hard stop was rejected. `None` means "use the compiled default". Set
 /// via `tetron config set reconnect-frozen.<key> <value>`; unset (or set
 /// to 0/empty) to return to the default.
+/// Compiled default for `join.request-timeout`, in seconds (JOIN-TIMEOUT-001).
+pub const JOIN_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+/// Fresh-join overrides (JOIN-TIMEOUT-001). Set via `tetron config set
+/// join.<key> <value>`; unset (or set to 0/empty) to return to the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JoinConfig {
+    /// How long the coordinator waits for a fresh joiner to open its stream
+    /// and deliver its `JoinRequest`, in seconds. Default 15. A short window
+    /// refuses joins on slow or lossy links, which is the worst outcome for
+    /// this knob, so the default is generous; the bound exists only so a
+    /// connection that never sends a request cannot hold a task forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+}
+
+impl JoinConfig {
+    /// The resolved wait: the override if set and non-zero, else the compiled
+    /// default. Zero is "unset", never "no limit".
+    pub fn request_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.request_timeout_secs
+                .filter(|s| *s > 0)
+                .unwrap_or(JOIN_REQUEST_TIMEOUT_SECS),
+        )
+    }
+}
+
 /// Status-snapshot cache overrides (STATUS-CACHE-001). Set via
 /// `tetron config set status-cache.<key> <value>`; unset (or set to 0) to
 /// return to the default.
@@ -394,6 +422,9 @@ pub struct AppConfig {
     /// [`StatusCacheConfig`].
     #[serde(default)]
     pub status_cache: StatusCacheConfig,
+    /// Fresh-join overrides (JOIN-TIMEOUT-001). See [`JoinConfig`].
+    #[serde(default)]
+    pub join: JoinConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).

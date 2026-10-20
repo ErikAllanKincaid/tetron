@@ -1897,3 +1897,34 @@ class ReconnectReAddUsesRosterIp(Requirement):
     `coordinator-reconnect` testsuite regression.
     """
     req_id = "PEER-IP-BIND-002"
+
+
+class JoinRequestWaitConfigurable(Requirement):
+    """REQUIREMENT-ID: JOIN-TIMEOUT-001
+
+    Independent of the other requirements in this group.
+
+    The coordinator waits for a fresh joiner's stream and `JoinRequest` with
+    two hardcoded 5 second timeouts (`accept.rs`, the non-member branch of
+    `CoordinatorAcceptState::handle_connection`). On a very slow, lossy or
+    high-latency link 5 seconds can be shorter than the time the joiner needs
+    to open the stream and deliver the request, which is the worst case for
+    this knob: it turns a slow connection into a refused join.
+
+    **The fix:** both waits use `join.request-timeout`, a settings-backed knob
+    (`tetron config set join.request-timeout <secs>`, `[join]
+    request-timeout-secs` in `settings.toml`), **default 15 seconds**
+    (previously 5). Unset or 0 returns to the default; there is no value that
+    disables the bound (a stored 0 also resolves to the default). The 5 second wait in `deny()` for the joiner
+    to close after a `JoinDenied` is unrelated and unchanged.
+
+    **Effect:** a slow joiner now has three times the window; an abusive
+    connection that never sends a request holds a coordinator task for up to
+    15 seconds instead of 5, which is acceptable because the fresh-join path
+    is already rate limited and unauthenticated callers are the case this
+    bound exists for.
+
+    **Tests:** unit test of the timeout-resolution helper; `config` round
+    trip; `core-smoke` and `regression` testsuite pass.
+    """
+    req_id = "JOIN-TIMEOUT-001"

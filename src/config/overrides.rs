@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
+    AppConfig, DropMonitorConfig, JoinConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
     ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig, ServerOverride,
     StatusCacheConfig,
 };
@@ -159,6 +159,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         holddown_key if holddown_key.starts_with("reconnect-holddown.") => {
             set_reconnect_holddown_key(&mut cfg.reconnect_holddown, holddown_key, &entries, reset)?;
         }
+        join_key if join_key.starts_with("join.") => {
+            set_join_key(&mut cfg.join, join_key, &entries, reset)?;
+        }
         sc_key if sc_key.starts_with("status-cache.") => {
             set_status_cache_key(&mut cfg.status_cache, sc_key, &entries, reset)?;
         }
@@ -257,7 +260,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              reconnect-log.<threshold|window>, \
              reconnect-cold.<threshold|backoff>, \
              reconnect-frozen.<threshold|backoff>, \
-             reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, or \
+             reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, \
+             join.request-timeout, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -457,6 +461,30 @@ fn set_reconnect_holddown_key(
         "min-uptime" => rh.min_uptime_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
         "jitter-pct" => rh.jitter_pct = Some(parse_ratelimit_value::<u32>(&entries[0])?),
         other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `join.<key>` entry (JOIN-TIMEOUT-001). `reset` (empty
+/// value or "0") clears the field back to `None` (compiled default of 15s).
+fn set_join_key(jc: &mut JoinConfig, key: &str, entries: &[String], reset: bool) -> Result<()> {
+    let sub = key.strip_prefix("join.").expect("checked by caller");
+    if reset {
+        match sub {
+            "request-timeout" => jc.request_timeout_secs = None,
+            other => anyhow::bail!("unknown join config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "join.{sub} takes a single numeric value"
+    );
+    match sub {
+        "request-timeout" => {
+            jc.request_timeout_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?)
+        }
+        other => anyhow::bail!("unknown join config key: {other}"),
     }
     Ok(())
 }
@@ -676,6 +704,13 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("join.") {
+            let val = match sub {
+                "request-timeout" => render_opt(cfg.join.request_timeout_secs),
+                other => anyhow::bail!("unknown join config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if let Some(sub) = k.strip_prefix("status-cache.") {
             let val = match sub {
                 "interval" => render_opt(cfg.status_cache.interval_secs),
@@ -761,6 +796,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("reconnect-cold.backoff")?,
             row("reconnect-frozen.threshold")?,
             row("reconnect-frozen.backoff")?,
+            row("join.request-timeout")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -848,6 +884,47 @@ mod tests {
             replace: true,
         };
         assert_eq!(resolve_upstreams(&rep, captured.clone()), vec![one]);
+    }
+
+    #[test]
+    fn config_set_get_join_request_timeout() {
+        // JOIN-TIMEOUT-001: the coordinator's wait for a fresh joiner's
+        // stream and JoinRequest is a settings-backed knob.
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            config_get(&cfg, Some("join.request-timeout")).unwrap()[0].1,
+            "<default>"
+        );
+        // Compiled default is 15s (previously a hardcoded 5s).
+        assert_eq!(
+            cfg.join.request_timeout(),
+            std::time::Duration::from_secs(15)
+        );
+
+        config_set(&mut cfg, "join.request-timeout", "40", false).unwrap();
+        assert_eq!(cfg.join.request_timeout_secs, Some(40));
+        assert_eq!(
+            config_get(&cfg, Some("join.request-timeout")).unwrap()[0].1,
+            "40"
+        );
+        assert_eq!(
+            cfg.join.request_timeout(),
+            std::time::Duration::from_secs(40)
+        );
+
+        // Empty resets to the default; a stored 0 also resolves to the
+        // default (there is no way to turn the bound off).
+        config_set(&mut cfg, "join.request-timeout", "", false).unwrap();
+        assert_eq!(cfg.join.request_timeout_secs, None);
+        cfg.join.request_timeout_secs = Some(0);
+        assert_eq!(
+            cfg.join.request_timeout(),
+            std::time::Duration::from_secs(15)
+        );
+
+        // Unknown sub-key and non-numeric value are both rejected.
+        assert!(config_set(&mut cfg, "join.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "join.request-timeout", "soon", false).is_err());
     }
 
     #[test]
