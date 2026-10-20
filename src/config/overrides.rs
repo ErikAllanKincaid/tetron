@@ -9,9 +9,9 @@ use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, JoinConfig, PathFlapConfig, RateLimitConfig, ReconnectColdConfig,
-    ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig, ServerOverride,
-    StatusCacheConfig,
+    AppConfig, DropMonitorConfig, HelloConfig, JoinConfig, PathFlapConfig, RateLimitConfig,
+    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig,
+    ServerOverride, StatusCacheConfig,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -159,6 +159,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         holddown_key if holddown_key.starts_with("reconnect-holddown.") => {
             set_reconnect_holddown_key(&mut cfg.reconnect_holddown, holddown_key, &entries, reset)?;
         }
+        hello_key if hello_key.starts_with("hello.") => {
+            set_hello_key(&mut cfg.hello, hello_key, &entries, reset)?;
+        }
         join_key if join_key.starts_with("join.") => {
             set_join_key(&mut cfg.join, join_key, &entries, reset)?;
         }
@@ -261,7 +264,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              reconnect-cold.<threshold|backoff>, \
              reconnect-frozen.<threshold|backoff>, \
              reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, \
-             join.request-timeout, or \
+             join.request-timeout, hello.timeout, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -461,6 +464,28 @@ fn set_reconnect_holddown_key(
         "min-uptime" => rh.min_uptime_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
         "jitter-pct" => rh.jitter_pct = Some(parse_ratelimit_value::<u32>(&entries[0])?),
         other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `hello.<key>` entry (HELLO-TIMEOUT-001). `reset` (empty
+/// value or "0") clears the field back to `None` (compiled default of 30s).
+fn set_hello_key(hc: &mut HelloConfig, key: &str, entries: &[String], reset: bool) -> Result<()> {
+    let sub = key.strip_prefix("hello.").expect("checked by caller");
+    if reset {
+        match sub {
+            "timeout" => hc.timeout_secs = None,
+            other => anyhow::bail!("unknown hello config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        entries.len() == 1,
+        "hello.{sub} takes a single numeric value"
+    );
+    match sub {
+        "timeout" => hc.timeout_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
+        other => anyhow::bail!("unknown hello config key: {other}"),
     }
     Ok(())
 }
@@ -704,6 +729,13 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("hello.") {
+            let val = match sub {
+                "timeout" => render_opt(cfg.hello.timeout_secs),
+                other => anyhow::bail!("unknown hello config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if let Some(sub) = k.strip_prefix("join.") {
             let val = match sub {
                 "request-timeout" => render_opt(cfg.join.request_timeout_secs),
@@ -797,6 +829,7 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("reconnect-frozen.threshold")?,
             row("reconnect-frozen.backoff")?,
             row("join.request-timeout")?,
+            row("hello.timeout")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -884,6 +917,34 @@ mod tests {
             replace: true,
         };
         assert_eq!(resolve_upstreams(&rep, captured.clone()), vec![one]);
+    }
+
+    #[test]
+    fn config_set_get_hello_timeout() {
+        // HELLO-TIMEOUT-001: the member accept path's wait for an inbound
+        // peer's stream and MeshHello is a settings-backed knob.
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            config_get(&cfg, Some("hello.timeout")).unwrap()[0].1,
+            "<default>"
+        );
+        // Compiled default is 30s, the transport idle timeout.
+        assert_eq!(cfg.hello.timeout(), std::time::Duration::from_secs(30));
+
+        config_set(&mut cfg, "hello.timeout", "60", false).unwrap();
+        assert_eq!(cfg.hello.timeout_secs, Some(60));
+        assert_eq!(config_get(&cfg, Some("hello.timeout")).unwrap()[0].1, "60");
+        assert_eq!(cfg.hello.timeout(), std::time::Duration::from_secs(60));
+
+        // Empty resets to the default; a stored 0 also resolves to the
+        // default (there is no way to turn the bound off).
+        config_set(&mut cfg, "hello.timeout", "", false).unwrap();
+        assert_eq!(cfg.hello.timeout_secs, None);
+        cfg.hello.timeout_secs = Some(0);
+        assert_eq!(cfg.hello.timeout(), std::time::Duration::from_secs(30));
+
+        assert!(config_set(&mut cfg, "hello.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "hello.timeout", "soon", false).is_err());
     }
 
     #[test]

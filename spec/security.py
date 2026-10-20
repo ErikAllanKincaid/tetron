@@ -1928,3 +1928,38 @@ class JoinRequestWaitConfigurable(Requirement):
     trip; `core-smoke` and `regression` testsuite pass.
     """
     req_id = "JOIN-TIMEOUT-001"
+
+
+class MemberHelloWaitBounded(Requirement):
+    """REQUIREMENT-ID: HELLO-TIMEOUT-001
+
+    Depends on PEER-IP-BIND-001 (same function; land that first).
+
+    Found by the independent review of the issue #59 triage, 2026-10-20.
+    `MemberAcceptState::handle_connection` (`accept.rs`) awaits
+    `conn.accept_bi()` and then `control::recv_msg()` with no time limit,
+    before any membership check. The coordinator path already bounds the
+    same two waits at 5 seconds. A caller on a non-coordinator member needs
+    only the network public key, not admission, so this is not the
+    admitted-member case that issue #59 was declined for: anyone who can
+    reach a member can park one task per connection indefinitely.
+
+    **The fix:** both waits are bounded by `hello.timeout`, a settings-backed
+    knob (`tetron config set hello.timeout <secs>`, `[hello] timeout-secs` in
+    `settings.toml`), **default 30 seconds**. The default is deliberately
+    long: an honest peer sends its `MeshHello` immediately after the
+    connection is up, so the wait is about one round trip, and a short
+    window would only ever hurt users on slow or lossy links. Unset or 0
+    returns to the default; there is no value that disables the bound.
+    On expiry the connection is dropped without a reply (the existing
+    behavior for a malformed hello). The peer's own reconnect loop retries
+    with its normal backoff.
+
+    **Not changed:** the 5 second wait the fresh-join path applies to a
+    joiner is a separate setting, JOIN-TIMEOUT-001.
+
+    **Tests:** a unit test of the timeout-resolution helper (default, override,
+    floor); `config set/get/unset hello.timeout` round trip; `core-smoke`
+    regression.
+    """
+    req_id = "HELLO-TIMEOUT-001"

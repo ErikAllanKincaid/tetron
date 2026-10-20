@@ -306,6 +306,35 @@ impl JoinConfig {
     }
 }
 
+/// Compiled default for `hello.timeout`, in seconds (HELLO-TIMEOUT-001).
+pub const HELLO_TIMEOUT_SECS: u64 = 30;
+
+/// Member-accept overrides (HELLO-TIMEOUT-001). Set via `tetron config set
+/// hello.<key> <value>`; unset (or set to 0/empty) to return to the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HelloConfig {
+    /// How long a member waits for an inbound peer to open its stream and
+    /// deliver its `MeshHello`, in seconds. Default 30, the transport idle
+    /// timeout. An honest peer sends the hello right after the connection is
+    /// up, so the wait is about one round trip; the bound exists so a
+    /// connection that never sends one cannot hold a task forever, and it is
+    /// generous so a slow or lossy link is never the thing that gets refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+impl HelloConfig {
+    /// The resolved wait: the override if set and non-zero, else the compiled
+    /// default. Zero is "unset", never "no limit".
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.timeout_secs
+                .filter(|s| *s > 0)
+                .unwrap_or(HELLO_TIMEOUT_SECS),
+        )
+    }
+}
+
 /// Status-snapshot cache overrides (STATUS-CACHE-001). Set via
 /// `tetron config set status-cache.<key> <value>`; unset (or set to 0) to
 /// return to the default.
@@ -425,6 +454,9 @@ pub struct AppConfig {
     /// Fresh-join overrides (JOIN-TIMEOUT-001). See [`JoinConfig`].
     #[serde(default)]
     pub join: JoinConfig,
+    /// Member-accept overrides (HELLO-TIMEOUT-001). See [`HelloConfig`].
+    #[serde(default)]
+    pub hello: HelloConfig,
     /// Override for `membership::NUKE_PROPOSAL_TTL_SECS` (compiled default
     /// 24h). `None` uses the compiled default. Set via `tetron config set
     /// nuke-proposal-ttl <duration>` (CONFIG-AUDIT-002).

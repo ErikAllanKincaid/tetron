@@ -512,16 +512,24 @@ impl MemberAcceptState {
     }
 
     async fn handle_connection(&self, conn: Connection) {
-        let Ok((_send, mut recv)) = conn.accept_bi().await else {
+        // HELLO-TIMEOUT-001: bound both waits by `hello.timeout` (default 30s).
+        // An honest peer sends its hello right after connecting, so only a
+        // connection that never does is dropped; it needs the network public
+        // key to get here, not admission, so this is not an admitted-member case.
+        let hello_timeout = config::load()
+            .map(|c| c.hello.timeout())
+            .unwrap_or_else(|_| Duration::from_secs(crate::config::HELLO_TIMEOUT_SECS));
+        let Ok(Ok((_send, mut recv))) = tokio::time::timeout(hello_timeout, conn.accept_bi()).await
+        else {
             return;
         };
         let transport_id = conn.remote_id();
-        let Ok(ControlMsg::MeshHello {
+        let Ok(Ok(ControlMsg::MeshHello {
             identity: peer_identity,
             ip,
             hostname,
             veilid_node_id,
-        }) = control::recv_msg(&mut recv).await
+        })) = tokio::time::timeout(hello_timeout, control::recv_msg(&mut recv)).await
         else {
             return;
         };
