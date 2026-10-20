@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
+    AppConfig, DropMonitorConfig, JoinConfig, NetworkConfig, PathFlapConfig, RateLimitConfig,
     ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig,
     ServerOverride, StatusCacheConfig,
 };
@@ -71,6 +71,8 @@ struct Settings {
     reconnect_holddown: ReconnectHolddownConfig,
     #[serde(default)]
     status_cache: StatusCacheConfig,
+    #[serde(default)]
+    join: JoinConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -525,6 +527,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             reconnect_frozen: ReconnectFrozenConfig::default(),
             reconnect_holddown: ReconnectHolddownConfig::default(),
             status_cache: StatusCacheConfig::default(),
+            join: JoinConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -574,6 +577,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         reconnect_frozen: settings.reconnect_frozen,
         reconnect_holddown: settings.reconnect_holddown,
         status_cache: settings.status_cache,
+        join: settings.join,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -654,6 +658,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         reconnect_frozen: config.reconnect_frozen.clone(),
         reconnect_holddown: config.reconnect_holddown.clone(),
         status_cache: config.status_cache.clone(),
+        join: config.join.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,

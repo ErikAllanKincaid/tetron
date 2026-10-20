@@ -87,14 +87,16 @@ impl CoordinatorAcceptState {
         // approval, invite secret, and access mode. Known members are handled
         // above (send-first) and never reach here; fresh joiners always send a
         // JoinRequest first (see `join_mesh_shared`).
-        let (send, mut recv) =
-            match tokio::time::timeout(Duration::from_secs(5), conn.accept_bi()).await {
-                Ok(Ok(pair)) => pair,
-                _ => return,
-            };
-        let msg = match tokio::time::timeout(Duration::from_secs(5), control::recv_msg(&mut recv))
-            .await
-        {
+        // JOIN-TIMEOUT-001: both waits use `join.request-timeout` (default
+        // 15s), not a fixed 5s that refused joins on slow or lossy links.
+        let request_timeout = config::load()
+            .map(|c| c.join.request_timeout())
+            .unwrap_or_else(|_| Duration::from_secs(crate::config::JOIN_REQUEST_TIMEOUT_SECS));
+        let (send, mut recv) = match tokio::time::timeout(request_timeout, conn.accept_bi()).await {
+            Ok(Ok(pair)) => pair,
+            _ => return,
+        };
+        let msg = match tokio::time::timeout(request_timeout, control::recv_msg(&mut recv)).await {
             Ok(Ok(m)) => m,
             _ => return,
         };
