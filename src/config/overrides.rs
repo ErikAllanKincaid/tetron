@@ -9,9 +9,9 @@ use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, HelloConfig, JoinConfig, PathFlapConfig, RateLimitConfig,
-    ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig, ReconnectLogConfig,
-    ServerOverride, StatusCacheConfig,
+    AppConfig, DropMonitorConfig, HelloConfig, IpcConfig, JoinConfig, PathFlapConfig,
+    RateLimitConfig, ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig,
+    ReconnectLogConfig, ServerOverride, StatusCacheConfig,
 };
 
 /// Preset URL for the rayfish-operated iroh transport relay.
@@ -159,6 +159,9 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
         holddown_key if holddown_key.starts_with("reconnect-holddown.") => {
             set_reconnect_holddown_key(&mut cfg.reconnect_holddown, holddown_key, &entries, reset)?;
         }
+        ipc_key if ipc_key.starts_with("ipc.") => {
+            set_ipc_key(&mut cfg.ipc, ipc_key, &entries, reset)?;
+        }
         hello_key if hello_key.starts_with("hello.") => {
             set_hello_key(&mut cfg.hello, hello_key, &entries, reset)?;
         }
@@ -264,7 +267,8 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              reconnect-cold.<threshold|backoff>, \
              reconnect-frozen.<threshold|backoff>, \
              reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, \
-             join.request-timeout, hello.timeout, or \
+             join.request-timeout, hello.timeout, \
+             ipc.<request-timeout|response-timeout>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -464,6 +468,31 @@ fn set_reconnect_holddown_key(
         "min-uptime" => rh.min_uptime_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?),
         "jitter-pct" => rh.jitter_pct = Some(parse_ratelimit_value::<u32>(&entries[0])?),
         other => anyhow::bail!("unknown reconnect-holddown config key: {other}"),
+    }
+    Ok(())
+}
+
+/// Parse and apply one `ipc.<key>` entry (IPC-ADMISSION-001). `reset` (empty
+/// value or "0") clears the field back to `None` (compiled default).
+fn set_ipc_key(ic: &mut IpcConfig, key: &str, entries: &[String], reset: bool) -> Result<()> {
+    let sub = key.strip_prefix("ipc.").expect("checked by caller");
+    if reset {
+        match sub {
+            "request-timeout" => ic.request_timeout_secs = None,
+            "response-timeout" => ic.response_timeout_secs = None,
+            other => anyhow::bail!("unknown ipc config key: {other}"),
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(entries.len() == 1, "ipc.{sub} takes a single numeric value");
+    match sub {
+        "request-timeout" => {
+            ic.request_timeout_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?)
+        }
+        "response-timeout" => {
+            ic.response_timeout_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?)
+        }
+        other => anyhow::bail!("unknown ipc config key: {other}"),
     }
     Ok(())
 }
@@ -729,6 +758,14 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             };
             return Ok((k.to_string(), val));
         }
+        if let Some(sub) = k.strip_prefix("ipc.") {
+            let val = match sub {
+                "request-timeout" => render_opt(cfg.ipc.request_timeout_secs),
+                "response-timeout" => render_opt(cfg.ipc.response_timeout_secs),
+                other => anyhow::bail!("unknown ipc config key: {other}"),
+            };
+            return Ok((k.to_string(), val));
+        }
         if let Some(sub) = k.strip_prefix("hello.") {
             let val = match sub {
                 "timeout" => render_opt(cfg.hello.timeout_secs),
@@ -830,6 +867,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("reconnect-frozen.backoff")?,
             row("join.request-timeout")?,
             row("hello.timeout")?,
+            row("ipc.request-timeout")?,
+            row("ipc.response-timeout")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -917,6 +956,47 @@ mod tests {
             replace: true,
         };
         assert_eq!(resolve_upstreams(&rep, captured.clone()), vec![one]);
+    }
+
+    #[test]
+    fn config_set_get_ipc_timeouts() {
+        // IPC-ADMISSION-001: first-request read and reply write deadlines.
+        let mut cfg = AppConfig::default();
+        for key in ["ipc.request-timeout", "ipc.response-timeout"] {
+            assert_eq!(config_get(&cfg, Some(key)).unwrap()[0].1, "<default>");
+        }
+        assert_eq!(
+            cfg.ipc.request_timeout(),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            cfg.ipc.response_timeout(),
+            std::time::Duration::from_secs(10)
+        );
+
+        config_set(&mut cfg, "ipc.request-timeout", "3", false).unwrap();
+        config_set(&mut cfg, "ipc.response-timeout", "20", false).unwrap();
+        assert_eq!(cfg.ipc.request_timeout(), std::time::Duration::from_secs(3));
+        assert_eq!(
+            cfg.ipc.response_timeout(),
+            std::time::Duration::from_secs(20)
+        );
+        assert_eq!(
+            config_get(&cfg, Some("ipc.request-timeout")).unwrap()[0].1,
+            "3"
+        );
+
+        // Empty resets; a stored 0 resolves to the default (never "no limit").
+        config_set(&mut cfg, "ipc.request-timeout", "", false).unwrap();
+        assert_eq!(cfg.ipc.request_timeout_secs, None);
+        cfg.ipc.response_timeout_secs = Some(0);
+        assert_eq!(
+            cfg.ipc.response_timeout(),
+            std::time::Duration::from_secs(10)
+        );
+
+        assert!(config_set(&mut cfg, "ipc.bogus", "1", false).is_err());
+        assert!(config_set(&mut cfg, "ipc.request-timeout", "soon", false).is_err());
     }
 
     #[test]

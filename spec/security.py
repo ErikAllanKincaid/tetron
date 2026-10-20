@@ -1963,3 +1963,54 @@ class MemberHelloWaitBounded(Requirement):
     regression.
     """
     req_id = "HELLO-TIMEOUT-001"
+
+
+# --------------------------------------------------------------------------
+# IPC-ADMISSION: GitHub issue #58 (unbounded IPC clients and request time).
+# See DO-NOT-COMMIT/TRACKER_tetron_security_issues_56-60_2026-10-20.md
+#
+# Dependency ordering (docs/tetron-workflow.md step 3):
+#   IPC-ADMISSION-001 -> IPC-ADMISSION-002  (002 adds keys to the `ipc` settings
+#                                            group 001 introduces and holds the slot
+#                                            for the lifetime of the bounded handler)
+#   IPC-ADMISSION-003 is independent of 001 and 002.
+# --------------------------------------------------------------------------
+
+class IpcRequestAndReplyDeadlines(Requirement):
+    """REQUIREMENT-ID: IPC-ADMISSION-001
+
+    Reported as GitHub issue #58 and verified 2026-10-20. The IPC socket is
+    `0666` by design (authority is per request via `SO_PEERCRED`), so any
+    local user can connect. `handle_ipc_client` (`bootstrap.rs`) awaits the
+    first request with no timeout, and writes the reply with no timeout, on a
+    task spawned per connection. IPC-DECODE-ERR-001 bounded the size of a
+    decode-error reply; it did not bound a client that sends no length
+    prefix, a partial prefix, or a partial body, or one that sends a request
+    and never reads the reply. Each such client parks one task and one file
+    descriptor for the life of the daemon. `contrib/tetron.service` sets no
+    `LimitNOFILE`, so the daemon runs with the systemd default soft limit of
+    1024 descriptors, and exhausting them also starves QUIC and the TUN.
+
+    **The fix:** the first request read is bounded by `ipc.request-timeout`
+    and the reply write (including the decode-error reply) by
+    `ipc.response-timeout`, both settings-backed (`tetron config set
+    ipc.request-timeout <secs>`, `[ipc] request-timeout-secs` in
+    `settings.toml`), **default 10 seconds each**. Unset or 0 returns to the
+    default; there is no value that disables a bound. On expiry the
+    connection is dropped and the task ends, logged at `debug!`. The
+    timeouts are read per accepted connection, so a change applies to the
+    next client without a restart.
+
+    **Deadlines are on those two operations only.** They are never placed
+    around `handle_request`, because `Join`, `Create` and other requests
+    legitimately run for a long time. Every in-tree client (CLI, webui,
+    systray, tui) opens a fresh connection per request and sends it
+    immediately, so ten seconds is far above what they need.
+
+    **Tests:** the bounded request read is a small function generic over the
+    framed stream (`recv_request_bounded`), tested with a connected
+    `UnixStream` pair: a client that sends nothing, a partial length prefix,
+    and a partial body all return an error after the timeout; a prompt
+    request is returned. `config set/get/unset` round trip for both keys.
+    """
+    req_id = "IPC-ADMISSION-001"

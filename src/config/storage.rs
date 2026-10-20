@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::schema::{
-    AppConfig, DropMonitorConfig, HelloConfig, JoinConfig, NetworkConfig, PathFlapConfig,
-    RateLimitConfig, ReconnectColdConfig, ReconnectFrozenConfig, ReconnectHolddownConfig,
-    ReconnectLogConfig, ServerOverride, StatusCacheConfig,
+    AppConfig, DropMonitorConfig, HelloConfig, IpcConfig, JoinConfig, NetworkConfig,
+    PathFlapConfig, RateLimitConfig, ReconnectColdConfig, ReconnectFrozenConfig,
+    ReconnectHolddownConfig, ReconnectLogConfig, ServerOverride, StatusCacheConfig,
 };
 
 // ---- Storage layout -------------------------------------------------------
@@ -75,6 +75,8 @@ struct Settings {
     join: JoinConfig,
     #[serde(default)]
     hello: HelloConfig,
+    #[serde(default)]
+    ipc: IpcConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nuke_proposal_ttl: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -531,6 +533,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
             status_cache: StatusCacheConfig::default(),
             join: JoinConfig::default(),
             hello: HelloConfig::default(),
+            ipc: IpcConfig::default(),
             nuke_proposal_ttl: None,
             listen_port: None,
             poller_interval: None,
@@ -582,6 +585,7 @@ fn load_in(dir: &Path) -> Result<AppConfig> {
         status_cache: settings.status_cache,
         join: settings.join,
         hello: settings.hello,
+        ipc: settings.ipc,
         nuke_proposal_ttl: settings.nuke_proposal_ttl,
         listen_port: settings.listen_port,
         poller_interval: settings.poller_interval,
@@ -664,6 +668,7 @@ fn save_settings_in(dir: &Path, config: &AppConfig) -> Result<()> {
         status_cache: config.status_cache.clone(),
         join: config.join.clone(),
         hello: config.hello.clone(),
+        ipc: config.ipc.clone(),
         nuke_proposal_ttl: config.nuke_proposal_ttl,
         listen_port: config.listen_port,
         poller_interval: config.poller_interval,
