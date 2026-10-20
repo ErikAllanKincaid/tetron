@@ -2289,6 +2289,47 @@ mod reconnect_tests {
         );
     }
 
+    // PEER-IP-BIND-002: a reconnect re-registers the peer under the roster
+    // address, not the address stored when the old connection was first
+    // registered.
+
+    fn roster_member_at(ip: Ipv4Addr) -> Member {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = 9;
+        Member {
+            identity: SecretKey::from(key_bytes).public(),
+            ip,
+            is_coordinator: false,
+            hostname: None,
+            collision_index: 0,
+            last_seen: None,
+            veilid_node_id: None,
+        }
+    }
+
+    #[test]
+    fn reconnect_route_ip_prefers_roster_over_stored() {
+        let stored = Ipv4Addr::new(10, 88, 0, 50);
+        let roster = Ipv4Addr::new(10, 88, 0, 20);
+        let m = roster_member_at(roster);
+        assert_eq!(reconnect_route_ip(Some(&m), stored), roster);
+    }
+
+    #[test]
+    fn reconnect_route_ip_keeps_stored_when_roster_agrees() {
+        let ip = Ipv4Addr::new(10, 88, 0, 20);
+        let m = roster_member_at(ip);
+        assert_eq!(reconnect_route_ip(Some(&m), ip), ip);
+    }
+
+    #[test]
+    fn reconnect_route_ip_falls_back_to_stored_when_unlisted() {
+        // Not on the roster: CONVERGE-010 abandons the dial before any
+        // re-add, so this arm only keeps the function total.
+        let stored = Ipv4Addr::new(10, 88, 0, 50);
+        assert_eq!(reconnect_route_ip(None, stored), stored);
+    }
+
     // CONVERGE-011: cold-peer backoff cap escalation.
     // CONVERGE-013: a third, frozen tier above cold -- same shape, one more
     // threshold/cap pair.
