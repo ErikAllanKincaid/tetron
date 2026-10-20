@@ -1864,3 +1864,36 @@ class PeerRouteBoundToRosterIp(Requirement):
     member accept path consistent with them and does not fix that.
     """
     req_id = "PEER-IP-BIND-001"
+
+
+class ReconnectReAddUsesRosterIp(Requirement):
+    """REQUIREMENT-ID: PEER-IP-BIND-002
+
+    Depends on PEER-IP-BIND-001 (reuses its roster-IP resolver).
+
+    Both reconnect loops re-register a peer under `DisconnectEvent.ip`, the
+    address stored when the connection was first registered, without
+    consulting the roster: `spawn_reconnect_loop` (`join.rs`, the
+    `peers.add` after "reconnected to peer") and
+    `spawn_coordinator_dial_retry` (`coordinator.rs`, after "coordinator
+    reconnected to member"). A route poisoned before PEER-IP-BIND-001 (or an
+    address that legitimately changed in the roster since) therefore
+    survives every reconnect. The poisoning also displaces the real owner's
+    connection in the peer table; when that connection later drops it is
+    logged as a stale disconnect and never redialed.
+
+    **The fix:** at both re-add sites the address is re-resolved from the
+    current roster (`live_state`/`state`) immediately before `peers.add`,
+    and the IPv6 address is derived from the identity as before. If the peer
+    is no longer on the roster the existing CONVERGE-010 recheck already
+    abandons the dial, so no new branch is needed for that case.
+
+    The other `PeerTable::add` call sites (`accept.rs` coordinator paths,
+    `join.rs` dial-all paths, `create_join.rs` restore) take the address
+    from the roster already and are not changed.
+
+    **Tests:** a unit test of the re-resolve helper with a roster whose IP
+    differs from the stored event IP; `reconnect-storm` and
+    `coordinator-reconnect` testsuite regression.
+    """
+    req_id = "PEER-IP-BIND-002"

@@ -297,7 +297,13 @@ fn spawn_coordinator_dial_retry(
             // peer never produces a fresh disconnect event for the outer
             // handler to react to, so this task must re-check itself before
             // every attempt.
-            let in_roster = state.read().unwrap().members.get(&peer_id).is_some();
+            // PEER-IP-BIND-002: the same read re-resolves the roster address
+            // the peer is re-registered under below.
+            let (in_roster, peer_ip) = {
+                let s = state.read().unwrap();
+                let m = s.members.get(&peer_id);
+                (m.is_some(), reconnect_route_ip(m, peer_ip))
+            };
             let was_pruned = pruned_peers
                 .remove(&(network_name.clone(), peer_id))
                 .is_some();

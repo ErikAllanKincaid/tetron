@@ -585,6 +585,16 @@ pub(crate) fn dial_retry_decision(in_roster: bool, was_pruned_locally: bool) -> 
     DialRetryDecision::KeepDialing
 }
 
+/// PEER-IP-BIND-002: the overlay IPv4 a reconnect re-registers a peer under.
+/// The roster member's address wins; `stored` (the address recorded when the
+/// dropped connection was first registered) is only a fallback for a peer no
+/// longer listed, which the CONVERGE-010 recheck abandons before any re-add.
+/// Re-resolving every attempt means a route registered under a wrong address
+/// does not survive a reconnect, and a roster address change is picked up.
+pub(crate) fn reconnect_route_ip(roster: Option<&Member>, stored: Ipv4Addr) -> Ipv4Addr {
+    crate::membership::resolve_hello_ip(roster, None).unwrap_or(stored)
+}
+
 /// Classifies the connection that just dropped as a flap or a healthy drop,
 /// and returns the starting state for the next reconnect task against this
 /// peer (RECONNECT-STORM-001, PURE-LOGIC-001).

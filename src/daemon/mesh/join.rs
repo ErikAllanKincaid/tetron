@@ -1253,7 +1253,13 @@ pub(crate) fn spawn_reconnect_loop(
                     // re-register a kicked peer that later comes back online.
                     // Consuming the `pruned_peers` entry here has the same
                     // one-shot semantics as the outer handler's consumption.
-                    let in_roster = live_state.read().unwrap().members.get(&peer_id).is_some();
+                    // PEER-IP-BIND-002: the same read re-resolves the roster
+                    // address the peer is re-registered under below.
+                    let (in_roster, peer_ip) = {
+                        let s = live_state.read().unwrap();
+                        let m = s.members.get(&peer_id);
+                        (m.is_some(), reconnect_route_ip(m, peer_ip))
+                    };
                     let was_pruned = pruned_peers.remove(&(net_name.clone(), peer_id)).is_some();
                     if dial_retry_decision(in_roster, was_pruned)
                         == DialRetryDecision::AbandonPeerGone
