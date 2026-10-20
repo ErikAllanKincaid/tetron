@@ -311,7 +311,12 @@ pub const IPC_REQUEST_TIMEOUT_SECS: u64 = 10;
 /// Compiled default for `ipc.response-timeout`, in seconds (IPC-ADMISSION-001).
 pub const IPC_RESPONSE_TIMEOUT_SECS: u64 = 10;
 
-/// IPC server overrides (IPC-ADMISSION-001). Set via `tetron config set
+/// Compiled default for `ipc.max-clients` (IPC-ADMISSION-002).
+pub const IPC_MAX_CLIENTS: usize = 256;
+/// Compiled default for `ipc.reserved-clients` (IPC-ADMISSION-002).
+pub const IPC_RESERVED_CLIENTS: usize = 16;
+
+/// IPC server overrides (IPC-ADMISSION-001/002). Set via `tetron config set
 /// ipc.<key> <value>`; unset (or set to 0/empty) to return to the default.
 /// The IPC socket is world-connectable by design, so these bound what a
 /// client that stalls can cost the daemon.
@@ -327,9 +332,32 @@ pub struct IpcConfig {
     /// answer from holding a task and a descriptor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_timeout_secs: Option<u64>,
+    /// Concurrent IPC handlers the daemon admits (IPC-ADMISSION-002).
+    /// Default 256. Read once at bind, so a change needs a daemon restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_clients: Option<usize>,
+    /// Further handler slots only root or the operator UID can use
+    /// (IPC-ADMISSION-002), so a full general pool cannot lock the
+    /// administrator out. Default 16. Read once at bind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_clients: Option<usize>,
 }
 
 impl IpcConfig {
+    /// The resolved general-slot count: override if set and non-zero, else the default.
+    pub fn max_clients_or_default(&self) -> usize {
+        self.max_clients
+            .filter(|n| *n > 0)
+            .unwrap_or(IPC_MAX_CLIENTS)
+    }
+
+    /// The resolved reserve size: override if set and non-zero, else the default.
+    pub fn reserved_clients_or_default(&self) -> usize {
+        self.reserved_clients
+            .filter(|n| *n > 0)
+            .unwrap_or(IPC_RESERVED_CLIENTS)
+    }
+
     /// The resolved request wait: override if set and non-zero, else the default.
     pub fn request_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(

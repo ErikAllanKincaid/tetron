@@ -268,7 +268,7 @@ pub fn config_set(cfg: &mut AppConfig, key: &str, value: &str, replace: bool) ->
              reconnect-frozen.<threshold|backoff>, \
              reconnect-holddown.<min-uptime|jitter-pct>, status-cache.interval, \
              join.request-timeout, hello.timeout, \
-             ipc.<request-timeout|response-timeout>, or \
+             ipc.<request-timeout|response-timeout|max-clients|reserved-clients>, or \
              ratelimit.<capacity|refill-per-sec|strike-limit|global-capacity|\
              global-refill-per-sec|global-strike-limit>)"
         ),
@@ -480,6 +480,8 @@ fn set_ipc_key(ic: &mut IpcConfig, key: &str, entries: &[String], reset: bool) -
         match sub {
             "request-timeout" => ic.request_timeout_secs = None,
             "response-timeout" => ic.response_timeout_secs = None,
+            "max-clients" => ic.max_clients = None,
+            "reserved-clients" => ic.reserved_clients = None,
             other => anyhow::bail!("unknown ipc config key: {other}"),
         }
         return Ok(());
@@ -491,6 +493,10 @@ fn set_ipc_key(ic: &mut IpcConfig, key: &str, entries: &[String], reset: bool) -
         }
         "response-timeout" => {
             ic.response_timeout_secs = Some(parse_ratelimit_value::<u64>(&entries[0])?)
+        }
+        "max-clients" => ic.max_clients = Some(parse_ratelimit_value::<usize>(&entries[0])?),
+        "reserved-clients" => {
+            ic.reserved_clients = Some(parse_ratelimit_value::<usize>(&entries[0])?)
         }
         other => anyhow::bail!("unknown ipc config key: {other}"),
     }
@@ -762,6 +768,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             let val = match sub {
                 "request-timeout" => render_opt(cfg.ipc.request_timeout_secs),
                 "response-timeout" => render_opt(cfg.ipc.response_timeout_secs),
+                "max-clients" => render_opt(cfg.ipc.max_clients),
+                "reserved-clients" => render_opt(cfg.ipc.reserved_clients),
                 other => anyhow::bail!("unknown ipc config key: {other}"),
             };
             return Ok((k.to_string(), val));
@@ -869,6 +877,8 @@ pub fn config_get(cfg: &AppConfig, key: Option<&str>) -> Result<Vec<(String, Str
             row("hello.timeout")?,
             row("ipc.request-timeout")?,
             row("ipc.response-timeout")?,
+            row("ipc.max-clients")?,
+            row("ipc.reserved-clients")?,
             row("nuke-proposal-ttl")?,
             row("listen-port")?,
             row("poller-interval")?,
@@ -956,6 +966,33 @@ mod tests {
             replace: true,
         };
         assert_eq!(resolve_upstreams(&rep, captured.clone()), vec![one]);
+    }
+
+    #[test]
+    fn config_set_get_ipc_slots() {
+        // IPC-ADMISSION-002: concurrent-handler cap and the privileged reserve.
+        let mut cfg = AppConfig::default();
+        for key in ["ipc.max-clients", "ipc.reserved-clients"] {
+            assert_eq!(config_get(&cfg, Some(key)).unwrap()[0].1, "<default>");
+        }
+        assert_eq!(cfg.ipc.max_clients_or_default(), 256);
+        assert_eq!(cfg.ipc.reserved_clients_or_default(), 16);
+
+        config_set(&mut cfg, "ipc.max-clients", "64", false).unwrap();
+        config_set(&mut cfg, "ipc.reserved-clients", "4", false).unwrap();
+        assert_eq!(cfg.ipc.max_clients_or_default(), 64);
+        assert_eq!(cfg.ipc.reserved_clients_or_default(), 4);
+        assert_eq!(
+            config_get(&cfg, Some("ipc.max-clients")).unwrap()[0].1,
+            "64"
+        );
+
+        // Empty resets; a stored 0 resolves to the default (no way to remove the cap).
+        config_set(&mut cfg, "ipc.max-clients", "", false).unwrap();
+        assert_eq!(cfg.ipc.max_clients, None);
+        cfg.ipc.reserved_clients = Some(0);
+        assert_eq!(cfg.ipc.reserved_clients_or_default(), 16);
+        assert!(config_set(&mut cfg, "ipc.max-clients", "many", false).is_err());
     }
 
     #[test]
