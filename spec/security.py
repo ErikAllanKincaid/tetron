@@ -2014,3 +2014,45 @@ class IpcRequestAndReplyDeadlines(Requirement):
     request is returned. `config set/get/unset` round trip for both keys.
     """
     req_id = "IPC-ADMISSION-001"
+
+
+class IpcClientSlotsWithPrivilegedReserve(Requirement):
+    """REQUIREMENT-ID: IPC-ADMISSION-002
+
+    Depends on IPC-ADMISSION-001 (the `ipc` settings group, and the bounded
+    handler that holds the slot).
+
+    Even with deadlines, a local user can open connections faster than they
+    expire. The daemon admits at most `ipc.max-clients` concurrent IPC
+    handlers (default **256**), enforced by a semaphore the accept loop tries
+    to take without waiting. On top of that, `ipc.reserved-clients` (default
+    **16**) further slots are available only to a privileged caller: root,
+    or the configured operator UID (`operator_uid`, the same identity
+    `check_authorized` already uses), read from `SO_PEERCRED` at accept. A
+    privileged connection takes a general slot if one is free and the
+    reserve otherwise; an unprivileged one can only ever use the general
+    slots. Without the reserve a flat cap would only move the denial of
+    service: an attacker fills 256 slots and the administrator is refused
+    when running `tetron down`. The worst case is 272 descriptors, below the
+    1024 soft limit.
+
+    **When no slot is free** the connection is answered with a best-effort,
+    non-blocking write of a pre-encoded `IpcMessage::Error` ("daemon busy:
+    too many IPC clients") and closed at once. The write is a single
+    `try_write` of a small frame into an empty socket buffer, so no task is
+    spawned and nothing an attacker does can park it. This reuses the
+    existing error message, so there is no `tetron-proto` change and no
+    addon change; clients show the text instead of "connection closed".
+
+    The two sizes are read once at bind, so changing them needs a daemon
+    restart (documented in `docs/CLI_REFERENCE.md`). Values of 0 reset to the
+    defaults; there is no way to remove the cap.
+
+    **Tests:** pure unit tests of the slot logic (`IpcSlots::try_admit`):
+    unprivileged callers are refused once the general slots are full while
+    privileged callers still get the reserve; dropping a permit frees a slot;
+    the reserve is not usable by an unprivileged caller. Tests of the pure
+    `is_privileged_uid` (root, operator, other, unknown). Config round trip
+    for both keys.
+    """
+    req_id = "IPC-ADMISSION-002"

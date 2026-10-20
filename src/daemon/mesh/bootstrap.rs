@@ -288,6 +288,13 @@ async fn serve_ipc(
     set_socket_permissions(&socket_path);
     tracing::info!(path = %socket_path.display(), "IPC socket listening");
 
+    // IPC-ADMISSION-002: handler slots, sized once at bind.
+    let ipc_cfg = config::load().map(|c| c.ipc).unwrap_or_default();
+    let slots = IpcSlots::new(
+        ipc_cfg.max_clients_or_default(),
+        ipc_cfg.reserved_clients_or_default(),
+    );
+
     loop {
         tokio::select! {
             _ = token.cancelled() => {
@@ -311,8 +318,25 @@ async fn serve_ipc(
             }
             result = listener.accept() => match result {
                 Ok((stream, _)) => {
+                    let uid = stream.peer_cred().ok().map(|c| c.uid());
+                    let permit = slots.try_admit(|| {
+                        // Only read on a full general pool: root needs no
+                        // lookup, anyone else is compared with the operator UID.
+                        uid == Some(0)
+                            || is_privileged_uid(
+                                uid,
+                                config::load().ok().and_then(|c| c.operator_uid),
+                            )
+                    });
+                    let Some(permit) = permit else {
+                        // No slot: answer without waiting and close.
+                        tracing::debug!("IPC client turned away: no free handler slot");
+                        let _ = stream.try_write(&busy_reply_frame());
+                        continue;
+                    };
                     let daemon = daemon.clone();
                     tokio::spawn(async move {
+                        let _permit = permit; // held for the life of the handler
                         if let Err(e) = handle_ipc_client(stream, &daemon).await {
                             tracing::debug!(error = %e, "IPC client error");
                         }
@@ -399,6 +423,63 @@ async fn handle_ipc_client(stream: UnixStream, daemon: &Arc<MeshManager>) -> Res
     Ok(())
 }
 
+/// IPC-ADMISSION-002: concurrent IPC handler slots. `general` is open to every
+/// caller; `reserve` only to a privileged one (root or the operator UID), so a
+/// full general pool cannot lock the administrator out. Admission never waits:
+/// an over-cap connection is turned away at once.
+pub(crate) struct IpcSlots {
+    general: Arc<tokio::sync::Semaphore>,
+    reserve: Arc<tokio::sync::Semaphore>,
+}
+
+impl IpcSlots {
+    pub(crate) fn new(general: usize, reserve: usize) -> Self {
+        Self {
+            general: Arc::new(tokio::sync::Semaphore::new(general)),
+            reserve: Arc::new(tokio::sync::Semaphore::new(reserve)),
+        }
+    }
+
+    /// Take a slot without waiting. A general slot is preferred for everyone, so
+    /// ordinary administration does not drain the reserve; `privileged` is only
+    /// consulted (it may read config) once the general slots are full.
+    pub(crate) fn try_admit(
+        &self,
+        privileged: impl FnOnce() -> bool,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        if let Ok(permit) = self.general.clone().try_acquire_owned() {
+            return Some(permit);
+        }
+        if privileged() {
+            return self.reserve.clone().try_acquire_owned().ok();
+        }
+        None
+    }
+}
+
+/// IPC-ADMISSION-002: root, or the configured operator UID (the same identity
+/// `check_authorized` accepts for mutating requests). An unknown caller is
+/// never privileged.
+fn is_privileged_uid(uid: Option<u32>, operator: Option<u32>) -> bool {
+    uid == Some(0) || (uid.is_some() && uid == operator)
+}
+
+/// IPC-ADMISSION-002: the pre-encoded reply for a connection turned away because
+/// no slot was free. Written with a single non-blocking `try_write` into the
+/// empty socket buffer, so no task is spawned and nothing the client does can
+/// park it.
+fn busy_reply_frame() -> bytes::BytesMut {
+    use tokio_util::codec::Encoder;
+    let mut buf = bytes::BytesMut::new();
+    let _ = ipc::MsgpackCodec::<IpcMessage>::new().encode(
+        IpcMessage::Error {
+            message: "daemon busy: too many IPC clients; try again shortly".to_string(),
+        },
+        &mut buf,
+    );
+    buf
+}
+
 /// The client did not deliver a complete request within `ipc.request-timeout`.
 #[derive(Debug)]
 struct RequestTimedOut;
@@ -445,6 +526,73 @@ mod tests {
     // bounded, so a client that stalls cannot park a task and a descriptor.
 
     const SHORT: std::time::Duration = std::time::Duration::from_millis(80);
+
+    // IPC-ADMISSION-002: a bounded number of concurrent handlers, with a
+    // reserve only root or the operator can use.
+
+    #[test]
+    fn unprivileged_callers_stop_at_the_general_slots() {
+        let slots = IpcSlots::new(2, 1);
+        let a = slots.try_admit(|| false);
+        let b = slots.try_admit(|| false);
+        assert!(a.is_some() && b.is_some());
+        // General slots are full: an unprivileged caller is refused and the
+        // reserve is untouched.
+        assert!(slots.try_admit(|| false).is_none());
+        assert!(slots.try_admit(|| true).is_some());
+    }
+
+    #[test]
+    fn privileged_callers_fall_back_to_the_reserve_then_stop() {
+        let slots = IpcSlots::new(1, 2);
+        let _general = slots.try_admit(|| true).unwrap();
+        let _r1 = slots.try_admit(|| true).unwrap();
+        let _r2 = slots.try_admit(|| true).unwrap();
+        assert!(slots.try_admit(|| true).is_none());
+    }
+
+    #[test]
+    fn privileged_callers_prefer_general_slots() {
+        // A privileged caller must not burn the reserve while a general slot
+        // is free, or the reserve would drain under ordinary admin use.
+        let slots = IpcSlots::new(1, 1);
+        let _p = slots.try_admit(|| true).unwrap();
+        // The general slot is taken; the reserve is still free for the next one.
+        assert!(slots.try_admit(|| true).is_some());
+    }
+
+    #[test]
+    fn dropping_a_permit_frees_its_slot() {
+        let slots = IpcSlots::new(1, 0);
+        let p = slots.try_admit(|| false).unwrap();
+        assert!(slots.try_admit(|| false).is_none());
+        drop(p);
+        assert!(slots.try_admit(|| false).is_some());
+    }
+
+    #[test]
+    fn privileged_uid_is_root_or_the_operator() {
+        assert!(is_privileged_uid(Some(0), None));
+        assert!(is_privileged_uid(Some(1000), Some(1000)));
+        assert!(!is_privileged_uid(Some(1001), Some(1000)));
+        assert!(!is_privileged_uid(Some(1000), None));
+        // Unknown caller is never privileged, even with no operator set.
+        assert!(!is_privileged_uid(None, None));
+    }
+
+    #[test]
+    fn busy_reply_is_a_decodable_error_frame() {
+        use tokio_util::codec::Decoder;
+        let mut buf = busy_reply_frame();
+        let msg = ipc::MsgpackCodec::<IpcMessage>::new()
+            .decode(&mut buf)
+            .unwrap()
+            .unwrap();
+        match msg {
+            IpcMessage::Error { message } => assert!(message.contains("busy"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn silent_client_times_out_instead_of_parking_the_handler() {
