@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-10-20
+
 ### Fixed
 
 - **A daemon out of file descriptors no longer spins and floods the log on the IPC socket** (`IPC-ADMISSION-003`). When the daemon ran out of descriptors, accepting a local client failed instantly and the loop retried at full speed, writing a warning on every pass. After an accept error it now pauses (50 ms, doubling to 1 second), logs the first error of a run once, and reports how many repeats it saw when accepting recovers. Shutdown and other daemon events are not delayed by the pause.
