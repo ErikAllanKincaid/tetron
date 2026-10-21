@@ -349,7 +349,7 @@ async fn serve_ipc(
                     let Some(permit) = permit else {
                         // No slot: answer without waiting and close.
                         tracing::debug!("IPC client turned away: no free handler slot");
-                        let _ = stream.try_write(&busy_reply_frame());
+                        send_busy_reply(stream);
                         continue;
                     };
                     let daemon = daemon.clone();
@@ -524,6 +524,23 @@ fn busy_reply_frame() -> bytes::BytesMut {
     buf
 }
 
+/// IPC-ADMISSION-002: answer a turned-away client with the busy frame and close.
+/// Written through the std fd, not `tokio::net::UnixStream::try_write`: tokio
+/// checks its cached readiness first, and on a socket the reactor has not yet
+/// seen as writable that is `WouldBlock`, which dropped the frame for about one
+/// client in five under a real flood (found in bare-metal testing). The std
+/// socket stays non-blocking, and a ~60 byte frame into an empty buffer cannot
+/// fill it, so this never blocks and spawns nothing. Returns whether the whole
+/// frame was written.
+fn send_busy_reply(stream: UnixStream) -> bool {
+    use std::io::Write;
+    let Ok(mut std_stream) = stream.into_std() else {
+        return false;
+    };
+    let frame = busy_reply_frame();
+    matches!(std_stream.write(&frame), Ok(n) if n == frame.len())
+}
+
 /// The client did not deliver a complete request within `ipc.request-timeout`.
 #[derive(Debug)]
 struct RequestTimedOut;
@@ -570,6 +587,42 @@ mod tests {
     // bounded, so a client that stalls cannot park a task and a descriptor.
 
     const SHORT: std::time::Duration = std::time::Duration::from_millis(80);
+
+    // IPC-ADMISSION-002 (bare-metal finding): the busy frame must reach every
+    // turned-away client. `tokio::net::UnixStream::try_write` on a socket the
+    // reactor has not yet seen as writable returns WouldBlock, which dropped
+    // the frame for roughly one client in five under a real flood.
+
+    #[tokio::test]
+    async fn busy_reply_reaches_every_turned_away_client() {
+        use std::io::Read;
+        use tokio_util::codec::Decoder;
+        let dir = std::env::temp_dir().join(format!("tetron-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let want = busy_reply_frame().len();
+        for i in 0..200 {
+            let mut client = std::os::unix::net::UnixStream::connect(&path).unwrap();
+            client
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            // Accept and answer immediately, as the accept loop does.
+            let (stream, _) = listener.accept().await.unwrap();
+            assert!(send_busy_reply(stream), "write failed on connection {i}");
+            let mut buf = vec![0u8; want];
+            client
+                .read_exact(&mut buf)
+                .unwrap_or_else(|e| panic!("connection {i}: no busy frame: {e}"));
+            let mut bytes = bytes::BytesMut::from(&buf[..]);
+            let msg = ipc::MsgpackCodec::<IpcMessage>::new()
+                .decode(&mut bytes)
+                .unwrap()
+                .unwrap();
+            assert!(matches!(msg, IpcMessage::Error { .. }));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     // IPC-ADMISSION-003: after an accept error the loop pauses, briefly and
     // growing, instead of spinning.

@@ -2039,8 +2039,17 @@ class IpcClientSlotsWithPrivilegedReserve(Requirement):
     **When no slot is free** the connection is answered with a best-effort,
     non-blocking write of a pre-encoded `IpcMessage::Error` ("daemon busy:
     too many IPC clients") and closed at once. The write is a single
-    `try_write` of a small frame into an empty socket buffer, so no task is
-    spawned and nothing an attacker does can park it. This reuses the
+    non-blocking `write` of a small frame into an empty socket buffer, so no
+    task is spawned and nothing an attacker does can park it. **It goes
+    through the std fd (`UnixStream::into_std`), not tokio's `try_write`**:
+    found in bare-metal testing 2026-10-20 (300 idle unprivileged clients
+    against a live daemon: 36 got the frame, 8 got nothing). tokio's
+    `try_write` consults cached readiness first, which is empty on a socket
+    the reactor has not yet seen as writable, so it returns `WouldBlock` and
+    the frame is silently lost (200 of 200 failures when accepting and
+    writing back to back in a test). `send_busy_reply` is tested by accepting
+    and answering 200 connections in a row and requiring every client to
+    receive a decodable `IpcMessage::Error`. This reuses the
     existing error message, so there is no `tetron-proto` change and no
     addon change; clients show the text instead of "connection closed".
 
