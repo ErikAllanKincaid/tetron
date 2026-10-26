@@ -87,6 +87,7 @@
   }
   @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .stage img, .steps .step { transition:none; } }
   .mesh { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; background:#05070a; padding:18px; }
+  .apk { display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; margin:.4rem 0 0; } .apk .btn { margin-top:0; } .apk span { color:var(--muted); font-size:.85rem; flex:1 1 18rem; min-width:0; }
   .legend { margin:12px 0 0; font:.78rem var(--mono); color:var(--muted); text-align:center; }
   .install code { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
   .mesh svg { display:block; width:100%; height:auto; }
@@ -121,7 +122,8 @@
   <h1>Every machine you own, on <em>one private network</em>.</h1>
   <p class="lede">Reach your laptop, home server, NAS and phone as if they sat on the same desk, from anywhere. No port forwarding, no static IPs, no account, nothing exposed to the internet. Invite a machine and it is on your network.</p>
   <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
-  <p class="sub">Linux (x86_64, aarch64) and macOS (Apple silicon, Intel). Installs the daemon, a web dashboard and a tray client.</p>
+  <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
+  <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
   <div class="mesh">
     <svg viewBox="0 0 760 300" role="img" aria-label="Four machines connected directly to each other through NAT, with one relayed link">
       <circle class="hub" cx="380" cy="150" r="112"/>
@@ -134,7 +136,7 @@
       </svg>
     <p class="legend"><span style="color:var(--accent)">&#x2501;&#x2501;</span> direct, hole-punched &nbsp;&nbsp; <span style="color:var(--warn)">&#x254C;&#x254C;</span> encrypted relay when no direct path exists</p>
   </div>
-  <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">MPL 2.0</span></div>
+  <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
 </div></header>
 
 <section id="why"><div class="wrap">
@@ -247,6 +249,7 @@ next: tetron join &lt;invite-key&gt;   single-use invite
 <section><div class="wrap">
   <h2>Try it now.</h2>
   <div class="install" style="margin-top:1rem"><span class="p">$</span><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code></div>
+  <p class="apk" style="margin-top:1rem"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>Debug build, pre-release.</span></p>
 </div></section>
 
 <footer><div class="wrap">
