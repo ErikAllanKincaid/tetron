@@ -39,6 +39,7 @@
   .lede { font-size:1.2rem; color:var(--muted); max-width:40rem; margin:0 0 1.6rem; text-wrap:pretty; }
   section { padding:4.5rem 0; border-top:1px solid var(--border); }
   .hero { padding:4rem 0 3rem; border:0; }
+  .inst { margin:1.8rem 0 .5rem; }
   .install { display:flex; align-items:center; gap:10px; background:var(--code); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font:.88rem var(--mono); max-width:46rem; }
   .install code { flex:1; overflow-x:auto; white-space:nowrap; color:var(--fg); }
   .install .p { color:var(--accent); }
@@ -139,6 +140,7 @@
   <p class="eyebrow">Peer-to-peer mesh VPN <span class="badge">experimental</span></p>
   <h1>Every machine you own, on <em>one private network</em>.</h1>
   <p class="lede">Reach your laptop, home server, NAS and phone as if they sat on the same desk, from anywhere. No port forwarding, no static IPs, no account, nothing exposed to the internet. Invite a machine and it is on your network.</p>
+  <p class="eyebrow inst">Install</p>
   <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
   <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
   <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
