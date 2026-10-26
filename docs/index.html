@@ -128,6 +128,9 @@
   .term pre.on { opacity:1; } .term .c { color:var(--muted); } .term .p { color:var(--accent); } .term .w { color:var(--warn); }
   .shots { display:grid; grid-template-columns:repeat(auto-fit,minmax(12rem,1fr)); gap:14px; margin-top:2rem; align-items:start; }
   .shots figure { margin:0; } .shots img { display:block; width:100%; height:17rem; object-fit:scale-down; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); }
+  .use { font:700 clamp(1.1rem,3vw,1.5rem)/1.2 var(--mono); letter-spacing:.2em; text-transform:uppercase; text-align:center; color:var(--accent); margin:3rem 0 0; }
+  .tui { margin:1.2rem auto 0; max-width:40rem; } .tui img { display:block; width:100%; height:auto; border-radius:8px; border:1px solid var(--border); box-shadow:0 20px 60px var(--shadow); }
+  .tui figcaption { font:.78rem var(--mono); color:var(--muted); margin-top:.5rem; text-align:center; }
   .shots figcaption { font:.78rem var(--mono); color:var(--muted); margin-top:.4rem; }
   .paper { margin-top:2rem; background:#f4f2ec; border:1px solid var(--border); border-radius:12px; padding:10px; } .paper img { display:block; width:100%; height:auto; border-radius:6px; }
   .note { color:var(--muted); font-size:.88rem; max-width:44rem; }
@@ -196,11 +199,14 @@ next: tetron join &lt;invite-key&gt;   single-use invite
       <p class="cap">sample commands, addresses shown as examples</p>
     </div>
   </div>
+  <p class="use">Use the GUI</p>
   <div class="shots">
     <figure><img src="images/systray1.png" alt="tetron-systray menu" loading="lazy"><figcaption>tray client</figcaption></figure>
     <figure><img src="images/webui1.png" alt="tetron-webui create network form" loading="lazy"><figcaption>web dashboard: create</figcaption></figure>
     <figure><img src="images/webui3.png" alt="tetron-webui join network form" loading="lazy"><figcaption>web dashboard: join</figcaption></figure>
   </div>
+  <p class="use">Use the TUI</p>
+  <figure class="tui"><img src="images/tetron-tui.png" alt="tetron-tui: networks on the left, peers with direct or relay path and round-trip time on the right, key hints along the bottom" loading="lazy"><figcaption>terminal dashboard over ssh or the local console &middot; <a href="https://github.com/ErikAllanKincaid/tetron-tui">tetron-tui</a></figcaption></figure>
 </div></section>
 
 <section id="why"><div class="wrap">
