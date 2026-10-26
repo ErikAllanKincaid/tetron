@@ -139,7 +139,7 @@
       </svg>
     <p class="legend"><span style="color:var(--accent)">&#x2501;&#x2501;</span> direct, hole-punched &nbsp;&nbsp; <span style="color:var(--warn)">&#x254C;&#x254C;</span> encrypted relay when no direct path exists</p>
   </div>
-  <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
+  <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">optional Tor and Veilid</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
 </div></header>
 
 <section id="why"><div class="wrap">
@@ -154,7 +154,8 @@
     <div class="win"><div class="bar"><i></i><i></i><i></i>identity</div><div class="body"><h3>Stable addresses</h3><p>Each machine derives its own IPv4 and IPv6 address from its key. Same machine, same address, every time.</p></div></div>
     <div class="win"><div class="bar"><i></i><i></i><i></i>nics</div><div class="body"><h3>Separate networks stay separate</h3><p>Each network gets its own TUN device and subnet, like a second network card. Family, work and lab never mix.</p></div></div>
     <div class="win"><div class="bar"><i></i><i></i><i></i>coexist</div><div class="body"><h3>Plays well with others</h3><p>The subnet is configurable, so tetron runs next to Tailscale and other overlays that claim the usual ranges.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>tor</div><div class="body"><h3>Optional Tor</h3><p>Route a network over Tor with one flag. Tor and non-Tor peers can share a network.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>tor</div><div class="body"><h3>Optional Tor</h3><p>Route a network over Tor with <code>--tor</code>. It needs a local Tor daemon, and Tor and non-Tor peers can share a network.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Optional Veilid</h3><p>Add the Veilid network as another path with <code>--veilid</code>, through the tetron-veilid companion. Choose one of Tor or Veilid per network.</p></div></div>
   </div>
 </div></section>
 
@@ -262,6 +263,7 @@ next: tetron join &lt;invite-key&gt;   single-use invite
   <h3 class="grp">Build on it</h3>
   <div class="grid">
     <div class="win"><div class="bar"><i></i><i></i><i></i>board</div><div class="body"><h3>Message board<span class="tag">opt-in</span></h3><p>A browser message board for one network. Anyone on the mesh can read and post text and images, with no accounts.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-messageboard">tetron-messageboard</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Veilid transport<span class="tag">opt-in</span></h3><p>Builds and installs the companion daemon that lets a network use Veilid as an extra path. It is a separate install, so core stays small.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-veilid">tetron-veilid</a></div></div>
     <div class="win"><div class="bar"><i></i><i></i><i></i>photos</div><div class="body"><h3>Phone photo backup<span class="tag">opt-in</span></h3><p>tetron-sync-receiver turns a home computer into a destination that accepts only allowed phones, over the mesh. tetron-mobile-sync is the phone side.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-sync-receiver">tetron-sync-receiver</a></div></div>
   </div>
   <p class="note" style="margin-top:1.4rem"><code>install-tetron-suite.sh --install-all</code> installs every addon above except the Android app and tetron-relay, which have their own installs. Addons are optional, and tetron works without any of them.</p>
