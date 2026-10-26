@@ -88,6 +88,9 @@
   @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .stage img, .steps .step { transition:none; } }
   .mesh { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; background:#05070a; padding:18px; }
   .apk { display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; margin:.4rem 0 0; } .apk .btn { margin-top:0; } .apk span { color:var(--muted); font-size:.85rem; flex:1 1 18rem; min-width:0; }
+  .grp { font:.78rem var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin:2.2rem 0 0; font-weight:400; }
+  .tag { font:.66rem var(--mono); color:var(--muted); border:1px solid var(--border); border-radius:99px; padding:1px 8px; margin-left:8px; vertical-align:middle; font-weight:400; white-space:nowrap; }
+  .more { display:inline-block; margin-top:.7rem; font:.8rem var(--mono); }
   .legend { margin:12px 0 0; font:.78rem var(--mono); color:var(--muted); text-align:center; }
   .install code { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
   .mesh svg { display:block; width:100%; height:auto; }
@@ -113,7 +116,7 @@
 <body>
 <nav><div class="wrap">
   <a class="brand" href="#top"><img src="images/icon.png" alt="">tetron</a>
-  <span class="links" style="display:contents"><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#tour">tour</a><a href="#desktop">desktop</a></span>
+  <span class="links" style="display:contents"><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#tour">tour</a><a href="#ecosystem">ecosystem</a><a href="#desktop">desktop</a></span>
   <a href="https://github.com/ErikAllanKincaid/tetron">github</a>
 </div></nav>
 
@@ -237,6 +240,31 @@ next: tetron join &lt;invite-key&gt;   single-use invite
     <figure><img src="images/webui3.png" alt="tetron-webui join network form" loading="lazy"><figcaption>web dashboard: join</figcaption></figure>
     <figure><img src="images/systray1.png" alt="tetron-systray menu" loading="lazy"><figcaption>tray client</figcaption></figure>
   </div>
+</div></section>
+
+<section id="ecosystem"><div class="wrap">
+  <p class="eyebrow">Ecosystem</p>
+  <h2>One daemon, many ways in.</h2>
+  <p class="lede">Every addon is a separate, opt-in program that talks to the same local daemon, so the core stays small. The suite installer picks sensible defaults and installs any of them with one flag.</p>
+  <h3 class="grp">Control it</h3>
+  <div class="grid">
+    <div class="win"><div class="bar"><i></i><i></i><i></i>browser</div><div class="body"><h3>Web dashboard<span class="tag">default</span></h3><p>Status, create, join and leave, invites and the full admin surface, in a browser. It also has an Add-ons panel to start the rest.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-webui">tetron-webui</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>terminal</div><div class="body"><h3>Terminal dashboard<span class="tag">default</span></h3><p>A keyboard and mouse TUI over ssh or the local console. Live peers, direct or relay path and why, rtt and throughput charts, invites with a QR code, and one key to ssh to a peer.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-tui">tetron-tui</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>tray</div><div class="body"><h3>Tray client<span class="tag">default with a display</span></h3><p>Glanceable status and per-network on/off in your menu bar or system tray, with a shortcut into the other dashboards.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-systray">tetron-systray</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>android</div><div class="body"><h3>Android app<span class="tag">pre-release</span></h3><p>Join your networks from your phone. Download the debug build and sideload it.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download the .apk</a></div></div>
+  </div>
+  <h3 class="grp">Name it and keep it</h3>
+  <div class="grid">
+    <div class="win"><div class="bar"><i></i><i></i><i></i>names</div><div class="body"><h3>Hostnames<span class="tag">opt-in</span></h3><p>Writes peer names into /etc/hosts as hostname.network, so ssh homeserver.mynet works with no DNS server.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-hosts">tetron-hosts</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>backup</div><div class="body"><h3>Encrypted backup<span class="tag">opt-in</span></h3><p>One script backs up and restores your identity and network keys as a passphrase-encrypted archive. Also in the web dashboard.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron/blob/main/contrib/tetron-backup.sh">tetron-backup.sh</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>relay</div><div class="body"><h3>Your own relay<span class="tag">opt-in</span></h3><p>Turns a plain Linux server into a self-hosted relay and prints the command that points your nodes at it.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-relay">tetron-relay</a></div></div>
+  </div>
+  <h3 class="grp">Build on it</h3>
+  <div class="grid">
+    <div class="win"><div class="bar"><i></i><i></i><i></i>board</div><div class="body"><h3>Message board<span class="tag">opt-in</span></h3><p>A browser message board for one network. Anyone on the mesh can read and post text and images, with no accounts.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-messageboard">tetron-messageboard</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>photos</div><div class="body"><h3>Phone photo backup<span class="tag">opt-in</span></h3><p>tetron-sync-receiver turns a home computer into a destination that accepts only allowed phones, over the mesh. tetron-mobile-sync is the phone side.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-sync-receiver">tetron-sync-receiver</a></div></div>
+  </div>
+  <p class="note" style="margin-top:1.4rem"><code>install-tetron-suite.sh --install-all</code> installs every addon above except the Android app and tetron-relay, which have their own installs. Addons are optional, and tetron works without any of them.</p>
 </div></section>
 
 <section id="desktop"><div class="wrap">
