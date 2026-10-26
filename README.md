@@ -4,7 +4,7 @@
 
 **Tetron turns any group of machines into one private network, wherever they are.**
 
-<img src="images/icon.png" alt="tetron logo">
+<img src="docs/images/icon.png" alt="tetron logo">
 
 Tetron lets you reach every computer you own as if they were sitting on the same desk, no matter where they actually are. Turn on your laptop or phone from a coffee shop and it can talk straight to your home server, your NAS, or your other laptop -- no port forwarding, no static IPs, nothing exposed to the open internet. Install it, invite your other machines, and they're on your network.
 
@@ -19,7 +19,7 @@ Both are genuinely separate, opt-in clients talking to the same daemon underneat
 
 **Name**
 
-<img src="images/torpedo2.png" alt="Electric ray (Torpedo californica)" width="320">
+<img src="docs/images/torpedo2.png" alt="Electric ray (Torpedo californica)" width="320">
 Electric ray *Tetronarce californica*
 
 **Want more?** This README covers getting started. For detailed walkthroughs, troubleshooting, and less-common scenarios (custom subnets, Tor transport, multi-machine deployment scripts), see **[docs/HOWTO.md](docs/HOWTO.md)**. For the ideas tetron is built on -- iroh, QUIC, WireGuard -- see **[docs/BACKGROUND.md](docs/BACKGROUND.md)**.
@@ -38,16 +38,16 @@ curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contri
 
 ##### Then use the webui, opens from systray.
 
-<img title="" src="images/systray1.png" alt="systray" width="166">
+<img title="" src="docs/images/systray1.png" alt="systray" width="166">
 
 #### Create a network
 
-<img src="images/webui1.png" alt="Create" width="200">
+<img src="docs/images/webui1.png" alt="Create" width="200">
 
 #### Mint an invite.
 
 Admin => mint invite
-<img title="" src="images/webui2.png" alt="Mint invite" width="400">
+<img title="" src="docs/images/webui2.png" alt="Mint invite" width="400">
 
 ##### Send it to whoever you want to join the network.
 
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contri
 
 ##### Join the network
 
-<img title="" src="images/webui3.png" alt="Join" width="270">
+<img title="" src="docs/images/webui3.png" alt="Join" width="270">
 
 The other machines on the network will show up. 
 
