@@ -39,7 +39,8 @@
   .lede { font-size:1.2rem; color:var(--muted); max-width:40rem; margin:0 0 1.6rem; text-wrap:pretty; }
   section { padding:4.5rem 0; border-top:1px solid var(--border); }
   .hero { padding:4rem 0 3rem; border:0; }
-  .inst { font-size:clamp(1.5rem,4vw,2.2rem); font-weight:700; letter-spacing:.22em; text-align:center; margin:2.4rem 0 1rem; color:var(--accent); }
+  .inst { font-size:clamp(1.5rem,4vw,2.2rem); font-weight:700; letter-spacing:.22em; text-align:center; margin:2.4rem 0 .9rem; color:var(--accent); }
+  .inst-sub { text-align:center; color:var(--muted); font-size:1.05rem; margin:-.5rem 0 1rem; }
   .hero .install { margin-left:auto; margin-right:auto; }
   .hero .pills { justify-content:center; }
   .hero .sub { text-align:center; margin-left:auto; margin-right:auto; max-width:46rem; }
@@ -146,6 +147,7 @@
   <h1>Every machine you own, on <em>one private network</em>.</h1>
   <p class="lede">Reach your laptop, home server, NAS and phone as if they sat on the same desk, from anywhere. No port forwarding, no static IPs, no account, nothing exposed to the internet. Invite a machine and it is on your network.</p>
   <p class="eyebrow inst">Install</p>
+  <p class="inst-sub">Paste into your terminal</p>
   <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
   <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
   <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
