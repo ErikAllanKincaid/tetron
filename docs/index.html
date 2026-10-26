@@ -39,7 +39,12 @@
   .lede { font-size:1.2rem; color:var(--muted); max-width:40rem; margin:0 0 1.6rem; text-wrap:pretty; }
   section { padding:4.5rem 0; border-top:1px solid var(--border); }
   .hero { padding:4rem 0 3rem; border:0; }
-  .inst { margin:1.8rem 0 .5rem; }
+  .inst { font-size:clamp(1.5rem,4vw,2.2rem); font-weight:700; letter-spacing:.22em; text-align:center; margin:2.4rem 0 1rem; color:var(--accent); }
+  .hero .install { margin-left:auto; margin-right:auto; }
+  .hero .pills { justify-content:center; }
+  .hero .sub { text-align:center; margin-left:auto; margin-right:auto; max-width:46rem; }
+  .hero .apk { justify-content:center; text-align:center; }
+  .hero .apk span { flex:0 1 auto; }
   .install { display:flex; align-items:center; gap:10px; background:var(--code); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font:.88rem var(--mono); max-width:46rem; }
   .install code { flex:1; overflow-x:auto; white-space:nowrap; color:var(--fg); }
   .install .p { color:var(--accent); }
@@ -131,7 +136,7 @@
 <body>
 <nav><div class="wrap">
   <a class="brand" href="#top"><img src="images/icon.png" alt="">tetron</a>
-  <span class="links" style="display:contents"><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#tour">tour</a><a href="#ecosystem">ecosystem</a><a href="#desktop">desktop</a></span>
+  <span class="links" style="display:contents"><a href="#tour">tour</a><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#ecosystem">ecosystem</a><a href="#desktop">desktop</a></span>
   <button class="tbtn" id="theme" type="button" aria-label="Switch between light and dark theme">light</button>
 <a href="https://github.com/ErikAllanKincaid/tetron">github</a>
 </div></nav>
@@ -144,75 +149,8 @@
   <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
   <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
   <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
-  <div class="mesh">
-    <svg viewBox="0 0 760 300" role="img" aria-label="Four machines connected directly to each other through NAT, with one relayed link">
-      <circle class="hub" cx="380" cy="150" r="112"/>
-      <path class="direct" d="M140 70 L620 70 M140 70 L140 230 M620 70 L620 230 M140 70 L620 230 M620 70 L140 230"/>
-      <path class="relay" d="M140 230 L620 230"/>
-      <g><rect class="node" x="60" y="40" width="160" height="60" rx="8"/><text class="nm" x="80" y="66">laptop</text><text x="80" y="86">10.88.0.1</text></g>
-      <g><rect class="node" x="540" y="40" width="160" height="60" rx="8"/><text class="nm" x="560" y="66">home server</text><text x="560" y="86">10.88.0.2</text></g>
-      <g><rect class="node" x="60" y="200" width="160" height="60" rx="8"/><text class="nm" x="80" y="226">phone</text><text x="80" y="246">10.88.0.3</text></g>
-      <g><rect class="node" x="540" y="200" width="160" height="60" rx="8"/><text class="nm" x="560" y="226">NAS</text><text x="560" y="246">10.88.0.4</text></g>
-      </svg>
-    <p class="legend"><span style="color:var(--accent)">&#x2501;&#x2501;</span> direct, hole-punched &nbsp;&nbsp; <span style="color:var(--warn)">&#x254C;&#x254C;</span> encrypted relay when no direct path exists</p>
-  </div>
   <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">optional Tor and Veilid</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
 </div></header>
-
-<section id="why"><div class="wrap">
-  <p class="eyebrow">Why</p>
-  <h2>A VPN you own.</h2>
-  <p class="lede">No company sits in the middle. Your machines find each other, prove who they are and talk directly.</p>
-  <div class="grid">
-    <div class="win"><div class="bar"><i></i><i></i><i></i>reach</div><div class="body"><h3>Same desk, any place</h3><p>ssh, a web UI or a file share by mesh IP, from a coffee shop or across NAT. Any TCP or UDP app works.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>invite</div><div class="body"><h3>Invite-only</h3><p>The only way in is an invite key you mint. Single use by default, with an expiry you choose and revocation before it is used.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>direct</div><div class="body"><h3>Direct when possible</h3><p>Peers hole-punch straight to each other over QUIC. Relays only help with the introduction or when a direct path is impossible.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>crypto</div><div class="body"><h3>Always encrypted</h3><p>Every connection is end-to-end encrypted between peer identities. There is no unencrypted mode, and a relay sees only ciphertext.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>identity</div><div class="body"><h3>Stable addresses</h3><p>Each machine derives its own IPv4 and IPv6 address from its key. Same machine, same address, every time.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>nics</div><div class="body"><h3>Separate networks stay separate</h3><p>Each network gets its own TUN device and subnet, like a second network card. Family, work and lab never mix.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>coexist</div><div class="body"><h3>Plays well with others</h3><p>The subnet is configurable, so tetron runs next to Tailscale and other overlays that claim the usual ranges.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>tor</div><div class="body"><h3>Optional Tor</h3><p>Route a network over Tor with <code>--tor</code>. It needs a local Tor daemon, and Tor and non-Tor peers can share a network.</p></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Optional Veilid</h3><p>Add the Veilid network as another path with <code>--veilid</code>, through the tetron-veilid companion. Choose one of Tor or Veilid per network.</p></div></div>
-  </div>
-</div></section>
-
-<section id="how"><div class="wrap">
-  <p class="eyebrow">How it works</p>
-  <h2>Identity first, addresses second.</h2>
-  <p class="lede">Every machine runs the same small daemon. Nothing in the data path belongs to anyone else.</p>
-  <div class="two">
-    <div><h3>Create and join</h3><pre>One peer creates a network.
-It mints an invite key.
-Another machine joins with it.
-Both derive their own stable
-mesh addresses from their keys.
-They connect directly.</pre></div>
-    <div class="good"><h3>What you get</h3><pre>No login server to trust.
-No data-plane server in the path.
-Signed, tamper-evident member list.
-Co-coordinators, so the network
-survives when one machine is off.
-No firewall, DNS or ssh server added.</pre></div>
-  </div>
-  <div class="paper"><img src="images/tetron.jpeg" alt="Diagram: each tetron node runs the same daemon and connects to peers over encrypted QUIC tunnels, with shared relay and discovery infrastructure used only for introductions and NAT traversal." loading="lazy"></div>
-  <p class="note" style="margin-top:1rem">Built on <a href="https://iroh.computer">iroh</a> (QUIC, hole-punching, relays) and a DHT for discovery. For the full picture read <a href="https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html">Anatomy of a Mesh</a>.</p>
-</div></section>
-
-<section id="compare"><div class="wrap">
-  <p class="eyebrow">Compare</p>
-  <h2>Less setup than WireGuard. Less lock-in than a hosted VPN.</h2>
-  <div class="tablewrap"><table class="cmp">
-    <tr><th></th><th>Port forward + VPN server</th><th>Hosted mesh VPN</th><th class="us">tetron</th></tr>
-    <tr><td>Works behind NAT without router changes</td><td>no</td><td>yes</td><td class="us">yes</td></tr>
-    <tr><td>Needs an account or login provider</td><td>no</td><td>yes</td><td class="us">no</td></tr>
-    <tr><td>Needs a server you run and keep up</td><td>yes</td><td>no</td><td class="us">no</td></tr>
-    <tr><td>Traffic goes through a middle server</td><td>yes, yours</td><td>direct or relay</td><td class="us">direct or relay</td></tr>
-    <tr><td>Admission</td><td>keys by hand</td><td>login and admin console</td><td class="us">invite keys</td></tr>
-    <tr><td>Per-peer and per-port rules</td><td>your firewall</td><td>built in</td><td class="us">host firewall on the TUN</td></tr>
-    <tr><td>Maturity</td><td>decades</td><td>established</td><td class="us">experimental</td></tr>
-  </table></div>
-  <p class="note" style="margin-top:1rem">tetron has no built-in per-port firewall. Every member of a network reaches every port a peer exposes, so restrict ports with nftables or ufw on the tetron interface.</p>
-</div></section>
 
 <section id="tour"><div class="wrap">
   <p class="eyebrow">Tour</p>
@@ -258,6 +196,73 @@ next: tetron join &lt;invite-key&gt;   single-use invite
     <figure><img src="images/webui3.png" alt="tetron-webui join network form" loading="lazy"><figcaption>web dashboard: join</figcaption></figure>
     <figure><img src="images/systray1.png" alt="tetron-systray menu" loading="lazy"><figcaption>tray client</figcaption></figure>
   </div>
+</div></section>
+
+<section id="why"><div class="wrap">
+  <p class="eyebrow">Why</p>
+  <h2>A VPN you own.</h2>
+  <p class="lede">No company sits in the middle. Your machines find each other, prove who they are and talk directly.</p>
+  <div class="grid">
+    <div class="win"><div class="bar"><i></i><i></i><i></i>reach</div><div class="body"><h3>Same desk, any place</h3><p>ssh, a web UI or a file share by mesh IP, from a coffee shop or across NAT. Any TCP or UDP app works.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>invite</div><div class="body"><h3>Invite-only</h3><p>The only way in is an invite key you mint. Single use by default, with an expiry you choose and revocation before it is used.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>direct</div><div class="body"><h3>Direct when possible</h3><p>Peers hole-punch straight to each other over QUIC. Relays only help with the introduction or when a direct path is impossible.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>crypto</div><div class="body"><h3>Always encrypted</h3><p>Every connection is end-to-end encrypted between peer identities. There is no unencrypted mode, and a relay sees only ciphertext.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>identity</div><div class="body"><h3>Stable addresses</h3><p>Each machine derives its own IPv4 and IPv6 address from its key. Same machine, same address, every time.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>nics</div><div class="body"><h3>Separate networks stay separate</h3><p>Each network gets its own TUN device and subnet, like a second network card. Family, work and lab never mix.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>coexist</div><div class="body"><h3>Plays well with others</h3><p>The subnet is configurable, so tetron runs next to Tailscale and other overlays that claim the usual ranges.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>tor</div><div class="body"><h3>Optional Tor</h3><p>Route a network over Tor with <code>--tor</code>. It needs a local Tor daemon, and Tor and non-Tor peers can share a network.</p></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Optional Veilid</h3><p>Add the Veilid network as another path with <code>--veilid</code>, through the tetron-veilid companion. Choose one of Tor or Veilid per network.</p></div></div>
+  </div>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <p class="eyebrow">How it works</p>
+  <h2>Identity first, addresses second.</h2>
+  <p class="lede">Every machine runs the same small daemon. Nothing in the data path belongs to anyone else.</p>
+  <div class="mesh" style="margin-bottom:2rem">
+    <svg viewBox="0 0 760 300" role="img" aria-label="Four machines connected directly to each other through NAT, with one relayed link">
+      <circle class="hub" cx="380" cy="150" r="112"/>
+      <path class="direct" d="M140 70 L620 70 M140 70 L140 230 M620 70 L620 230 M140 70 L620 230 M620 70 L140 230"/>
+      <path class="relay" d="M140 230 L620 230"/>
+      <g><rect class="node" x="60" y="40" width="160" height="60" rx="8"/><text class="nm" x="80" y="66">laptop</text><text x="80" y="86">10.88.0.1</text></g>
+      <g><rect class="node" x="540" y="40" width="160" height="60" rx="8"/><text class="nm" x="560" y="66">home server</text><text x="560" y="86">10.88.0.2</text></g>
+      <g><rect class="node" x="60" y="200" width="160" height="60" rx="8"/><text class="nm" x="80" y="226">phone</text><text x="80" y="246">10.88.0.3</text></g>
+      <g><rect class="node" x="540" y="200" width="160" height="60" rx="8"/><text class="nm" x="560" y="226">NAS</text><text x="560" y="246">10.88.0.4</text></g>
+      </svg>
+    <p class="legend"><span style="color:var(--accent)">&#x2501;&#x2501;</span> direct, hole-punched &nbsp;&nbsp; <span style="color:var(--warn)">&#x254C;&#x254C;</span> encrypted relay when no direct path exists</p>
+  </div>
+  <div class="two">
+    <div><h3>Create and join</h3><pre>One peer creates a network.
+It mints an invite key.
+Another machine joins with it.
+Both derive their own stable
+mesh addresses from their keys.
+They connect directly.</pre></div>
+    <div class="good"><h3>What you get</h3><pre>No login server to trust.
+No data-plane server in the path.
+Signed, tamper-evident member list.
+Co-coordinators, so the network
+survives when one machine is off.
+No firewall, DNS or ssh server added.</pre></div>
+  </div>
+  <div class="paper"><img src="images/tetron.jpeg" alt="Diagram: each tetron node runs the same daemon and connects to peers over encrypted QUIC tunnels, with shared relay and discovery infrastructure used only for introductions and NAT traversal." loading="lazy"></div>
+  <p class="note" style="margin-top:1rem">Built on <a href="https://iroh.computer">iroh</a> (QUIC, hole-punching, relays) and a DHT for discovery. For the full picture read <a href="https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html">Anatomy of a Mesh</a>.</p>
+</div></section>
+
+<section id="compare"><div class="wrap">
+  <p class="eyebrow">Compare</p>
+  <h2>Less setup than WireGuard. Less lock-in than a hosted VPN.</h2>
+  <div class="tablewrap"><table class="cmp">
+    <tr><th></th><th>Port forward + VPN server</th><th>Hosted mesh VPN</th><th class="us">tetron</th></tr>
+    <tr><td>Works behind NAT without router changes</td><td>no</td><td>yes</td><td class="us">yes</td></tr>
+    <tr><td>Needs an account or login provider</td><td>no</td><td>yes</td><td class="us">no</td></tr>
+    <tr><td>Needs a server you run and keep up</td><td>yes</td><td>no</td><td class="us">no</td></tr>
+    <tr><td>Traffic goes through a middle server</td><td>yes, yours</td><td>direct or relay</td><td class="us">direct or relay</td></tr>
+    <tr><td>Admission</td><td>keys by hand</td><td>login and admin console</td><td class="us">invite keys</td></tr>
+    <tr><td>Per-peer and per-port rules</td><td>your firewall</td><td>built in</td><td class="us">host firewall on the TUN</td></tr>
+    <tr><td>Maturity</td><td>decades</td><td>established</td><td class="us">experimental</td></tr>
+  </table></div>
+  <p class="note" style="margin-top:1rem">tetron has no built-in per-port firewall. Every member of a network reaches every port a peer exposes, so restrict ports with nftables or ufw on the tetron interface.</p>
 </div></section>
 
 <section id="ecosystem"><div class="wrap">
