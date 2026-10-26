@@ -6,18 +6,29 @@
 <link rel="icon" type="image/svg+xml" href="images/icon.svg">
 <link rel="icon" type="image/png" href="images/icon.png">
 <link rel="apple-touch-icon" href="images/icon.png">
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <title>tetron</title>
 <meta name="description" content="A peer-to-peer mesh VPN. Invite your machines, and they reach each other directly and encrypted from anywhere, with no accounts and no open ports.">
 <style>
   :root { --bg:#0e1116; --surface:#161b22; --surface-2:#1e252e; --fg:#e6eaf0; --muted:#98a3b1; --border:#2a323d;
     --accent:#7ee0b0; --accent-2:#8fb8dc; --warn:#e0a96b; --bad:#e07b7b;
+    --code:var(--code); --nav-bg:rgba(14,17,22,.88); --us-bg:rgba(126,224,176,.07); --on-accent:#04130c; --shadow:var(--shadow); --shadow-lg:var(--shadow-lg);
     --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",sans-serif; color-scheme:dark; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg:#f6f8fa; --surface:#ffffff; --surface-2:#eaeef3; --fg:#1b222c; --muted:#556170; --border:#d5dce5;
+    --accent:#14744c; --accent-2:#2a5f8f; --warn:#955510; --bad:#b83a3a;
+    --code:#ffffff; --nav-bg:rgba(246,248,250,.9); --us-bg:rgba(20,116,76,.08); --on-accent:#ffffff; --shadow:rgba(30,45,70,.14); --shadow-lg:rgba(30,45,70,.2); color-scheme:light; } }
+  :root[data-theme="light"] { --bg:#f6f8fa; --surface:#ffffff; --surface-2:#eaeef3; --fg:#1b222c; --muted:#556170; --border:#d5dce5;
+    --accent:#14744c; --accent-2:#2a5f8f; --warn:#955510; --bad:#b83a3a;
+    --code:#ffffff; --nav-bg:rgba(246,248,250,.9); --us-bg:rgba(20,116,76,.08); --on-accent:#ffffff; --shadow:rgba(30,45,70,.14); --shadow-lg:rgba(30,45,70,.2); color-scheme:light; }
+  .tbtn { background:none; color:var(--muted); border:1px solid var(--border); border-radius:6px; padding:3px 10px; font:.75rem var(--mono); }
+  .tbtn:hover { color:var(--fg); border-color:var(--accent); }
+  :focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
   * { box-sizing:border-box; }
   html { scroll-behavior:smooth; -webkit-text-size-adjust:100%; }
   body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.65 var(--sans); -webkit-font-smoothing:antialiased; }
   a { color:var(--accent-2); }
   .wrap { max-width:62rem; margin:0 auto; padding:0 20px; }
-  nav { position:sticky; top:0; z-index:10; background:rgba(14,17,22,.88); backdrop-filter:blur(8px); border-bottom:1px solid var(--border); }
+  nav { position:sticky; top:0; z-index:10; background:var(--nav-bg); backdrop-filter:blur(8px); border-bottom:1px solid var(--border); }
   nav .wrap { display:flex; gap:18px; align-items:center; height:48px; font-family:var(--mono); font-size:.85rem; }
   nav .brand { color:var(--accent); font-weight:700; margin-right:auto; text-decoration:none; }
   nav a { color:var(--muted); text-decoration:none; } nav a:hover { color:var(--fg); }
@@ -28,14 +39,14 @@
   .lede { font-size:1.2rem; color:var(--muted); max-width:40rem; margin:0 0 1.6rem; text-wrap:pretty; }
   section { padding:4.5rem 0; border-top:1px solid var(--border); }
   .hero { padding:4rem 0 3rem; border:0; }
-  .install { display:flex; align-items:center; gap:10px; background:#05070a; border:1px solid var(--border); border-radius:10px; padding:12px 14px; font:.88rem var(--mono); max-width:46rem; }
+  .install { display:flex; align-items:center; gap:10px; background:var(--code); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font:.88rem var(--mono); max-width:46rem; }
   .install code { flex:1; overflow-x:auto; white-space:nowrap; color:var(--fg); }
   .install .p { color:var(--accent); }
   button { font:inherit; cursor:pointer; }
   .copy { background:var(--surface-2); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:5px 12px; font:.8rem var(--mono); }
   .copy:hover { border-color:var(--accent); }
   .sub { color:var(--muted); font-size:.88rem; margin:.7rem 0 0; }
-  .shot { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; overflow:hidden; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  .shot { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; overflow:hidden; box-shadow:0 30px 80px var(--shadow-lg); }
   .shot img { display:block; width:100%; height:auto; }
   .pills { display:flex; flex-wrap:wrap; gap:8px; margin-top:1.6rem; }
   .pill { font:.78rem var(--mono); color:var(--muted); border:1px solid var(--border); border-radius:99px; padding:3px 12px; }
@@ -47,11 +58,11 @@
   .cmp { width:100%; border-collapse:collapse; margin-top:2rem; font-size:.93rem; }
   .cmp th, .cmp td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
   .cmp th { font:.75rem var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
-  .cmp td:first-child { color:var(--muted); } .cmp .us { background:rgba(126,224,176,.07); color:var(--fg); }
+  .cmp td:first-child { color:var(--muted); } .cmp .us { background:var(--us-bg); color:var(--fg); }
   .cmp th.us { color:var(--accent); }
   .tablewrap { overflow-x:auto; }
   .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:2rem; }
-  .two pre { margin:0; padding:14px 16px; background:#05070a; border:1px solid var(--border); border-radius:10px; font:.82rem/1.5 var(--mono); overflow-x:auto; color:var(--muted); }
+  .two pre { margin:0; padding:14px 16px; background:var(--code); border:1px solid var(--border); border-radius:10px; font:.82rem/1.5 var(--mono); overflow-x:auto; color:var(--muted); }
   .two h3 { margin:0 0 .5rem; font:.78rem var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
   .two .good h3 { color:var(--accent); }
   .demo { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.25fr); gap:40px; margin-top:2.5rem; align-items:start; }
@@ -61,7 +72,7 @@
   .step h3 { font-size:1.5rem; margin:.2rem 0 .4rem; } .step p { color:var(--muted); margin:0; }
   .step kbd { font:.8rem var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; color:var(--fg); }
   .stage { position:sticky; top:72px; }
-  .stage .frame { position:relative; border:1px solid var(--border); border-radius:12px; overflow:hidden; aspect-ratio:var(--ar,16/10); background:#05070a; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .stage .frame { position:relative; border:1px solid var(--border); border-radius:12px; overflow:hidden; aspect-ratio:var(--ar,16/10); background:var(--code); box-shadow:0 20px 60px var(--shadow); }
   .stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .45s; }
   .stage img.on { opacity:1; }
   .cap { font:.8rem var(--mono); color:var(--muted); margin-top:.6rem; text-align:center; }
@@ -72,13 +83,13 @@
   .vpn ul { margin:0; padding:0; list-style:none; display:grid; gap:12px; }
   .vpn li { color:var(--muted); padding-left:1.2rem; position:relative; } .vpn li b { color:var(--fg); font-weight:600; }
   .vpn li::before { content:"\25CF"; position:absolute; left:0; color:var(--accent); font-size:.7rem; top:.35rem; }
-  .tray { background:#05070a; border:1px solid var(--border); border-radius:10px; font:.85rem/1.7 var(--mono); overflow:hidden; max-width:24rem; }
+  .tray { background:var(--code); border:1px solid var(--border); border-radius:10px; font:.85rem/1.7 var(--mono); overflow:hidden; max-width:24rem; }
   .tray .top { display:flex; gap:16px; padding:6px 14px; background:var(--surface-2); border-bottom:1px solid var(--border); color:var(--muted); } .tray .top .on { color:var(--accent); }
   .tray .row { display:flex; justify-content:space-between; gap:12px; padding:2px 14px; } .tray .row span:last-child { color:var(--muted); }
   .tray .hr { border-top:1px solid var(--border); margin:6px 0; } .tray .dir { color:var(--accent); } .tray .rel { color:var(--warn); }
   .tray .pad { padding:8px 0; }
   .tray .note { color:var(--muted); font-size:.72rem; padding:0 14px 8px; }
-  .btn { display:inline-block; margin-top:1.6rem; padding:10px 18px; border-radius:8px; background:var(--accent); color:#04130c; font-weight:600; text-decoration:none; }
+  .btn { display:inline-block; margin-top:1.6rem; padding:10px 18px; border-radius:8px; background:var(--accent); color:var(--on-accent); font-weight:600; text-decoration:none; }
   .btn.ghost { background:none; color:var(--fg); border:1px solid var(--border); margin-left:8px; }
   footer { border-top:1px solid var(--border); padding:2.5rem 0 3rem; color:var(--muted); font-size:.88rem; }
   footer a { margin-right:16px; }
@@ -89,7 +100,7 @@
     nav .links { display:none; }
   }
   @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .stage img, .steps .step { transition:none; } }
-  .mesh { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; background:#05070a; padding:18px; }
+  .mesh { margin-top:2.5rem; border:1px solid var(--border); border-radius:12px; background:var(--code); padding:18px; }
   .apk { display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; margin:.4rem 0 0; } .apk .btn { margin-top:0; } .apk span { color:var(--muted); font-size:.85rem; flex:1 1 18rem; min-width:0; }
   .grp { font:.78rem var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin:2.2rem 0 0; font-weight:400; }
   .tag { font:.66rem var(--mono); color:var(--muted); border:1px solid var(--border); border-radius:99px; padding:1px 8px; margin-left:8px; vertical-align:middle; font-weight:400; white-space:nowrap; }
@@ -100,7 +111,7 @@
   .mesh text { font:12px var(--mono); fill:var(--muted); } .mesh .nm { fill:var(--fg); font-size:13px; }
   .mesh .node { fill:var(--surface-2); stroke:var(--border); } .mesh .direct { stroke:var(--accent); stroke-width:2; fill:none; }
   .mesh .relay { stroke:var(--warn); stroke-width:1.6; stroke-dasharray:5 5; fill:none; } .mesh .hub { fill:none; stroke:var(--border); stroke-dasharray:3 4; }
-  .term { background:#05070a; border:1px solid var(--border); border-radius:10px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .term { background:var(--code); border:1px solid var(--border); border-radius:10px; overflow:hidden; box-shadow:0 20px 60px var(--shadow); }
   .term .bar { display:flex; align-items:center; gap:6px; padding:7px 12px; background:var(--surface-2); border-bottom:1px solid var(--border); font:.75rem var(--mono); color:var(--muted); }
   .term .bar i { width:9px; height:9px; border-radius:50%; background:var(--border); } .term .bar i:first-child { background:var(--bad); }
   .term .screens { position:relative; min-height:15rem; }
@@ -120,7 +131,8 @@
 <nav><div class="wrap">
   <a class="brand" href="#top"><img src="images/icon.png" alt="">tetron</a>
   <span class="links" style="display:contents"><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#tour">tour</a><a href="#ecosystem">ecosystem</a><a href="#desktop">desktop</a></span>
-  <a href="https://github.com/ErikAllanKincaid/tetron">github</a>
+  <button class="tbtn" id="theme" type="button" aria-label="Switch between light and dark theme">light</button>
+<a href="https://github.com/ErikAllanKincaid/tetron">github</a>
 </div></nav>
 
 <header class="hero" id="top"><div class="wrap">
@@ -292,6 +304,16 @@ next: tetron join &lt;invite-key&gt;   single-use invite
 
 <script>
 (function () {
+  var tb = document.getElementById('theme'), root = document.documentElement, mq = window.matchMedia && matchMedia('(prefers-color-scheme: light)');
+  function eff() { var t = root.getAttribute('data-theme'); return t || (mq && mq.matches ? 'light' : 'dark'); }
+  function label() { tb.textContent = eff() === 'dark' ? 'light' : 'dark'; }
+  label();
+  tb.addEventListener('click', function () {
+    var n = eff() === 'dark' ? 'light' : 'dark'; root.setAttribute('data-theme', n);
+    try { localStorage.setItem('theme', n); } catch (e) {}
+    label();
+  });
+  if (mq && mq.addEventListener) mq.addEventListener('change', label);
   var cmd = document.getElementById('cmd'), b = document.getElementById('copy');
   b.addEventListener('click', function () {
     var t = cmd.textContent;
