@@ -130,6 +130,21 @@ hasnt "install -m 0755" "no install"
 fake_installed 0.14.2; run 0 --check
 case "$OUT" in *"origin=binary"*) ok "binary origin shown" ;; *) bad "origin missing: $OUT" ;; esac
 
+echo "shadowing: a raw copy first on PATH hides a package copy (PACKAGING-008):"
+mkdir -p "$W/pkgbin"
+printf '#!/bin/sh\necho "tetron 0.14.0 (pkg)"\n' > "$W/pkgbin/tetron"; chmod +x "$W/pkgbin/tetron"
+fake_installed 0.14.2; release_json 1
+: > "$LOG"
+OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkgbin:$PATH" CMDLOG="$LOG" OWNED_PATHS="$W/pkgbin/tetron" \
+	RELEASE_JSON="$W/release.json" bash "$SRC" --core-only --check 2>&1 </dev/null)"
+case "$OUT" in *"shadows $W/pkgbin/tetron from package tetron"*) ok "--check reports the shadowing" ;; *) bad "shadow report missing: $OUT" ;; esac
+hasnt "rm -f" "--check removes nothing"
+: > "$LOG"
+OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkgbin:$PATH" CMDLOG="$LOG" OWNED_PATHS="$W/pkgbin/tetron" \
+	RELEASE_JSON="$W/release.json" bash "$SRC" --core-only 2>&1 </dev/null)"
+case "$OUT" in *"shadows $W/pkgbin/tetron from package tetron"*) ok "install run reports the shadowing too" ;; *) bad "shadow report missing on install: $OUT" ;; esac
+hasnt "rm -f" "no terminal: neither copy is deleted"
+
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

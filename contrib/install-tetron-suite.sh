@@ -118,6 +118,10 @@
 #                            with a warning and binary installs the raw copy
 #                            to /usr/local/bin instead. --check shows each
 #                            component's origin (package:<name> or binary).
+#                            A raw copy that comes first on PATH and hides a
+#                            package-owned copy is reported on every run; at
+#                            a terminal the script offers to remove the raw
+#                            copy (default no).
 #   --yes-core               accepted for compatibility; has no effect.
 #   -h, --help               show this text.
 
@@ -261,6 +265,57 @@ component_origin() {
 	[ -e "$dest" ] || { echo none; return 0; }
 	owner="$(dpkg_owner "$dest")"
 	if [ -n "$owner" ]; then echo "package:$owner"; else echo binary; fi
+}
+
+# path_copies <binary>: every distinct executable <binary> along PATH, in PATH
+# order. Entries that resolve to the same file (/bin -> /usr/bin, a symlink)
+# count once.
+path_copies() {
+	local bin="$1" dir cand real seen=" " IFS=:
+	for dir in $PATH; do
+		[ -n "$dir" ] || continue
+		cand="$dir/$bin"
+		{ [ -f "$cand" ] && [ -x "$cand" ]; } || continue
+		real="$(readlink -f "$cand" 2>/dev/null)" || real=""
+		[ -n "$real" ] || real="$cand"
+		case "$seen" in *" $real "*) continue ;; esac
+		seen="$seen$real "
+		printf '%s\n' "$cand"
+	done
+}
+
+# shadowed_package_copy <binary>: when the first copy of <binary> on PATH is a
+# raw file and a later copy is package-owned, print
+# `<raw path>|<package copy>|<package>` -- the raw one runs and hides the
+# package. Prints nothing when the first copy is packaged, when there is only
+# one copy, or when no later copy is package-owned (PACKAGING-008).
+shadowed_package_copy() {
+	local bin="$1" first="" copy owner
+	while IFS= read -r copy; do
+		if [ -z "$first" ]; then
+			first="$copy"
+			[ -z "$(dpkg_owner "$first")" ] || return 0
+			continue
+		fi
+		owner="$(dpkg_owner "$copy")"
+		if [ -n "$owner" ]; then
+			printf '%s|%s|%s\n' "$first" "$copy" "$owner"
+			return 0
+		fi
+	done < <(path_copies "$bin")
+	return 0
+}
+
+# offer_remove_shadow <comp> <raw path>: ask before deleting the raw copy that
+# shadows a package. The default is no, and with no terminal it never deletes
+# anything (PACKAGING-008). Returns 0 only if the copy was removed.
+offer_remove_shadow() {
+	local comp="$1" raw="$2" reply
+	have_tty || return 1
+	read -r -p "Remove the raw copy $raw so the packaged $comp runs instead? This needs sudo. [y/N] " reply < /dev/tty
+	[[ "$reply" =~ ^[Yy]$ ]] || return 1
+	$SUDO rm -f -- "$raw" || { log_warn "$comp: could not remove $raw"; return 1; }
+	log_pass "$comp: removed $raw"
 }
 
 # choose_method <comp> <dest> <have_deb 0|1>: what to do for this component,
@@ -805,6 +860,14 @@ for comp in "${COMPONENTS[@]}"; do
 	fi
 	method="$(choose_method "$comp" "$dest" "$have_deb")"
 	origin="$(component_origin "$dest")"
+	# A raw copy first on PATH hides a package copy: report it every run
+	# (--check included); removal is only ever offered at install time.
+	shadow="$(shadowed_package_copy "$(component_binary "$comp")")"
+	shadow_raw=""
+	if [ -n "$shadow" ]; then
+		IFS='|' read -r shadow_raw shadow_pkgcopy shadow_pkg <<<"$shadow"
+		log_warn "$comp: $shadow_raw (raw binary) comes first on PATH and shadows $shadow_pkgcopy from package $shadow_pkg"
+	fi
 	# --method deb also converts a raw install to the package, even at the same version.
 	convert_to_deb=0
 	[ "$METHOD" = deb ] && [ "$method" = deb ] && [ "${origin#package:}" = "$origin" ] && convert_to_deb=1
@@ -866,6 +929,15 @@ for comp in "${COMPONENTS[@]}"; do
 		log_warn "$comp: package ${origin#package:} owns the installed copy; installing the raw binary to $dest instead of overwriting it (it will come first on PATH and shadow the packaged one)"
 		;;
 	esac
+
+	# Shadowed package: offer to delete the raw copy (default no; never without a
+	# terminal). If it was removed, stop here for this component -- re-running
+	# continues with the packaged copy rather than reinstalling a raw one.
+	if [ -n "$shadow_raw" ] && offer_remove_shadow "$comp" "$shadow_raw"; then
+		log_info "$comp: re-run this script to continue with the packaged copy"
+		skipped="$skipped $comp"
+		continue
+	fi
 
 	is_upgrade=0
 	[ -n "$current" ] && is_upgrade=1
