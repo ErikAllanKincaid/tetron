@@ -6,8 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Each release now carries Debian packages** (`PACKAGING-006`). Next to the raw binaries, a release publishes `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb` with `.sha256` files. They are built from the same static binary, tested by installing them in a clean Debian 13 container before the release is published, and ship the systemd unit disabled so that nothing starts until you ask. Install with `sudo apt install ./tetron_<version>-1_amd64.deb`. Raw binary assets and the suite installer are unchanged.
+- **`install-tetron-suite.sh --method auto|binary|deb`** (`PACKAGING-007`). `binary` is the raw install the script always did. `deb` installs the release `.deb` with apt-get and registers the service from the packaged path. The default, `auto`, upgrades a component with its `.deb` when a package already owns it and uses the raw binary otherwise, so existing installs behave exactly as before. The script never overwrites a file a package owns: with no `.deb` in the release it skips that component with a warning, and `--method binary` installs the raw copy to `/usr/local/bin` instead. `--check` now shows whether each component is a package or a raw binary.
+- **The suite installer reports a raw copy that hides a package** (`PACKAGING-008`). A binary in `/usr/local/bin` comes before `/usr/bin` on `PATH`, so a stale raw copy silently wins over an installed package. The script now says so on every run and, when a terminal is available, offers to remove the raw copy. The default is no, and nothing is deleted without a yes.
+
 ### Changed
 
+- **`tetron install` leaves a package-installed service alone** (`PACKAGING-004`). On a host where a package owns the `tetron` binary and ships its service unit, `tetron install` no longer writes a second unit into `/etc/systemd/system`. It still enables and starts the service and grants you operator access. The path flags `--config-dir`, `--log-dir` and `--socket-path` become a systemd drop-in in that case. Other installs behave exactly as before.
 - **`install-tetron-suite.sh` explains itself before you run it** (`ADDONS-SUITE-013`). Its header, also shown by `--help`, lists each component, what the script downloads and verifies, where it installs, when it uses sudo, what to expect during an upgrade, and the limits of its checksum check.
 
 ### Fixed
@@ -20,6 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`install-tetron-suite.sh --help` prints the complete help, including when piped into bash** (`ADDONS-SUITE-007`). It printed a fixed range of lines that cut the text off partway, and under `curl ... | bash -s -- --help` it failed with an error instead of printing anything.
 - **`install-tetron-suite.sh --core-only --install-tui` is refused instead of silently ignoring `--install-tui`** (`ADDONS-SUITE-006`). `--core-only` already refused every other `--install-*` flag; it now refuses this one too, before anything is downloaded.
 - **A cryptography helper library updated to clear a published security advisory** (`CON-013`). `ctutils` 0.4.2, pulled in through `iroh`, has non-constant-time mask generation and `u128` comparisons (RUSTSEC-2026-0385, fixed in 0.4.4 and later). It is now 0.4.6. Only the lockfile changed.
+- **`tetron start`, `stop` and `restart` no longer say the service is not installed when a package installed it** (`PACKAGING-003`). They only looked in `/etc/systemd/system` and now also look in the directories packages install into.
+- **`tetron uninstall` no longer reports "Service not installed" for a package-installed service, and never deletes a packaged unit** (`PACKAGING-005`). It stops and disables the service and tells you which package to remove with `apt`.
 
 ## [0.14.3] - 2026-10-20
 

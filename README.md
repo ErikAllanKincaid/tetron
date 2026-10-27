@@ -36,6 +36,10 @@ Install suite.
 curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
 ```
 
+##### Debian and Ubuntu: install the .deb instead
+
+Each release also has `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb`. Download one from the [releases page](https://github.com/ErikAllanKincaid/tetron/releases), then `sudo apt install ./tetron_<version>-1_amd64.deb` and `sudo tetron install` to enable and start the service. The suite installer can do this for you with `--method deb`, and by default it upgrades with the `.deb` when a package already owns the binary. Use one method per machine: a raw copy in `/usr/local/bin` comes first on `PATH` and hides the packaged one, which the suite installer reports.
+
 ##### Then use the webui, opens from systray.
 
 <img title="" src="docs/images/systray1.png" alt="systray" width="166">
