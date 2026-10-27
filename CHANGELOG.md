@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cryptography helper library updated to clear a published security advisory** (`CON-013`). `ctutils` 0.4.2, pulled in through `iroh`, has non-constant-time mask generation and `u128` comparisons (RUSTSEC-2026-0385, fixed in 0.4.4 and later). It is now 0.4.6. Only the lockfile changed.
+
 ## [0.14.3] - 2026-10-20
 
 ### Fixed
