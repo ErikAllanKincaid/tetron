@@ -124,8 +124,8 @@ fn dpkg_search(path: &Path) -> Option<String> {
 }
 
 /// The package that owns `path` on a Debian-family host, else `None`
-/// (PACKAGING-001). Consumed by PACKAGING-004 and PACKAGING-005.
-#[allow(dead_code)]
+/// (PACKAGING-001). Used by PACKAGING-004 and PACKAGING-005.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn package_owner(path: &Path) -> Option<String> {
     package_owner_with(path, &dpkg_search)
 }
@@ -139,6 +139,84 @@ pub(crate) struct PathOverrides {
     pub config_dir: Option<String>,
     pub log_dir: Option<String>,
     pub socket_path: Option<String>,
+}
+
+/// What `tetron install` does about the systemd unit on Linux (PACKAGING-004).
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) enum UnitPlan {
+    /// Write `/etc/systemd/system/tetron.service` with the running exe path.
+    WriteUnit,
+    /// A package owns the binary and ships a vendor unit: leave the unit alone
+    /// and apply any path overrides as a systemd drop-in.
+    UsePackaged {
+        package: String,
+        dropin: Option<String>,
+    },
+}
+
+/// Decide how to install the unit: leave a packaged one alone when the
+/// executable is package-owned and a vendor unit exists, otherwise write the
+/// unit as before (PACKAGING-004).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn plan_linux_unit(
+    owner: Option<String>,
+    vendor_unit_exists: bool,
+    overrides: &PathOverrides,
+) -> UnitPlan {
+    match owner {
+        Some(package) if vendor_unit_exists => UnitPlan::UsePackaged {
+            package,
+            dropin: dropin_text(overrides),
+        },
+        _ => UnitPlan::WriteUnit,
+    }
+}
+
+/// systemd drop-in carrying only the path overrides that were given, in the
+/// order config, log, socket; `None` when none were given (PACKAGING-004).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn dropin_text(overrides: &PathOverrides) -> Option<String> {
+    let lines: String = [
+        ("CONFIG_DIR", &overrides.config_dir),
+        ("LOG_DIR", &overrides.log_dir),
+        ("SOCKET_PATH", &overrides.socket_path),
+    ]
+    .iter()
+    .filter_map(|(key, value)| {
+        value
+            .as_ref()
+            .map(|v| format!("Environment=TETRON_{key}={v}\n"))
+    })
+    .collect();
+    (!lines.is_empty()).then(|| format!("[Service]\n{lines}"))
+}
+
+/// Write the path-override drop-in `10-paths.conf` into `dir`, creating the
+/// directory; replaces any earlier content (PACKAGING-004).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn write_dropin(dir: &Path, text: &str) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let file = dir.join("10-paths.conf");
+    std::fs::write(&file, text).with_context(|| format!("failed to write {}", file.display()))
+}
+
+/// One-line notice when a unit that `tetron install` wrote earlier still
+/// exists: systemd lets it override the packaged unit (PACKAGING-004).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn legacy_unit_notice(etc_unit_exists: bool) -> Option<String> {
+    etc_unit_exists.then(|| {
+        "note: /etc/systemd/system/tetron.service takes precedence over the packaged unit; \
+         remove it and run `systemctl daemon-reload` to use the packaged one"
+            .to_string()
+    })
+}
+
+/// Whether a package-installed unit exists in a vendor directory.
+#[cfg(target_os = "linux")]
+fn vendor_unit_exists() -> bool {
+    let dirs = [Path::new(UNIT_DIRS[1]), Path::new(UNIT_DIRS[2])];
+    unit_exists_in(&dirs)
 }
 
 /// Write the system service unit/plist, substituting the path of the binary
@@ -162,6 +240,31 @@ pub(crate) fn ensure_service_installed(overrides: &PathOverrides) -> Result<()> 
         // absent (see config::set_owner).
         ensure_tetron_group();
         let path = Path::new("/etc/systemd/system/tetron.service");
+        let vendor = vendor_unit_exists();
+        let owner = if vendor {
+            package_owner(Path::new(&exe))
+        } else {
+            None
+        };
+        if let UnitPlan::UsePackaged { package, dropin } = plan_linux_unit(owner, vendor, overrides)
+        {
+            println!(
+                "tetron is managed by package '{package}'; leaving the packaged unit in place"
+            );
+            if let Some(note) = legacy_unit_notice(path.exists()) {
+                println!("{note}");
+            }
+            if let Some(text) = dropin {
+                let dir = Path::new("/etc/systemd/system/tetron.service.d");
+                write_dropin(dir, &text)?;
+                println!(
+                    "wrote path overrides -> {}",
+                    dir.join("10-paths.conf").display()
+                );
+                run_cmd("systemctl", &["daemon-reload"]);
+            }
+            return Ok(());
+        }
         let mut service =
             include_str!("../../contrib/tetron.service").replace("/usr/local/bin/tetron", &exe);
         // Inject path-override env vars or remove the line if unset so a
@@ -784,6 +887,97 @@ mod tests {
         assert_eq!(expected, got);
         assert!(!packaged.contains("__TETRON_"));
         assert!(packaged.contains("ExecStart=/usr/bin/tetron daemon"));
+    }
+
+    // PACKAGING-004: install is package aware.
+
+    fn overrides(c: Option<&str>, l: Option<&str>, s: Option<&str>) -> PathOverrides {
+        PathOverrides {
+            config_dir: c.map(str::to_string),
+            log_dir: l.map(str::to_string),
+            socket_path: s.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn plan_writes_unit_when_not_package_owned() {
+        let plan = plan_linux_unit(None, true, &overrides(None, None, None));
+        assert_eq!(plan, UnitPlan::WriteUnit);
+    }
+
+    #[test]
+    fn plan_writes_unit_when_owned_but_no_vendor_unit() {
+        let plan = plan_linux_unit(Some("tetron".into()), false, &overrides(None, None, None));
+        assert_eq!(plan, UnitPlan::WriteUnit);
+    }
+
+    #[test]
+    fn plan_uses_packaged_unit_without_dropin_when_no_overrides() {
+        let plan = plan_linux_unit(Some("tetron".into()), true, &overrides(None, None, None));
+        assert_eq!(
+            plan,
+            UnitPlan::UsePackaged {
+                package: "tetron".into(),
+                dropin: None
+            }
+        );
+    }
+
+    #[test]
+    fn plan_dropin_has_exactly_the_given_overrides() {
+        let plan = plan_linux_unit(
+            Some("tetron".into()),
+            true,
+            &overrides(Some("/srv/tetron"), None, Some("/run/t.sock")),
+        );
+        assert_eq!(
+            plan,
+            UnitPlan::UsePackaged {
+                package: "tetron".into(),
+                dropin: Some(
+                    "[Service]\nEnvironment=TETRON_CONFIG_DIR=/srv/tetron\n\
+                     Environment=TETRON_SOCKET_PATH=/run/t.sock\n"
+                        .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn dropin_text_orders_config_log_socket() {
+        let t = dropin_text(&overrides(Some("/c"), Some("/l"), Some("/s"))).unwrap();
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "[Service]",
+                "Environment=TETRON_CONFIG_DIR=/c",
+                "Environment=TETRON_LOG_DIR=/l",
+                "Environment=TETRON_SOCKET_PATH=/s"
+            ]
+        );
+        assert_eq!(dropin_text(&overrides(None, None, None)), None);
+    }
+
+    #[test]
+    fn write_dropin_creates_directory_and_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("tetron.service.d");
+        write_dropin(&dir, "[Service]\nEnvironment=X=1\n").unwrap();
+        let got = std::fs::read_to_string(dir.join("10-paths.conf")).unwrap();
+        assert_eq!(got, "[Service]\nEnvironment=X=1\n");
+        // Idempotent: a second write replaces the content.
+        write_dropin(&dir, "[Service]\nEnvironment=X=2\n").unwrap();
+        let got = std::fs::read_to_string(dir.join("10-paths.conf")).unwrap();
+        assert!(got.contains("X=2") && !got.contains("X=1"));
+    }
+
+    #[test]
+    fn legacy_unit_notice_only_when_etc_unit_exists() {
+        assert_eq!(legacy_unit_notice(false), None);
+        let n = legacy_unit_notice(true).unwrap();
+        assert!(n.contains("/etc/systemd/system/tetron.service"));
+        assert!(n.contains("takes precedence"));
     }
 
     #[test]
