@@ -43,5 +43,12 @@ jobs:
         with:
           tool: cargo-audit
 
+      # reconcile.py reads packaging/deb.toml with tomllib (Python 3.11+); the
+      # ubuntu-22.04 runner image ships 3.10.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Reconcile
         run: python3 reconcile.py

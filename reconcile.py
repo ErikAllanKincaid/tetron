@@ -433,7 +433,10 @@ def check_product_identity() -> dict:
 def check_deb_release() -> dict:
     """CON-PKG01: PACKAGING-006 wiring (deb.toml, postinst policy, pinned action,
     raw assets unchanged). Token/regex based, same spirit as the other checks."""
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        return {"valid": False, "problems": ["needs Python 3.11+ (tomllib); run reconcile.py with python3.11 or newer"]}
 
     problems = []
     try:
