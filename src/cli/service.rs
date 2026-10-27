@@ -769,6 +769,23 @@ mod tests {
         );
     }
 
+    // PACKAGING-002: the packaged unit cannot drift from the installed one.
+
+    #[test]
+    fn packaged_unit_differs_from_installed_unit_only_in_exec_path_and_placeholders() {
+        let installed = include_str!("../../contrib/tetron.service");
+        let packaged = include_str!("../../contrib/tetron.packaged.service");
+        let expected: Vec<String> = installed
+            .lines()
+            .filter(|l| !l.contains("__TETRON_"))
+            .map(|l| l.replace("/usr/local/bin/tetron", "/usr/bin/tetron"))
+            .collect();
+        let got: Vec<String> = packaged.lines().map(str::to_string).collect();
+        assert_eq!(expected, got);
+        assert!(!packaged.contains("__TETRON_"));
+        assert!(packaged.contains("ExecStart=/usr/bin/tetron daemon"));
+    }
+
     #[test]
     fn package_owner_with_none_when_runner_has_no_output() {
         let run = |_: &Path| None;
