@@ -1,0 +1,11 @@
+#!/bin/sh
+# Create the tetron system group (the daemon owns /etc/tetron as root:tetron).
+# Never start or enable the service, and never create configuration or an
+# identity here: that happens on the first daemon start (PACKAGING-006).
+set -e
+case "$1" in
+	configure)
+		getent group tetron >/dev/null || groupadd --system tetron
+		;;
+esac
+exit 0

@@ -110,9 +110,11 @@ jobs:
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-22.04
             name: tetron-linux-x86_64-musl
+            deb_arch: amd64
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-22.04-arm
             name: tetron-linux-aarch64-musl
+            deb_arch: arm64
 
     runs-on: ${{ matrix.runner }}
 
@@ -165,6 +167,37 @@ jobs:
           files: |
             ${{ matrix.name }}
             ${{ matrix.name }}.sha256
+
+      # .deb for Debian-family hosts (PACKAGING-006, spec/packaging.py), built from the
+      # exact static musl binary uploaded above by the shared build-deb action, pinned
+      # to a full commit SHA. The action installs the deb in a clean debian:trixie
+      # container and fails the job before the upload step if that test fails. The
+      # install test runs on the runner's native architecture. The maintainer comes
+      # from the repository variable DEB_MAINTAINER (Settings > Secrets and variables
+      # > Actions > Variables); an unset variable fails the build rather than
+      # publishing an invented identity.
+      - name: Build .deb
+        id: deb
+        if: matrix.deb_arch != ''
+        uses: ErikAllanKincaid/tetron-packaging@857a529066d54ca738254934ff9936a1ddacabec
+        with:
+          binary: ${{ matrix.name }}
+          deb-toml: packaging/deb.toml
+          version: ${{ needs.create-release.outputs.tag }}
+          arch: ${{ matrix.deb_arch }}
+          maintainer: ${{ vars.DEB_MAINTAINER }}
+          smoke: tetron --version
+
+      - name: Upload .deb assets
+        if: matrix.deb_arch != ''
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
+          files: |
+            ${{ steps.deb.outputs.deb }}
+            ${{ steps.deb.outputs.sha256 }}
 
   # ENABLED as of 0.3.0 (MACOS-001/MACOS-002/MULTISEG-008): macOS support
   # is live-verified on real Apple Silicon hardware — joined a live network,
