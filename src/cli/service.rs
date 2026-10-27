@@ -2,7 +2,7 @@
 //! uninstall, operator, plus small process/daemon-reachability helpers.
 
 use crate::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,66 @@ pub(crate) fn require_systemd() {
 /// crash-loop with `unrecognized subcommand '(deleted)'`.
 pub(crate) fn strip_deleted_suffix(path: &str) -> &str {
     path.strip_suffix(" (deleted)").unwrap_or(path)
+}
+
+/// Parse `dpkg -S` output into the owning package name (PACKAGING-001).
+///
+/// Accepts `pkg: /path`, `pkg:arch: /path` and `a, b: /path` (first owner
+/// wins); ignores `diversion by ...` lines and anything that is not a package
+/// name followed by an absolute path, such as dpkg's "no path found" message.
+pub(crate) fn parse_dpkg_search(out: &str) -> Option<String> {
+    out.lines()
+        .filter(|l| !l.starts_with("diversion by "))
+        .find_map(|l| {
+            let (owners, path) = l.split_once(": ")?;
+            if !path.starts_with('/') {
+                return None;
+            }
+            let name = owners.split(',').next()?.trim().split(':').next()?;
+            let valid = name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+                && name.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '-' | '.')
+                });
+            valid.then(|| name.to_string())
+        })
+}
+
+/// Name of the package that owns `path`, asking through the injected `run`
+/// (which returns `dpkg -S` stdout on success). The path is stripped of the
+/// ` (deleted)` marker and symlink-resolved first. Never errors: no owner, no
+/// dpkg, or a failing command all give `None` (PACKAGING-001).
+pub(crate) fn package_owner_with(
+    path: &Path,
+    run: &dyn Fn(&Path) -> Option<String>,
+) -> Option<String> {
+    let stripped = PathBuf::from(strip_deleted_suffix(&path.to_string_lossy()));
+    let resolved = stripped.canonicalize().unwrap_or(stripped);
+    parse_dpkg_search(&run(&resolved)?)
+}
+
+/// `dpkg -S <path>` stdout when dpkg exists and succeeds.
+fn dpkg_search(path: &Path) -> Option<String> {
+    let out = Command::new("dpkg")
+        .arg("-S")
+        .arg("--")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The package that owns `path` on a Debian-family host, else `None`
+/// (PACKAGING-001). Consumed by PACKAGING-004 and PACKAGING-005.
+#[allow(dead_code)]
+pub(crate) fn package_owner(path: &Path) -> Option<String> {
+    package_owner_with(path, &dpkg_search)
 }
 
 /// Path overrides a user can pass to `tetron install` to relocate config,
@@ -574,5 +634,93 @@ mod tests {
     fn test_full_version_non_empty() {
         assert!(!FULL_VERSION.is_empty());
         assert!(FULL_VERSION.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    // PACKAGING-001: package owner detection.
+
+    #[test]
+    fn parse_dpkg_search_plain_owner() {
+        assert_eq!(
+            parse_dpkg_search("tetron: /usr/bin/tetron\n"),
+            Some("tetron".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_dpkg_search_strips_architecture_qualifier() {
+        assert_eq!(
+            parse_dpkg_search("tetron:amd64: /usr/bin/tetron\n"),
+            Some("tetron".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_dpkg_search_takes_first_of_several_owners() {
+        assert_eq!(
+            parse_dpkg_search("alpha, beta: /usr/bin/tool\n"),
+            Some("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_dpkg_search_skips_diversion_lines() {
+        let out = "diversion by other from: /usr/bin/tetron\n\
+                   diversion by other to: /usr/bin/tetron.distrib\n\
+                   tetron: /usr/bin/tetron\n";
+        assert_eq!(parse_dpkg_search(out), Some("tetron".to_string()));
+    }
+
+    #[test]
+    fn parse_dpkg_search_unowned_or_garbage_is_none() {
+        assert_eq!(parse_dpkg_search(""), None);
+        assert_eq!(
+            parse_dpkg_search("dpkg-query: no path found matching pattern /usr/local/bin/tetron\n"),
+            None
+        );
+        assert_eq!(parse_dpkg_search("\n\n"), None);
+        assert_eq!(parse_dpkg_search("Not A Package: /x\n"), None);
+    }
+
+    #[test]
+    fn package_owner_with_strips_deleted_marker_before_asking() {
+        let seen = std::cell::RefCell::new(None);
+        let run = |p: &Path| {
+            *seen.borrow_mut() = Some(p.to_path_buf());
+            Some("tetron: /usr/bin/tetron\n".to_string())
+        };
+        let got = package_owner_with(Path::new("/nonexistent-dir/tetron (deleted)"), &run);
+        assert_eq!(got, Some("tetron".to_string()));
+        assert_eq!(
+            seen.borrow().as_deref(),
+            Some(Path::new("/nonexistent-dir/tetron"))
+        );
+    }
+
+    #[test]
+    fn package_owner_with_resolves_symlinks_before_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-tetron");
+        std::fs::write(&real, b"x").unwrap();
+        let link = dir.path().join("link-tetron");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let seen = std::cell::RefCell::new(None);
+        let run = |p: &Path| {
+            *seen.borrow_mut() = Some(p.to_path_buf());
+            None
+        };
+        assert_eq!(package_owner_with(&link, &run), None);
+        assert_eq!(
+            seen.borrow().as_deref(),
+            Some(real.canonicalize().unwrap().as_path())
+        );
+    }
+
+    #[test]
+    fn package_owner_with_none_when_runner_has_no_output() {
+        let run = |_: &Path| None;
+        assert_eq!(
+            package_owner_with(Path::new("/usr/local/bin/tetron"), &run),
+            None
+        );
     }
 }
