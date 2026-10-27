@@ -45,3 +45,5 @@ sudo tetron install | restart | uninstall   # manage the service unit/plist
 sudo tetron start | stop                    # start / stop the service. stop = fully offline (closes peer connections); start = back online
 sudo tetron set-operator <user>             # authorize a user to run tetron without sudo
 ```
+
+**Package-managed hosts (PACKAGING-003/004/005):** when a Debian package owns the `tetron` binary and ships `/usr/lib/systemd/system/tetron.service`, `install` leaves that unit alone (path flags become the drop-in `/etc/systemd/system/tetron.service.d/10-paths.conf`), `start`/`stop`/`restart` find the unit in `/etc`, `/usr/lib` or `/lib`, and `uninstall` only stops and disables it, then names the package to remove with `apt`. A unit that `tetron install` wrote into `/etc/systemd/system` earlier still takes precedence over the packaged one and install says so. Ownership is read with `dpkg -S`; without dpkg every host behaves as before.
