@@ -215,8 +215,7 @@ pub(crate) fn legacy_unit_notice(etc_unit_exists: bool) -> Option<String> {
 /// Whether a package-installed unit exists in a vendor directory.
 #[cfg(target_os = "linux")]
 fn vendor_unit_exists() -> bool {
-    let dirs = [Path::new(UNIT_DIRS[1]), Path::new(UNIT_DIRS[2])];
-    unit_exists_in(&dirs)
+    vendor_unit_path().is_some()
 }
 
 /// Write the system service unit/plist, substituting the path of the binary
@@ -709,6 +708,52 @@ pub(crate) fn run_cmd_quiet(program: &str, args: &[&str]) {
         .status();
 }
 
+/// What `tetron uninstall` does on Linux (PACKAGING-005).
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct UninstallPlan {
+    /// Any tetron unit exists, so the service is disabled and stopped.
+    pub installed: bool,
+    /// Delete `/etc/systemd/system/tetron.service`, which `tetron install` wrote.
+    pub remove_etc_unit: bool,
+    /// Said when a package-installed unit remains: it is never deleted here.
+    pub hint: Option<String>,
+}
+
+/// Decide the uninstall steps from which units exist and who owns the vendor
+/// unit. A vendor unit under `/usr/lib` or `/lib` is never deleted
+/// (PACKAGING-005).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn plan_uninstall(
+    etc_unit_exists: bool,
+    vendor_unit_exists: bool,
+    vendor_owner: Option<String>,
+) -> UninstallPlan {
+    let hint = vendor_unit_exists.then(|| match vendor_owner {
+        Some(pkg) => format!(
+            "The service unit is installed by package '{pkg}' and was not deleted; \
+             remove it with: sudo apt remove {pkg}"
+        ),
+        None => "The service unit is installed by a package and was not deleted; \
+                 remove it with your package manager"
+            .to_string(),
+    });
+    UninstallPlan {
+        installed: etc_unit_exists || vendor_unit_exists,
+        remove_etc_unit: etc_unit_exists,
+        hint,
+    }
+}
+
+/// Path of the first package-installed unit, if any.
+#[cfg(target_os = "linux")]
+fn vendor_unit_path() -> Option<PathBuf> {
+    UNIT_DIRS[1..]
+        .iter()
+        .map(|d| Path::new(d).join("tetron.service"))
+        .find(|p| p.exists())
+}
+
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
     // SELFCAPTURE-ROUTE-001: torn down only here, not on ordinary `tetron
     // stop`/restart -- mirrors TUN devices, which are likewise only removed
@@ -718,14 +763,22 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let path = Path::new("/etc/systemd/system/tetron.service");
-        if path.exists() {
-            require_systemd();
-            run_cmd("systemctl", &["disable", "--now", "tetron"]);
+        let vendor = vendor_unit_path();
+        let owner = vendor.as_deref().and_then(package_owner);
+        let plan = plan_uninstall(path.exists(), vendor.is_some(), owner);
+        if !plan.installed {
+            println!("Service not installed.");
+            return Ok(());
+        }
+        require_systemd();
+        run_cmd("systemctl", &["disable", "--now", "tetron"]);
+        if plan.remove_etc_unit {
             std::fs::remove_file(path)?;
             run_cmd("systemctl", &["daemon-reload"]);
             println!("Removed systemd service.");
-        } else {
-            println!("Service not installed.");
+        }
+        if let Some(hint) = plan.hint {
+            println!("{hint}");
         }
         return Ok(());
     }
@@ -978,6 +1031,60 @@ mod tests {
         let n = legacy_unit_notice(true).unwrap();
         assert!(n.contains("/etc/systemd/system/tetron.service"));
         assert!(n.contains("takes precedence"));
+    }
+
+    // PACKAGING-005: uninstall is package aware.
+
+    #[test]
+    fn uninstall_plan_etc_unit_only_matches_previous_behavior() {
+        let plan = plan_uninstall(true, false, None);
+        assert_eq!(
+            plan,
+            UninstallPlan {
+                installed: true,
+                remove_etc_unit: true,
+                hint: None
+            }
+        );
+    }
+
+    #[test]
+    fn uninstall_plan_vendor_unit_only_disables_and_points_at_apt() {
+        let plan = plan_uninstall(false, true, Some("tetron".into()));
+        assert!(plan.installed);
+        assert!(!plan.remove_etc_unit);
+        let hint = plan.hint.unwrap();
+        assert!(hint.contains("sudo apt remove tetron"));
+        assert!(hint.contains("not deleted"));
+    }
+
+    #[test]
+    fn uninstall_plan_vendor_unit_unknown_owner_names_the_package_manager() {
+        let plan = plan_uninstall(false, true, None);
+        let hint = plan.hint.unwrap();
+        assert!(hint.contains("package manager"));
+        assert!(!hint.contains("apt remove"));
+    }
+
+    #[test]
+    fn uninstall_plan_both_units_removes_only_the_etc_one() {
+        let plan = plan_uninstall(true, true, Some("tetron".into()));
+        assert!(plan.installed);
+        assert!(plan.remove_etc_unit);
+        assert!(plan.hint.unwrap().contains("sudo apt remove tetron"));
+    }
+
+    #[test]
+    fn uninstall_plan_nothing_installed() {
+        let plan = plan_uninstall(false, false, None);
+        assert_eq!(
+            plan,
+            UninstallPlan {
+                installed: false,
+                remove_etc_unit: false,
+                hint: None
+            }
+        );
     }
 
     #[test]
