@@ -398,3 +398,19 @@ class DebReleaseWiringGate(Constraint):
     """
     constraint_id = "CON-PKG01"
     enforcement_logic = "{{ deb_release.valid }}"
+
+
+class SuiteInstallerShellTestsGate(Constraint):
+    """CONSTRAINT-ID: CON-PKG02
+
+    Every `contrib/tests/*.test.sh` exits 0: the decision-table tests for
+    `confirm_sudo_install` and for `--method`, and the stubbed end-to-end flow
+    test for `--method` (PACKAGING-007). They run the shipped script, extract
+    its functions at run time, and never touch the host.
+
+    ENFORCEMENT (reconcile.py): suite_shell_tests.failures equals 0 and
+    suite_shell_tests.ran is greater than 0.
+    """
+    constraint_id = "CON-PKG02"
+    enforcement_logic = "{{ suite_shell_tests.failures == 0 and suite_shell_tests.ran > 0 }}"
+
