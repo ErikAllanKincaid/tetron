@@ -166,9 +166,26 @@ class SuiteInstallerMethodFlag(Requirement):
     own `install` subcommand (now package-aware). `auto` upgrades a component
     with its `.deb` if dpkg owns the installed binary, and with the raw binary
     otherwise; with no existing install it uses `binary` (no behavior change
-    for current users). `deb` on a host without dpkg and apt is an error with
-    a clear message. `--check` reports, per component, whether the installed
-    copy is a package or a binary.
+    for current users). `deb` on a host without dpkg and apt-get (or on
+    macOS) is an error with a clear message. `--check` reports, per
+    component, whether the installed copy is a package or a binary.
+
+    The script never writes into a file a package owns:
+    - `auto` with a package-owned installed copy and no `.deb` asset in the
+      latest release for that component (for example a component that does
+      not publish debs yet) skips the component with a warning that names the
+      package and how to override, instead of overwriting the packaged file;
+    - `binary` with a package-owned installed copy installs the raw binary to
+      the default directory (`/usr/local/bin`) instead of overwriting the
+      packaged file, and PACKAGING-008 then reports the shadowing;
+    - `deb` with no `.deb` asset for the component is an error naming the
+      component and release.
+
+    The `.deb` is installed to its own path (`/usr/bin/<binary>`), and the
+    component's `install` subcommand is run on that path, not on whichever
+    copy comes first on `PATH`. Asset discovery reads the asset list of the
+    latest release (names `<binary>_<version>-<revision>_<amd64|arm64>.deb`)
+    so a packaging-only revision bump is found without guessing.
     """
     req_id = "PACKAGING-007"
 
