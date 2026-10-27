@@ -430,6 +430,52 @@ def check_product_identity() -> dict:
     }
 
 
+def check_deb_release() -> dict:
+    """CON-PKG01: PACKAGING-006 wiring (deb.toml, postinst policy, pinned action,
+    raw assets unchanged). Token/regex based, same spirit as the other checks."""
+    import tomllib
+
+    problems = []
+    try:
+        d = tomllib.loads(Path("packaging/deb.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return {"valid": False, "problems": [f"deb.toml: {e}"]}
+    files = {f.get("dst"): f.get("mode") for f in d.get("files", [])}
+    if d.get("name") != "tetron":
+        problems.append("name is not tetron")
+    if files.get("usr/bin/tetron") != "0755":
+        problems.append("usr/bin/tetron 0755 missing")
+    if files.get("usr/lib/systemd/system/tetron.service") != "0644":
+        problems.append("packaged unit 0644 missing")
+    if not any(x.split()[0] == "iproute2" for x in d.get("depends", [])):
+        problems.append("iproute2 not in depends")
+    if "maintainer" in d:
+        problems.append("maintainer must not be hardcoded")
+    if set(d.get("scripts", {})) != {"postinst"}:
+        problems.append("scripts must be exactly postinst")
+    try:
+        post = Path("packaging/postinst").read_text()
+        code = "\n".join(l for l in post.splitlines() if not l.lstrip().startswith("#"))
+        if "groupadd --system" not in code:
+            problems.append("postinst lacks groupadd --system")
+        if re.search(r"addgroup|adduser|systemctl\s+(--\S+\s+)*(start|enable|restart)", code):
+            problems.append("postinst violates policy")
+    except OSError:
+        problems.append("packaging/postinst missing")
+    wf = Path(".github/workflows/release.yml").read_text()
+    refs = re.findall(r"uses:\s*ErikAllanKincaid/tetron-packaging@(\S+)", wf)
+    if not refs or any(not re.fullmatch(r"[0-9a-f]{40}", r) for r in refs):
+        problems.append("tetron-packaging action missing or not pinned to a full SHA")
+    if "vars.DEB_MAINTAINER" not in wf:
+        problems.append("workflow does not pass vars.DEB_MAINTAINER")
+    for asset in ("tetron-linux-x86_64-musl", "tetron-linux-aarch64-musl"):
+        if asset not in wf:
+            problems.append(f"raw asset {asset} missing from release.yml")
+    if ".sha256" not in wf:
+        problems.append("sha256 assets missing from release.yml")
+    return {"valid": not problems, "problems": problems}
+
+
 if __name__ == "__main__":
     ctx = {
         "fmt": check_fmt(),
@@ -450,6 +496,7 @@ if __name__ == "__main__":
         "product_identity": check_product_identity(),
         "live_approval_absence": check_live_approval_absence(),
         "cargo_audit": check_cargo_audit(),
+        "deb_release": check_deb_release(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -474,5 +521,6 @@ if __name__ == "__main__":
         and ctx["live_approval_absence"]["unexpected_count"] == 0
         and ctx["cargo_audit"]["installed"]
         and ctx["cargo_audit"]["count"] == 0
+        and ctx["deb_release"]["valid"]
     )
     sys.exit(0 if ok else 1)

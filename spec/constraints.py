@@ -378,3 +378,23 @@ class LiveApprovalAbsenceGate(Constraint):
     """
     constraint_id = "CON-M05"
     enforcement_logic = "{{ live_approval_absence.unexpected_count == 0 }}"
+
+
+class DebReleaseWiringGate(Constraint):
+    """CONSTRAINT-ID: CON-PKG01
+
+    PACKAGING-006 guard. `packaging/deb.toml` installs `/usr/bin/tetron`
+    (0755) and the packaged unit at
+    `/usr/lib/systemd/system/tetron.service` (0644), depends on `iproute2`,
+    has no maintainer key, and has only a `postinst` script that uses
+    `groupadd --system` and never `addgroup`, `systemctl start|enable|restart`.
+    `.github/workflows/release.yml` uses
+    `ErikAllanKincaid/tetron-packaging` pinned to a full 40 hex SHA, passes
+    `vars.DEB_MAINTAINER` as the maintainer, and still builds and uploads the
+    raw `tetron-linux-x86_64-musl` and `tetron-linux-aarch64-musl` assets with
+    their `.sha256` files.
+
+    ENFORCEMENT (reconcile.py): deb_release.valid is true.
+    """
+    constraint_id = "CON-PKG01"
+    enforcement_logic = "{{ deb_release.valid }}"

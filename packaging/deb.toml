@@ -1,0 +1,29 @@
+# Package description for mkdeb (https://github.com/ErikAllanKincaid/tetron-packaging).
+# Built in release CI by the build-deb action from the static musl binary.
+# Spec: spec/packaging.py (PACKAGING-006). The maintainer comes from the
+# repository variable DEB_MAINTAINER, never from this file.
+name = "tetron"
+description = "P2P mesh VPN powered by iroh"
+long_description = """
+tetron connects machines into a private mesh network by cryptographic
+identity. This package carries the daemon and CLI (static musl build).
+The service is installed disabled; enable it with: systemctl enable --now tetron.
+The node identity is created on the first daemon start, not at install time."""
+section = "net"
+license = "MPL-2.0"
+homepage = "https://github.com/ErikAllanKincaid/tetron"
+depends = ["iproute2"]
+smoke = "tetron --version"
+
+[[files]]
+src = "binary"
+dst = "usr/bin/tetron"
+mode = "0755"
+
+[[files]]
+src = "../contrib/tetron.packaged.service"
+dst = "usr/lib/systemd/system/tetron.service"
+mode = "0644"
+
+[scripts]
+postinst = "postinst"
