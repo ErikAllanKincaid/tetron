@@ -476,6 +476,17 @@ def check_deb_release() -> dict:
     return {"valid": not problems, "problems": problems}
 
 
+def check_suite_shell_tests() -> dict:
+    """CON-PKG02: run contrib/tests/*.test.sh (suite installer decision and flow tests)."""
+    failures = []
+    tests = sorted(Path("contrib/tests").glob("*.test.sh"))
+    for t in tests:
+        r = run(["bash", str(t)])
+        if r.returncode != 0:
+            failures.append(t.name)
+    return {"ran": len(tests), "failures": len(failures), "failed": failures}
+
+
 if __name__ == "__main__":
     ctx = {
         "fmt": check_fmt(),
@@ -497,6 +508,7 @@ if __name__ == "__main__":
         "live_approval_absence": check_live_approval_absence(),
         "cargo_audit": check_cargo_audit(),
         "deb_release": check_deb_release(),
+        "suite_shell_tests": check_suite_shell_tests(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -522,5 +534,7 @@ if __name__ == "__main__":
         and ctx["cargo_audit"]["installed"]
         and ctx["cargo_audit"]["count"] == 0
         and ctx["deb_release"]["valid"]
+        and ctx["suite_shell_tests"]["failures"] == 0
+        and ctx["suite_shell_tests"]["ran"] > 0
     )
     sys.exit(0 if ok else 1)

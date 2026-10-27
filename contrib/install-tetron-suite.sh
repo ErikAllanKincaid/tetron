@@ -27,8 +27,11 @@
 #      .sha256 checksum file, from that exact release over HTTPS. The binary
 #      is not installed unless the checksum matches.
 #   3. Copies the binary into /usr/local/bin. An existing copy elsewhere on
-#      PATH, such as /usr/bin, is replaced where it is. sudo never writes
-#      into a home directory.
+#      PATH, such as /usr/bin, is replaced where it is, unless a Debian
+#      package owns it (see --method). sudo never writes into a home
+#      directory. With --method deb, or --method auto and a package-owned
+#      copy, the release .deb is installed with apt-get instead; it puts the
+#      binary in /usr/bin and ships the packaged service unit.
 #   4. Runs the new binary's own `install` subcommand, which registers and
 #      (re)starts its background service:
 #        core, hosts                    system services, registered with sudo
@@ -103,6 +106,18 @@
 #   --musl                   use the statically linked (musl) build of core.
 #                            Chosen automatically on Alpine Linux, and when
 #                            the installed tetron is already a static build.
+#   --method auto|binary|deb how to install each component. binary copies
+#                            the raw release binary as described above.
+#                            deb installs the release .deb with apt-get
+#                            (Debian-family Linux only) and also converts a
+#                            raw install to the package. auto, the default,
+#                            upgrades a package-owned component with its .deb
+#                            and uses the raw binary for everything else. A
+#                            file a package owns is never overwritten: with
+#                            no .deb in the release, auto skips that component
+#                            with a warning and binary installs the raw copy
+#                            to /usr/local/bin instead. --check shows each
+#                            component's origin (package:<name> or binary).
 #   --yes-core               accepted for compatibility; has no effect.
 #   -h, --help               show this text.
 
@@ -152,9 +167,19 @@ INSTALL_MESSAGEBOARD=0
 INSTALL_BACKUP=0
 INSTALL_ALL=0
 SELECTION_FLAG_GIVEN=0
+METHOD=auto
+EXPECT_METHOD=0
 
 for arg in "$@"; do
+	# `--method VALUE`: the value is the next argument.
+	if [ "$EXPECT_METHOD" -eq 1 ]; then
+		METHOD="$arg"
+		EXPECT_METHOD=0
+		continue
+	fi
 	case "$arg" in
+	--method) EXPECT_METHOD=1 ;;
+	--method=*) METHOD="${arg#--method=}" ;;
 	--check) CHECK_ONLY=1 ;;
 	# Accepted and ignored: core is upgraded by default.
 	--yes-core) ;;
@@ -176,6 +201,12 @@ for arg in "$@"; do
 	*) fatal "unrecognized argument: $arg (see --help)" ;;
 	esac
 done
+
+[ "$EXPECT_METHOD" -eq 1 ] && fatal "--method needs a value (auto, binary or deb)"
+case "$METHOD" in
+auto | binary | deb) ;;
+*) fatal "--method must be auto, binary or deb (got: $METHOD)" ;;
+esac
 
 [ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_TUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
 	&& fatal "--core-only installs core alone and cannot be combined with --install-* options; those already include core, so run again without --core-only"
@@ -209,6 +240,79 @@ trap 'exit 143' TERM
 in_list() {
 	case " $2 " in *" $1 "*) return 0 ;; esac
 	return 1
+}
+
+# dpkg_owner <path>: name of the Debian package that owns <path> (symlinks
+# resolved), or nothing when no package owns it or dpkg is absent. Never
+# fails. Used to decide whether a file may be overwritten (PACKAGING-007).
+dpkg_owner() {
+	local path="$1" real out
+	command -v dpkg >/dev/null 2>&1 || return 0
+	real="$(readlink -f "$path" 2>/dev/null)" || real=""
+	[ -n "$real" ] || real="$path"
+	out="$(dpkg -S -- "$real" 2>/dev/null)" || return 0
+	printf '%s\n' "$out" | awk -F': ' '$0 !~ /^diversion by / && $2 ~ /^\// { n = split($1, a, ", "); split(a[1], b, ":"); print b[1]; exit }'
+}
+
+# component_origin <dest>: `package:<name>` when a package owns <dest>,
+# `binary` when it is a file nothing owns, `none` when it does not exist.
+component_origin() {
+	local dest="$1" owner
+	[ -e "$dest" ] || { echo none; return 0; }
+	owner="$(dpkg_owner "$dest")"
+	if [ -n "$owner" ]; then echo "package:$owner"; else echo binary; fi
+}
+
+# choose_method <comp> <dest> <have_deb 0|1>: what to do for this component,
+# from $METHOD, who owns the installed copy, and whether the latest release
+# has a .deb for it. Prints one of: deb, binary, binary-default-dir (the
+# installed copy is package-owned, so write the raw binary to the default
+# directory instead), skip-owned (auto, package-owned, no .deb to upgrade
+# it with), error-no-deb (--method deb but no .deb published). Never picks
+# an action that overwrites a package-owned file (PACKAGING-007).
+choose_method() {
+	local dest="$2" have_deb="$3" owner
+	owner="$(dpkg_owner "$dest")"
+	case "$METHOD" in
+	binary)
+		if [ -n "$owner" ]; then echo binary-default-dir; else echo binary; fi
+		;;
+	deb)
+		if [ "$have_deb" -eq 1 ]; then echo deb; else echo error-no-deb; fi
+		;;
+	*)
+		if [ -z "$owner" ]; then
+			echo binary
+		elif [ "$have_deb" -eq 1 ]; then
+			echo deb
+		else
+			echo skip-owned
+		fi
+		;;
+	esac
+}
+
+# deb_arch_for <uname -m style arch>: the Debian architecture name, or nothing.
+deb_arch_for() {
+	case "$1" in
+	x86_64 | amd64) echo amd64 ;;
+	aarch64 | arm64) echo arm64 ;;
+	esac
+}
+
+# deb_asset_from_json <package> <deb arch>: read a GitHub release JSON on
+# stdin, print the name of its `<package>_<version>-<rev>_<arch>.deb` asset
+# (never the .sha256 sibling), or nothing. Matching on the asset list means a
+# packaging-only revision bump (-2) is found without guessing.
+deb_asset_from_json() {
+	local pkg="$1" debarch="$2"
+	grep -o "\"name\": *\"${pkg}_[^\"]*_${debarch}\.deb\"" | sed -E 's/.*"([^"]+)"$/\1/' | head -1
+}
+
+# deb_supported: true where the .deb method can work -- Linux with dpkg and
+# apt-get. Defined here, ahead of the platform detection that calls it.
+deb_supported() {
+	[ "${plat_os:-}" = linux ] && command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1
 }
 
 # True when a graphical display is available. Decides whether webui and
@@ -356,6 +460,10 @@ aarch64 | arm64) plat_arch=aarch64 ;;
 *) fatal "unsupported architecture: $arch" ;;
 esac
 PLATFORM="${plat_os}-${plat_arch}"
+DEB_ARCH="$(deb_arch_for "$plat_arch")"
+if [ "$METHOD" = deb ] && ! deb_supported; then
+	fatal "--method deb needs Linux with dpkg and apt-get (Debian-family); this host has neither"
+fi
 
 # Alpine Linux uses musl instead of glibc, so it needs the static (musl) build
 # of core. Detected from /etc/os-release.
@@ -474,11 +582,17 @@ warn_if_shadowed() {
 	return 0
 }
 
-# Prints the tag of a repository's latest GitHub release (e.g. "v0.14.3").
-latest_tag() {
-	local repo="$1" json tag
-	json="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")" || return 1
-	tag="$(printf '%s' "$json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+# One GitHub API request per component: the JSON is fetched once and both the
+# tag (tag_from_json) and the .deb asset (deb_asset_from_json) are read from
+# it, so the unauthenticated rate limit is not doubled by --method.
+release_json() {
+	curl -fsSL "https://api.github.com/repos/$1/releases/latest"
+}
+
+# Reads a release JSON on stdin and prints its tag (e.g. "v0.14.3").
+tag_from_json() {
+	local tag
+	tag="$(grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
 	[ -n "$tag" ] || return 1
 	printf '%s\n' "$tag"
 }
@@ -545,11 +659,9 @@ confirm_sudo_install() {
 # Downloads one component from release $4, verifies it, installs it to $2,
 # and starts its service.
 install_component() {
-	local comp="$1" dest="$2" asset="$3" tag="$4" repo tmpdir sudo_prefix service_sudo_prefix
+	local comp="$1" dest="$2" asset="$3" tag="$4" repo tmpdir sudo_prefix
 	repo="$(component_repo "$comp")"
 	sudo_prefix="$SUDO"
-	service_sudo_prefix=""
-	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="$SUDO"
 
 	tmpdir="$WORKDIR/$comp"
 	mkdir -p "$tmpdir"
@@ -566,6 +678,17 @@ install_component() {
 	$sudo_prefix mkdir -p "$(dirname "$dest")"
 	$sudo_prefix install -m 0755 "$tmpdir/$asset" "$dest" \
 		|| { log_error "$comp: failed to install binary to $dest"; return 1; }
+
+	post_install_component "$comp" "$dest"
+}
+
+# Steps after a component's binary is in place, shared by the raw-binary and
+# the .deb install paths: register/restart its service (or just report, for
+# binary-only components), then report the version at $dest.
+post_install_component() {
+	local comp="$1" dest="$2" service_sudo_prefix ver
+	service_sudo_prefix=""
+	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="$SUDO"
 
 	if [ "$(component_no_service "$comp")" -eq 1 ]; then
 		# A plain binary (tetron-tui): placed on PATH, nothing to start.
@@ -585,6 +708,33 @@ install_component() {
 	warn_if_shadowed "$comp" "$dest"
 	ver="$(installed_version "$dest")"
 	[ -n "$ver" ] && log_pass "$comp: version $ver"
+}
+
+# Installs a component from asset $2 of release $3, a .deb, with apt-get
+# (PACKAGING-007). The package puts the binary in /usr/bin; the component's
+# own `install` subcommand runs on that path, not on whichever copy is first
+# on PATH.
+install_component_deb() {
+	local comp="$1" asset="$2" tag="$3" repo tmpdir dest
+	repo="$(component_repo "$comp")"
+	dest="/usr/bin/$(component_binary "$comp")"
+
+	tmpdir="$WORKDIR/$comp"
+	mkdir -p "$tmpdir"
+
+	log_info "$comp: downloading $asset from $repo release $tag..."
+	curl -fsSL -o "$tmpdir/$asset" "https://github.com/$repo/releases/download/$tag/$asset" \
+		|| { log_error "$comp: failed to download $asset"; return 1; }
+	curl -fsSL -o "$tmpdir/$asset.sha256" "https://github.com/$repo/releases/download/$tag/$asset.sha256" \
+		|| { log_error "$comp: failed to download $asset.sha256"; return 1; }
+	verify_checksum "$tmpdir/$asset" "$tmpdir/$asset.sha256" \
+		|| { log_error "$comp: checksum verification failed, not installed"; return 1; }
+
+	log_info "$comp: installing $asset with apt-get..."
+	$SUDO apt-get install -y "$tmpdir/$asset" \
+		|| { log_error "$comp: apt-get failed to install $asset"; return 1; }
+
+	post_install_component "$comp" "$dest"
 }
 
 # backup is a plain script from the tetron repository's main branch. It has no
@@ -636,12 +786,28 @@ for comp in "${COMPONENTS[@]}"; do
 	fi
 
 	current="$(installed_version "$dest")"
-	tag="$(latest_tag "$(component_repo "$comp")")" || {
+	release="$(release_json "$(component_repo "$comp")")" \
+		&& tag="$(printf '%s' "$release" | tag_from_json)" || {
 		log_error "$comp: failed to query latest release -- skipping"
 		failed="$failed $comp"
 		continue
 	}
 	latest="${tag#v}"
+
+	# Install method (PACKAGING-007): look for a .deb asset in the release JSON
+	# already fetched, then let choose_method pick deb, binary, or a safe
+	# alternative that never overwrites a package-owned file.
+	have_deb=0
+	deb_asset=""
+	if [ "$METHOD" != binary ] && [ -n "$DEB_ARCH" ] && deb_supported; then
+		deb_asset="$(printf '%s' "$release" | deb_asset_from_json "$(component_binary "$comp")" "$DEB_ARCH")"
+		[ -n "$deb_asset" ] && have_deb=1
+	fi
+	method="$(choose_method "$comp" "$dest" "$have_deb")"
+	origin="$(component_origin "$dest")"
+	# --method deb also converts a raw install to the package, even at the same version.
+	convert_to_deb=0
+	[ "$METHOD" = deb ] && [ "$method" = deb ] && [ "${origin#package:}" = "$origin" ] && convert_to_deb=1
 
 	asset="$(component_binary "$comp")-${PLATFORM}"
 	if [ "$comp" = "core" ]; then
@@ -652,8 +818,8 @@ for comp in "${COMPONENTS[@]}"; do
 		fi
 	fi
 
-	status="$comp: installed=${current:-none} latest=$latest"
-	if [ -n "$current" ] && [ "$current" = "$latest" ]; then
+	status="$comp: installed=${current:-none} latest=$latest origin=$origin"
+	if [ -n "$current" ] && [ "$current" = "$latest" ] && [ "$convert_to_deb" -eq 0 ]; then
 		# messageboard and tui: an up-to-date binary is all there is to check.
 		if [ "$(component_binary_only "$comp")" -eq 1 ]; then
 			log_pass "$status (up to date)"
@@ -684,11 +850,32 @@ for comp in "${COMPONENTS[@]}"; do
 
 	[ "$CHECK_ONLY" -eq 1 ] && continue
 
+	case "$method" in
+	error-no-deb)
+		log_error "$comp: --method deb requested but release $latest has no .deb for $DEB_ARCH"
+		failed="$failed $comp"
+		continue
+		;;
+	skip-owned)
+		log_warn "$comp: the installed copy ($dest) is owned by package ${origin#package:} and release $latest has no .deb to upgrade it with -- not overwriting it (use --method binary to install a raw copy to $(component_default_dir "$comp") instead)"
+		skipped="$skipped $comp"
+		continue
+		;;
+	binary-default-dir)
+		dest="$(component_default_dir "$comp")/$(component_binary "$comp")"
+		log_warn "$comp: package ${origin#package:} owns the installed copy; installing the raw binary to $dest instead of overwriting it (it will come first on PATH and shadow the packaged one)"
+		;;
+	esac
+
 	is_upgrade=0
 	[ -n "$current" ] && is_upgrade=1
 	confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
 
-	install_component "$comp" "$dest" "$asset" "$tag" || failed="$failed $comp"
+	if [ "$method" = deb ]; then
+		install_component_deb "$comp" "$deb_asset" "$tag" || failed="$failed $comp"
+	else
+		install_component "$comp" "$dest" "$asset" "$tag" || failed="$failed $comp"
+	fi
 done
 
 # Report anything you declined. A declined core upgrade gets its own warning,
