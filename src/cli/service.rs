@@ -395,11 +395,31 @@ pub(crate) async fn cmd_install(
     install_and_start_service(None, &overrides).await
 }
 
-/// Whether the system service unit/plist is installed on this host.
+/// Directories systemd reads service units from, in the places this tool or a
+/// package manager puts tetron's unit: the admin directory that
+/// `tetron install` writes to, and the vendor directories a package installs
+/// into (PACKAGING-003).
+#[cfg(target_os = "linux")]
+const UNIT_DIRS: [&str; 3] = [
+    "/etc/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+];
+
+/// Whether `tetron.service` exists in any of `dirs` (PACKAGING-003).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn unit_exists_in(dirs: &[&Path]) -> bool {
+    dirs.iter().any(|d| d.join("tetron.service").exists())
+}
+
+/// Whether the system service unit/plist is installed on this host. On Linux
+/// a unit installed by a package under `/usr/lib` or `/lib` counts, not only
+/// the `/etc` unit that `tetron install` writes (PACKAGING-003).
 pub(crate) fn service_unit_exists() -> bool {
     #[cfg(target_os = "linux")]
     {
-        return Path::new("/etc/systemd/system/tetron.service").exists();
+        let dirs = UNIT_DIRS.map(Path::new);
+        return unit_exists_in(&dirs);
     }
     #[cfg(target_os = "macos")]
     {
@@ -712,6 +732,40 @@ mod tests {
         assert_eq!(
             seen.borrow().as_deref(),
             Some(real.canonicalize().unwrap().as_path())
+        );
+    }
+
+    // PACKAGING-003: vendor service unit detection.
+
+    #[test]
+    fn unit_exists_in_finds_unit_in_any_directory() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        assert!(!unit_exists_in(&[a.path(), b.path()]));
+        assert!(!unit_exists_in(&[]));
+        std::fs::write(b.path().join("tetron.service"), b"[Unit]\n").unwrap();
+        assert!(unit_exists_in(&[a.path(), b.path()]));
+        assert!(unit_exists_in(&[b.path()]));
+        assert!(!unit_exists_in(&[a.path()]));
+    }
+
+    #[test]
+    fn unit_exists_in_ignores_other_unit_names() {
+        let a = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("tetron-webui.service"), b"[Unit]\n").unwrap();
+        assert!(!unit_exists_in(&[a.path()]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_dirs_cover_etc_and_vendor_locations() {
+        assert_eq!(
+            UNIT_DIRS,
+            [
+                "/etc/systemd/system",
+                "/usr/lib/systemd/system",
+                "/lib/systemd/system"
+            ]
         );
     }
 
