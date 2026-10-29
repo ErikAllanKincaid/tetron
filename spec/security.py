@@ -966,6 +966,32 @@ class InstallSuiteTempCleanup(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-013: comments and --help written for the person deciding whether to run it
+# --------------------------------------------------------------------------
+
+class InstallSuiteReaderFacingComments(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-013
+
+    `install-tetron-suite.sh` is public: the project website asks people to read
+    it before piping it into bash. Its comments therefore serve that reader. The
+    header (also printed by `--help`) states what each component is, what the
+    script does in order (release lookup, HTTPS download, checksum check, copy
+    to `/usr/local/bin`, service registration), when sudo is used, what to
+    expect (core restart, cleanup, failure handling, upgrades of installed
+    components), and its limits (what a same-release checksum does and does not
+    prove, which sources float, the GitHub API rate limit). Inline comments
+    describe what the code does. They carry no host names, dates, incident
+    history, version history, or references to private files or other
+    repositories' internals.
+
+    Kept accurate by `contrib/tests/install-suite-sandbox.test.sh`, which
+    exercises the behavior the header describes.
+    """
+
+    req_id = "ADDONS-SUITE-013"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

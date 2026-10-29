@@ -1,130 +1,107 @@
 #!/usr/bin/env bash
-# install-tetron-suite.sh: install or upgrade tetron, tetron-webui,
-# tetron-tui, tetron-systray, tetron-hosts, tetron-sync-receiver,
-# tetron-messageboard, and tetron-backup.sh to their latest GitHub releases
-# in one pass.
-# Idempotent -- a component already at the latest release version is left
-# untouched.
-# Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
-# this repo first is not required.
+# install-tetron-suite.sh: install or upgrade tetron and its add-ons from their
+# GitHub releases in one pass. It is safe to run again at any time: anything
+# already at the latest release is left as it is.
 #
-# What this script does, in order:
-#   1. Looks up the latest release of each selected component on GitHub
-#      (api.github.com, repositories under ErikAllanKincaid/).
-#   2. Downloads the release binary for this OS/CPU over HTTPS, together with
-#      its .sha256 file, into a private temporary directory, and refuses to
-#      install it unless the checksum matches. The directory is deleted
-#      afterwards.
-#   3. Copies the binary to /usr/local/bin using sudo (creating that
-#      directory if missing).
-#   4. Runs the component's own `install` subcommand, which registers its
-#      service: a system-wide systemd unit (or launchd job on macOS) for
-#      tetron and a systemd timer for hosts, both via sudo; per-user services
-#      for webui and systray, registered as the invoking user without sudo.
-#   Restarting tetron (the core daemon) briefly disconnects this host from its
-#   mesh peers. tetron-backup.sh is the one exception to steps 1-2: it is a
-#   plain script fetched from the tetron repository's main branch, with no
-#   checksum.
-#   `--check` performs step 1 only and changes nothing. The install and
-#   upgrade prompts say when sudo is needed before asking.
+# Quick start (asks what to install when run at a terminal):
+#   curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
+# Show this help without installing anything:
+#   curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+# Options go after `bash -s --` in the same way.
 #
-# Usage:
-#   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
-#       [--core-only | --install-webui] [--install-systray] [--install-hosts]
-#       [--install-sync-receiver] [--install-messageboard] [--install-backup]
-#       [--install-all]
+# Components:
+#   core           tetron, the mesh VPN daemon and command line tool
+#   webui          tetron-webui, a browser dashboard for this host
+#   tui            tetron-tui, a terminal dashboard
+#   systray        tetron-systray, a desktop tray icon
+#   hosts          tetron-hosts, keeps /etc/hosts names for mesh peers
+#   sync-receiver  tetron-sync-receiver, receives phone photo backups
+#   messageboard   tetron-messageboard, a message board served on the mesh
+#   backup         tetron-backup.sh, a script that backs up tetron's settings
 #
-#   --check           report installed vs. latest versions only, change nothing
-#   --no-core         leave `core` alone -- upgrade/install only the addons.
-#                      Upgrading core needs sudo and briefly disconnects
-#                      every peer on this host while the daemon restarts.
-#                      That happens *by default* (it is the whole point of
-#                      running this script); this flag is the opt-out.
-#   --yes-core        accepted and ignored (core is upgraded by default).
-#   --musl            force the statically-linked musl `core` build regardless
-#                      of host detection (core only -- webui/systray/hosts/
-#                      sync-receiver/backup have no musl variant). Auto-
-#                      selected without this flag when the host is Alpine
-#                      (`/etc/os-release`), or when the already-installed
-#                      `tetron` binary is itself static, so an existing musl
-#                      install upgrades in place instead of silently
-#                      flipping to glibc.
-#   --core-only        install/upgrade core only, no addons. Errors if
-#                      combined with any --install-* flag below.
-#   --install-webui    include webui (core is always included).
-#   --install-tui      include tui, the tetron-tui terminal dashboard (core
-#                      is always included). In the default set regardless of
-#                      display -- it is a terminal app, useful headless too.
-#   --install-systray  include systray (core is always included).
-#   --install-hosts    include hosts (core is always included). Like
-#                      backup, never in the default set -- opt-in only,
-#                      via this flag or the interactive picker, since it
-#                      registers a new root-level scheduled system service
-#                      (a systemd timer, unlike webui/systray's per-user
-#                      services) rather than something purely additive.
-#   --install-sync-receiver  include sync-receiver (core is always
-#                      included) -- the tetron-mobile-sync home-side rsync
-#                      receiver. Like hosts/backup, never in the default
-#                      set -- opt-in only, since it's a specific product
-#                      feature (accepting phone photo-backup uploads), not
-#                      something every tetron install wants. Registers a
-#                      per-user service, same privilege tier as webui/
-#                      systray, not hosts' root-level one.
-#   --install-messageboard  include messageboard (core is always included) --
-#                      the mesh-hosted browser message board. Like
-#                      hosts/sync-receiver/backup, never in the default set,
-#                      opt-in only. This only *places the binary* (needs root
-#                      for /usr/local/bin); it does not start a board. A board
-#                      is per tetron network (it binds that network's own mesh
-#                      IP), so several run at once on a multi-network node --
-#                      start each from tetron-webui's Add-ons panel, or with
-#                      `tetron-messageboard install --network <name>`.
-#   --install-backup   include backup (core is always included). Unlike
-#                      webui/systray, backup is never in the default set --
-#                      opt-in only, via this flag or the interactive picker.
-#   --install-all      core + webui + tui + systray + hosts + sync-receiver +
-#                      messageboard + backup.
+# What this script does for each selected component, in order:
+#   1. Asks GitHub (api.github.com) for the latest release of the component's
+#      repository. All repositories are under github.com/ErikAllanKincaid/.
+#   2. If that version is installed and its service is running, moves on.
+#      Otherwise downloads the binary built for this OS and CPU, plus its
+#      .sha256 checksum file, from that exact release over HTTPS. The binary
+#      is not installed unless the checksum matches.
+#   3. Copies the binary into /usr/local/bin. An existing copy elsewhere on
+#      PATH, such as /usr/bin, is replaced where it is. sudo never writes
+#      into a home directory.
+#   4. Runs the new binary's own `install` subcommand, which registers and
+#      (re)starts its background service:
+#        core, hosts                    system services, registered with sudo
+#        webui, systray, sync-receiver  per-user services, registered as you
+#      tui has no service. messageboard runs one board per tetron network, so
+#      only the binary is placed; start boards from tetron-webui's Add-ons
+#      panel or with `tetron-messageboard install --network <name>`.
+#   backup is a plain script rather than a release: it is fetched from the
+#   tetron repository's main branch, with no checksum file, and copied to
+#   /usr/local/bin. If it is already there it is left alone; delete it to
+#   fetch a fresh copy.
 #
-#   With none of the above selection flags, the script picks components
-#   itself. Prompts (below) read from /dev/tty, not stdin, so the
-#   README's `curl | bash` one-liner still prompts normally when a human
-#   is running it at a real terminal -- stdin there is the piped script,
-#   not the keyboard, but /dev/tty reaches the controlling terminal
-#   directly regardless (same trick rustup/Homebrew's installers use):
-#     - no controlling terminal at all (cron, CI, a container run without
-#       -it): installs core and upgrades every component already present
-#       on the host, since there is nothing to prompt. It does not add
-#       addons that are not installed yet -- that would be guessing.
-#     - a controlling terminal is reachable: detects a display
-#       ($DISPLAY/$WAYLAND_DISPLAY) and prints the resulting default
-#       (core+tui if headless; core+webui+systray+tui with a display), then
-#       asks "Use defaults? [Y/n]" -- enter accepts it, "n" drops into a
-#       yes/no prompt per addon (each still pre-filled with the same
-#       display-aware default; hosts/sync-receiver/backup default to "N" in
-#       this prompt regardless of display, matching their opt-in-only
-#       status above).
-#       `tetron-hosts install` (run automatically as this script's last
-#       step for that component, same as every other component) has its
-#       own further interactive wizard -- which networks to sync and
-#       whether to schedule automatic runs -- reading from the same
-#       /dev/tty, so it prompts normally too in this same pass.
+# What to expect:
+#   - sudo is used only to write to /usr/local/bin and to register the core
+#     and hosts system services. Run as root, sudo is not used at all.
+#   - Upgrading core restarts the tetron daemon, which briefly disconnects
+#     this host from its mesh peers.
+#   - Downloads go to a private temporary directory that is removed when the
+#     script exits, including on Ctrl-C.
+#   - If one component fails, the others still run. Failures, and anything
+#     you declined, are listed at the end. The exit status is 1 on any
+#     failure, 0 otherwise.
+#   - Every component that is already installed is upgraded with the rest,
+#     unless you decline it or use --no-core or --core-only. The add-ons talk
+#     to the core daemon and need matching releases.
 #
-#   It is called "install", not "upgrade" -- a selected component missing
-#   on this host is installed, not silently skipped. The mirror rule holds
-#   too, and matters more in practice: a component that is *already*
-#   installed here is always upgraded, whatever the selection logic above
-#   picked. The default set decides what gets newly installed; it never
-#   decides what gets left stale. Without this, a headless host (default
-#   set: core alone) would keep an installed webui at an old version
-#   forever, and every addon speaks tetron-proto to the core daemon, so
-#   drifting versions apart is exactly what breaks. --core-only,
-#   --no-core, and an addon explicitly declined at the picker still win.
+# Limits worth knowing:
+#   - The checksum proves the download is intact and matches the release. It
+#     does not protect against a compromised GitHub account or release.
+#   - This script and backup come from the main branch, and binaries from the
+#     latest release. Both change over time, so read the copy you are about
+#     to run.
+#   - GitHub allows 60 API requests per hour per IP address without login. If
+#     the limit is reached, the affected components are reported as failed;
+#     run the script again later.
 #
-#   backup is a script, not a versioned binary: it fetches
-#   contrib/tetron-backup.sh from the tetron repo's main branch (no
-#   release tag to compare against), installs to /usr/local/bin next to
-#   the core binary, and is considered up to date whenever it is already
-#   present -- delete it first to force a refresh.
+# Choosing components:
+#   With no --install-* or --core-only option, the script chooses:
+#     - At a terminal, it shows a default set and asks "Use defaults? [Y/n]".
+#       The default is core and tui, plus webui and systray when a graphical
+#       display is found (always on macOS). Answering "n" asks about each
+#       add-on in turn; hosts, sync-receiver, messageboard and backup default
+#       to "no" unless they are already installed.
+#     - With no terminal (cron, CI, a container started without -t), it
+#       installs core and tui without asking.
+#   Questions are read from the terminal (/dev/tty), so they work when the
+#   script is piped into bash. `tetron-hosts install` asks its own questions
+#   (which networks to sync, whether to schedule runs) the same way.
+#
+# Options:
+#   --check                  show installed and latest versions; change
+#                            nothing. Exits 1 if an up-to-date component's
+#                            service is not running.
+#   --core-only              install or upgrade core only. Cannot be combined
+#                            with any --install-* option.
+#   --no-core                leave core as it is; install or upgrade add-ons
+#                            only.
+#   --install-webui          add webui
+#   --install-tui            add tui
+#   --install-systray        add systray
+#   --install-hosts          add hosts
+#   --install-sync-receiver  add sync-receiver
+#   --install-messageboard   add messageboard
+#   --install-backup         add backup
+#   --install-all            add all of the above
+#                            The --install-* options replace the "Use
+#                            defaults?" question. core is included unless
+#                            --no-core is given.
+#   --musl                   use the statically linked (musl) build of core.
+#                            Chosen automatically on Alpine Linux, and when
+#                            the installed tetron is already a static build.
+#   --yes-core               accepted for compatibility; has no effect.
+#   -h, --help               show this text.
 
 set -uo pipefail
 
@@ -200,9 +177,7 @@ done
 [ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_TUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
 	&& fatal "--core-only cannot be combined with any --install-* flag"
 
-# --core-only says "core and nothing else"; --no-core says "everything
-# except core". Together they select nothing at all, which is always a
-# mistake rather than a no-op worth honouring silently.
+# --core-only and --no-core together would select nothing.
 [ "$CORE_ONLY" -eq 1 ] && [ "$NO_CORE" -eq 1 ] \
 	&& fatal "--core-only and --no-core are contradictory -- they select nothing"
 
@@ -225,68 +200,48 @@ trap 'rm -rf "$WORKDIR"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# in_list <needle> <space-separated haystack>: membership test used for the
-# selection bookkeeping below. A plain string rather than a bash array so
-# it stays safe when empty under `set -u` on bash 3.2, which is what macOS
-# still ships as /bin/bash.
+# in_list <word> <space-separated list>: true if the word is in the list. A
+# plain string rather than an array also works with the bash 3.2 that macOS
+# ships.
 in_list() {
 	case " $2 " in *" $1 "*) return 0 ;; esac
 	return 1
 }
 
-# host_has_display: true if a display server is reachable -- systray can
-# never function without one, and webui defaults follow it too (a remote
-# port-forward to webui is possible but rare, not worth defaulting on).
+# True when a graphical display is available. Decides whether webui and
+# systray are in the default set.
 host_has_display() {
-	# macOS uses Quartz/Aqua, never X11/Wayland, so $DISPLAY is always unset
-	# there; a Mac counts as having a display (the prompts still allow "n").
+	# macOS always counts as having a display.
 	[ "$(uname -s)" = Darwin ] && return 0
 	[ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
 }
 
-# have_tty: true if a controlling terminal is reachable via /dev/tty --
-# deliberately independent of stdin (`[ -t 0 ]`), which is always false
-# under `curl ... | bash` even when a human is sitting at a real terminal
-# running it (stdin there is the piped script itself). /dev/tty reaches
-# the controlling terminal directly regardless of stdin redirection, the
-# same trick rustup/Homebrew's installers use to stay interactive when
-# piped. `:` reads nothing -- this only tests that the open succeeds.
-# Genuinely fails (no controlling terminal at all) in cron/CI/containers
-# without a pty, which is the correct signal for non-interactive.
+# True when a terminal can be reached through /dev/tty. This works even when
+# the script itself arrives on stdin through `curl | bash`, and is false under
+# cron, CI, or a container without a terminal.
 have_tty() {
 	{ : < /dev/tty; } 2>/dev/null
 }
 
-# Defined up here, ahead of the selection logic, rather than down in the
-# per-component config section with its siblings: the "already installed
-# is always upgraded" rule below has to consult it while building the
-# component set, and bash resolves function names at call time, so the
-# definition has to precede the first call.
+# Binary name of each component.
 component_binary() { case "$1" in core) echo tetron ;; webui) echo tetron-webui ;; tui) echo tetron-tui ;; systray) echo tetron-systray ;; hosts) echo tetron-hosts ;; sync-receiver) echo tetron-sync-receiver ;; messageboard) echo tetron-messageboard ;; backup) echo tetron-backup.sh ;; esac; }
 
-# True when this component's binary is already on this host. Uses PATH
-# rather than the default install dir so a copy installed somewhere
-# nonstandard still counts as installed -- the same reasoning, and the
-# same lookup, as component_dest() further down.
+# True when the component is already on this host: on PATH, or where older
+# installers put add-ons (~/.local/bin, the macOS TetronSystray app). Such
+# copies are upgraded into /usr/local/bin.
 component_installed() {
 	command -v "$(component_binary "$1")" >/dev/null 2>&1 && return 0
-	# Older installers put per-user addons off $PATH (macOS app bundle,
-	# ~/.local/bin). Unseen, the stale sweep skipped them and a 0.8.2 systray
-	# kept talking to a 0.14 daemon ("daemon unreachable"). They are
-	# re-placed in /usr/local/bin and their service re-registered.
 	[ -x "$HOME/.local/bin/$(component_binary "$1")" ] && return 0
 	[ "$1" = systray ] && [ -x "$HOME/Applications/TetronSystray.app/Contents/MacOS/tetron-systray" ] && return 0
 	return 1
 }
 
-# Addons explicitly turned down at the interactive picker. They are held
-# back from the "already installed is always upgraded" sweep below --
-# answering "no" to a component has to mean no, even for one that is
-# already present.
+# Add-ons you answered "no" to. They are not upgraded, even if installed.
 DECLINED=""
 
+# Components are installed in list order. tui comes before systray because
+# the tray adds its "Open tui" menu item only if tetron-tui is already there.
 COMPONENTS=(core)
-	# tui before systray: the tray builds its "Open tui" item once at start, only if tetron-tui is already on disk
 if [ "$INSTALL_ALL" -eq 1 ]; then
 	COMPONENTS=(core webui tui systray hosts sync-receiver messageboard backup)
 elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
@@ -300,19 +255,11 @@ elif [ "$SELECTION_FLAG_GIVEN" -eq 1 ]; then
 		[ "$INSTALL_BACKUP" -eq 1 ] && COMPONENTS+=(backup)
 	}
 elif [ "$CHECK_ONLY" -eq 1 ]; then
-	# Read-only status check: use the display-aware default set with no
-	# prompt at all -- there is nothing to confirm before just reporting.
-	# tui is in the default set regardless of display (a headless-friendly
-	# TUI). hosts/sync-receiver/backup are opt-in only (see below), so
-	# excluded here too.
+	# --check reports on the default set without asking.
 	COMPONENTS=(core tui)
 	host_has_display && COMPONENTS=(core webui tui systray)
 elif ! have_tty; then
-	# No controlling terminal at all (cron, CI, a container run without
-	# -it) -- nothing to prompt on. Default to core + tui (tetron-tui is
-	# headless-friendly and has no service to disrupt, so it belongs on an
-	# unattended/imaged install such as TetronOS); display-only addons
-	# stay opt-in. Tell the user how to get the rest instead of guessing.
+	# No terminal to ask at: install core and tui.
 	COMPONENTS=(core tui)
 	log_info "no controlling terminal detected -- defaulting to core + tui (pass --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all, or run this script with a terminal attached, to include more addons)"
 else
@@ -320,8 +267,7 @@ else
 		DEFAULT_COMPONENTS=(core webui tui systray)
 		log_info "display detected"
 	else
-		# tui (tetron-tui) defaults in even headless: it is a terminal
-		# app, the headless dashboard for a CLI-first tool.
+		# tui runs in a terminal, so it is a default even without a display.
 		DEFAULT_COMPONENTS=(core tui)
 		log_info "no display detected (headless)"
 	fi
@@ -344,38 +290,16 @@ else
 		}
 		webui_default=0; systray_default=0
 		host_has_display && { webui_default=1; systray_default=1; }
-		# tui defaults to "yes" regardless of display -- it is a terminal
-		# app, useful on a headless host too.
 		tui_default=1
-		# An addon already installed here is being *upgraded*, not
-		# installed, so it is pre-answered "yes" no matter what the
-		# display heuristic says -- declining an upgrade is still
-		# possible, but it should take a deliberate "n".
+		# An add-on that is already installed defaults to "yes": this is an
+		# upgrade.
 		component_installed webui && webui_default=1
 		component_installed systray && systray_default=1
 		ask_addon webui "$webui_default" && COMPONENTS+=(webui) || DECLINED="$DECLINED webui"
 		ask_addon tui "$tui_default" && COMPONENTS+=(tui) || DECLINED="$DECLINED tui"
 		ask_addon systray "$systray_default" && COMPONENTS+=(systray) || DECLINED="$DECLINED systray"
-		# hosts registers a new root-level scheduled system service (not
-		# purely additive the way webui/systray's own per-user services
-		# are), so -- like sync-receiver/backup -- it defaults to "N"
-		# here regardless of display, opt-in only. tetron-hosts's own
-		# `install` subcommand (run automatically below, same as every
-		# component) has its own further wizard for which networks to
-		# sync and whether to schedule automatic runs.
-		#
-		# sync-receiver (tetron-mobile-sync's home-side rsync receiver)
-		# registers a per-user service like webui/systray, but still
-		# defaults to "N" regardless of display: it is a specific
-		# product feature (accepting phone photo-backup uploads), not
-		# something every tetron install wants, so it is opt-in only
-		# the same way hosts/backup are.
-		# messageboard (the mesh-hosted browser message board) is a per-user
-		# service like webui/systray but defaults to "N" regardless of
-		# display, same as sync-receiver: a specific product feature, not
-		# something every install wants, and its normal install path is
-		# tetron-webui's Add-ons panel anyway (only a host with a browser
-		# can use it).
+		# These default to "no": each adds something not every host needs.
+		# hosts registers a system service that edits /etc/hosts.
 		hosts_default=0; sync_receiver_default=0; messageboard_default=0; backup_default=0
 		component_installed hosts && hosts_default=1
 		component_installed sync-receiver && sync_receiver_default=1
@@ -388,13 +312,9 @@ else
 	fi
 fi
 
-# Already installed on this host => always upgraded, whatever the block
-# above selected. The selection logic only decides what to *add*; installed
-# components are kept at the same release so addons never run against an
-# older core daemon (they speak tetron-proto to it).
-#
-# --check is included deliberately: reporting the version of something
-# installed but unselected is exactly what a status check is for.
+# Add every component already installed, so it is upgraded with the rest: the
+# add-ons talk to the core daemon and need matching releases. --check reports
+# them too.
 if [ "$CORE_ONLY" -ne 1 ]; then
 	for comp in core webui tui systray hosts sync-receiver messageboard backup; do
 		component_installed "$comp" || continue
@@ -405,9 +325,7 @@ if [ "$CORE_ONLY" -ne 1 ]; then
 	done
 fi
 
-# --no-core: drop core back out, after the sweep above would have re-added
-# it. Rebuilds the array rather than unsetting an index, which would leave
-# a sparse array behind.
+# --no-core removes core, including when the step above added it.
 if [ "$NO_CORE" -eq 1 ]; then
 	KEPT=()
 	for comp in "${COMPONENTS[@]}"; do
@@ -421,7 +339,7 @@ if [ "$NO_CORE" -eq 1 ]; then
 	log_info "--no-core: skipping core"
 fi
 
-# --- platform detection, same suffixes tetron-webui's addons.rs::asset_suffix() uses ---
+# --- platform detection: release files are named <binary>-<os>-<cpu> ---
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -436,10 +354,8 @@ aarch64 | arm64) plat_arch=aarch64 ;;
 esac
 PLATFORM="${plat_os}-${plat_arch}"
 
-# Alpine ships musl only -- no glibc at all, so the plain asset can't even
-# run there. `/etc/os-release` is the standard, reliable source for this
-# (avoids guessing from `ldd` output, which varies across musl distros and
-# is sometimes absent entirely).
+# Alpine Linux uses musl instead of glibc, so it needs the static (musl) build
+# of core. Detected from /etc/os-release.
 host_is_alpine() {
 	[ -r /etc/os-release ] || return 1
 	(
@@ -451,9 +367,8 @@ host_is_alpine() {
 	)
 }
 
-# True if the binary already at $1 is statically linked -- lets an
-# existing musl install upgrade in place instead of silently flipping to
-# glibc.
+# True if the binary at $1 is statically linked, so a static (musl) install of
+# core stays static when upgraded.
 dest_is_static() {
 	local dest="$1"
 	[ -x "$dest" ] || return 1
@@ -464,9 +379,8 @@ dest_is_static() {
 	fi
 }
 
-# Non-empty (the reason, for logging) when `core` should fetch the musl
-# asset instead of the plain glibc one. Only `core` has a musl variant --
-# webui/systray/backup do not, so callers must gate this to comp=core.
+# Prints why core should use the musl build, or nothing. Only core has a musl
+# build.
 musl_reason() {
 	local dest="$1"
 	if [ "$MUSL_OVERRIDE" -eq 1 ]; then
@@ -478,69 +392,34 @@ musl_reason() {
 	fi
 }
 
-# --- per-component config ---
-# component_binary() / component_installed() are defined further up, ahead
-# of the component-selection logic that has to call them.
+# --- per-component settings ---
+# GitHub repository of each component.
 component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; tui) echo ErikAllanKincaid/tetron-tui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
-# Every component installs to the same root-owned /usr/local/bin and
-# needs sudo -- webui/systray run as per-user services (systemd --user /
-# launchd LaunchAgent) with no elevated runtime privilege of their own,
-# but /usr/local/bin is the one location reliably on $PATH out of the box
-# on every supported OS/shell, and the sudo prompt is already unavoidable
-# for core, so splitting addons off into a separate unprivileged directory
-# only trades a $PATH problem for a sudo prompt that costs nothing extra.
+# Install location. /usr/local/bin is on PATH by default on Linux and macOS;
+# writing to it needs root.
 component_default_dir() { echo /usr/local/bin; }
 
-# Placing the binary in root-owned /usr/local/bin always needs sudo, but
-# registering the service is a different privilege question: `core` and
-# `hosts` both register a real root-owned systemd *system* unit (hosts:
-# a scheduled timer, since it writes /etc/hosts, which needs root
-# regardless of who invokes it) -- but webui/systray/sync-receiver register
-# a `systemd --user` unit (or launchd LaunchAgent) that must run as the
-# plain invoking user -- running it under sudo points `systemctl --user` at
-# root's own (nonexistent, session-less) user manager instead of the
-# invoking user's, which fails with a D-Bus/XDG_RUNTIME_DIR error.
-# sync-receiver never needs root even to bind its own port -- it always
-# binds a non-privileged port (>1024), a hard requirement of its own
-# `install --port` (see that repo's src/config.rs).
+# Whether registering the component's service needs root. core and hosts are
+# system services (hosts edits /etc/hosts). The others are per-user services,
+# which must be registered as you, not as root.
 component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 ;; esac; }
 
-# A release binary this script places but must NOT start via `$dest install`.
-# messageboard registers one per-user service *per tetron network* (a board
-# binds that network's own mesh IP), so there is no single network to start at
-# install time.
-# The binary is placed here; boards are started per network from tetron-webui's
-# Add-ons panel (or `tetron-messageboard install --network <name>` by hand).
-#
-# tui (tetron-tui) is also binary-only for the purposes of this check: it has
-# no service at all to poll, so an up-to-date binary is the whole story.
+# Components whose `install` this script does not run, so an up-to-date
+# binary means nothing more to do. messageboard runs one board per tetron
+# network, started from tetron-webui's Add-ons panel or with
+# `tetron-messageboard install --network <name>`. tui has no service.
 component_binary_only() { case "$1" in messageboard | tui) echo 1 ;; *) echo 0 ;; esac; }
 
-# A release binary this script just *places* -- no service to register and no
-# `install`/`restart-all` subcommand to call afterward (tetron-tui is a plain
-# interactive TUI). Distinct from messageboard's binary_only, which still has a
-# `restart-all` to nudge running boards.
+# Components with no service at all: the binary is copied and nothing is run.
 component_no_service() { case "$1" in tui) echo 1 ;; *) echo 0 ;; esac; }
 
-# systemd unit name per component -- matches the binary name for the
-# systemd --user services (also what tetron-webui's own addons.rs
-# `linux_unit` field uses for its is-active check), except hosts, whose
-# actual persistent unit is the *timer* (contrib/tetron-hosts.timer), not
-# the oneshot `.service` it triggers -- the timer is what should be
-# "active" continuously; the service is only transiently active while a
-# sync run is in progress. backup has no service and never calls this.
+# systemd unit used to check whether a component is running. For hosts this is
+# its timer, which stays active between scheduled runs.
 component_unit() { case "$1" in core) echo tetron.service ;; hosts) echo tetron-hosts.timer ;; *) component_binary "$1" ;; esac; }
 
-# Is the component's own service actually running, independent of
-# whether its binary is at the latest version? The two can disagree: a
-# binary can be current while its service was never registered (see the
-# "up to date" branch below for why that matters) -- e.g. a previous run
-# was interrupted between placing the binary and running `install`, or
-# the binary arrived some other way (a manual build, a different
-# install path) that never called `install` at all. Only Linux/macOS are
-# handled, matching this script's own two supported platforms above;
-# `false` on anything else is the same "can't tell, so don't claim it's
-# fine" default tetron-webui's own is_active() uses.
+# True if the component's service is running. When the binary is already up
+# to date but its service is not running, the service is registered and
+# started again.
 component_service_active() {
 	local comp="$1" unit
 	unit="$(component_unit "$comp")"
@@ -553,15 +432,8 @@ component_service_active() {
 		fi
 		;;
 	macos)
-		# launchd label, not a systemd unit name. Matches
-		# tetron-webui's own addons.rs macos_label values
-		# (com.tetron.<component>) for webui/systray/sync-receiver,
-		# and each project's own contrib/*.plist Label for the two
-		# components webui doesn't manage: core is "com.tetron.vpn"
-		# (contrib/com.tetron.vpn.plist, not "com.tetron.core"),
-		# hosts is "com.tetron.hosts" (tetron-hosts/contrib/
-		# com.tetron.hosts.plist) -- which the general case also
-		# produces, so only core needs the override.
+		# launchd job names are com.tetron.<component>, except core, which is
+		# com.tetron.vpn.
 		local label
 		case "$comp" in
 		core) label="com.tetron.vpn" ;;
@@ -608,11 +480,10 @@ latest_tag() {
 	printf '%s\n' "$tag"
 }
 
-# Probe a binary for its version without ever letting it hang the installer
-# or take over the terminal. `setsid` detaches the controlling terminal so the
-# probed binary cannot open /dev/tty, and `timeout` bounds the call to 5
-# seconds. Both are best-effort: where absent (e.g. macOS) the binary is run
-# directly. Output is returned to the caller.
+# Runs an installed binary with a version option and prints its output.
+# `setsid` keeps the binary from using the terminal and `timeout` stops it
+# after 5 seconds, so a misbehaving binary cannot stall the installer. Both
+# are skipped where unavailable (for example on macOS).
 probe_version() {
 	local dest="$1" arg="$2"
 	if command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
@@ -624,17 +495,17 @@ probe_version() {
 	fi
 }
 
-# Prints the installed semver (e.g. "0.8.2"), or nothing if the binary is
-# missing or does not answer `--version`/`-V`/`version`. An unparseable or
-# missing version is treated as "needs installing/upgrading", not an error.
+# Prints the installed version (e.g. "0.14.3"), or nothing if the binary is
+# missing or does not report one, in which case it is installed.
 installed_version() {
 	local dest="$1" out
 	[ -x "$dest" ] || return 0
 	out="$(probe_version "$dest" --version)" || out="$(probe_version "$dest" version)" || true
-	# clap's default `--version` output is "<bin-name> <version> (<sha>)".
+	# Version output looks like "tetron 0.14.3 (abc1234)"; print the second word.
 	printf '%s\n' "$out" | awk 'NF>=2{print $2}'
 }
 
+# True if the file matches the SHA-256 checksum in its .sha256 file.
 verify_checksum() {
 	local file="$1" sumfile="$2" dir sumfile_name
 	dir="$(dirname "$file")"
@@ -646,17 +517,10 @@ verify_checksum() {
 	fi
 }
 
-# $1 = component name (for messaging), $2 = 1 if this is an upgrade of an
-# already-installed copy, 0 for a fresh install. Only an upgrade of `core`
-# actually disrupts anything (drops live peers while the daemon restarts)
-# -- a fresh install has nothing running yet, so it proceeds without
-# --yes-core even when piped (no TTY). webui/systray/hosts/backup upgrades
-# are not disruptive either (restarting a per-user service, or hosts' own
-# root-level timer, has no VPN/peer impact -- hosts never touches the
-# daemon itself, only re-registers its own independent scheduled sync),
-# so they get the same no-drama treatment as a fresh install rather than
-# core's --yes-core gate, even though hosts shares core's *privilege*
-# tier (component_service_needs_sudo).
+# Asks before installing or upgrading a component. Enter means yes; "n" skips
+# it. Without a terminal it proceeds. Upgrading core has its own question that
+# states the cost: the daemon restarts and peers disconnect briefly.
+# $1 = component, $2 = 1 for an upgrade, 0 for a new install.
 confirm_sudo_install() {
 	local comp="$1" is_upgrade="$2" reply
 	if [ "$is_upgrade" -eq 0 ] || [ "$comp" != "core" ]; then
@@ -665,9 +529,7 @@ confirm_sudo_install() {
 		[[ "$reply" =~ ^[Nn]$ ]] && return 1
 		return 0
 	fi
-	# Upgrading an installed core is the one disruptive step (the daemon
-	# restarts and peers disconnect), so the prompt spells out the cost.
-	# It defaults to yes like every other prompt; --no-core skips it.
+	# Upgrading core. --no-core skips this entirely.
 	if ! have_tty; then
 		log_warn "$comp: upgrading without a terminal to confirm at -- every peer on this host drops briefly while the daemon restarts (pass --no-core to skip core)"
 		return 0
@@ -677,6 +539,8 @@ confirm_sudo_install() {
 	return 0
 }
 
+# Downloads one component from release $4, verifies it, installs it to $2,
+# and starts its service.
 install_component() {
 	local comp="$1" dest="$2" asset="$3" tag="$4" repo tmpdir sudo_prefix service_sudo_prefix
 	repo="$(component_repo "$comp")"
@@ -705,8 +569,8 @@ install_component() {
 		log_info "$comp: binary placed at $dest -- run '$(component_binary "$comp")'"
 	elif [ "$(component_binary_only "$comp")" -eq 1 ]; then
 		log_info "$comp: binary placed -- start a board per network from tetron-webui's Add-ons panel (or '$dest install --network <name>')"
-		# A freshly upgraded binary: nudge any boards already running to
-		# pick it up. No-op (and harmless) when none are installed.
+		# Restart boards already running so they use the new binary. Does
+		# nothing when there are none.
 		$service_sudo_prefix "$dest" restart-all >/dev/null 2>&1 || true
 	else
 		log_info "$comp: running '$dest install' to register/restart its service..."
@@ -720,11 +584,8 @@ install_component() {
 	[ -n "$ver" ] && log_pass "$comp: version $ver"
 }
 
-# The backup component is a raw script, not a release binary: no checksum
-# sidecar convention and no `install` subcommand to register a service.
-# Fetches contrib/tetron-backup.sh from the repo's main branch (floating,
-# same as the webui's own Config Backup proxy -- there is no release tag
-# for a script) and drops it next to the core binary.
+# backup is a plain script from the tetron repository's main branch. It has no
+# release and no checksum file. It is copied next to the core binary.
 install_backup() {
 	local comp="$1" dest="$2" bin repo url tmpdir sudo_prefix
 	bin="$(component_binary "$comp")"
@@ -751,16 +612,14 @@ any_failed=0
 # Components that failed. One failure does not stop the others; all are
 # listed in the closing summary and the script exits 1.
 failed=""
-# Components that were selected but deliberately not installed (declined
-# at a prompt, or skipped by --no-core). Listed in the closing summary so
-# a skip is never silent.
+# Components you declined at a prompt. Listed in the closing summary so a
+# skip is never silent.
 skipped=""
 for comp in "${COMPONENTS[@]}"; do
 	dest="$(component_dest "$comp")"
 
-	# backup is a script with no version: skip the release-tag compare
-	# entirely. Present = up to date; missing = install (same confirm as
-	# core -- root-owned /usr/local/bin) when passed explicitly.
+	# backup has no version to compare: if present it is left alone,
+	# otherwise it is installed.
 	if [ "$comp" = "backup" ]; then
 		if [ -x "$dest" ]; then
 			log_pass "$comp: installed ($dest)"
@@ -792,9 +651,7 @@ for comp in "${COMPONENTS[@]}"; do
 
 	status="$comp: installed=${current:-none} latest=$latest"
 	if [ -n "$current" ] && [ "$current" = "$latest" ]; then
-		# Binary-only components (messageboard) have no single service to
-		# poll -- boards are per-network, started from the webui -- so an
-		# up-to-date binary is all this step is responsible for.
+		# messageboard and tui: an up-to-date binary is all there is to check.
 		if [ "$(component_binary_only "$comp")" -eq 1 ]; then
 			log_pass "$status (up to date)"
 			continue
@@ -803,13 +660,8 @@ for comp in "${COMPONENTS[@]}"; do
 			log_pass "$status (up to date)"
 			continue
 		fi
-		# The binary matches latest, but its service isn't running --
-		# e.g. a previous run was interrupted between placing the
-		# binary and registering the service, or the binary arrived
-		# some other way that never called `install`. Re-running
-		# `install` (idempotent, same as a fresh install -- see the
-		# header comment on why it's called "install" not "upgrade")
-		# fixes this without re-downloading an already-current binary.
+		# Up to date, but the service is not running: register and start it
+		# again with `install`, without downloading anything.
 		log_info "$status, but its service is not active -- registering/starting it"
 		if [ "$CHECK_ONLY" -eq 1 ]; then
 			any_failed=1
@@ -836,10 +688,8 @@ for comp in "${COMPONENTS[@]}"; do
 	install_component "$comp" "$dest" "$asset" "$tag" || failed="$failed $comp"
 done
 
-# Say plainly what did not happen. A skipped core is called out on its own
-# line because it is the case that actually breaks a host: every addon
-# speaks tetron-proto to the core daemon, so leaving core behind while the
-# addons move forward is how versions drift apart.
+# Report anything you declined. A declined core upgrade gets its own warning,
+# because add-ons newer than the core daemon may not work with it.
 if [ -n "$skipped" ]; then
 	log_warn "not installed/upgraded:$skipped"
 	if in_list core "$skipped"; then

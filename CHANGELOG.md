@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`install-tetron-suite.sh` explains itself before you run it** (`ADDONS-SUITE-013`). Its header, also shown by `--help`, lists each component, what the script downloads and verifies, where it installs, when it uses sudo, what to expect during an upgrade, and the limits of its checksum check.
+
 ### Fixed
 
 - **An interrupted `install-tetron-suite.sh` run no longer leaves partial downloads in `/tmp`** (`ADDONS-SUITE-012`). Temporary files are now removed on every exit, including Ctrl-C.
