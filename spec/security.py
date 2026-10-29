@@ -816,6 +816,26 @@ class InstallSuiteMessageboardComponent(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-006: --core-only refuses every --install-* flag
+# --------------------------------------------------------------------------
+
+class InstallSuiteCoreOnlyConflicts(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-006
+
+    `--core-only` installs core and nothing else, so `install-tetron-suite.sh`
+    refuses it together with any `--install-*` flag, `--install-tui` included,
+    with a usage error before anything is fetched. Previously `--install-tui` was
+    missing from the check, so `--core-only --install-tui` ran and silently
+    ignored the tui request.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("argument
+    checks").
+    """
+
+    req_id = "ADDONS-SUITE-006"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

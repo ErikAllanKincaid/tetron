@@ -186,8 +186,8 @@ for arg in "$@"; do
 	esac
 done
 
-[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
-	&& fatal "--core-only cannot be combined with --install-webui/--install-systray/--install-hosts/--install-sync-receiver/--install-messageboard/--install-backup/--install-all"
+[ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_TUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
+	&& fatal "--core-only cannot be combined with any --install-* flag"
 
 # --core-only says "core and nothing else"; --no-core says "everything
 # except core". Together they select nothing at all, which is always a
