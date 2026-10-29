@@ -592,12 +592,13 @@ warn_if_shadowed() {
 	return 0
 }
 
+# Prints the tag of a repository's latest GitHub release (e.g. "v0.14.3").
 latest_tag() {
 	local repo="$1" json tag
 	json="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")" || return 1
 	tag="$(printf '%s' "$json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
 	[ -n "$tag" ] || return 1
-	printf '%s\n' "${tag#v}"
+	printf '%s\n' "$tag"
 }
 
 # Probe a binary for its version without ever letting it hang the installer
@@ -670,7 +671,7 @@ confirm_sudo_install() {
 }
 
 install_component() {
-	local comp="$1" dest="$2" asset="$3" repo tmpdir sudo_prefix service_sudo_prefix
+	local comp="$1" dest="$2" asset="$3" tag="$4" repo tmpdir sudo_prefix service_sudo_prefix
 	repo="$(component_repo "$comp")"
 	sudo_prefix="$SUDO"
 	service_sudo_prefix=""
@@ -679,10 +680,10 @@ install_component() {
 	tmpdir="$(mktemp -d)"
 	trap 'rm -rf "$tmpdir"' RETURN
 
-	log_info "$comp: downloading $asset from $repo release..."
-	curl -fsSL -o "$tmpdir/$asset" "https://github.com/$repo/releases/latest/download/$asset" \
+	log_info "$comp: downloading $asset from $repo release $tag..."
+	curl -fsSL -o "$tmpdir/$asset" "https://github.com/$repo/releases/download/$tag/$asset" \
 		|| { log_error "$comp: failed to download $asset"; return 1; }
-	curl -fsSL -o "$tmpdir/$asset.sha256" "https://github.com/$repo/releases/latest/download/$asset.sha256" \
+	curl -fsSL -o "$tmpdir/$asset.sha256" "https://github.com/$repo/releases/download/$tag/$asset.sha256" \
 		|| { log_error "$comp: failed to download $asset.sha256"; return 1; }
 	verify_checksum "$tmpdir/$asset" "$tmpdir/$asset.sha256" \
 		|| { log_error "$comp: checksum verification failed, not installed"; return 1; }
@@ -766,11 +767,12 @@ for comp in "${COMPONENTS[@]}"; do
 	fi
 
 	current="$(installed_version "$dest")"
-	latest="$(latest_tag "$(component_repo "$comp")")" || {
+	tag="$(latest_tag "$(component_repo "$comp")")" || {
 		log_error "$comp: failed to query latest release -- skipping"
 		failed="$failed $comp"
 		continue
 	}
+	latest="${tag#v}"
 
 	asset="$(component_binary "$comp")-${PLATFORM}"
 	if [ "$comp" = "core" ]; then
@@ -824,7 +826,7 @@ for comp in "${COMPONENTS[@]}"; do
 	[ -n "$current" ] && is_upgrade=1
 	confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
 
-	install_component "$comp" "$dest" "$asset" || failed="$failed $comp"
+	install_component "$comp" "$dest" "$asset" "$tag" || failed="$failed $comp"
 done
 
 # Say plainly what did not happen. A skipped core is called out on its own

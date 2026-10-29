@@ -925,6 +925,27 @@ class InstallSuiteNoRootFilesInHome(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-011: downloads come from the reported release tag
+# --------------------------------------------------------------------------
+
+class InstallSuiteDownloadPinnedTag(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-011
+
+    `install-tetron-suite.sh` downloads each binary and its `.sha256` file from
+    the exact release tag it just looked up and reported
+    (`releases/download/<tag>/...`), never from GitHub's floating
+    `releases/latest/download/...` address. The version shown in the log is
+    therefore the version installed, even if a new release is published while
+    the script runs.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("download pinned
+    to the queried release tag").
+    """
+
+    req_id = "ADDONS-SUITE-011"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
