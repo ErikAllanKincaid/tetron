@@ -135,7 +135,7 @@ echo "older copy in a home directory ahead on PATH"
 run -- 'mkdir -p /root/.local/bin && cp /fix/release/tetron-tui-linux-x86_64 /root/.local/bin/tetron-tui && sed -i "s/9.9.9/0.0.1/" /root/.local/bin/tetron-tui
 	export PATH=/root/.local/bin:$PATH; bash /fix/script --no-core --install-tui; ls /usr/local/bin'
 check "new copy installed to /usr/local/bin" has "^tetron-tui$"
-check "  warns that the old copy shadows it" has "/root/.local/bin/tetron-tui"
+check "  warns that the old copy shadows it" has "/root/.local/bin/tetron-tui comes first on PATH"
 
 echo "upgrade of an existing install, defaults, no terminal"
 run -- 'cp /fix/release/tetron-linux-x86_64 /usr/local/bin/tetron && sed -i "s/9.9.9/0.0.1/" /usr/local/bin/tetron

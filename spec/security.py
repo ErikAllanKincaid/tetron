@@ -902,6 +902,29 @@ class InstallSuitePreconditionsAndRoot(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-010: never writes root-owned files into a home directory; warns on PATH shadowing
+# --------------------------------------------------------------------------
+
+class InstallSuiteNoRootFilesInHome(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-010
+
+    When a component is already installed somewhere on `PATH` outside the home
+    directory (for example `/usr/bin`), `install-tetron-suite.sh` upgrades that
+    copy in place. A copy inside `$HOME` (for example `~/.local/bin`, where older
+    installers put per-user addons) is not overwritten: the new copy goes to
+    `/usr/local/bin`, so the script never uses sudo to write a root-owned file
+    into a home directory. After every install, if `PATH` would still run a
+    different copy than the one just installed, the script warns and names the
+    file to remove.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("older copy in a
+    home directory ahead on PATH").
+    """
+
+    req_id = "ADDONS-SUITE-010"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

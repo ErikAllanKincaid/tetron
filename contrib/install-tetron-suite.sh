@@ -568,17 +568,28 @@ component_service_active() {
 	esac
 }
 
-# Prefer wherever the binary is actually already installed (PATH) over the
-# default dir, so an install in a nonstandard location is upgraded in
-# place rather than a second copy appearing at the default path.
+# Where to install. An existing copy found on PATH outside the home directory
+# (for example /usr/bin) is upgraded in place. A copy inside $HOME is not:
+# /usr/local/bin is used instead, so sudo never writes a root-owned file into a
+# home directory.
 component_dest() {
-	local comp="$1" bin
-	bin="$(component_binary "$comp")"
-	if command -v "$bin" >/dev/null 2>&1; then
-		command -v "$bin"
-	else
-		echo "$(component_default_dir "$comp")/$bin"
-	fi
+	local bin path
+	bin="$(component_binary "$1")"
+	path="$(command -v "$bin" 2>/dev/null)"
+	case "$path" in
+	"" | "$HOME"/*) echo "$(component_default_dir)/$bin" ;;
+	*) echo "$path" ;;
+	esac
+}
+
+# Warn when PATH would still run a different copy than the one just installed.
+warn_if_shadowed() {
+	local comp="$1" dest="$2" found
+	hash -r
+	found="$(command -v "$(component_binary "$comp")" 2>/dev/null)"
+	[ -n "$found" ] && [ "$found" != "$dest" ] \
+		&& log_warn "$comp: $found comes first on PATH and runs instead of $dest -- remove it: rm '$found'"
+	return 0
 }
 
 latest_tag() {
@@ -696,6 +707,7 @@ install_component() {
 	fi
 
 	log_pass "$comp: installed/upgraded successfully"
+	warn_if_shadowed "$comp" "$dest"
 	ver="$(installed_version "$dest")"
 	[ -n "$ver" ] && log_pass "$comp: version $ver"
 }
@@ -724,6 +736,7 @@ install_backup() {
 		|| { log_error "$comp: failed to install $bin to $dest"; return 1; }
 
 	log_pass "$comp: installed/upgraded successfully"
+	warn_if_shadowed "$comp" "$dest"
 }
 
 any_failed=0
