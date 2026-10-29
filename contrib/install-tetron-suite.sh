@@ -8,6 +8,25 @@
 # Fetch this file directly (raw.githubusercontent.com) and run it -- cloning
 # this repo first is not required.
 #
+# What this script does, in order:
+#   1. Looks up the latest release of each selected component on GitHub
+#      (api.github.com, repositories under ErikAllanKincaid/).
+#   2. Downloads the release binary for this OS/CPU over HTTPS, together with
+#      its .sha256 file, into a private temporary directory, and refuses to
+#      install it unless the checksum matches. The directory is deleted
+#      afterwards.
+#   3. Copies the binary to /usr/local/bin using sudo. Nothing else on the
+#      system is modified by this step.
+#   4. Runs the component's own `install` subcommand, which registers its
+#      service: a systemd unit (or launchd job on macOS) for tetron, per-user
+#      services for webui and systray, a systemd timer for hosts.
+#   Restarting tetron (the core daemon) briefly disconnects this host from its
+#   mesh peers. tetron-backup.sh is the one exception to steps 1-2: it is a
+#   plain script fetched from the tetron repository's main branch, with no
+#   checksum.
+#   `--check` performs step 1 only and changes nothing. Every prompt names
+#   what needs sudo before asking.
+#
 # Usage:
 #   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
 #       [--core-only | --install-webui] [--install-systray] [--install-hosts]
