@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`install-tetron-suite.sh --help` prints the complete help, including when piped into bash** (`ADDONS-SUITE-007`). It printed a fixed range of lines that cut the text off partway, and under `curl ... | bash -s -- --help` it failed with an error instead of printing anything.
 - **`install-tetron-suite.sh --core-only --install-tui` is refused instead of silently ignoring `--install-tui`** (`ADDONS-SUITE-006`). `--core-only` already refused every other `--install-*` flag; it now refuses this one too, before anything is downloaded.
 - **A cryptography helper library updated to clear a published security advisory** (`CON-013`). `ctutils` 0.4.2, pulled in through `iroh`, has non-constant-time mask generation and `u128` comparisons (RUSTSEC-2026-0385, fixed in 0.4.4 and later). It is now 0.4.6. Only the lockfile changed.
 

@@ -148,6 +148,17 @@ require_cmd() {
 
 require_cmd curl install
 
+SELF_URL=https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh
+
+# --help prints the comment block at the top of this file. When the script is
+# piped into bash there is no file to read, so it is fetched again from
+# SELF_URL, the same address the documented one-liner uses.
+print_help() {
+	local src="${BASH_SOURCE[0]:-}"
+	{ if [ -r "$src" ]; then cat "$src"; else curl -fsSL "$SELF_URL"; fi; } \
+		| awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }'
+}
+
 CHECK_ONLY=0
 NO_CORE=0
 MUSL_OVERRIDE=0
@@ -179,7 +190,7 @@ for arg in "$@"; do
 	--install-backup) INSTALL_BACKUP=1; SELECTION_FLAG_GIVEN=1 ;;
 	--install-all) INSTALL_ALL=1; SELECTION_FLAG_GIVEN=1 ;;
 	-h | --help)
-		sed -n '2,105p' "$0" | sed 's/^# \{0,1\}//'
+		print_help
 		exit 0
 		;;
 	*) fatal "unrecognized argument: $arg (see --help)" ;;

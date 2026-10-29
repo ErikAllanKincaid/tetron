@@ -836,6 +836,27 @@ class InstallSuiteCoreOnlyConflicts(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-007: --help prints the full header, also when piped
+# --------------------------------------------------------------------------
+
+class InstallSuiteHelpPrintsHeader(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-007
+
+    `install-tetron-suite.sh --help` prints the script's entire leading comment
+    block, however long it is, and works the same when the script is piped into
+    bash (`curl ... | bash -s -- --help`). In that case there is no file to read,
+    so the script fetches itself from the same raw GitHub URL the documented
+    one-liner uses. Previously the help text was a hardcoded line range that had
+    fallen out of step with the header, and under a pipe it tried to read a file
+    named `bash`.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("--help").
+    """
+
+    req_id = "ADDONS-SUITE-007"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
