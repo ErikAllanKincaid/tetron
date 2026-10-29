@@ -43,7 +43,10 @@
   .inst-sub { text-align:center; color:var(--muted); font-size:1.05rem; margin:-.5rem 0 1rem; }
   .inspect { font:.8rem var(--mono); color:var(--muted); text-align:center; margin:.7rem auto 0; max-width:46rem; }
   .inspect a { white-space:nowrap; }
-  .inspect code { overflow-wrap:anywhere; }
+  .install.alt { margin-top:.35rem; padding:7px 10px; background:none; border-style:dashed; font-size:.74rem; max-width:40rem; }
+  .install.alt code { white-space:normal; overflow-wrap:anywhere; color:var(--muted); }
+  .install.alt .tail { white-space:nowrap; } .install.alt b { color:var(--fg); font-weight:600; }
+  .install.alt .copy { padding:2px 8px; font-size:.7rem; color:var(--muted); }
   .hero .install { margin-left:auto; margin-right:auto; }
   .hero .pills { justify-content:center; }
   .hero .sub { text-align:center; margin-left:auto; margin-right:auto; max-width:46rem; }
@@ -158,7 +161,8 @@
   <p class="inst-sub">Paste into your terminal</p>
   <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
   <p class="inspect">Read before you run: <a href="https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
-  <p class="inspect">See every option without installing:<br><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help</code></p>
+  <p class="inspect">Optional, installs nothing: list every option first</p>
+  <div class="install alt"><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
   <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
   <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
   <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">optional Tor and Veilid</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
@@ -318,7 +322,8 @@ No firewall, DNS or ssh server added.</pre></div>
   <h2>Try it now.</h2>
   <div class="install" style="margin-top:1rem"><span class="p">$</span><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code></div>
   <p class="inspect" style="margin-left:0;text-align:left">Read before you run: <a href="https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
-  <p class="inspect" style="margin-left:0;text-align:left">See every option without installing:<br><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help</code></p>
+  <p class="inspect" style="margin-left:0;text-align:left">Optional, installs nothing: list every option first</p>
+  <div class="install alt" style="margin-left:0"><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
   <p class="apk" style="margin-top:1rem"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>Debug build, pre-release.</span></p>
 </div></section>
 
@@ -339,13 +344,15 @@ No firewall, DNS or ssh server added.</pre></div>
     label();
   });
   if (mq && mq.addEventListener) mq.addEventListener('change', label);
-  var cmd = document.getElementById('cmd'), b = document.getElementById('copy');
-  b.addEventListener('click', function () {
-    var t = cmd.textContent;
-    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { b.textContent = 'copied'; }, function () {
-      var r = document.createRange(); r.selectNodeContents(cmd); var s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'select, ctrl+c';
+  [].forEach.call(document.querySelectorAll('.install .copy'), function (b) {
+    var cmd = b.parentNode.querySelector('code');
+    b.addEventListener('click', function () {
+      var t = cmd.textContent;
+      (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { b.textContent = 'copied'; }, function () {
+        var r = document.createRange(); r.selectNodeContents(cmd); var s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'select, ctrl+c';
+      });
+      setTimeout(function () { b.textContent = 'copy'; }, 2000);
     });
-    setTimeout(function () { b.textContent = 'copy'; }, 2000);
   });
   var steps = [].slice.call(document.querySelectorAll('.step')), pres = [].slice.call(document.querySelectorAll('.term pre')),
       cap = document.getElementById('cap'), names = ['install', 'create', 'invite', 'join', 'reach'];
