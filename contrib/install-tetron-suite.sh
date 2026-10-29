@@ -20,10 +20,7 @@
 #                      every peer on this host while the daemon restarts.
 #                      That happens *by default* (it is the whole point of
 #                      running this script); this flag is the opt-out.
-#   --yes-core        accepted and ignored. Kept so existing scripts and
-#                      documented command lines keep working -- core no
-#                      longer has to be opted in to, so there is nothing
-#                      left for this flag to permit.
+#   --yes-core        accepted and ignored (core is upgraded by default).
 #   --musl            force the statically-linked musl `core` build regardless
 #                      of host detection (core only -- webui/systray/hosts/
 #                      sync-receiver/backup have no musl variant). Auto-
@@ -148,11 +145,7 @@ SELECTION_FLAG_GIVEN=0
 for arg in "$@"; do
 	case "$arg" in
 	--check) CHECK_ONLY=1 ;;
-	# Accepted and ignored: upgrading core is the default now, so there is
-	# nothing left to permit. Still parsed (rather than rejected by the
-	# catch-all below) so existing cron entries, CI jobs, and copies of the
-	# old documented command line keep running instead of dying on an
-	# "unrecognized argument".
+	# Accepted and ignored: core is upgraded by default.
 	--yes-core) ;;
 	--no-core) NO_CORE=1 ;;
 	--musl) MUSL_OVERRIDE=1 ;;
@@ -346,13 +339,9 @@ else
 fi
 
 # Already installed on this host => always upgraded, whatever the block
-# above selected. The selection logic exists to decide what to *add* to a
-# machine; letting it also decide what to leave stale is what produced the
-# live report this fixes (2026-08-16): the documented `curl | bash`
-# one-liner refreshed the addons and quietly left core behind, so a
-# freshly upgraded webui/systray ended up talking tetron-proto to an old
-# daemon -- precisely the version skew the matched-release discipline
-# exists to prevent.
+# above selected. The selection logic only decides what to *add*; installed
+# components are kept at the same release so addons never run against an
+# older core daemon (they speak tetron-proto to it).
 #
 # --check is included deliberately: reporting the version of something
 # installed but unselected is exactly what a status check is for.
@@ -414,9 +403,7 @@ host_is_alpine() {
 
 # True if the binary already at $1 is statically linked -- lets an
 # existing musl install upgrade in place instead of silently flipping to
-# glibc (found live 2026-08-08: `rpi5-test` had a manually-installed
-# static musl `core`, and a plain upgrade through this script replaced it
-# with a dynamic glibc binary with no warning that linkage changed).
+# glibc.
 dest_is_static() {
 	local dest="$1"
 	[ -x "$dest" ] || return 1
@@ -472,8 +459,7 @@ component_service_needs_sudo() { case "$1" in core | hosts) echo 1 ;; *) echo 0 
 # A release binary this script places but must NOT start via `$dest install`.
 # messageboard registers one per-user service *per tetron network* (a board
 # binds that network's own mesh IP), so there is no single network to start at
-# install time -- on a multi-network node `tetron-messageboard install` with no
-# --network cannot even resolve one, and used to abort the whole suite install.
+# install time.
 # The binary is placed here; boards are started per network from tetron-webui's
 # Add-ons panel (or `tetron-messageboard install --network <name>` by hand).
 #
@@ -562,15 +548,10 @@ latest_tag() {
 }
 
 # Probe a binary for its version without ever letting it hang the installer
-# or take over the terminal. A pre-0.14.1 tetron-tui treated `--version` as
-# "launch the TUI": it opened the controlling terminal and blocked a piped
-# `curl | bash` install forever (found live on xps-17, 2026-10-10). Detach the
-# controlling terminal with `setsid` so an `open("/dev/tty")` fails fast
-# instead of hijacking the install, and bound the call with `timeout` as a
-# backstop against any other way a probe might block. Both are best-effort:
-# where they are absent (e.g. macOS, which ships neither by default) fall back
-# to a plain invocation -- the binaries we probe there do not misbehave this
-# way. Output still flows through the command substitution regardless.
+# or take over the terminal. `setsid` detaches the controlling terminal so the
+# probed binary cannot open /dev/tty, and `timeout` bounds the call to 5
+# seconds. Both are best-effort: where absent (e.g. macOS) the binary is run
+# directly. Output is returned to the caller.
 probe_version() {
 	local dest="$1" arg="$2"
 	if command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
@@ -583,10 +564,8 @@ probe_version() {
 }
 
 # Prints the installed semver (e.g. "0.8.2"), or nothing if the binary is
-# missing or predates the `--version`/`-V`/`version` support all three
-# gained 2026-07-25 -- an unparseable/missing version is treated as
-# "needs installing/upgrading", not an error, so old installs still get
-# picked up.
+# missing or does not answer `--version`/`-V`/`version`. An unparseable or
+# missing version is treated as "needs installing/upgrading", not an error.
 installed_version() {
 	local dest="$1" out
 	[ -x "$dest" ] || return 0
@@ -627,16 +606,9 @@ confirm_sudo_install() {
 		[[ "$reply" =~ ^[Nn]$ ]] && return 1
 		return 0
 	fi
-	# Upgrading an installed core: still the one genuinely disruptive step
-	# here, so the prompt spells out what it costs -- but it now defaults
-	# to yes like every other prompt in this script, and a bare Enter
-	# accepts it. It used to be [y/N], which read as a safe default and
-	# was anything but: the preceding "Use defaults? [Y/n]" trains Enter,
-	# so Enter here silently declined the single most important component,
-	# and the run still exited 0 with a row of green addon lines. That is
-	# how a fleet ends up on freshly upgraded addons over a stale daemon
-	# (reported live 2026-08-16). --no-core is the way to skip it now, and
-	# saying so out loud beats inferring it from a keystroke.
+	# Upgrading an installed core is the one disruptive step (the daemon
+	# restarts and peers disconnect), so the prompt spells out the cost.
+	# It defaults to yes like every other prompt; --no-core skips it.
 	if ! have_tty; then
 		log_warn "$comp: upgrading without a terminal to confirm at -- every peer on this host drops briefly while the daemon restarts (pass --no-core to skip core)"
 		return 0
@@ -718,9 +690,8 @@ install_backup() {
 
 any_failed=0
 # Components that were selected but deliberately not installed (declined
-# at a prompt, or skipped by --no-core). Surfaced in the closing summary:
-# the failure this script was reported for was silent, so "nothing was
-# said" must never again mean "nothing was skipped".
+# at a prompt, or skipped by --no-core). Listed in the closing summary so
+# a skip is never silent.
 skipped=""
 for comp in "${COMPONENTS[@]}"; do
 	dest="$(component_dest "$comp")"
