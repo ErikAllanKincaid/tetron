@@ -946,6 +946,26 @@ class InstallSuiteDownloadPinnedTag(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-012: temporary downloads removed on every exit
+# --------------------------------------------------------------------------
+
+class InstallSuiteTempCleanup(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-012
+
+    `install-tetron-suite.sh` downloads into a single private temporary
+    directory (`mktemp -d`) that is removed when the script exits for any
+    reason: normal completion, an error, Ctrl-C, or SIGTERM. Previously each
+    component made its own temporary directory with a function-return trap, so
+    an interrupted run left the partial download behind.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("interrupted
+    during a download").
+    """
+
+    req_id = "ADDONS-SUITE-012"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

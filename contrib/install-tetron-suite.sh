@@ -218,6 +218,13 @@ if [ "$CHECK_ONLY" -ne 1 ]; then
 		|| fatal "sha256sum or shasum is required to verify downloads"
 fi
 
+# Downloads go to one private temporary directory, removed when the script
+# exits for any reason, including Ctrl-C.
+WORKDIR="$(mktemp -d)" || fatal "cannot create a temporary directory"
+trap 'rm -rf "$WORKDIR"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # in_list <needle> <space-separated haystack>: membership test used for the
 # selection bookkeeping below. A plain string rather than a bash array so
 # it stays safe when empty under `set -u` on bash 3.2, which is what macOS
@@ -677,8 +684,8 @@ install_component() {
 	service_sudo_prefix=""
 	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="$SUDO"
 
-	tmpdir="$(mktemp -d)"
-	trap 'rm -rf "$tmpdir"' RETURN
+	tmpdir="$WORKDIR/$comp"
+	mkdir -p "$tmpdir"
 
 	log_info "$comp: downloading $asset from $repo release $tag..."
 	curl -fsSL -o "$tmpdir/$asset" "https://github.com/$repo/releases/download/$tag/$asset" \
@@ -725,8 +732,8 @@ install_backup() {
 	url="https://raw.githubusercontent.com/$repo/main/contrib/$bin"
 	sudo_prefix="$SUDO"
 
-	tmpdir="$(mktemp -d)"
-	trap 'rm -rf "$tmpdir"' RETURN
+	tmpdir="$WORKDIR/$comp"
+	mkdir -p "$tmpdir"
 
 	log_info "$comp: downloading $url ..."
 	curl -fsSL -o "$tmpdir/$bin" "$url" \
