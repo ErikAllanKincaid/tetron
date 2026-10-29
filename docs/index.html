@@ -256,7 +256,6 @@ Co-coordinators, so the network
 survives when one machine is off.
 No firewall, DNS or ssh server added.</pre></div>
   </div>
-  <div class="paper"><img src="images/tetron.jpeg" alt="Diagram: each tetron node runs the same daemon and connects to peers over encrypted QUIC tunnels, with shared relay and discovery infrastructure used only for introductions and NAT traversal." loading="lazy"></div>
   <p class="note" style="margin-top:1rem">Built on <a href="https://iroh.computer">iroh</a> (QUIC, hole-punching, relays) and a DHT for discovery. For the full picture read <a href="https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html">Anatomy of a Mesh</a>.</p>
 </div></section>
 
@@ -267,7 +266,7 @@ No firewall, DNS or ssh server added.</pre></div>
     <tr><th></th><th>Port forward + VPN server</th><th>Hosted mesh VPN</th><th class="us">tetron</th></tr>
     <tr><td>Works behind NAT without router changes</td><td>no</td><td>yes</td><td class="us">yes</td></tr>
     <tr><td>Needs an account or login provider</td><td>no</td><td>yes</td><td class="us">no</td></tr>
-    <tr><td>Needs a server you run and keep up</td><td>yes</td><td>no</td><td class="us">no</td></tr>
+    <tr><td>Needs a server you run and keep up</td><td>yes</td><td>their server, not yours</td><td class="us">no</td></tr>
     <tr><td>Traffic goes through a middle server</td><td>yes, yours</td><td>direct or relay</td><td class="us">direct or relay</td></tr>
     <tr><td>Admission</td><td>keys by hand</td><td>login and admin console</td><td class="us">invite keys</td></tr>
     <tr><td>Per-peer and per-port rules</td><td>your firewall</td><td>built in</td><td class="us">host firewall on the TUN</td></tr>
