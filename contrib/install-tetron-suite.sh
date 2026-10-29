@@ -15,17 +15,18 @@
 #      its .sha256 file, into a private temporary directory, and refuses to
 #      install it unless the checksum matches. The directory is deleted
 #      afterwards.
-#   3. Copies the binary to /usr/local/bin using sudo. Nothing else on the
-#      system is modified by this step.
+#   3. Copies the binary to /usr/local/bin using sudo (creating that
+#      directory if missing).
 #   4. Runs the component's own `install` subcommand, which registers its
-#      service: a systemd unit (or launchd job on macOS) for tetron, per-user
-#      services for webui and systray, a systemd timer for hosts.
+#      service: a system-wide systemd unit (or launchd job on macOS) for
+#      tetron and a systemd timer for hosts, both via sudo; per-user services
+#      for webui and systray, registered as the invoking user without sudo.
 #   Restarting tetron (the core daemon) briefly disconnects this host from its
 #   mesh peers. tetron-backup.sh is the one exception to steps 1-2: it is a
 #   plain script fetched from the tetron repository's main branch, with no
 #   checksum.
-#   `--check` performs step 1 only and changes nothing. Every prompt names
-#   what needs sudo before asking.
+#   `--check` performs step 1 only and changes nothing. The install and
+#   upgrade prompts say when sudo is needed before asking.
 #
 # Usage:
 #   ./install-tetron-suite.sh [--check] [--no-core] [--musl]
@@ -451,8 +452,8 @@ musl_reason() {
 # component_binary() / component_installed() are defined further up, ahead
 # of the component-selection logic that has to call them.
 component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; tui) echo ErikAllanKincaid/tetron-tui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
-# All five components install to the same root-owned /usr/local/bin and
-# need sudo -- webui/systray run as per-user services (systemd --user /
+# Every component installs to the same root-owned /usr/local/bin and
+# needs sudo -- webui/systray run as per-user services (systemd --user /
 # launchd LaunchAgent) with no elevated runtime privilege of their own,
 # but /usr/local/bin is the one location reliably on $PATH out of the box
 # on every supported OS/shell, and the sudo prompt is already unavoidable
