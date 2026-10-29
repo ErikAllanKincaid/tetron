@@ -662,16 +662,16 @@ install_component() {
 
 	log_info "$comp: downloading $asset from $repo release..."
 	curl -fsSL -o "$tmpdir/$asset" "https://github.com/$repo/releases/latest/download/$asset" \
-		|| fatal "$comp: failed to download $asset"
+		|| { log_error "$comp: failed to download $asset"; return 1; }
 	curl -fsSL -o "$tmpdir/$asset.sha256" "https://github.com/$repo/releases/latest/download/$asset.sha256" \
-		|| fatal "$comp: failed to download $asset.sha256"
+		|| { log_error "$comp: failed to download $asset.sha256"; return 1; }
 	verify_checksum "$tmpdir/$asset" "$tmpdir/$asset.sha256" \
-		|| fatal "$comp: checksum verification failed"
+		|| { log_error "$comp: checksum verification failed, not installed"; return 1; }
 
 	log_info "$comp: installing to $dest..."
 	$sudo_prefix mkdir -p "$(dirname "$dest")"
 	$sudo_prefix install -m 0755 "$tmpdir/$asset" "$dest" \
-		|| fatal "$comp: failed to install binary to $dest"
+		|| { log_error "$comp: failed to install binary to $dest"; return 1; }
 
 	if [ "$(component_no_service "$comp")" -eq 1 ]; then
 		# A plain binary (tetron-tui): placed on PATH, nothing to start.
@@ -684,7 +684,7 @@ install_component() {
 	else
 		log_info "$comp: running '$dest install' to register/restart its service..."
 		$service_sudo_prefix "$dest" install \
-			|| fatal "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"
+			|| { log_error "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"; return 1; }
 	fi
 
 	log_pass "$comp: installed/upgraded successfully"
@@ -710,16 +710,19 @@ install_backup() {
 
 	log_info "$comp: downloading $url ..."
 	curl -fsSL -o "$tmpdir/$bin" "$url" \
-		|| fatal "$comp: failed to download $bin"
+		|| { log_error "$comp: failed to download $bin"; return 1; }
 	log_info "$comp: installing to $dest..."
 	$sudo_prefix mkdir -p "$(dirname "$dest")"
 	$sudo_prefix install -m 0755 "$tmpdir/$bin" "$dest" \
-		|| fatal "$comp: failed to install $bin to $dest"
+		|| { log_error "$comp: failed to install $bin to $dest"; return 1; }
 
 	log_pass "$comp: installed/upgraded successfully"
 }
 
 any_failed=0
+# Components that failed. One failure does not stop the others; all are
+# listed in the closing summary and the script exits 1.
+failed=""
 # Components that were selected but deliberately not installed (declined
 # at a prompt, or skipped by --no-core). Listed in the closing summary so
 # a skip is never silent.
@@ -737,7 +740,7 @@ for comp in "${COMPONENTS[@]}"; do
 			log_info "$comp: not installed"
 			[ "$CHECK_ONLY" -eq 1 ] && continue
 			confirm_sudo_install "$comp" 0 || { skipped="$skipped $comp"; continue; }
-			install_backup "$comp" "$dest" || any_failed=1
+			install_backup "$comp" "$dest" || failed="$failed $comp"
 		fi
 		continue
 	fi
@@ -745,7 +748,7 @@ for comp in "${COMPONENTS[@]}"; do
 	current="$(installed_version "$dest")"
 	latest="$(latest_tag "$(component_repo "$comp")")" || {
 		log_error "$comp: failed to query latest release -- skipping"
-		any_failed=1
+		failed="$failed $comp"
 		continue
 	}
 
@@ -789,7 +792,7 @@ for comp in "${COMPONENTS[@]}"; do
 			log_pass "$comp: service registered/started"
 		else
 			log_error "$comp: '$dest install' failed to register/start its service"
-			any_failed=1
+			failed="$failed $comp"
 		fi
 		continue
 	fi
@@ -803,7 +806,7 @@ for comp in "${COMPONENTS[@]}"; do
 		confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
 	fi
 
-	install_component "$comp" "$dest" "$asset" || any_failed=1
+	install_component "$comp" "$dest" "$asset" || failed="$failed $comp"
 done
 
 # Say plainly what did not happen. A skipped core is called out on its own
@@ -816,6 +819,11 @@ if [ -n "$skipped" ]; then
 		log_warn "core was NOT upgraded -- the daemon is still on the version it was already running"
 		log_warn "addons talk tetron-proto to the core daemon, so leaving core behind risks version skew; re-run and accept the core prompt to finish the upgrade"
 	fi
+fi
+
+if [ -n "$failed" ]; then
+	log_error "failed:$failed"
+	any_failed=1
 fi
 
 exit "$any_failed"

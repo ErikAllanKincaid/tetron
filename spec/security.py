@@ -857,6 +857,27 @@ class InstallSuiteHelpPrintsHeader(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-008: one failed component does not abort the rest
+# --------------------------------------------------------------------------
+
+class InstallSuiteFailureDoesNotAbort(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-008
+
+    A component that fails to download, verify, install, or register its service
+    does not stop `install-tetron-suite.sh`. The script logs the error, moves on
+    to the remaining components, lists every failed component on a closing
+    `failed:` line, and exits 1. Previously the first failure exited the script
+    at once, so later components were never processed and the closing summary of
+    skipped components was never printed.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("one component
+    fails").
+    """
+
+    req_id = "ADDONS-SUITE-008"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
