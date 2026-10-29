@@ -102,7 +102,9 @@
   .btn.ghost { background:none; color:var(--fg); border:1px solid var(--border); margin-left:8px; }
   footer { border-top:1px solid var(--border); padding:2.5rem 0 3rem; color:var(--muted); font-size:.88rem; }
   footer a { margin-right:16px; }
+  .desk { display:flex; gap:2rem; align-items:center; } .desk > div { flex:1 1 0; min-width:0; } .desk > a { flex:0 0 22rem; max-width:40%; } .desk img { display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:10px; }
   @media (max-width:760px) {
+    .desk { flex-direction:column; align-items:stretch; } .desk > a { flex:none; max-width:100%; }
     .two, .demo, .vpn { grid-template-columns:1fr; }
     .stage { position:sticky; top:48px; z-index:2; background:var(--bg); padding:8px 0; }
     .steps .step { min-height:45vh; }
@@ -301,11 +303,13 @@ No firewall, DNS or ssh server added.</pre></div>
   <p class="note" style="margin-top:1.4rem"><code>install-tetron-suite.sh --install-all</code> installs every addon above except the Android app and tetron-relay, which have their own installs. Addons are optional, and tetron works without any of them.</p>
 </div></section>
 
-<section id="desktop"><div class="wrap">
+<section id="desktop"><div class="wrap desk"><div>
   <p class="eyebrow">Better together</p>
   <h2>A mesh network and a desktop for it.</h2>
   <p class="lede"><a href="https://erikallankincaid.github.io/tetron-wm/">tetron-wm</a> is a window manager for the terminal. It shows tetron status in its tray, toggles each network from a popover and opens a terminal into tetron. Everything works without it, and it works without tetron too.</p>
   <a class="btn" href="https://erikallankincaid.github.io/tetron-wm/">Meet tetron-wm</a><a class="btn ghost" href="https://github.com/ErikAllanKincaid/tetron-wm">tetron-wm on GitHub</a>
+  </div>
+  <a href="https://erikallankincaid.github.io/tetron-wm/"><img src="images/tetron-wm_desktop.png" alt="The tetron-wm desktop: a terminal window manager with tetron status in its tray." loading="lazy"></a>
 </div></section>
 
 <section><div class="wrap">
