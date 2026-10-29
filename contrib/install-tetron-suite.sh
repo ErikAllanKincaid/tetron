@@ -206,6 +206,18 @@ done
 [ "$CORE_ONLY" -eq 1 ] && [ "$NO_CORE" -eq 1 ] \
 	&& fatal "--core-only and --no-core are contradictory -- they select nothing"
 
+# Writing to /usr/local/bin needs root. Run as root, the script uses no sudo;
+# otherwise it needs sudo. Both this and the checksum tool are checked before
+# anything is downloaded. --check changes nothing, so it needs neither.
+SUDO=sudo
+[ "$(id -u)" -eq 0 ] && SUDO=""
+if [ "$CHECK_ONLY" -ne 1 ]; then
+	[ -z "$SUDO" ] || command -v sudo >/dev/null 2>&1 \
+		|| fatal "sudo is required to install into /usr/local/bin (or run this script as root)"
+	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+		|| fatal "sha256sum or shasum is required to verify downloads"
+fi
+
 # in_list <needle> <space-separated haystack>: membership test used for the
 # selection bookkeeping below. A plain string rather than a bash array so
 # it stays safe when empty under `set -u` on bash 3.2, which is what macOS
@@ -471,7 +483,6 @@ component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) ech
 # for core, so splitting addons off into a separate unprivileged directory
 # only trades a $PATH problem for a sudo prompt that costs nothing extra.
 component_default_dir() { echo /usr/local/bin; }
-component_needs_sudo() { echo 1; }
 
 # Placing the binary in root-owned /usr/local/bin always needs sudo, but
 # registering the service is a different privilege question: `core` and
@@ -611,10 +622,8 @@ verify_checksum() {
 	sumfile_name="$(basename "$sumfile")"
 	if command -v sha256sum >/dev/null 2>&1; then
 		(cd "$dir" && sha256sum -c "$sumfile_name") >/dev/null
-	elif command -v shasum >/dev/null 2>&1; then
-		(cd "$dir" && shasum -a 256 -c "$sumfile_name") >/dev/null
 	else
-		fatal "neither sha256sum nor shasum is available to verify the download"
+		(cd "$dir" && shasum -a 256 -c "$sumfile_name") >/dev/null
 	fi
 }
 
@@ -652,10 +661,9 @@ confirm_sudo_install() {
 install_component() {
 	local comp="$1" dest="$2" asset="$3" repo tmpdir sudo_prefix service_sudo_prefix
 	repo="$(component_repo "$comp")"
-	sudo_prefix=""
-	[ "$(component_needs_sudo "$comp")" -eq 1 ] && sudo_prefix="sudo"
+	sudo_prefix="$SUDO"
 	service_sudo_prefix=""
-	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="sudo"
+	[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="$SUDO"
 
 	tmpdir="$(mktemp -d)"
 	trap 'rm -rf "$tmpdir"' RETURN
@@ -702,8 +710,7 @@ install_backup() {
 	bin="$(component_binary "$comp")"
 	repo="$(component_repo "$comp")"
 	url="https://raw.githubusercontent.com/$repo/main/contrib/$bin"
-	sudo_prefix=""
-	[ "$(component_needs_sudo "$comp")" -eq 1 ] && sudo_prefix="sudo"
+	sudo_prefix="$SUDO"
 
 	tmpdir="$(mktemp -d)"
 	trap 'rm -rf "$tmpdir"' RETURN
@@ -787,7 +794,7 @@ for comp in "${COMPONENTS[@]}"; do
 			continue
 		fi
 		service_sudo_prefix=""
-		[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="sudo"
+		[ "$(component_service_needs_sudo "$comp")" -eq 1 ] && service_sudo_prefix="$SUDO"
 		if $service_sudo_prefix "$dest" install; then
 			log_pass "$comp: service registered/started"
 		else
@@ -800,11 +807,9 @@ for comp in "${COMPONENTS[@]}"; do
 
 	[ "$CHECK_ONLY" -eq 1 ] && continue
 
-	if [ "$(component_needs_sudo "$comp")" -eq 1 ]; then
-		is_upgrade=0
-		[ -n "$current" ] && is_upgrade=1
-		confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
-	fi
+	is_upgrade=0
+	[ -n "$current" ] && is_upgrade=1
+	confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
 
 	install_component "$comp" "$dest" "$asset" || failed="$failed $comp"
 done

@@ -878,6 +878,30 @@ class InstallSuiteFailureDoesNotAbort(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-009: runs as root without sudo; checks prerequisites first
+# --------------------------------------------------------------------------
+
+class InstallSuitePreconditionsAndRoot(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-009
+
+    `install-tetron-suite.sh` run as root does everything directly, without
+    `sudo`, so it works on systems that do not have sudo installed (minimal
+    containers, fresh servers). Run as any other user it needs `sudo` to write
+    `/usr/local/bin`. That, and a SHA-256 tool (`sha256sum` or `shasum`) to verify
+    downloads, are checked before anything is downloaded, and a missing one is a
+    clear error naming what is needed. `--check` changes nothing and needs
+    neither. Previously sudo was invoked unconditionally, so a root run without
+    sudo failed at the first install step, and a missing checksum tool was only
+    discovered after the first download.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("fresh install as
+    root, no sudo on the system", "non-root without sudo").
+    """
+
+    req_id = "ADDONS-SUITE-009"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 

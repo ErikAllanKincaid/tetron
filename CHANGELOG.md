@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`install-tetron-suite.sh` works when run as root on a system without `sudo`, and checks its prerequisites before downloading anything** (`ADDONS-SUITE-009`). A root run used `sudo` anyway and failed where sudo is not installed. A missing `sudo` or checksum tool is now reported up front.
 - **One failed component no longer stops `install-tetron-suite.sh` from installing the rest** (`ADDONS-SUITE-008`). A failed download, checksum, or service registration ended the whole run. The script now continues, names every failed component at the end, and exits 1.
 - **`install-tetron-suite.sh --help` prints the complete help, including when piped into bash** (`ADDONS-SUITE-007`). It printed a fixed range of lines that cut the text off partway, and under `curl ... | bash -s -- --help` it failed with an error instead of printing anything.
 - **`install-tetron-suite.sh --core-only --install-tui` is refused instead of silently ignoring `--install-tui`** (`ADDONS-SUITE-006`). `--core-only` already refused every other `--install-*` flag; it now refuses this one too, before anything is downloaded.
