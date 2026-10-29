@@ -99,7 +99,11 @@ sudo install tetron-systray /usr/local/bin/tetron-systray
 tetron-systray install
 ```
 
-To install or upgrade tetron, `tetron-webui`, and `tetron-systray` together instead of running the steps above by hand, fetch and run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) -- it checks each against its own latest release and only touches the ones that are missing or behind (`--check` reports without changing anything). Anything already installed on the host is always upgraded, whether or not it was part of the selection, so nothing quietly falls behind; the selection only decides what gets *newly* installed. Run at a real terminal (including piped, as in the TL;DR above -- it reads its prompts from `/dev/tty`, not stdin) it asks a `webui`/`systray` picker with sensible display-aware defaults; with no terminal attached at all (cron, CI, a container run without `-it`) it installs core and upgrades whatever else is present. Upgrading core restarts the daemon and briefly drops every peer on the host, so it asks first -- but Enter accepts, and `--no-core` is how you skip it. Skip prompts entirely with `--core-only` / `--install-webui` / `--install-systray` / `--install-hosts` / `--install-backup` / `--install-all`.
+To install or upgrade tetron and its add-ons in one step instead of running the steps above by hand, run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) as in the TL;DR above. It compares each component with its latest GitHub release, verifies each download against the SHA-256 checksum published with it, installs to `/usr/local/bin`, and registers each component's service. At a terminal it offers a default set (core and `tetron-tui`, plus `tetron-webui` and `tetron-systray` when a display is present) and lets you choose add-ons; with no terminal it installs core and `tetron-tui`. Anything already installed is upgraded with the rest. Upgrading core restarts the daemon, which briefly disconnects the host from its peers. `--check` reports versions without changing anything. The script documents itself at the top of the file. To see every option without installing anything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+```
 
 ```bash
 # Create a network. Output includes your mesh IP and invite key.
