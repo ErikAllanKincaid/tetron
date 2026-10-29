@@ -82,8 +82,11 @@
 #   --check                  show installed and latest versions; change
 #                            nothing. Exits 1 if an up-to-date component's
 #                            service is not running.
-#   --core-only              install or upgrade core only. Cannot be combined
-#                            with any --install-* option.
+#   --core-only              install or upgrade core only, leaving any other
+#                            installed components as they are. Cannot be
+#                            combined with --install-* options; those already
+#                            include core, so `--install-tui` alone installs
+#                            core and tui.
 #   --no-core                leave core as it is; install or upgrade add-ons
 #                            only.
 #   --install-webui          add webui
@@ -175,7 +178,7 @@ for arg in "$@"; do
 done
 
 [ "$CORE_ONLY" -eq 1 ] && [ "$((INSTALL_WEBUI + INSTALL_TUI + INSTALL_SYSTRAY + INSTALL_HOSTS + INSTALL_SYNC_RECEIVER + INSTALL_MESSAGEBOARD + INSTALL_BACKUP + INSTALL_ALL))" -gt 0 ] \
-	&& fatal "--core-only cannot be combined with any --install-* flag"
+	&& fatal "--core-only installs core alone and cannot be combined with --install-* options; those already include core, so run again without --core-only"
 
 # --core-only and --no-core together would select nothing.
 [ "$CORE_ONLY" -eq 1 ] && [ "$NO_CORE" -eq 1 ] \

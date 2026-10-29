@@ -824,7 +824,10 @@ class InstallSuiteCoreOnlyConflicts(Requirement):
 
     `--core-only` installs core and nothing else, so `install-tetron-suite.sh`
     refuses it together with any `--install-*` flag, `--install-tui` included,
-    with a usage error before anything is fetched. Previously `--install-tui` was
+    with a usage error before anything is fetched. The error says what to do
+    instead: `--install-*` options already include core, so the same command
+    without `--core-only` installs core plus the named add-ons (`--help` says
+    the same). Previously `--install-tui` was
     missing from the check, so `--core-only --install-tui` ran and silently
     ignored the tui request.
 

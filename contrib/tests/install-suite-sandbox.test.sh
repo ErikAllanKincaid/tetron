@@ -103,6 +103,7 @@ echo "argument checks"
 run -- 'bash /fix/script --core-only --install-tui'
 check "--core-only with --install-tui is refused" rc_is 1
 check "  with a usage error" has "cannot be combined"
+check "  that says how to get core plus the add-on" has "run again without --core-only"
 check "  and nothing is fetched" log_lacks curl.log http
 
 echo "fresh install as root, no sudo on the system"
