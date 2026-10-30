@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`install-tetron-suite.sh` no longer lists a component as failed after installing it** (`ADDONS-SUITE-014`). When the new binary printed no version, the install was reported as a failure in the closing summary and the script exited 1, although the binary was in place and its service registered.
 - **An interrupted `install-tetron-suite.sh` run no longer leaves partial downloads in `/tmp`** (`ADDONS-SUITE-012`). Temporary files are now removed on every exit, including Ctrl-C.
 - **`install-tetron-suite.sh` installs exactly the release version it reports** (`ADDONS-SUITE-011`). Downloads used GitHub's floating "latest" address, which could differ from the version just shown if a release was published mid-run. They now use the reported tag.
 - **`install-tetron-suite.sh` no longer writes root-owned files into your home directory** (`ADDONS-SUITE-010`). An older addon copy in `~/.local/bin` was upgraded in place with sudo. The new copy now goes to `/usr/local/bin`, and the script warns when an older copy would still run first on `PATH`.

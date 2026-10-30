@@ -87,6 +87,7 @@ check() {
 	fi
 }
 has() { printf '%s\n' "$OUT" | grep -q -- "$1"; }
+lacks() { ! has "$1"; }
 rc_is() { [ "$RC" -eq "$1" ]; }
 log_has() { grep -q -- "$2" "$FIX/$1" 2>/dev/null; }
 log_lacks() { ! log_has "$@"; }
@@ -144,6 +145,20 @@ run -- 'cp /fix/release/tetron-linux-x86_64 /usr/local/bin/tetron && sed -i "s/9
 check "succeeds" has "rc=0"
 check "  core upgraded" has "tetron $VER (test)"
 check "  tui added (headless default)" has "^tetron-tui$"
+
+echo "installed binary reports no version"
+# The tui release asset is swapped for one that prints nothing, for this case only.
+TUI=tetron-tui-linux-x86_64
+cp "$FIX/release/$TUI" "$FIX/release/$TUI.orig"
+cp "$FIX/release/$TUI.sha256" "$FIX/release/$TUI.sha256.orig"
+printf '#!/bin/sh\nexit 0\n' > "$FIX/release/$TUI"
+(cd "$FIX/release" && sha256sum "$TUI" > "$TUI.sha256")
+run -- 'bash /fix/script --no-core --install-tui; echo "rc=$?"; ls /usr/local/bin'
+mv "$FIX/release/$TUI.orig" "$FIX/release/$TUI"
+mv "$FIX/release/$TUI.sha256.orig" "$FIX/release/$TUI.sha256"
+check "succeeds" has "rc=0"
+check "  binary installed" has "^tetron-tui$"
+check "  not listed as failed" lacks "failed:"
 
 echo "already up to date"
 run -- 'cp /fix/release/tetron-linux-x86_64 /usr/local/bin/tetron; bash /fix/script --core-only'
