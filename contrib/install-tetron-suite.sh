@@ -762,7 +762,7 @@ post_install_component() {
 	log_pass "$comp: installed/upgraded successfully"
 	warn_if_shadowed "$comp" "$dest"
 	ver="$(installed_version "$dest")"
-	[ -n "$ver" ] && log_pass "$comp: version $ver"
+	if [ -n "$ver" ]; then log_pass "$comp: version $ver"; fi
 }
 
 # Installs a component from asset $2 of release $3, a .deb, with apt-get
