@@ -403,10 +403,16 @@ class DebReleaseWiringGate(Constraint):
 class SuiteInstallerShellTestsGate(Constraint):
     """CONSTRAINT-ID: CON-PKG02
 
-    Every `contrib/tests/*.test.sh` exits 0: the decision-table tests for
-    `confirm_sudo_install` and for `--method`, and the stubbed end-to-end flow
-    test for `--method` (PACKAGING-007). They run the shipped script, extract
-    its functions at run time, and never touch the host.
+    The hermetic suite installer tests exit 0: `install-suite-confirm.test.sh`
+    and `install-suite-method.test.sh` (decision tables for
+    `confirm_sudo_install` and `--method`), `install-suite-method-flow.test.sh`
+    (stubbed end-to-end flow for `--method`, PACKAGING-007), and
+    `install-suite-shadow.test.sh` (PACKAGING-008). They run the shipped
+    script, extract its functions at run time, and never touch the host. The
+    list is explicit, not a glob: `install-suite-sandbox.test.sh` needs Docker
+    and pulls an image, so it is run by hand and is not part of this gate.
+    A listed test that is missing counts as a failure. For each failure the
+    last lines of its output are recorded, so a CI log shows the cause.
 
     ENFORCEMENT (reconcile.py): suite_shell_tests.failures equals 0 and
     suite_shell_tests.ran is greater than 0.
