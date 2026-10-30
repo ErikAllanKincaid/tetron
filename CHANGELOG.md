@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.4] - 2026-10-29
+
 ### Added
 
 - **Each release now carries Debian packages** (`PACKAGING-006`). Next to the raw binaries, a release publishes `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb` with `.sha256` files. They are built from the same static binary, tested by installing them in a clean Debian 13 container before the release is published, and ship the systemd unit disabled so that nothing starts until you ask. Install with `sudo apt install ./tetron_<version>-1_amd64.deb`. Raw binary assets and the suite installer are unchanged.
