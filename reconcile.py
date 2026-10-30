@@ -480,14 +480,27 @@ def check_deb_release() -> dict:
 
 
 def check_suite_shell_tests() -> dict:
-    """CON-PKG02: run contrib/tests/*.test.sh (suite installer decision and flow tests)."""
+    """CON-PKG02: run the hermetic suite installer tests. Explicit list, not a
+    glob: install-suite-sandbox.test.sh needs Docker and is run by hand."""
+    names = [
+        "install-suite-confirm.test.sh",
+        "install-suite-method.test.sh",
+        "install-suite-method-flow.test.sh",
+        "install-suite-shadow.test.sh",
+    ]
     failures = []
-    tests = sorted(Path("contrib/tests").glob("*.test.sh"))
-    for t in tests:
+    output = {}
+    for name in names:
+        t = Path("contrib/tests") / name
+        if not t.is_file():
+            failures.append(name)
+            output[name] = "missing"
+            continue
         r = run(["bash", str(t)])
         if r.returncode != 0:
-            failures.append(t.name)
-    return {"ran": len(tests), "failures": len(failures), "failed": failures}
+            failures.append(name)
+            output[name] = (r.stdout + r.stderr).splitlines()[-20:]
+    return {"ran": len(names), "failures": len(failures), "failed": failures, "output": output}
 
 
 if __name__ == "__main__":
