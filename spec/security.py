@@ -998,6 +998,28 @@ class InstallSuiteReaderFacingComments(Requirement):
 
 
 # --------------------------------------------------------------------------
+# ADDONS-SUITE-014: an install that worked is never reported as failed
+# --------------------------------------------------------------------------
+
+class InstallSuiteVersionProbeNotFailure(Requirement):
+    """REQUIREMENT-ID: ADDONS-SUITE-014
+
+    After a component is installed, `install-tetron-suite.sh` probes the new
+    binary for its version only to report it. When the probe prints nothing
+    (a binary that does not answer `--version` or `version`), the version line
+    is left out and the component still counts as installed: it is not named
+    in the closing "failed:" summary and does not make the script exit 1.
+    Previously the install function ended with the version check, so an empty
+    probe became the function's failing return status.
+
+    Verified by `contrib/tests/install-suite-sandbox.test.sh` ("installed
+    binary reports no version").
+    """
+
+    req_id = "ADDONS-SUITE-014"
+
+
+# --------------------------------------------------------------------------
 # KICK-COORDINATOR-001: any coordinator can kick any other coordinator
 # --------------------------------------------------------------------------
 
