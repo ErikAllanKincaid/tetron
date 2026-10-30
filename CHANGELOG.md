@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Releases now actually include the Debian packages** (`PACKAGING-006`). v0.14.4 was published with its raw binaries but without the `.deb` files described under 0.14.4: the packaging step needed Python 3.11 and the release build machines have 3.10. The shared packaging action now provides a suitable Python itself, and the release workflow uses that version. This release is the first with `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb`.
+
 ## [0.14.4] - 2026-10-29
 
 ### Added
