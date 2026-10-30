@@ -913,7 +913,10 @@ class InstallSuiteNoRootFilesInHome(Requirement):
 
     When a component is already installed somewhere on `PATH` outside the home
     directory (for example `/usr/bin`), `install-tetron-suite.sh` upgrades that
-    copy in place. A copy inside `$HOME` (for example `~/.local/bin`, where older
+    copy in place, unless a Debian package owns that copy: then PACKAGING-007
+    decides (upgrade with the `.deb`, skip, or install the raw binary to
+    `/usr/local/bin`), and the packaged file is never overwritten. A copy
+    inside `$HOME` (for example `~/.local/bin`, where older
     installers put per-user addons) is not overwritten: the new copy goes to
     `/usr/local/bin`, so the script never uses sudo to write a root-owned file
     into a home directory. After every install, if `PATH` would still run a
