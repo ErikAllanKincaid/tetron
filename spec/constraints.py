@@ -386,8 +386,10 @@ class DebReleaseWiringGate(Constraint):
     PACKAGING-006 guard. `packaging/deb.toml` installs `/usr/bin/tetron`
     (0755) and the packaged unit at
     `/usr/lib/systemd/system/tetron.service` (0644), depends on `iproute2`,
-    has no maintainer key, and has only a `postinst` script that uses
-    `groupadd --system` and never `addgroup`, `systemctl start|enable|restart`.
+    has no maintainer key, and has exactly a `postinst` and a `postrm`
+    script. `postinst` uses `groupadd --system` and never `addgroup`,
+    `systemctl start|enable|restart`. `postrm` (PACKAGING-013) never removes
+    node data: no `rm`, `groupdel`, `delgroup` or `systemctl`.
     `.github/workflows/release.yml` uses
     `ErikAllanKincaid/tetron-packaging` pinned to a full 40 hex SHA, passes
     `vars.DEB_MAINTAINER` as the maintainer, and still builds and uploads the

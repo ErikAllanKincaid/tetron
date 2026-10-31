@@ -8,7 +8,10 @@ long_description = """
 tetron connects machines into a private mesh network by cryptographic
 identity. This package carries the daemon and CLI (static musl build).
 The service is installed disabled; enable it with: systemctl enable --now tetron.
-The node identity is created on the first daemon start, not at install time."""
+The node identity is created on the first daemon start, not at install time.
+Removing or purging the package keeps /etc/tetron (node identity, settings)
+and /var/log/tetron; delete them by hand if you really want the node gone:
+sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron."""
 section = "net"
 license = "MPL-2.0"
 homepage = "https://github.com/ErikAllanKincaid/tetron"
@@ -27,3 +30,4 @@ mode = "0644"
 
 [scripts]
 postinst = "postinst"
+postrm = "postrm"

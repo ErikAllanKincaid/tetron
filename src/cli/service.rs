@@ -13,8 +13,11 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
 pub(crate) fn ensure_tetron_group() {
     // `getent group tetron` exits 0 if the group exists.
+    // PACKAGING-014: only the exit status matters; getent's line is discarded.
     let exists = Command::new("getent")
         .args(["group", "tetron"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -135,6 +138,7 @@ pub(crate) fn package_owner(path: &Path) -> Option<String> {
 /// in the service unit (PORTABILITY-004, matching the tetron-webui `--port`
 /// pattern). `None` means "use the compiled default" — the unit gets no
 /// `Environment=` line for that var.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PathOverrides {
     pub config_dir: Option<String>,
     pub log_dir: Option<String>,
@@ -212,6 +216,117 @@ pub(crate) fn legacy_unit_notice(etc_unit_exists: bool) -> Option<String> {
     })
 }
 
+/// The line `tetron install` prints once the daemon answered the resume
+/// request (PACKAGING-015).
+pub(crate) fn started_line(reply: &str) -> String {
+    let reply = reply.trim();
+    if reply.is_empty() {
+        "tetron service started.".to_string()
+    } else {
+        format!("tetron service started; VPN: {reply}")
+    }
+}
+
+/// What uninstall and package removal keep, and how to delete it by hand
+/// (PACKAGING-013, purge policy).
+pub(crate) fn kept_data_notice(config_dir: &Path, log_dir: &Path) -> String {
+    format!(
+        "Kept: the node identity and settings in {c} and the logs in {l} \
+         (removing tetron never deletes them; without the identity this node \
+         drops out of its networks). To delete them: \
+         sudo rm -rf {c} {l} && sudo groupdel tetron",
+        c = config_dir.display(),
+        l = log_dir.display()
+    )
+}
+
+/// Description line of the unit template `tetron install` writes.
+const UNIT_TEMPLATE_DESCRIPTION: &str = "Description=tetron P2P mesh VPN";
+
+/// Path overrides carried by an `/etc` unit that `tetron install` wrote, or
+/// `None` when the unit is not one of ours: its description is not the
+/// template's, or its `ExecStart` does not run a `tetron` binary with the
+/// `daemon` argument (PACKAGING-016).
+pub(crate) fn legacy_unit_overrides(text: &str) -> Option<PathOverrides> {
+    if !text.lines().any(|l| l.trim() == UNIT_TEMPLATE_DESCRIPTION) {
+        return None;
+    }
+    let exec = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ExecStart="))?;
+    let mut words = exec.split_whitespace();
+    let program = words.next()?;
+    let is_tetron = Path::new(program)
+        .file_name()
+        .is_some_and(|n| n == "tetron");
+    if !is_tetron || words.next() != Some("daemon") {
+        return None;
+    }
+    let env = |key: &str| {
+        let prefix = format!("Environment=TETRON_{key}=");
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix(prefix.as_str()).map(str::to_string))
+            .filter(|v| !v.is_empty() && !v.starts_with("__TETRON_"))
+    };
+    Some(PathOverrides {
+        config_dir: env("CONFIG_DIR"),
+        log_dir: env("LOG_DIR"),
+        socket_path: env("SOCKET_PATH"),
+    })
+}
+
+/// Flags given on this run win; the legacy unit fills the gaps (PACKAGING-016).
+pub(crate) fn merge_overrides(flags: &PathOverrides, legacy: &PathOverrides) -> PathOverrides {
+    PathOverrides {
+        config_dir: flags
+            .config_dir
+            .clone()
+            .or_else(|| legacy.config_dir.clone()),
+        log_dir: flags.log_dir.clone().or_else(|| legacy.log_dir.clone()),
+        socket_path: flags
+            .socket_path
+            .clone()
+            .or_else(|| legacy.socket_path.clone()),
+    }
+}
+
+/// Move `file` into `backup_dir` as `<name>.<stamp>`, creating the directory.
+/// Copies then removes, so it works across filesystems (PACKAGING-016).
+pub(crate) fn move_to_backup(file: &Path, backup_dir: &Path, stamp: u64) -> Result<PathBuf> {
+    std::fs::create_dir_all(backup_dir)
+        .with_context(|| format!("failed to create {}", backup_dir.display()))?;
+    let name = file
+        .file_name()
+        .context("unit path has no file name")?
+        .to_string_lossy();
+    let dest = backup_dir.join(format!("{name}.{stamp}"));
+    std::fs::copy(file, &dest)
+        .with_context(|| format!("failed to copy {} to {}", file.display(), dest.display()))?;
+    std::fs::remove_file(file).with_context(|| format!("failed to remove {}", file.display()))?;
+    Ok(dest)
+}
+
+/// Ask at a terminal whether to move the legacy `/etc` unit aside. Default
+/// yes; without a terminal the answer is no (PACKAGING-016).
+#[cfg(target_os = "linux")]
+fn confirm_move_legacy_unit(path: &Path) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    print!(
+        "{} (written by an earlier `tetron install`) overrides the packaged unit. \
+         Move it to /var/backups/tetron/ and use the packaged unit? [Y/n] ",
+        path.display()
+    );
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    !matches!(answer.trim(), "n" | "N" | "no" | "No")
+}
+
 /// Whether a package-installed unit exists in a vendor directory.
 #[cfg(target_os = "linux")]
 fn vendor_unit_exists() -> bool {
@@ -250,8 +365,30 @@ pub(crate) fn ensure_service_installed(overrides: &PathOverrides) -> Result<()> 
             println!(
                 "tetron is managed by package '{package}'; leaving the packaged unit in place"
             );
-            if let Some(note) = legacy_unit_notice(path.exists()) {
-                println!("{note}");
+            let mut dropin = dropin;
+            // PACKAGING-016: move a unit an earlier `tetron install` wrote out of
+            // the way, keeping its path overrides, when the user agrees.
+            let legacy = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| legacy_unit_overrides(&t));
+            match legacy {
+                Some(old) if confirm_move_legacy_unit(path) => {
+                    let merged = merge_overrides(overrides, &old);
+                    dropin = dropin_text(&merged);
+                    run_cmd("systemctl", &["disable", "tetron"]);
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let moved = move_to_backup(path, Path::new("/var/backups/tetron"), stamp)?;
+                    println!("moved {} -> {}", path.display(), moved.display());
+                    run_cmd("systemctl", &["daemon-reload"]);
+                }
+                _ => {
+                    if let Some(note) = legacy_unit_notice(path.exists()) {
+                        println!("{note}");
+                    }
+                }
             }
             if let Some(text) = dropin {
                 let dir = Path::new("/etc/systemd/system/tetron.service.d");
@@ -409,7 +546,7 @@ pub(crate) async fn install_and_start_service(
             )
             .await?;
             match ipc::recv(&mut stream).await? {
-                ipc::IpcMessage::Ok { message } => println!("tetron service started. {message}"),
+                ipc::IpcMessage::Ok { message } => println!("{}", started_line(&message)),
                 ipc::IpcMessage::Error { message } => {
                     print_error("error", &message, None);
                     std::process::exit(1);
@@ -754,6 +891,14 @@ fn vendor_unit_path() -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Print what uninstall keeps, for the directories actually in use
+/// (PACKAGING-013).
+fn print_kept_data_notice() {
+    if let Ok(config) = tetron::config::config_dir() {
+        println!("{}", kept_data_notice(&config, &tetron::logdir::log_dir()));
+    }
+}
+
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
     // SELFCAPTURE-ROUTE-001: torn down only here, not on ordinary `tetron
     // stop`/restart -- mirrors TUN devices, which are likewise only removed
@@ -780,6 +925,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
         if let Some(hint) = plan.hint {
             println!("{hint}");
         }
+        print_kept_data_notice();
         return Ok(());
     }
 
@@ -790,6 +936,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
             run_cmd("launchctl", &["unload", "-w", &path.to_string_lossy()]);
             std::fs::remove_file(path)?;
             println!("Removed launchd daemon.");
+            print_kept_data_notice();
         } else {
             println!("Service not installed.");
         }
@@ -1094,5 +1241,97 @@ mod tests {
             package_owner_with(Path::new("/usr/local/bin/tetron"), &run),
             None
         );
+    }
+
+    // PACKAGING-013: uninstall says what it keeps.
+    #[test]
+    fn kept_data_notice_names_dirs_and_removal_command() {
+        let n = kept_data_notice(Path::new("/etc/tetron"), Path::new("/var/log/tetron"));
+        assert!(n.contains("/etc/tetron"), "{n}");
+        assert!(n.contains("/var/log/tetron"), "{n}");
+        assert!(n.contains("identity"), "{n}");
+        assert!(
+            n.contains("sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron"),
+            "{n}"
+        );
+    }
+
+    #[test]
+    fn kept_data_notice_uses_custom_dirs() {
+        let n = kept_data_notice(Path::new("/srv/t"), Path::new("/srv/l"));
+        assert!(n.contains("sudo rm -rf /srv/t /srv/l"), "{n}");
+    }
+
+    // PACKAGING-015: the started line reads correctly.
+    #[test]
+    fn started_line_with_reply() {
+        assert_eq!(
+            started_line("already active"),
+            "tetron service started; VPN: already active"
+        );
+    }
+
+    #[test]
+    fn started_line_without_reply() {
+        assert_eq!(started_line(""), "tetron service started.");
+        assert_eq!(started_line("  "), "tetron service started.");
+    }
+
+    // PACKAGING-016: the legacy /etc unit is recognised and migrated.
+    #[test]
+    fn legacy_unit_from_plain_template_has_no_overrides() {
+        let text = include_str!("../../contrib/tetron.service")
+            .replace("/usr/local/bin/tetron", "/usr/local/bin/tetron")
+            .replace("Environment=TETRON_CONFIG_DIR=__TETRON_CONFIG_DIR__\n", "")
+            .replace("Environment=TETRON_LOG_DIR=__TETRON_LOG_DIR__\n", "")
+            .replace(
+                "Environment=TETRON_SOCKET_PATH=__TETRON_SOCKET_PATH__\n",
+                "",
+            );
+        let got = legacy_unit_overrides(&text).expect("tetron-written unit");
+        assert_eq!(got, overrides(None, None, None));
+    }
+
+    #[test]
+    fn legacy_unit_overrides_are_read() {
+        let text = include_str!("../../contrib/tetron.service")
+            .replace("__TETRON_CONFIG_DIR__", "/srv/tetron")
+            .replace("Environment=TETRON_LOG_DIR=__TETRON_LOG_DIR__\n", "")
+            .replace("__TETRON_SOCKET_PATH__", "/run/t.sock");
+        let got = legacy_unit_overrides(&text).expect("tetron-written unit");
+        assert_eq!(
+            got,
+            overrides(Some("/srv/tetron"), None, Some("/run/t.sock"))
+        );
+    }
+
+    #[test]
+    fn foreign_unit_is_not_legacy() {
+        let custom = "[Unit]\nDescription=my own tetron\n[Service]\nExecStart=/opt/tetron daemon\n";
+        assert!(legacy_unit_overrides(custom).is_none());
+        let other_exec = "[Unit]\nDescription=tetron P2P mesh VPN\n[Service]\nExecStart=/usr/bin/somethingelse run\n";
+        assert!(legacy_unit_overrides(other_exec).is_none());
+    }
+
+    #[test]
+    fn flags_win_over_legacy_overrides() {
+        let flags = overrides(Some("/flag/c"), None, None);
+        let legacy = overrides(Some("/old/c"), Some("/old/l"), None);
+        assert_eq!(
+            merge_overrides(&flags, &legacy),
+            overrides(Some("/flag/c"), Some("/old/l"), None)
+        );
+    }
+
+    #[test]
+    fn move_to_backup_keeps_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unit = tmp.path().join("tetron.service");
+        std::fs::write(&unit, "x").unwrap();
+        let backup_dir = tmp.path().join("backups/tetron");
+        let moved = move_to_backup(&unit, &backup_dir, 1234).unwrap();
+        assert!(!unit.exists());
+        assert_eq!(moved, backup_dir.join("tetron.service.1234"));
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "x");
     }
 }
