@@ -283,3 +283,62 @@ class SuiteInstallerConvertsRawInstallToPackage(Requirement):
     `DEBIAN_FRONTEND=noninteractive`, since the script already asked.
     """
     req_id = "PACKAGING-009"
+
+
+class SuiteInstallerAutoPrefersDebOnFreshHost(Requirement):
+    """REQUIREMENT-ID: PACKAGING-011
+
+    Depends on PACKAGING-007 and amends its rule that a fresh install uses
+    the raw binary. Independent of PACKAGING-012.
+
+    USER decision 2026-10-31: on a host with dpkg and apt-get the deb is the
+    install method. With `--method auto` (the default) and no installed copy
+    of the component, `install-tetron-suite.sh` installs the release `.deb`
+    when the latest release has one for this architecture, and the raw
+    binary otherwise (no deb asset, no dpkg/apt-get, macOS).
+
+    An existing raw install under `auto` is still upgraded with the raw
+    binary, as before: converting it changes how the host is managed, so it
+    stays an explicit `--method deb` (PACKAGING-009). In that case the script
+    prints one info line saying that `--method deb` converts it to the
+    package.
+    """
+    req_id = "PACKAGING-011"
+
+
+class SuiteInstallerBinaryReplacesPackage(Requirement):
+    """REQUIREMENT-ID: PACKAGING-012
+
+    Depends on PACKAGING-007 and PACKAGING-010, and replaces PACKAGING-007's
+    rule that `--method binary` on a package-owned copy installs a second,
+    shadowing raw copy in `/usr/local/bin`. Independent of PACKAGING-011.
+
+    USER decision 2026-10-31: one install method per host. `--method binary`
+    on a host where a package owns the component replaces the package with
+    the raw install in one confirmed step:
+
+    1. Guards, checked before anything changes. The script refuses, prints
+       the manual commands (`sudo apt-get remove <pkg>`, then rerun with
+       `--method binary`), and lists the component as failed when
+       (a) `apt-get -s remove <pkg>` shows that other packages would be
+       removed too (they are named; for example a TetronOS metapackage that
+       depends on it), or (b) there is no terminal: removing a package
+       unattended needs a human who saw the plan. This is a deliberate
+       difference from the deb conversion (PACKAGING-009), which only
+       installs.
+    2. The plan is printed and confirmed once. Declining skips the
+       component.
+    3. The raw binary is downloaded, verified and installed to
+       `/usr/local/bin` before the package is removed, so the service
+       restarts only once.
+    4. `apt-get remove` (never purge) removes the package. The node identity
+       and everything else the daemon created stay (purge policy).
+    5. The raw binary's `install` subcommand runs, which writes the `/etc`
+       unit and restarts the service.
+    6. PACKAGING-010 checks that the raw copy is what runs.
+
+    If step 3 or 4 fails, later steps are skipped and the component is
+    reported as failed; a raw copy placed in step 3 before a failed removal
+    is left in place and named.
+    """
+    req_id = "PACKAGING-012"
