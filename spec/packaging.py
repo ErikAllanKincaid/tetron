@@ -202,3 +202,84 @@ class SuiteInstallerShadowDetection(Requirement):
     never deletes either copy without the user answering yes.
     """
     req_id = "PACKAGING-008"
+
+
+class SuiteInstallerVerifiesWhatRuns(Requirement):
+    """REQUIREMENT-ID: PACKAGING-010
+
+    Depends on PACKAGING-007. Independent of PACKAGING-009; either can land
+    first.
+
+    Found 2026-10-31 in the raw-to-deb VM test (tetron-os
+    `TEST_tetron_raw_to_deb_upgrade_VM_2026-10-31.md`): after
+    `--method deb` installed `tetron` 0.14.5-1, the script printed
+    `[pass] core: version 0.14.5` and exited 0, while the daemon and the
+    `tetron` first on `PATH` were still the raw 0.14.3 in `/usr/local/bin`,
+    started by the old `/etc/systemd/system/tetron.service`. The version was
+    read from the path just installed, not from what runs.
+
+    After installing a component, `install-tetron-suite.sh` checks what will
+    actually run, comparing resolved paths (so `/bin` and `/usr/bin` on a
+    merged-/usr system are the same file):
+
+    - the first copy of the binary on `PATH` must be the installed copy;
+    - for a component whose service is a system unit (core), on Linux with
+      `systemctl`, the path in the unit's `ExecStart` must be the installed
+      copy. When systemd reports no `ExecStart` (no systemd, a timer unit),
+      this check is skipped.
+
+    If either check fails the component is reported with `[fail]`, naming
+    the copy that runs instead and its version, and is listed in the failed
+    summary (exit 1). The version printed on success is the version of the
+    copy that runs. This replaces the warning-only `warn_if_shadowed` after
+    an install.
+    """
+    req_id = "PACKAGING-010"
+
+
+class SuiteInstallerConvertsRawInstallToPackage(Requirement):
+    """REQUIREMENT-ID: PACKAGING-009
+
+    Depends on PACKAGING-007 (the `--method deb` conversion) and amends
+    PACKAGING-008 for this one case. Independent of PACKAGING-010.
+
+    Found 2026-10-31 in the same VM test: `--method deb` on a raw install
+    installed the package but left the raw copy in `/usr/local/bin` (first on
+    `PATH`) and the `/etc/systemd/system/tetron.service` that starts it, so
+    the old daemon kept running. Finishing by hand (remove the `/etc` unit and
+    the raw copy, `daemon-reload`, `tetron install`) worked and survived a
+    reboot, but left the `multi-user.target.wants` link pointing at the
+    deleted `/etc` unit.
+
+    When `--method deb` converts a component whose first copy on `PATH` is a
+    raw (not package-owned) binary, the conversion is one step:
+
+    1. Before anything changes, the plan is printed (package to install, unit
+       file to move, raw copy to remove) and confirmed once at a terminal.
+       Without a terminal it proceeds with a warning, because `--method deb`
+       is the explicit request to convert. Declining skips the component.
+    2. The `.deb` is installed. If that fails nothing else is touched.
+    3. Unit migration, before the raw copy is removed: when the component has
+       a system unit (core: `tetron.service`) in `/etc/systemd/system` that no
+       package owns and whose `ExecStart` runs the raw copy, it is disabled
+       (removing its enable links while the file still exists), moved to
+       `/var/backups/tetron/<unit>.<timestamp>` (never deleted, since it may
+       hold local edits), and `systemctl daemon-reload` runs. A unit that
+       runs some other path is left alone; PACKAGING-010 then reports it.
+    4. The raw copy is removed (it is a release download, not user data).
+    5. The packaged binary's `install` subcommand runs as before, enabling
+       and restarting the service from the packaged unit, so the enable link
+       is re-made for the packaged unit.
+
+    If step 3 or 4 fails the component is reported as failed and later steps
+    are skipped. The daemon keeps running the old binary until step 5
+    restarts it, so peers drop only once. Running `--method deb` again on a
+    half-converted host (package installed, raw copy still first on `PATH`)
+    completes the conversion.
+
+    The unit directory, backup directory and package binary directory can be
+    overridden with `TETRON_SUITE_UNIT_DIR`, `TETRON_SUITE_BACKUP_DIR` and
+    `TETRON_SUITE_PKG_BIN_DIR` for the hermetic tests only. apt-get runs with
+    `DEBIAN_FRONTEND=noninteractive`, since the script already asked.
+    """
+    req_id = "PACKAGING-009"
