@@ -1,0 +1,16 @@
+#!/bin/sh
+# PACKAGING-013: never remove what the daemon created. /etc/tetron holds the
+# node identity (secret_key), settings and networks; /var/log/tetron the logs;
+# the tetron group owns /etc/tetron. On purge, say what was kept and how to
+# delete it by hand. Never stop, disable or delete anything here.
+set -e
+case "$1" in
+	purge)
+		if [ -e /etc/tetron ] || [ -e /var/log/tetron ]; then
+			echo "tetron: kept /etc/tetron (node identity, settings, networks) and /var/log/tetron (logs)."
+			echo "tetron: without the identity this node drops out of its networks, so purge does not delete it."
+			echo "tetron: to delete them: sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron"
+		fi
+		;;
+esac
+exit 0

@@ -454,8 +454,15 @@ def check_deb_release() -> dict:
         problems.append("iproute2 not in depends")
     if "maintainer" in d:
         problems.append("maintainer must not be hardcoded")
-    if set(d.get("scripts", {})) != {"postinst"}:
-        problems.append("scripts must be exactly postinst")
+    if set(d.get("scripts", {})) != {"postinst", "postrm"}:
+        problems.append("scripts must be exactly postinst and postrm")
+    try:
+        rm_code = "\n".join(l for l in Path("packaging/postrm").read_text().splitlines()
+                            if not l.lstrip().startswith("#") and not l.lstrip().startswith("echo "))
+        if re.search(r"\b(rm|groupdel|delgroup|systemctl)\b", rm_code):
+            problems.append("postrm removes or stops something (PACKAGING-013)")
+    except OSError:
+        problems.append("packaging/postrm missing")
     try:
         post = Path("packaging/postinst").read_text()
         code = "\n".join(l for l in post.splitlines() if not l.lstrip().startswith("#"))
