@@ -9,7 +9,7 @@ SRC="$(cd "$(dirname "${1:-$(dirname "$0")/../install-tetron-suite.sh}")" && pwd
 [ -r "$SRC" ] || { echo "cannot read $SRC" >&2; exit 1; }
 
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-mkdir -p "$W/stubs" "$W/home"
+mkdir -p "$W/stubs" "$W/home" "$W/tmp"
 LOG="$W/cmds.log"
 
 # curl: serves the release JSON and fabricated assets with matching .sha256 files.
@@ -48,9 +48,9 @@ if [ "$1" = env ]; then shift; while [[ "$1" == *=* ]]; do shift; done; fi
 [ -n "$TESTROOT" ] || exit 0
 case "$1" in
 apt-get) "$@"; exit $? ;;
-rm | mv | mkdir)
+rm | mv | mkdir | install)
 	for a in "${@:2}"; do
-		case "$a" in -*) ;; "$TESTROOT"/*) ;; *) exit 0 ;; esac
+		case "$a" in /*) case "$a" in "$TESTROOT"/*) ;; *) exit 0 ;; esac ;; esac
 	done
 	"$@"; exit $? ;;
 esac
@@ -85,6 +85,16 @@ STUB
 cat > "$W/stubs/apt-get" <<'STUB'
 #!/bin/bash
 echo "apt-get $*" >> "$CMDLOG"
+if [ "$1" = -s ] && [ "$2" = remove ]; then
+	echo "NOTE: This is only a simulation!"
+	echo "Remv $3 [0.14.3-1]"
+	for x in ${FAKE_APT_REMOVE_EXTRA:-}; do echo "Remv $x [1]"; done
+	exit 0
+fi
+if [ "$1" = remove ]; then
+	[ "${FAKE_APT_FAIL:-0}" -eq 1 ] && exit 100
+	rm -f "${FAKE_PKG_DIR:-/nonexistent}/tetron"; exit 0
+fi
 [ "${FAKE_APT_FAIL:-0}" -eq 1 ] && exit 100
 if [ -n "${FAKE_PKG_DIR:-}" ]; then
 	mkdir -p "$FAKE_PKG_DIR"
@@ -143,11 +153,12 @@ hasnt "apt-get" "no apt call"
 case "$OUT" in *"owned by package tetron"*"not overwriting"*) ok "warns with the package name" ;; *) bad "warning missing: $OUT" ;; esac
 case "$OUT" in *"not installed/upgraded: core"*) ok "listed as skipped in the summary" ;; *) bad "summary missing: $OUT" ;; esac
 
-echo "--method binary, package-owned -> raw copy goes to /usr/local/bin:"
+echo "--method binary, package-owned, no terminal -> refuses, prints the manual commands (PACKAGING-012):"
 fake_installed 0.14.2; release_json 1; run 1 --method binary
-has "install -m 0755" "installs a raw binary"
-has "/usr/local/bin/tetron" "into the default directory"
-hasnt "$W/bin/tetron" "not over the packaged copy"
+[ "$RC" -eq 1 ] && ok "exits 1" || bad "exit code $RC"
+case "$OUT" in *"sudo apt-get remove tetron"*) ok "prints the apt-get remove command" ;; *) bad "command missing: $OUT" ;; esac
+hasnt "install -m 0755" "no raw copy placed"
+hasnt "apt-get remove" "package not removed"
 
 echo "--method deb, raw install at the latest version -> converts to the package:"
 fake_installed 0.14.3; release_json 1; run 0 --method deb
@@ -200,7 +211,7 @@ conv_setup() { # raw_version unit_exec(path or empty)
 }
 run_conv() { # args...
 	: > "$LOG"
-	OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkg:$PATH" CMDLOG="$LOG" TESTROOT="$W" \
+	OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkg:$PATH" CMDLOG="$LOG" TESTROOT="$W" TMPDIR="$W/tmp" \
 		OWNED_PATHS="$W/pkg/tetron" FAKE_PKG_DIR="$W/pkg" PKG_VERSION=0.14.3 PKG_UNIT_EXEC="$W/pkg/tetron" \
 		FAKE_APT_FAIL="${FAKE_APT_FAIL:-0}" \
 		TETRON_SUITE_UNIT_DIR="$W/unit" TETRON_SUITE_BACKUP_DIR="$W/backup" TETRON_SUITE_PKG_BIN_DIR="$W/pkg" \
@@ -259,6 +270,91 @@ RC=$?
 case "$OUT" in *"[fail]"*"$W/home/bin/tetron comes first on PATH and runs instead of /usr/local/bin/tetron (it is version 0.13.0)"*) ok "names the copy that runs and its version" ;; *) bad "fail line missing: $OUT" ;; esac
 case "$OUT" in *"[pass]  core: version"*) bad "still reports a version pass" ;; *) ok "no version pass" ;; esac
 rm -rf "$W/home/bin"
+
+# --- PACKAGING-011 / PACKAGING-012 --------------------------------------------
+# A sealed PATH (stubs plus links to the host tools the script needs) so a
+# tetron installed on the host can never be found.
+mkdir -p "$W/tools" "$W/tmp"
+for t in bash sh env awk sed grep sort head tail tr cut cat mkdir rm mv mktemp id uname readlink \
+	dirname basename install sha256sum date setsid timeout chmod ls touch sleep file ldd; do
+	p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$W/tools/$t"
+done
+run_sealed() { # pathdirs(colon list, before tools) args...
+	local dirs="$1"; shift
+	: > "$LOG"
+	OUT="$(env HOME="$W/home" PATH="$W/stubs:$dirs:$W/tools" CMDLOG="$LOG" TESTROOT="$W" TMPDIR="$W/tmp" \
+		OWNED_PATHS="$W/pkg/tetron" FAKE_PKG_DIR="$W/pkg" PKG_VERSION=0.14.3 PKG_UNIT_EXEC="" \
+		FAKE_APT_REMOVE_EXTRA="${FAKE_APT_REMOVE_EXTRA:-}" FAKE_APT_FAIL="${FAKE_APT_FAIL:-0}" \
+		TETRON_SUITE_UNIT_DIR="$W/unit" TETRON_SUITE_BACKUP_DIR="$W/backup" \
+		TETRON_SUITE_PKG_BIN_DIR="$W/pkg" TETRON_SUITE_RAW_BIN_DIR="$W/raw" \
+		RELEASE_JSON="$W/release.json" bash "$SRC" --core-only "$@" 2>&1 </dev/null)"
+	RC=$?
+}
+# run_tty: same, but at a terminal (script(1) gives a pty) answering $ANSWER.
+SCRIPT_PTY="$(command -v script)"
+run_tty() { # pathdirs args...
+	local dirs="$1"; shift
+	: > "$LOG"
+	OUT="$(printf '%s\n' "${ANSWER:-y}" | env HOME="$W/home" PATH="$W/stubs:$dirs:$W/tools" CMDLOG="$LOG" TESTROOT="$W" TMPDIR="$W/tmp" \
+		OWNED_PATHS="$W/pkg/tetron" FAKE_PKG_DIR="$W/pkg" PKG_VERSION=0.14.3 PKG_UNIT_EXEC="" \
+		FAKE_APT_REMOVE_EXTRA="${FAKE_APT_REMOVE_EXTRA:-}" FAKE_APT_FAIL="${FAKE_APT_FAIL:-0}" \
+		TETRON_SUITE_UNIT_DIR="$W/unit" TETRON_SUITE_BACKUP_DIR="$W/backup" \
+		TETRON_SUITE_PKG_BIN_DIR="$W/pkg" TETRON_SUITE_RAW_BIN_DIR="$W/raw" \
+		RELEASE_JSON="$W/release.json" "$SCRIPT_PTY" -qec "bash '$SRC' --core-only $*; echo rc=\$?" /dev/null 2>&1)"
+	RC="$(printf '%s' "$OUT" | tr -d '\r' | sed -n 's/^rc=//p' | tail -1)"
+}
+pkg_installed() { mkdir -p "$W/pkg"; printf '#!/bin/sh\necho "tetron 0.14.3 (pkg)"\n' > "$W/pkg/tetron"; chmod +x "$W/pkg/tetron"; }
+reset_dirs() { rm -rf "$W/pkg" "$W/raw" "$W/unit" "$W/backup" "$W/bin/tetron"; mkdir -p "$W/raw" "$W/unit"; }
+
+echo "PACKAGING-011: auto on a fresh dpkg host with a deb -> installs the deb:"
+reset_dirs; release_json 1; run_sealed "$W/raw:$W/pkg"
+[ "$RC" -eq 0 ] && ok "exits 0" || bad "exit code $RC: $OUT"
+has "apt-get install -y" "installs the .deb"
+has "$W/pkg/tetron install" "runs install on the packaged binary"
+hasnt "install -m 0755" "no raw copy"
+
+echo "PACKAGING-011: auto on a fresh host, no deb in the release -> raw binary:"
+reset_dirs; release_json 0; run_sealed "$W/raw:$W/pkg"
+has "install -m 0755" "places the raw binary"
+hasnt "apt-get" "no apt call"
+
+echo "PACKAGING-011: auto on a raw install -> stays raw, hints at --method deb:"
+reset_dirs; fake_installed 0.14.2; release_json 1; run_sealed "$W/bin:$W/pkg"
+has "install -m 0755" "upgrades the raw binary"
+hasnt "apt-get install" "no conversion"
+case "$OUT" in *"--method deb converts"*) ok "prints the hint" ;; *) bad "hint missing: $OUT" ;; esac
+rm -f "$W/bin/tetron"
+
+echo "PACKAGING-012: --method binary on a package host, at a terminal, answer y -> replaces the package:"
+reset_dirs; pkg_installed; release_json 1; ANSWER=y run_tty "$W/raw:$W/pkg" --method binary
+[ "$RC" = 0 ] && ok "exits 0" || bad "exit code $RC: $OUT"
+case "$OUT" in *"replacing package tetron"*) ok "prints the plan" ;; *) bad "plan missing: $OUT" ;; esac
+has "install -m 0755" "places the raw binary"
+has "apt-get remove -y tetron" "removes the package"
+hasnt "purge" "never purges"
+has "$W/raw/tetron install" "runs install on the raw binary"
+before "install -m 0755" "apt-get remove -y tetron" "raw copy placed before the package is removed"
+before "apt-get remove -y tetron" "$W/raw/tetron install" "package removed before the service restart"
+[ ! -e "$W/pkg/tetron" ] && [ -e "$W/raw/tetron" ] && ok "package copy gone, raw copy in place" || bad "files wrong"
+
+echo "PACKAGING-012: answer n -> nothing changes:"
+reset_dirs; pkg_installed; release_json 1; ANSWER=n run_tty "$W/raw:$W/pkg" --method binary
+hasnt "install -m 0755" "no raw copy"
+hasnt "apt-get remove" "package kept"
+[ -e "$W/pkg/tetron" ] && ok "package copy still there" || bad "package copy gone"
+
+echo "PACKAGING-012: other packages would be removed -> refuses and names them:"
+reset_dirs; pkg_installed; release_json 1; FAKE_APT_REMOVE_EXTRA="tetronos-core" ANSWER=y run_tty "$W/raw:$W/pkg" --method binary
+[ "$RC" = 1 ] && ok "exits 1" || bad "exit code $RC"
+case "$OUT" in *"tetronos-core"*) ok "names the other package" ;; *) bad "name missing: $OUT" ;; esac
+hasnt "install -m 0755" "no raw copy"
+hasnt "apt-get remove -y" "package kept"
+
+echo "PACKAGING-012: apt-get remove fails -> failed, raw copy named:"
+reset_dirs; pkg_installed; release_json 1; FAKE_APT_FAIL=1 ANSWER=y run_tty "$W/raw:$W/pkg" --method binary
+[ "$RC" = 1 ] && ok "exits 1" || bad "exit code $RC"
+case "$OUT" in *"$W/raw/tetron"*) ok "names the raw copy left in place" ;; *) bad "raw copy not named: $OUT" ;; esac
+hasnt "$W/raw/tetron install" "service not switched"
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
