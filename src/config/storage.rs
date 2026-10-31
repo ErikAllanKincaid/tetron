@@ -346,7 +346,20 @@ struct Fingerprint {
     /// Per-file, catching a network edited *in place* (which leaves the
     /// directory mtime untouched).
     network_files: Vec<(std::ffi::OsString, std::time::SystemTime, u64)>,
+    /// False when any mtime above was within [`RACY_WINDOW`] of the moment
+    /// the fingerprint was taken (CONFIG-CACHE-002). The kernel stamps mtimes
+    /// from a coarse clock (one tick, about 4ms on Linux; 1-2s on some
+    /// filesystems), so a write in that same tick leaves every stamp
+    /// unchanged and the fingerprint would match a stale parse. Such a
+    /// fingerprint never serves a hit; the next load re-reads, and once the
+    /// files are older than the window the cache arms again (git's "racily
+    /// clean" rule).
+    trusted: bool,
 }
+
+/// How recent an mtime may be before a fingerprint holding it is not trusted.
+/// Covers the coarsest common timestamp granularity (FAT's 2s).
+const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct CacheEntry {
     /// The cache is keyed by directory: `TETRON_CONFIG_DIR` can differ between
@@ -447,10 +460,20 @@ fn fingerprint_full(dir: &Path) -> Fingerprint {
         }
     }
     network_files.sort();
+    let settings = stat_file(&dir.join(SETTINGS_FILE));
+    let networks_dir = dir_mtime(&ndir);
+    let now = std::time::SystemTime::now();
+    let trusted = settings
+        .map(|(m, _)| m)
+        .into_iter()
+        .chain(networks_dir)
+        .chain(network_files.iter().map(|(_, m, _)| *m))
+        .all(|m| m + RACY_WINDOW <= now);
     Fingerprint {
-        settings: stat_file(&dir.join(SETTINGS_FILE)),
-        networks_dir: dir_mtime(&ndir),
+        settings,
+        networks_dir,
         network_files,
+        trusted,
     }
 }
 
@@ -458,6 +481,9 @@ fn fingerprint_full(dir: &Path) -> Fingerprint {
 /// `read_dir`. A changed directory mtime means the *set* of networks may have
 /// changed, which forces the full reload that re-enumerates it.
 fn fingerprint_still_valid(dir: &Path, fp: &Fingerprint) -> bool {
+    if !fp.trusted {
+        return false;
+    }
     if stat_file(&dir.join(SETTINGS_FILE)) != fp.settings {
         return false;
     }
@@ -819,12 +845,33 @@ mod tests {
         CONFIG_CACHE_TL.with(|c| *c.borrow_mut() = None);
     }
 
+    /// Set `p`'s mtime a minute back, out of the racy window (CONFIG-CACHE-002),
+    /// so a test can assert cache hits right after writing its files.
+    fn backdate(p: &Path) {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(p).unwrap().set_modified(t).unwrap();
+    }
+
+    /// [`backdate`] every file the fingerprint covers under `dir`.
+    fn backdate_tree(dir: &Path) {
+        let ndir = dir.join(NETWORKS_SUBDIR);
+        for e in std::fs::read_dir(&ndir).into_iter().flatten().flatten() {
+            backdate(&e.path());
+        }
+        for p in [dir.join(SETTINGS_FILE), ndir] {
+            if p.exists() {
+                backdate(&p);
+            }
+        }
+    }
+
     #[test]
     fn cached_load_skips_reparse_when_nothing_changed() {
         let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         save_network_in(dir, &net("homelab")).unwrap();
+        backdate_tree(dir);
         clear_cache();
 
         let before = full_loads();
@@ -903,11 +950,39 @@ mod tests {
     }
 
     #[test]
+    fn cached_load_sees_network_added_in_the_same_clock_tick() {
+        // CI failure 2026-10-31: the second save landed in the same kernel
+        // clock tick as the first load, so the networks/ mtime did not move
+        // and the cache served one network. Force that: put the directory
+        // mtime back to what the first load saw.
+        let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        save_network_in(dir, &net("homelab")).unwrap();
+        clear_cache();
+        let ndir = dir.join(NETWORKS_SUBDIR);
+        let seen = std::fs::metadata(&ndir).unwrap().modified().unwrap();
+        assert_eq!(load_cached_in(dir, false).unwrap().networks.len(), 1);
+
+        save_network_in(dir, &net("genesis")).unwrap();
+        std::fs::File::open(&ndir)
+            .unwrap()
+            .set_modified(seen)
+            .unwrap();
+        assert_eq!(
+            load_cached_in(dir, false).unwrap().networks.len(),
+            2,
+            "a fingerprint taken in the write's own clock tick must not serve a hit"
+        );
+    }
+
+    #[test]
     fn cached_load_sees_network_edited_in_place() {
         let _lk = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         save_network_in(dir, &net("homelab")).unwrap();
+        backdate_tree(dir);
         clear_cache();
         assert_eq!(load_cached_in(dir, false).unwrap().networks.len(), 1);
 
@@ -918,6 +993,9 @@ mod tests {
         let mut s = std::fs::read_to_string(&p).unwrap();
         s.push_str("\n# padding to change length and mtime\n");
         std::fs::write(&p, s).unwrap();
+        // Only the file: the directory mtime stays as it was, so the reload
+        // below can come only from the per-file stat.
+        backdate(&p);
 
         let before = full_loads();
         let _ = load_cached_in(dir, false).unwrap();
