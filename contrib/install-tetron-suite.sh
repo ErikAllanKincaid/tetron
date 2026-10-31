@@ -29,9 +29,10 @@
 #   3. Copies the binary into /usr/local/bin. An existing copy elsewhere on
 #      PATH, such as /usr/bin, is replaced where it is, unless a Debian
 #      package owns it (see --method). sudo never writes into a home
-#      directory. With --method deb, or --method auto and a package-owned
-#      copy, the release .deb is installed with apt-get instead; it puts the
-#      binary in /usr/bin and ships the packaged service unit.
+#      directory. On Debian-family Linux the release .deb is installed with
+#      apt-get instead when the release has one and the component is not
+#      yet installed, is package-owned, or --method deb is given; the .deb
+#      puts the binary in /usr/bin and ships the packaged service unit.
 #   4. Runs the new binary's own `install` subcommand, which registers and
 #      (re)starts its background service:
 #        core, hosts                    system services, registered with sudo
@@ -117,13 +118,19 @@
 #                            step: the old unit in /etc/systemd/system is
 #                            disabled and moved to /var/backups/tetron/, the
 #                            raw copy is removed, and the service restarts
-#                            from the packaged binary. auto, the default,
-#                            upgrades a package-owned component with its .deb
-#                            and uses the raw binary for everything else. A
-#                            file a package owns is never overwritten: with
-#                            no .deb in the release, auto skips that component
-#                            with a warning and binary installs the raw copy
-#                            to /usr/local/bin instead. --check shows each
+#                            from the packaged binary. binary on a host where
+#                            a package owns the component replaces the
+#                            package in one confirmed step: the raw binary
+#                            goes to /usr/local/bin, the package is removed
+#                            (not purged), and the service restarts from the
+#                            raw binary. It needs a terminal and refuses if
+#                            removing the package would remove other
+#                            packages. auto, the default, uses the .deb for a
+#                            new install and for a package-owned component
+#                            when the release has one, and keeps an existing
+#                            raw install raw. A file a package owns is never
+#                            overwritten: with no .deb in the release, auto
+#                            skips that component with a warning. --check shows each
 #                            component's origin (package:<name> or binary).
 #                            A raw copy that comes first on PATH and hides a
 #                            package-owned copy is reported on every run; at
@@ -334,24 +341,26 @@ offer_remove_shadow() {
 
 # choose_method <comp> <dest> <have_deb 0|1>: what to do for this component,
 # from $METHOD, who owns the installed copy, and whether the latest release
-# has a .deb for it. Prints one of: deb, binary, binary-default-dir (the
-# installed copy is package-owned, so write the raw binary to the default
-# directory instead), skip-owned (auto, package-owned, no .deb to upgrade
-# it with), error-no-deb (--method deb but no .deb published). Never picks
-# an action that overwrites a package-owned file (PACKAGING-007).
+# has a .deb for it. Prints one of: deb, binary, replace-package (the
+# installed copy is package-owned and --method binary asks for the raw
+# install, PACKAGING-012), skip-owned (auto, package-owned, no .deb to
+# upgrade it with), error-no-deb (--method deb but no .deb published). Never
+# picks an action that overwrites a package-owned file (PACKAGING-007). auto
+# on a fresh host takes the .deb when there is one (PACKAGING-011); the
+# caller sets have_deb only where dpkg and apt-get exist.
 choose_method() {
 	local dest="$2" have_deb="$3" owner
 	owner="$(dpkg_owner "$dest")"
 	case "$METHOD" in
 	binary)
-		if [ -n "$owner" ]; then echo binary-default-dir; else echo binary; fi
+		if [ -n "$owner" ]; then echo replace-package; else echo binary; fi
 		;;
 	deb)
 		if [ "$have_deb" -eq 1 ]; then echo deb; else echo error-no-deb; fi
 		;;
 	*)
 		if [ -z "$owner" ]; then
-			echo binary
+			if [ ! -e "$dest" ] && [ "$have_deb" -eq 1 ]; then echo deb; else echo binary; fi
 		elif [ "$have_deb" -eq 1 ]; then
 			echo deb
 		else
@@ -577,7 +586,7 @@ musl_reason() {
 component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; tui) echo ErikAllanKincaid/tetron-tui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
 # Install location. /usr/local/bin is on PATH by default on Linux and macOS;
 # writing to it needs root.
-component_default_dir() { echo /usr/local/bin; }
+component_default_dir() { echo "${TETRON_SUITE_RAW_BIN_DIR:-/usr/local/bin}"; }
 
 # Whether registering the component's service needs root. core and hosts are
 # system services (hosts edits /etc/hosts). The others are per-user services,
@@ -726,9 +735,10 @@ confirm_sudo_install() {
 }
 
 # Downloads one component from release $4, verifies it, installs it to $2,
-# and starts its service.
+# and starts its service. With a 5th argument, that package is removed after
+# the raw copy is in place and before the service restarts (PACKAGING-012).
 install_component() {
-	local comp="$1" dest="$2" asset="$3" tag="$4" repo tmpdir sudo_prefix
+	local comp="$1" dest="$2" asset="$3" tag="$4" remove_pkg="${5:-}" repo tmpdir sudo_prefix
 	repo="$(component_repo "$comp")"
 	sudo_prefix="$SUDO"
 
@@ -747,6 +757,13 @@ install_component() {
 	$sudo_prefix mkdir -p "$(dirname "$dest")"
 	$sudo_prefix install -m 0755 "$tmpdir/$asset" "$dest" \
 		|| { log_error "$comp: failed to install binary to $dest"; return 1; }
+
+	if [ -n "$remove_pkg" ]; then
+		log_info "$comp: removing package $remove_pkg with apt-get (remove, not purge)..."
+		$SUDO env DEBIAN_FRONTEND=noninteractive apt-get remove -y "$remove_pkg" \
+			|| { log_error "$comp: apt-get could not remove $remove_pkg -- the raw copy $dest is in place but the service still runs the package"; return 1; }
+		hash -r
+	fi
 
 	post_install_component "$comp" "$dest"
 }
@@ -859,6 +876,37 @@ migrate_raw_install() {
 		log_info "$comp: removed the raw copy $raw"
 	fi
 	hash -r
+}
+
+# replace_guard <comp> <pkg>: PACKAGING-012 guards. Fails, printing the manual
+# commands, when other packages would be removed with <pkg> or when there is
+# no terminal to confirm at.
+replace_guard() {
+	local comp="$1" pkg="$2" sim others
+	if ! sim="$(apt-get -s remove "$pkg" 2>/dev/null)"; then
+		log_error "$comp: could not simulate 'apt-get remove $pkg'; not replacing the package"
+		return 1
+	fi
+	others="$(printf '%s\n' "$sim" | awk -v p="$pkg" '$1 == "Remv" && $2 != p { printf "%s ", $2 }')"
+	if [ -n "$others" ]; then
+		log_error "$comp: removing package $pkg would also remove: ${others% } -- not replacing it. To do it by hand: sudo apt-get remove $pkg, then rerun with --method binary"
+		return 1
+	fi
+	if ! have_tty; then
+		log_error "$comp: replacing package $pkg with the raw binary needs a terminal to confirm at. To do it by hand: sudo apt-get remove $pkg, then rerun with --method binary"
+		return 1
+	fi
+}
+
+# print_replace_plan <comp> <pkg> <raw dest> <asset>: what --method binary
+# will do to replace the package (PACKAGING-012).
+print_replace_plan() {
+	local comp="$1" pkg="$2" dest="$3" asset="$4"
+	log_info "$comp: replacing package $pkg with the raw binary:"
+	log_info "  1. download and verify $asset, install it to $dest"
+	log_info "  2. sudo apt-get remove $pkg (not purge: the node identity and settings stay)"
+	[ "$(component_no_service "$comp")" -eq 1 ] && return 0
+	log_info "  3. run '$dest install' to register the service for the raw binary and restart it"
 }
 
 # print_conversion_plan <comp> <raw path> <deb asset>: what --method deb will
@@ -1016,7 +1064,7 @@ for comp in "${COMPONENTS[@]}"; do
 	fi
 
 	status="$comp: installed=${current:-none} latest=$latest origin=$origin"
-	if [ -n "$current" ] && [ "$current" = "$latest" ] && [ "$convert_to_deb" -eq 0 ]; then
+	if [ -n "$current" ] && [ "$current" = "$latest" ] && [ "$convert_to_deb" -eq 0 ] && [ "$method" != replace-package ]; then
 		# messageboard and tui: an up-to-date binary is all there is to check.
 		if [ "$(component_binary_only "$comp")" -eq 1 ]; then
 			log_pass "$status (up to date)"
@@ -1054,13 +1102,24 @@ for comp in "${COMPONENTS[@]}"; do
 		continue
 		;;
 	skip-owned)
-		log_warn "$comp: the installed copy ($dest) is owned by package ${origin#package:} and release $latest has no .deb to upgrade it with -- not overwriting it (use --method binary to install a raw copy to $(component_default_dir "$comp") instead)"
+		log_warn "$comp: the installed copy ($dest) is owned by package ${origin#package:} and release $latest has no .deb to upgrade it with -- not overwriting it (use --method binary to replace the package with the raw binary)"
 		skipped="$skipped $comp"
 		continue
 		;;
-	binary-default-dir)
-		dest="$(component_default_dir "$comp")/$(component_binary "$comp")"
-		log_warn "$comp: package ${origin#package:} owns the installed copy; installing the raw binary to $dest instead of overwriting it (it will come first on PATH and shadow the packaged one)"
+	replace-package)
+		rep_pkg="${origin#package:}"
+		rep_dest="$(component_default_dir "$comp")/$(component_binary "$comp")"
+		replace_guard "$comp" "$rep_pkg" || { failed="$failed $comp"; continue; }
+		print_replace_plan "$comp" "$rep_pkg" "$rep_dest" "$asset"
+		read -r -p "Replace package $rep_pkg with the raw binary as listed above? This needs sudo$([ "$comp" = core ] && echo " and briefly disconnects every peer on this host"). [Y/n] " reply < /dev/tty
+		if [[ "$reply" =~ ^[Nn]$ ]]; then skipped="$skipped $comp"; continue; fi
+		install_component "$comp" "$rep_dest" "$asset" "$tag" "$rep_pkg" || failed="$failed $comp"
+		continue
+		;;
+	binary)
+		# A raw install under auto stays raw; say how to convert (PACKAGING-011).
+		[ "$METHOD" = auto ] && [ "$origin" = binary ] && [ "$have_deb" -eq 1 ] \
+			&& log_info "$comp: this is a raw install; --method deb converts it to the package"
 		;;
 	esac
 

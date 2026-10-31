@@ -69,12 +69,13 @@ expect "absent" none "$(component_origin /nonexistent/tool)"
 echo
 echo "choose_method (METHOD, dest, have_deb):"
 choose() { METHOD="$1" choose_method tetron "$2" "$3"; }
-expect "auto, fresh install, deb available" binary "$(choose auto /usr/local/bin/free 1)"
-expect "auto, raw install, deb available" binary "$(choose auto /usr/local/bin/free 1)"
+expect "auto, fresh install, deb available (PACKAGING-011)" deb "$(choose auto /nonexistent/tool 1)"
+expect "auto, fresh install, no deb asset" binary "$(choose auto /nonexistent/tool 0)"
+expect "auto, raw install, deb available (stays raw)" binary "$(choose auto "$STUB/rawbin" 1)"
 expect "auto, package-owned, deb available" deb "$(choose auto /usr/bin/owned 1)"
 expect "auto, package-owned, no deb asset" skip-owned "$(choose auto /usr/bin/owned 0)"
 expect "binary, raw install" binary "$(choose binary /usr/local/bin/free 1)"
-expect "binary, package-owned (never overwrite)" binary-default-dir "$(choose binary /usr/bin/owned 1)"
+expect "binary, package-owned (PACKAGING-012)" replace-package "$(choose binary /usr/bin/owned 1)"
 expect "deb, deb available" deb "$(choose deb /usr/local/bin/free 1)"
 expect "deb, no deb asset" error-no-deb "$(choose deb /usr/local/bin/free 0)"
 

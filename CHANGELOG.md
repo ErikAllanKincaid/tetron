@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **On Debian-family Linux a new install uses the `.deb`** (`PACKAGING-011`). `install-tetron-suite.sh` with the default `--method auto` now installs the release `.deb` when the component is not installed yet and the release has one, so the package manager owns it from the start. An existing raw install stays raw and the script says that `--method deb` converts it. macOS, distributions without dpkg and components without a `.deb` still get the raw binary.
+- **`--method binary` replaces an installed package** (`PACKAGING-012`). It used to put a second, shadowing raw copy in `/usr/local/bin`. Now it shows the plan and asks once, puts the raw binary in `/usr/local/bin`, removes the package (never purges it, so the node identity stays), and restarts the service from the raw binary. It needs a terminal, and it refuses, printing the manual commands, when removing the package would remove other packages too.
+
 ### Fixed
 
 - **`install-tetron-suite.sh --method deb` now converts a raw install completely** (`PACKAGING-009`). Before, it installed the package but left the raw copy in `/usr/local/bin` and the `/etc/systemd/system/tetron.service` that starts it, so the old daemon kept running. Now it shows the plan and asks once, installs the package, disables the old unit and moves it to `/var/backups/tetron/` (it is kept, not deleted), removes the raw copy, and restarts the service from the packaged binary. If the package install fails, nothing else is touched. Running it again on a half-converted machine finishes the job.
