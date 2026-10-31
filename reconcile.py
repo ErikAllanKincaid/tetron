@@ -510,6 +510,36 @@ def check_suite_shell_tests() -> dict:
     return {"ran": len(names), "failures": len(failures), "failed": failures, "output": output}
 
 
+def check_release_bump() -> dict:
+    """CON-REL01: the three version sites and both Cargo.lock entries agree,
+    and the hermetic bump-version.sh test passes (RELEASE-001)."""
+    import re
+    def pkg(path):
+        m = re.search(r'^\[package\][^\[]*?^version = "([^"]+)"', Path(path).read_text(), re.M | re.S)
+        return m.group(1) if m else None
+    cargo = Path("Cargo.toml").read_text()
+    dep = re.search(r'^tetron-proto = \{.*version = "([^"]+)"', cargo, re.M)
+    lock = Path("Cargo.lock").read_text()
+    def locked(name):
+        m = re.search(r'^name = "' + re.escape(name) + r'"\nversion = "([^"]+)"', lock, re.M)
+        return m.group(1) if m else None
+    sites = {
+        "Cargo.toml [package]": pkg("Cargo.toml"),
+        "Cargo.toml tetron-proto dependency": dep.group(1) if dep else None,
+        "tetron-proto/Cargo.toml [package]": pkg("tetron-proto/Cargo.toml"),
+        "Cargo.lock tetron": locked("tetron"),
+        "Cargo.lock tetron-proto": locked("tetron-proto"),
+    }
+    agree = None not in sites.values() and len(set(sites.values())) == 1
+    t = Path("contrib/tests/bump-version.test.sh")
+    if t.is_file():
+        r = run(["bash", str(t)])
+        failures, tail = (0, []) if r.returncode == 0 else (1, (r.stdout + r.stderr).splitlines()[-20:])
+    else:
+        failures, tail = 1, ["missing"]
+    return {"sites": sites, "sites_agree": agree, "test_failures": failures, "output": tail}
+
+
 if __name__ == "__main__":
     ctx = {
         "fmt": check_fmt(),
@@ -532,6 +562,7 @@ if __name__ == "__main__":
         "cargo_audit": check_cargo_audit(),
         "deb_release": check_deb_release(),
         "suite_shell_tests": check_suite_shell_tests(),
+        "release_bump": check_release_bump(),
     }
     print(json.dumps(ctx, indent=2))
     ok = (
@@ -559,5 +590,7 @@ if __name__ == "__main__":
         and ctx["deb_release"]["valid"]
         and ctx["suite_shell_tests"]["failures"] == 0
         and ctx["suite_shell_tests"]["ran"] > 0
+        and ctx["release_bump"]["sites_agree"]
+        and ctx["release_bump"]["test_failures"] == 0
     )
     sys.exit(0 if ok else 1)
