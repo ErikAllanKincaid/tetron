@@ -163,6 +163,7 @@ hasnt "apt-get remove" "package not removed"
 echo "--method deb, raw install at the latest version -> converts to the package:"
 fake_installed 0.14.3; release_json 1; run 0 --method deb
 has "apt-get install -y" "installs the .deb even though versions match"
+case "$OUT" in *"(same version; converting to the package)"*) ok "status says converting, not update available" ;; *) bad "status wording: $OUT" ;; esac
 hasnt "install -m 0755" "no raw copy"
 
 echo "--method deb, no deb published -> error:"
@@ -331,6 +332,8 @@ reset_dirs; pkg_installed; release_json 1; ANSWER=y run_tty "$W/raw:$W/pkg" --me
 case "$OUT" in *"replacing package tetron"*) ok "prints the plan" ;; *) bad "plan missing: $OUT" ;; esac
 has "install -m 0755" "places the raw binary"
 has "apt-get remove -y tetron" "removes the package"
+before "systemctl disable tetron.service" "apt-get remove -y tetron" "packaged unit disabled before removal (enable link goes too)"
+case "$OUT" in *"(same version; replacing the package)"*) ok "status says replacing, not update available" ;; *) bad "status wording: $OUT" ;; esac
 hasnt "purge" "never purges"
 has "$W/raw/tetron install" "runs install on the raw binary"
 before "install -m 0755" "apt-get remove -y tetron" "raw copy placed before the package is removed"

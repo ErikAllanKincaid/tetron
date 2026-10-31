@@ -759,6 +759,12 @@ install_component() {
 		|| { log_error "$comp: failed to install binary to $dest"; return 1; }
 
 	if [ -n "$remove_pkg" ]; then
+		# Disable the packaged unit first so its enable link goes with it; the
+		# daemon keeps running until the raw binary's `install` restarts it.
+		if component_has_system_unit "$comp"; then
+			$SUDO systemctl disable "$(component_unit "$comp")" >/dev/null 2>&1 \
+				|| log_warn "$comp: could not disable $(component_unit "$comp") (continuing)"
+		fi
 		log_info "$comp: removing package $remove_pkg with apt-get (remove, not purge)..."
 		$SUDO env DEBIAN_FRONTEND=noninteractive apt-get remove -y "$remove_pkg" \
 			|| { log_error "$comp: apt-get could not remove $remove_pkg -- the raw copy $dest is in place but the service still runs the package"; return 1; }
@@ -1091,7 +1097,16 @@ for comp in "${COMPONENTS[@]}"; do
 		fi
 		continue
 	fi
-	log_info "$status ($( [ -z "$current" ] && echo "not installed or version unknown" || echo "update available" ))"
+	if [ -z "$current" ]; then
+		note="not installed or version unknown"
+	elif [ "$current" = "$latest" ] && [ "$convert_to_deb" -eq 1 ]; then
+		note="same version; converting to the package"
+	elif [ "$current" = "$latest" ] && [ "$method" = replace-package ]; then
+		note="same version; replacing the package"
+	else
+		note="update available"
+	fi
+	log_info "$status ($note)"
 
 	[ "$CHECK_ONLY" -eq 1 ] && continue
 
