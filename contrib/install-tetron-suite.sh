@@ -39,6 +39,9 @@
 #      tui has no service. messageboard runs one board per tetron network, so
 #      only the binary is placed; start boards from tetron-webui's Add-ons
 #      panel or with `tetron-messageboard install --network <name>`.
+#   5. Checks that the copy it installed is the one that runs: the first
+#      copy on PATH and, for core, the binary its service starts. If another
+#      copy runs instead, the component is reported as failed.
 #   backup is a plain script rather than a release: it is fetched from the
 #   tetron repository's main branch, with no checksum file, and copied to
 #   /usr/local/bin. If it is already there it is left alone; delete it to
@@ -110,7 +113,11 @@
 #                            the raw release binary as described above.
 #                            deb installs the release .deb with apt-get
 #                            (Debian-family Linux only) and also converts a
-#                            raw install to the package. auto, the default,
+#                            raw install to the package in one confirmed
+#                            step: the old unit in /etc/systemd/system is
+#                            disabled and moved to /var/backups/tetron/, the
+#                            raw copy is removed, and the service restarts
+#                            from the packaged binary. auto, the default,
 #                            upgrades a package-owned component with its .deb
 #                            and uses the raw binary for everything else. A
 #                            file a package owns is never overwritten: with
@@ -230,6 +237,13 @@ if [ "$CHECK_ONLY" -ne 1 ]; then
 	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
 		|| fatal "sha256sum or shasum is required to verify downloads"
 fi
+
+# Where the packaged binaries live, where unit files that override packaged
+# ones live, and where a replaced unit file is kept (PACKAGING-009). The
+# TETRON_SUITE_* overrides exist for the hermetic tests only.
+PKG_BIN_DIR="${TETRON_SUITE_PKG_BIN_DIR:-/usr/bin}"
+UNIT_DIR="${TETRON_SUITE_UNIT_DIR:-/etc/systemd/system}"
+BACKUP_DIR="${TETRON_SUITE_BACKUP_DIR:-/var/backups/tetron}"
 
 # Downloads go to one private temporary directory, removed when the script
 # exits for any reason, including Ctrl-C.
@@ -759,20 +773,133 @@ post_install_component() {
 			|| { log_error "$comp: '$dest install' failed -- binary is updated but its service was not restarted, check logs"; return 1; }
 	fi
 
+	verify_runs_installed "$comp" "$dest" || return 1
 	log_pass "$comp: installed/upgraded successfully"
-	warn_if_shadowed "$comp" "$dest"
 	ver="$(installed_version "$dest")"
 	if [ -n "$ver" ]; then log_pass "$comp: version $ver"; fi
+}
+
+# resolved <path>: <path> with symlinks resolved, or <path> itself.
+resolved() {
+	local r
+	r="$(readlink -f "$1" 2>/dev/null)" || r=""
+	printf '%s\n' "${r:-$1}"
+}
+
+# True when the component runs as a system unit (core) on Linux.
+component_has_system_unit() {
+	[ "${plat_os:-}" = linux ] \
+		&& [ "$(component_service_needs_sudo "$1")" -eq 1 ] \
+		&& [ "$(component_no_service "$1")" -eq 0 ] \
+		&& [ "$(component_binary_only "$1")" -eq 0 ]
+}
+
+# unit_exec_path <unit>: the program systemd starts for <unit>'s ExecStart, or
+# nothing (no systemctl, no such unit, a timer).
+unit_exec_path() {
+	command -v systemctl >/dev/null 2>&1 || return 0
+	systemctl show -p ExecStart --value "$1" 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1
+}
+
+# verify_runs_installed <comp> <dest>: true when what will run is <dest>: the
+# first copy on PATH and, for a system unit, the unit's ExecStart. Otherwise
+# names what runs instead, with its version, and fails (PACKAGING-010).
+verify_runs_installed() {
+	local comp="$1" dest="$2" found exec unit
+	hash -r
+	found="$(command -v "$(component_binary "$comp")" 2>/dev/null)"
+	if [ -n "$found" ] && [ "$(resolved "$found")" != "$(resolved "$dest")" ]; then
+		log_fail "$comp: $found comes first on PATH and runs instead of $dest (it is version $(installed_version "$found" | grep . || echo unknown)) -- remove it: rm '$found'"
+		return 1
+	fi
+	if component_has_system_unit "$comp"; then
+		unit="$(component_unit "$comp")"
+		exec="$(unit_exec_path "$unit")"
+		if [ -n "$exec" ] && [ "$(resolved "$exec")" != "$(resolved "$dest")" ]; then
+			log_fail "$comp: its service $unit runs $exec (version $(installed_version "$exec" | grep . || echo unknown)), not $dest"
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# raw_unit_to_migrate <comp> <raw path>: the unit file in $UNIT_DIR that no
+# package owns and whose ExecStart runs <raw path>, or nothing (PACKAGING-009).
+raw_unit_to_migrate() {
+	local comp="$1" raw="$2" ufile
+	component_has_system_unit "$comp" || return 0
+	ufile="$UNIT_DIR/$(component_unit "$comp")"
+	[ -f "$ufile" ] || return 0
+	[ -z "$(dpkg_owner "$ufile")" ] || return 0
+	awk -v p="$raw" '/^ExecStart=/ { sub(/^ExecStart=[-@:+!]*/, ""); split($0, a, " "); if (a[1] == p) f = 1 } END { exit !f }' "$ufile" \
+		&& printf '%s\n' "$ufile"
+	return 0
+}
+
+# migrate_raw_install <comp> <raw path>: after the package is installed, move
+# the unit that runs the raw copy out of the way, then remove the raw copy
+# (PACKAGING-009 steps 3 and 4). The daemon keeps running until the packaged
+# binary's `install` restarts it.
+migrate_raw_install() {
+	local comp="$1" raw="$2" ufile unit backup
+	ufile="$(raw_unit_to_migrate "$comp" "$raw")"
+	if [ -n "$ufile" ]; then
+		unit="$(basename "$ufile")"
+		backup="$BACKUP_DIR/$unit.$(date +%Y%m%d%H%M%S)"
+		$SUDO systemctl disable "$unit" >/dev/null 2>&1 \
+			|| log_warn "$comp: could not disable $unit (continuing)"
+		{ $SUDO mkdir -p "$BACKUP_DIR" && $SUDO mv -- "$ufile" "$backup"; } \
+			|| { log_error "$comp: could not move $ufile -- the raw copy $raw is left in place"; return 1; }
+		log_info "$comp: moved $ufile to $backup"
+		$SUDO systemctl daemon-reload \
+			|| log_warn "$comp: systemctl daemon-reload failed (continuing)"
+	fi
+	if [ -z "$(dpkg_owner "$raw")" ] && [ "$(resolved "$raw")" != "$(resolved "$PKG_BIN_DIR/$(component_binary "$comp")")" ]; then
+		$SUDO rm -f -- "$raw" || { log_error "$comp: could not remove the raw copy $raw"; return 1; }
+		log_info "$comp: removed the raw copy $raw"
+	fi
+	hash -r
+}
+
+# print_conversion_plan <comp> <raw path> <deb asset>: what --method deb will
+# do to convert a raw install, shown before the one question (PACKAGING-009).
+print_conversion_plan() {
+	local comp="$1" raw="$2" asset="$3" ufile n=1
+	ufile="$(raw_unit_to_migrate "$comp" "$raw")"
+	log_info "$comp: converting the raw install at $raw to the package:"
+	log_info "  $n. install $asset with apt-get"; n=$((n + 1))
+	if [ -n "$ufile" ]; then
+		log_info "  $n. disable $ufile (it runs $raw) and move it to $BACKUP_DIR/"; n=$((n + 1))
+	fi
+	log_info "  $n. remove $raw"; n=$((n + 1))
+	[ "$(component_no_service "$comp")" -eq 1 ] && return 0
+	log_info "  $n. run '$PKG_BIN_DIR/$(component_binary "$comp") install' to start the service from the packaged binary"
+}
+
+# confirm_conversion <comp>: the one question for a conversion. Without a
+# terminal it proceeds, since --method deb asked for it.
+confirm_conversion() {
+	local comp="$1" reply cost=""
+	[ "$comp" = core ] && cost=" and briefly disconnects every peer on this host"
+	if ! have_tty; then
+		log_warn "$comp: converting without a terminal to confirm at (--method deb was given)"
+		return 0
+	fi
+	read -r -p "Convert $comp to the package as listed above? This needs sudo$cost. [Y/n] " reply < /dev/tty
+	[[ "$reply" =~ ^[Nn]$ ]] && return 1
+	return 0
 }
 
 # Installs a component from asset $2 of release $3, a .deb, with apt-get
 # (PACKAGING-007). The package puts the binary in /usr/bin; the component's
 # own `install` subcommand runs on that path, not on whichever copy is first
 # on PATH.
+# With a 4th argument, the raw copy at that path is migrated away after the
+# package is installed (PACKAGING-009).
 install_component_deb() {
-	local comp="$1" asset="$2" tag="$3" repo tmpdir dest
+	local comp="$1" asset="$2" tag="$3" raw="${4:-}" repo tmpdir dest
 	repo="$(component_repo "$comp")"
-	dest="/usr/bin/$(component_binary "$comp")"
+	dest="$PKG_BIN_DIR/$(component_binary "$comp")"
 
 	tmpdir="$WORKDIR/$comp"
 	mkdir -p "$tmpdir"
@@ -786,8 +913,12 @@ install_component_deb() {
 		|| { log_error "$comp: checksum verification failed, not installed"; return 1; }
 
 	log_info "$comp: installing $asset with apt-get..."
-	$SUDO apt-get install -y "$tmpdir/$asset" \
+	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmpdir/$asset" \
 		|| { log_error "$comp: apt-get failed to install $asset"; return 1; }
+
+	if [ -n "$raw" ]; then
+		migrate_raw_install "$comp" "$raw" || return 1
+	fi
 
 	post_install_component "$comp" "$dest"
 }
@@ -871,6 +1002,9 @@ for comp in "${COMPONENTS[@]}"; do
 	# --method deb also converts a raw install to the package, even at the same version.
 	convert_to_deb=0
 	[ "$METHOD" = deb ] && [ "$method" = deb ] && [ "${origin#package:}" = "$origin" ] && convert_to_deb=1
+	# A raw copy to convert: migrated away in the same step (PACKAGING-009).
+	conv_raw=""
+	[ "$convert_to_deb" -eq 1 ] && [ "$origin" = binary ] && conv_raw="$dest"
 
 	asset="$(component_binary "$comp")-${PLATFORM}"
 	if [ "$comp" = "core" ]; then
@@ -933,7 +1067,8 @@ for comp in "${COMPONENTS[@]}"; do
 	# Shadowed package: offer to delete the raw copy (default no; never without a
 	# terminal). If it was removed, stop here for this component -- re-running
 	# continues with the packaged copy rather than reinstalling a raw one.
-	if [ -n "$shadow_raw" ] && offer_remove_shadow "$comp" "$shadow_raw"; then
+	# A conversion removes the raw copy itself, so it is not asked about twice.
+	if [ -z "$conv_raw" ] && [ -n "$shadow_raw" ] && offer_remove_shadow "$comp" "$shadow_raw"; then
 		log_info "$comp: re-run this script to continue with the packaged copy"
 		skipped="$skipped $comp"
 		continue
@@ -941,10 +1076,15 @@ for comp in "${COMPONENTS[@]}"; do
 
 	is_upgrade=0
 	[ -n "$current" ] && is_upgrade=1
-	confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
+	if [ -n "$conv_raw" ]; then
+		print_conversion_plan "$comp" "$conv_raw" "$deb_asset"
+		confirm_conversion "$comp" || { skipped="$skipped $comp"; continue; }
+	else
+		confirm_sudo_install "$comp" "$is_upgrade" || { skipped="$skipped $comp"; continue; }
+	fi
 
 	if [ "$method" = deb ]; then
-		install_component_deb "$comp" "$deb_asset" "$tag" || failed="$failed $comp"
+		install_component_deb "$comp" "$deb_asset" "$tag" "$conv_raw" || failed="$failed $comp"
 	else
 		install_component "$comp" "$dest" "$asset" "$tag" || failed="$failed $comp"
 	fi

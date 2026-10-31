@@ -38,11 +38,37 @@ case "$url" in
 *) echo "curl stub: unexpected url $url" >&2; exit 22 ;;
 esac
 STUB
-# sudo: log only, never execute.
+# sudo: log, and execute only what stays inside the test directory: apt-get
+# (the stub below) and rm/mv/mkdir whose path arguments are all under
+# $TESTROOT. Everything else is logged only, so nothing on the host changes.
 cat > "$W/stubs/sudo" <<'STUB'
 #!/bin/bash
 echo "sudo $*" >> "$CMDLOG"
+if [ "$1" = env ]; then shift; while [[ "$1" == *=* ]]; do shift; done; fi
+[ -n "$TESTROOT" ] || exit 0
+case "$1" in
+apt-get) "$@"; exit $? ;;
+rm | mv | mkdir)
+	for a in "${@:2}"; do
+		case "$a" in -*) ;; "$TESTROOT"/*) ;; *) exit 0 ;; esac
+	done
+	"$@"; exit $? ;;
+esac
 exit 0
+STUB
+# systemctl: `show -p ExecStart --value tetron.service` reports the ExecStart of
+# $TETRON_SUITE_UNIT_DIR/tetron.service while it exists, else $PKG_UNIT_EXEC
+# (the packaged unit). Nothing else is ever active.
+cat > "$W/stubs/systemctl" <<'STUB'
+#!/bin/bash
+case "$*" in
+*"show -p ExecStart --value"*)
+	u="${TETRON_SUITE_UNIT_DIR:-/nonexistent}/tetron.service"
+	if [ -f "$u" ]; then p="$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$u")"; else p="${PKG_UNIT_EXEC:-}"; fi
+	[ -n "$p" ] && echo "{ path=$p ; argv[]=$p daemon ; }"
+	exit 0 ;;
+esac
+exit 1
 STUB
 # dpkg: -S -- PATH owns PATH only if it is listed in $OWNED_PATHS.
 cat > "$W/stubs/dpkg" <<'STUB'
@@ -54,7 +80,19 @@ done
 echo "dpkg-query: no path found matching pattern $p" >&2; exit 1
 STUB
 # apt-get must exist for deb_supported; it is only ever run through the sudo stub.
-printf '#!/bin/bash\necho "apt-get $*" >> "$CMDLOG"\n' > "$W/stubs/apt-get"
+# With $FAKE_PKG_DIR set it "installs" the package: writes $FAKE_PKG_DIR/tetron
+# at $PKG_VERSION. $FAKE_APT_FAIL=1 makes it fail.
+cat > "$W/stubs/apt-get" <<'STUB'
+#!/bin/bash
+echo "apt-get $*" >> "$CMDLOG"
+[ "${FAKE_APT_FAIL:-0}" -eq 1 ] && exit 100
+if [ -n "${FAKE_PKG_DIR:-}" ]; then
+	mkdir -p "$FAKE_PKG_DIR"
+	printf '#!/bin/sh\necho "tetron %s (pkg)"\n' "$PKG_VERSION" > "$FAKE_PKG_DIR/tetron"
+	chmod +x "$FAKE_PKG_DIR/tetron"
+fi
+exit 0
+STUB
 chmod +x "$W/stubs/"*
 
 # The fake installed tetron.
@@ -144,6 +182,83 @@ OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkgbin:$PATH" CMDLOG="$LOG" O
 	RELEASE_JSON="$W/release.json" bash "$SRC" --core-only 2>&1 </dev/null)"
 case "$OUT" in *"shadows $W/pkgbin/tetron from package tetron"*) ok "install run reports the shadowing too" ;; *) bad "shadow report missing on install: $OUT" ;; esac
 hasnt "rm -f" "no terminal: neither copy is deleted"
+
+# --- PACKAGING-009 / PACKAGING-010 -------------------------------------------
+# Conversion runs: the raw copy is $W/bin/tetron, the package installs to
+# $W/pkg (owned), the /etc unit directory is $W/unit, backups go to $W/backup.
+line_of() { grep -nF -- "$1" "$LOG" | head -1 | cut -d: -f1; }
+before() { # a b desc: log line with a comes before log line with b
+	local x y; x="$(line_of "$1")"; y="$(line_of "$2")"
+	if [ -n "$x" ] && [ -n "$y" ] && [ "$x" -lt "$y" ]; then ok "$3"; else bad "$3 ($1 at ${x:-none}, $2 at ${y:-none})"; sed 's/^/        log: /' "$LOG"; fi
+}
+conv_setup() { # raw_version unit_exec(path or empty)
+	rm -rf "$W/pkg" "$W/unit" "$W/backup"
+	mkdir -p "$W/unit"
+	fake_installed "$1"
+	[ -n "$2" ] && printf '[Service]\nExecStart=%s daemon\n' "$2" > "$W/unit/tetron.service"
+	release_json 1
+}
+run_conv() { # args...
+	: > "$LOG"
+	OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/bin:$W/pkg:$PATH" CMDLOG="$LOG" TESTROOT="$W" \
+		OWNED_PATHS="$W/pkg/tetron" FAKE_PKG_DIR="$W/pkg" PKG_VERSION=0.14.3 PKG_UNIT_EXEC="$W/pkg/tetron" \
+		FAKE_APT_FAIL="${FAKE_APT_FAIL:-0}" \
+		TETRON_SUITE_UNIT_DIR="$W/unit" TETRON_SUITE_BACKUP_DIR="$W/backup" TETRON_SUITE_PKG_BIN_DIR="$W/pkg" \
+		RELEASE_JSON="$W/release.json" bash "$SRC" --core-only "$@" 2>&1 </dev/null)"
+	RC=$?
+}
+
+echo "PACKAGING-009: --method deb converts a raw install with an /etc unit in one step:"
+conv_setup 0.14.2 "$W/bin/tetron"; run_conv --method deb
+[ "$RC" -eq 0 ] && ok "exits 0" || bad "exit code $RC: $OUT"
+case "$OUT" in *"converting the raw install at $W/bin/tetron"*) ok "prints the plan" ;; *) bad "plan missing: $OUT" ;; esac
+has "DEBIAN_FRONTEND=noninteractive apt-get install -y" "apt-get runs non-interactive"
+has "systemctl disable tetron.service" "disables the /etc unit"
+has "systemctl daemon-reload" "reloads systemd"
+[ ! -e "$W/unit/tetron.service" ] && ok "/etc unit is gone" || bad "/etc unit still present"
+ls "$W/backup"/tetron.service.* >/dev/null 2>&1 && ok "/etc unit kept in the backup dir" || bad "no backup of the unit"
+[ ! -e "$W/bin/tetron" ] && ok "raw copy removed" || bad "raw copy still present"
+has "$W/pkg/tetron install" "runs install on the packaged binary"
+before "apt-get install" "systemctl disable" "package installed before the unit is touched"
+before "systemctl disable" "mv -- $W/unit/tetron.service" "unit disabled before it is moved"
+before "mv -- $W/unit/tetron.service" "rm -f -- $W/bin/tetron" "unit moved before the raw copy is removed"
+before "rm -f -- $W/bin/tetron" "$W/pkg/tetron install" "raw copy removed before the service restart"
+case "$OUT" in *"[pass]  core: version 0.14.3"*) ok "reports the version that runs" ;; *) bad "version line missing: $OUT" ;; esac
+case "$OUT" in *"Remove the raw copy"*) bad "asked a second question" ;; *) ok "no separate shadow question" ;; esac
+
+echo "PACKAGING-009: a half-converted host (package installed, raw still first) is completed:"
+conv_setup 0.14.3 "$W/bin/tetron"
+mkdir -p "$W/pkg"; printf '#!/bin/sh\necho "tetron 0.14.3 (pkg)"\n' > "$W/pkg/tetron"; chmod +x "$W/pkg/tetron"
+run_conv --method deb
+[ "$RC" -eq 0 ] && ok "exits 0" || bad "exit code $RC: $OUT"
+[ ! -e "$W/bin/tetron" ] && [ ! -e "$W/unit/tetron.service" ] && ok "raw copy and /etc unit gone" || bad "conversion not completed"
+
+echo "PACKAGING-009: apt-get fails -> nothing else is touched:"
+conv_setup 0.14.2 "$W/bin/tetron"; FAKE_APT_FAIL=1 run_conv --method deb
+[ "$RC" -eq 1 ] && ok "exits 1" || bad "exit code $RC"
+[ -e "$W/bin/tetron" ] && [ -e "$W/unit/tetron.service" ] && ok "raw copy and unit untouched" || bad "something was removed"
+hasnt "systemctl disable" "unit not disabled"
+
+echo "PACKAGING-009/010: an /etc unit that runs another path is left alone and reported:"
+conv_setup 0.14.2 "/opt/other/tetron"; run_conv --method deb
+[ -e "$W/unit/tetron.service" ] && ok "unit left in place" || bad "foreign unit was moved"
+hasnt "systemctl disable" "foreign unit not disabled"
+[ "$RC" -eq 1 ] && ok "exits 1" || bad "exit code $RC"
+case "$OUT" in *"[fail]"*"runs /opt/other/tetron"*) ok "names the binary the service runs" ;; *) bad "fail line missing: $OUT" ;; esac
+
+echo "PACKAGING-010: a copy first on PATH that is not the installed one is a failure:"
+mkdir -p "$W/home/bin"
+printf '#!/bin/sh\necho "tetron 0.13.0 (home)"\n' > "$W/home/bin/tetron"; chmod +x "$W/home/bin/tetron"
+# Tag 9.9.9: whatever the host has in /usr/local/bin, it is never "up to date".
+printf '{"tag_name":"v9.9.9","assets":[{"name":"tetron-linux-x86_64"},{"name":"tetron-linux-aarch64"}]}' > "$W/release.json"
+: > "$LOG"
+OUT="$(env HOME="$W/home" PATH="$W/stubs:$W/home/bin:$PATH" CMDLOG="$LOG" \
+	RELEASE_JSON="$W/release.json" bash "$SRC" --core-only 2>&1 </dev/null)"
+RC=$?
+[ "$RC" -eq 1 ] && ok "exits 1" || bad "exit code $RC: $OUT"
+case "$OUT" in *"[fail]"*"$W/home/bin/tetron comes first on PATH and runs instead of /usr/local/bin/tetron (it is version 0.13.0)"*) ok "names the copy that runs and its version" ;; *) bad "fail line missing: $OUT" ;; esac
+case "$OUT" in *"[pass]  core: version"*) bad "still reports a version pass" ;; *) ok "no version pass" ;; esac
+rm -rf "$W/home/bin"
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
