@@ -2954,12 +2954,17 @@ mod headless_tests {
     /// "successfully auto-promoted a reachable member" happy path needs a
     /// real live QUIC connection to exercise -- not covered here; see this
     /// requirement's own live-testing caveat in `spec/security.py`.)
+    ///
+    /// STRANDED-COORDINATOR-TEST-001: the daemon gets a fixed identity so
+    /// its derived IP never lands on a member's hard-coded address (a random
+    /// key did so about 1 run in 64 and `MemberList::add` panicked).
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leave_blocks_on_sole_coordinator_with_unreachable_members() {
         let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let _env_guard = EnvVarGuard::set("TETRON_CONFIG_DIR", tmp.path());
+        std::fs::write(tmp.path().join("secret_key"), [29u8; 32]).unwrap();
 
         let daemon = tokio::time::timeout(std::time::Duration::from_secs(30), build_headless())
             .await
@@ -2968,6 +2973,16 @@ mod headless_tests {
 
         const NET: &str = "test-net";
         let my_id = daemon.identity.local_identity();
+        assert_eq!(
+            my_id,
+            SecretKey::from_bytes(&[29u8; 32]).public(),
+            "build_headless should load the fixed secret_key"
+        );
+        let my_ip = daemon.identity.local_ip();
+        assert!(
+            my_ip != Ipv4Addr::new(10, 88, 0, 2) && my_ip != Ipv4Addr::new(10, 88, 0, 3),
+            "fixed daemon IP {my_ip} collides with a member address; pick another key"
+        );
         let member_a = SecretKey::from_bytes(&[30u8; 32]).public();
         let member_b = SecretKey::from_bytes(&[31u8; 32]).public();
 
