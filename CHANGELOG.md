@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install-tetron-suite.sh --method deb` now converts a raw install completely** (`PACKAGING-009`). Before, it installed the package but left the raw copy in `/usr/local/bin` and the `/etc/systemd/system/tetron.service` that starts it, so the old daemon kept running. Now it shows the plan and asks once, installs the package, disables the old unit and moves it to `/var/backups/tetron/` (it is kept, not deleted), removes the raw copy, and restarts the service from the packaged binary. If the package install fails, nothing else is touched. Running it again on a half-converted machine finishes the job.
+- **The suite installer checks what actually runs after an install** (`PACKAGING-010`). It reported the version of the copy it had just installed even when another copy ran instead. It now fails, naming the copy that runs and its version, when a different copy comes first on `PATH` or when the service starts a different binary.
+
 ## [0.14.5] - 2026-10-29
 
 ### Fixed
