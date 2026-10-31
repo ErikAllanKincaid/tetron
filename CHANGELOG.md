@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.6] - 2026-10-31
+
 ### Changed
 
 - **On Debian-family Linux a new install uses the `.deb`** (`PACKAGING-011`). `install-tetron-suite.sh` with the default `--method auto` now installs the release `.deb` when the component is not installed yet and the release has one, so the package manager owns it from the start. An existing raw install stays raw and the script says that `--method deb` converts it. macOS, distributions without dpkg and components without a `.deb` still get the raw binary.
