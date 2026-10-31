@@ -3758,6 +3758,36 @@ class ConfigLoadIsCached(Requirement):
     req_id = "CONFIG-CACHE-001"
 
 
+class ConfigCacheRacyMtime(Requirement):
+    """REQUIREMENT-ID: CONFIG-CACHE-002
+
+    Amends CONFIG-CACHE-001, whose "no staleness window at all" holds only
+    when every write moves an mtime. It does not: the kernel stamps mtimes
+    from a coarse clock (one tick, about 4ms on Linux; 1 to 2s on some
+    filesystems), so a network saved in the same tick as the previous load
+    leaves the `networks/` directory mtime unchanged, the fingerprint
+    matches, and `config::load()` returns the old network list until some
+    later write. Found 2026-10-31: `cached_load_sees_network_added_and_removed`
+    failed on a GitHub runner (1 network instead of 2).
+
+    Rule (git's "racily clean" index entries): when the fingerprint is
+    taken, it records whether any of its mtimes (`settings.toml`, the
+    `networks/` directory, each `networks/*.toml`) is less than
+    `RACY_WINDOW` (2s, the coarsest common granularity) before now. Such a
+    fingerprint never serves a hit; the next call reloads. Once the files
+    are older than the window, the reload's fingerprint is trusted and the
+    cache serves hits as before. Cost: loads within 2s of a config write
+    re-read the tree, which is what every load did before CONFIG-CACHE-001.
+
+    Tests: a deterministic regression sets the `networks/` mtime back to
+    the value the first load saw after a second save and asserts two
+    networks; the hit-counting tests set their files' mtimes a minute back
+    so they still prove the cache is used.
+    """
+
+    req_id = "CONFIG-CACHE-002"
+
+
 # --------------------------------------------------------------------------
 # STATUS-CACHE-001: the daemon owns the status refresh rate, not its clients
 # --------------------------------------------------------------------------
