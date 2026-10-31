@@ -893,10 +893,33 @@ fn vendor_unit_path() -> Option<PathBuf> {
 
 /// Print what uninstall keeps, for the directories actually in use
 /// (PACKAGING-013).
-fn print_kept_data_notice() {
-    if let Ok(config) = tetron::config::config_dir() {
-        println!("{}", kept_data_notice(&config, &tetron::logdir::log_dir()));
-    }
+/// `TETRON_CONFIG_DIR` and `TETRON_LOG_DIR` from systemd's `Environment=`
+/// property (`systemctl show -p Environment --value`), so uninstall names the
+/// directories the service actually used (PACKAGING-013).
+pub(crate) fn service_env_dirs(env: &str) -> (Option<String>, Option<String>) {
+    let get = |key: &str| {
+        env.split_whitespace()
+            .find_map(|kv| kv.strip_prefix(key).map(str::to_string))
+            .filter(|v| !v.is_empty())
+    };
+    (get("TETRON_CONFIG_DIR="), get("TETRON_LOG_DIR="))
+}
+
+/// Print what uninstall keeps. `service_env` is the unit's `Environment=`
+/// value when known; it wins over this process's defaults (PACKAGING-013).
+fn print_kept_data_notice(service_env: Option<&str>) {
+    let (config, log) = service_env.map(service_env_dirs).unwrap_or((None, None));
+    let config = match config {
+        Some(c) => PathBuf::from(c),
+        None => match tetron::config::config_dir() {
+            Ok(c) => c,
+            Err(_) => return,
+        },
+    };
+    let log = log
+        .map(PathBuf::from)
+        .unwrap_or_else(tetron::logdir::log_dir);
+    println!("{}", kept_data_notice(&config, &log));
 }
 
 pub(crate) fn cmd_uninstall_service() -> Result<()> {
@@ -916,6 +939,12 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
             return Ok(());
         }
         require_systemd();
+        // Read the directories the service uses before it is disabled.
+        let service_env = Command::new("systemctl")
+            .args(["show", "-p", "Environment", "--value", "tetron"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         run_cmd("systemctl", &["disable", "--now", "tetron"]);
         if plan.remove_etc_unit {
             std::fs::remove_file(path)?;
@@ -925,7 +954,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
         if let Some(hint) = plan.hint {
             println!("{hint}");
         }
-        print_kept_data_notice();
+        print_kept_data_notice(service_env.as_deref());
         return Ok(());
     }
 
@@ -936,7 +965,7 @@ pub(crate) fn cmd_uninstall_service() -> Result<()> {
             run_cmd("launchctl", &["unload", "-w", &path.to_string_lossy()]);
             std::fs::remove_file(path)?;
             println!("Removed launchd daemon.");
-            print_kept_data_notice();
+            print_kept_data_notice(None);
         } else {
             println!("Service not installed.");
         }
@@ -1260,6 +1289,19 @@ mod tests {
     fn kept_data_notice_uses_custom_dirs() {
         let n = kept_data_notice(Path::new("/srv/t"), Path::new("/srv/l"));
         assert!(n.contains("sudo rm -rf /srv/t /srv/l"), "{n}");
+    }
+
+    #[test]
+    fn service_env_dirs_reads_overrides() {
+        assert_eq!(
+            service_env_dirs("TETRON_LOG_DIR=/var/log/tetron-alt TETRON_SOCKET_PATH=/run/t.sock\n"),
+            (None, Some("/var/log/tetron-alt".to_string()))
+        );
+        assert_eq!(
+            service_env_dirs("TETRON_CONFIG_DIR=/srv/t"),
+            (Some("/srv/t".to_string()), None)
+        );
+        assert_eq!(service_env_dirs(""), (None, None));
     }
 
     // PACKAGING-015: the started line reads correctly.
