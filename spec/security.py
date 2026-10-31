@@ -173,6 +173,40 @@ class LeaveWarnsWhenSoleCoordinatorHasOtherMembers(Requirement):
     req_id = "STRANDED-COORDINATOR-WARN"
 
 
+class StrandedCoordinatorTestUsesFixedIdentity(Requirement):
+    """REQUIREMENT-ID: STRANDED-COORDINATOR-TEST-001
+
+    The unit test `leave_blocks_on_sole_coordinator_with_unreachable_members`
+    (`daemon/mod.rs` `headless_tests`, the coverage named in
+    `STRANDED-COORDINATOR-WARN`) must be deterministic.
+
+    **The flake.** The test ran `build_headless()` in an empty temporary
+    config dir, so `identity::load_or_create` generated a random key and
+    the daemon's virtual IP came from `derive_ip` over that random id in
+    the default `10.88.0.0/24`. The test then added the daemon plus two
+    members at the hard-coded `10.88.0.2` and `10.88.0.3` to one
+    `MemberList`. `derive_ip` maps host values 0 and 1 onto 2 and 3, so 4
+    of 256 hash values give `.2` or `.3`: about 1 run in 64 the daemon IP
+    equalled a member IP, `MemberList::add` returned `IpCollision`, and
+    the `.unwrap()` panicked. Seen on `main` CI at `8e5b00d` (0.14.5
+    bump) after the same tree passed on its PR.
+
+    **The fix.** Before `build_headless()`, the test writes a fixed
+    32-byte key to `<TETRON_CONFIG_DIR>/secret_key`, which
+    `load_or_create` loads instead of generating one. The daemon IP is
+    then the same on every run. The test asserts that this IP is neither
+    member address, so a future change to `derive_ip` or the default
+    subnet fails with a clear message instead of a random `IpCollision`.
+
+    Scope: only this test. The other `headless_tests` do not put the
+    daemon and a hard-coded member IP into the same `MemberList` and can
+    not collide. No production code changes.
+
+    No dependency on other requirements; can land at any time.
+    """
+    req_id = "STRANDED-COORDINATOR-TEST-001"
+
+
 # --------------------------------------------------------------------------
 # HARDEN-002/004/005: control-plane rate-limit hardening, bundled
 # --------------------------------------------------------------------------
