@@ -204,6 +204,91 @@ class SuiteInstallerShadowDetection(Requirement):
     req_id = "PACKAGING-008"
 
 
+class PurgeKeepsNodeDataAndSaysSo(Requirement):
+    """REQUIREMENT-ID: PACKAGING-013
+
+    Depends on PACKAGING-006. Independent of PACKAGING-014..016.
+
+    USER decision 2026-10-30: purging the package keeps everything the daemon
+    created: `/etc/tetron` (node identity `secret_key`, settings, networks,
+    blobs, peer cache), `/var/log/tetron` and the `tetron` group. The identity
+    is user data (it is created when the user runs `tetron install`, like
+    `~/.ssh` keys and unlike a package-generated host key); losing it drops
+    the node from every network and its admin role.
+
+    - No maintainer script ever removes `/etc/tetron`, `/var/log/tetron` or
+      the `tetron` group.
+    - `postrm purge` prints a notice when `/etc/tetron` or `/var/log/tetron`
+      exists: what was kept, why, and the manual removal command
+      `sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron`.
+    - The same statement is in the deb `long_description`, the README
+      install section and the `tetron uninstall` output (some apt frontends
+      hide maintainer script output). `tetron uninstall` names the config
+      and log directories actually in use.
+
+    Test: purge in a VM keeps `secret_key` (same checksum) and prints the
+    notice.
+    """
+    req_id = "PACKAGING-013"
+
+
+class InstallGroupCheckIsSilent(Requirement):
+    """REQUIREMENT-ID: PACKAGING-014
+
+    Independent of the other requirements.
+
+    `tetron install` printed a stray `tetron:x:989:` line: the check whether
+    the `tetron` group exists ran `getent group tetron` with its output going
+    to the terminal. The check discards `getent` output; only its exit status
+    is used.
+    """
+    req_id = "PACKAGING-014"
+
+
+class InstallStartedLineReadsCorrectly(Requirement):
+    """REQUIREMENT-ID: PACKAGING-015
+
+    Independent of the other requirements.
+
+    `tetron install` printed "tetron service started. already active" when
+    the VPN was already active: the daemon's reply to the resume request was
+    appended to a fixed sentence. The line reads
+    "tetron service started; VPN: <reply>" (for example
+    "tetron service started; VPN: already active"), and just
+    "tetron service started." when the reply is empty.
+    """
+    req_id = "PACKAGING-015"
+
+
+class InstallMigratesLegacyEtcUnit(Requirement):
+    """REQUIREMENT-ID: PACKAGING-016
+
+    Depends on PACKAGING-004 and amends its notice-only handling. Independent
+    of PACKAGING-013..015.
+
+    USER decision 2026-10-31. When the `tetron` executable is package-owned,
+    a vendor unit exists, and `/etc/systemd/system/tetron.service` is a unit
+    `tetron install` wrote earlier (its `Description=` is the tetron template
+    description and its `ExecStart` runs a `tetron` binary with the `daemon`
+    argument), that unit overrides the packaged one. `tetron install` then:
+
+    - at a terminal (stdin is a TTY), asks once whether to move it aside
+      (default yes). On yes: path overrides found in it
+      (`Environment=TETRON_CONFIG_DIR/LOG_DIR/SOCKET_PATH`) are carried into
+      the `10-paths.conf` drop-in, with flags given on this run taking
+      precedence; the unit is disabled (removing its enable links while the
+      file exists), moved to `/var/backups/tetron/tetron.service.<timestamp>`
+      (never deleted), and `systemctl daemon-reload` runs; the normal enable
+      and restart that follow then use the packaged unit;
+    - without a terminal, or on no, prints the existing notice and changes
+      nothing.
+
+    A unit in `/etc` that tetron did not write (other description or
+    ExecStart) is never touched; the notice is printed.
+    """
+    req_id = "PACKAGING-016"
+
+
 class SuiteInstallerVerifiesWhatRuns(Requirement):
     """REQUIREMENT-ID: PACKAGING-010
 
