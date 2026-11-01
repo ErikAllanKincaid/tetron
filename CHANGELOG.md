@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-01
+
 ### Fixed
 
 - A network added or a setting changed within a few milliseconds of the daemon reading its config could stay invisible to the daemon until the next config change: the config cache trusted file timestamps that had not ticked yet. Changes made in the last 2 seconds are now always re-read (CONFIG-CACHE-002).
