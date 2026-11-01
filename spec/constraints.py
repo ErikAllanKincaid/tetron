@@ -422,3 +422,20 @@ class SuiteInstallerShellTestsGate(Constraint):
     constraint_id = "CON-PKG02"
     enforcement_logic = "{{ suite_shell_tests.failures == 0 and suite_shell_tests.ran > 0 }}"
 
+
+
+class ReleaseVersionSitesAgree(Constraint):
+    """CONSTRAINT-ID: CON-REL01
+
+    Depends on RELEASE-001. The three version sites (`Cargo.toml`
+    `[package]`, the tetron-proto dependency requirement in `Cargo.toml`,
+    `tetron-proto/Cargo.toml` `[package]`) and the `tetron` and
+    `tetron-proto` entries in `Cargo.lock` hold the same version, so a hand
+    bump that misses one is caught before release. The hermetic test
+    `contrib/tests/bump-version.test.sh` exits 0.
+
+    ENFORCEMENT (reconcile.py): release_bump.sites_agree is true and
+    release_bump.test_failures equals 0.
+    """
+    constraint_id = "CON-REL01"
+    enforcement_logic = "{{ release_bump.sites_agree and release_bump.test_failures == 0 }}"

@@ -427,3 +427,44 @@ class SuiteInstallerBinaryReplacesPackage(Requirement):
     is left in place and named.
     """
     req_id = "PACKAGING-012"
+
+
+class ReleaseBumpScript(Requirement):
+    """REQUIREMENT-ID: RELEASE-001
+
+    `contrib/bump-version.sh [X.Y.Z|patch|minor|major] [-n] [-y]` prepares a
+    release commit so a bump can not miss a site. A version is kept at three
+    sites, all in lockstep: `[package] version` in `Cargo.toml`, the
+    `tetron-proto = { path = "tetron-proto", version = "X.Y.Z" }` dependency
+    requirement in `Cargo.toml`, and `[package] version` in
+    `tetron-proto/Cargo.toml`. `Cargo.lock` and the `CHANGELOG.md` heading
+    follow them.
+
+    The script:
+    - prints the current state: the three sites, the two `Cargo.lock`
+      entries, the branch, whether the tree is clean, the newest `v*` tag and
+      the number of entries under `## [Unreleased]`;
+    - takes the new version as an argument, `patch` (the default), `minor`
+      or `major`;
+    - refuses, naming each reason, when the three sites or `Cargo.lock`
+      disagree, the new version is not `X.Y.Z` or not greater than the
+      current one, tag `vX.Y.Z` or branch `chore/release-X.Y.Z` exists, the
+      tree is not clean, the branch is not `main`, or `## [Unreleased]` has
+      no entries;
+    - with `-n` stops after the plan and changes nothing; otherwise asks
+      before changing anything unless `-y` is given;
+    - creates `chore/release-X.Y.Z`, writes the three sites, turns
+      `## [Unreleased]` into `## [Unreleased]` followed by
+      `## [X.Y.Z] - <today>`, re-reads all three sites, runs `cargo build`
+      then `cargo build --locked` (the v0.9.1 failure: a stale lockfile fails
+      every release matrix target) and `python3 reconcile.py`, and commits
+      `chore: bump version to X.Y.Z` with no other text;
+    - never pushes, tags or contacts a remote; it prints the merge, tag and
+      push commands for USER;
+    - on a failure after the branch exists, prints how to return to `main`
+      and delete the branch.
+
+    The build and gate commands can be replaced through `BUMP_BUILD_CMD` and
+    `BUMP_GATE_CMD` so the hermetic test runs in seconds.
+    """
+    req_id = "RELEASE-001"
