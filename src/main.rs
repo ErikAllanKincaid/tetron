@@ -79,7 +79,8 @@ pub(crate) enum Command {
     },
     /// Join an existing network using an invite code (bare room id is denied — tetron is invite-only)
     Join {
-        /// A one-time invite code (tetron join <room-id> is denied)
+        /// A one-time invite code, or `-` to read it from stdin so it stays
+        /// out of argv/ps (tetron join <room-id> is denied)
         invite_code: String,
         /// Optional local alias for the network
         #[arg(long)]

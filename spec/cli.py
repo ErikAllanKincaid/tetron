@@ -1357,3 +1357,60 @@ class CreateAcceptsJsonFlag(Requirement):
     """
 
     req_id = "CREATE-JSON-001"
+
+
+class JoinReadsInviteFromStdin(Requirement):
+    """REQUIREMENT-ID: JOIN-INPUT-001
+
+    `tetron join -` reads the invite code from stdin instead of argv, so the
+    secret never shows in `ps`, `/proc/<pid>/cmdline`, shell history or a
+    systemd unit's ExecStart. Asked for by the TetronOS installer and
+    first-boot unit (cross-repo plan `tetron-os/DO-NOT-COMMIT/
+    PLAN_tetron_suite_mesh_join_invite_flow_across_repos.md`, decisions 1,
+    14 and 19, USER 2026-11-03/04): tetron does one thing well and gains no
+    HTTP client; a URL is fetched by the caller,
+    `curl --proto =https -fsS --max-filesize 8192 URL | tetron join -`.
+
+    **Behavior:**
+    - The positional `invite_code` value `-` means "read stdin". Every
+      other value keeps today's meaning (the invite code itself).
+    - The size comes from the invite codec, not a new number:
+      `tetron-proto/src/invite.rs` fixes `ENCODED_LEN` = 52 bytes (32 network
+      key + 16 secret + 4 checksum), which base58 encodes to at most 72
+      characters. Add `pub const INVITE_CODE_MAX_CHARS` there, derived from
+      `ENCODED_LEN` (`ceil(ENCODED_LEN * 8 / log2(58))`, integer form
+      `(ENCODED_LEN * 1366).div_ceil(1000)` = 72), with a unit test that an
+      all-0xFF 52-byte payload encodes to exactly that length. Read at most
+      `INVITE_CODE_MAX_CHARS + 64` bytes (slack for surrounding whitespace
+      and line endings); more is an error ("input too large to be an
+      invite"), not a truncation, and so is a trimmed line longer than
+      `INVITE_CODE_MAX_CHARS`.
+    - Trim surrounding whitespace (including a trailing newline from
+      `echo`/curl/a file). The rest must be one non-empty line: empty input
+      ("no invite on stdin") and more than one non-empty line ("expected
+      exactly one invite") are errors.
+    - The result goes through the existing `ipc_join` decode path
+      unchanged: `invite::decode_invite_code`, the INVITE-CHECKSUM-001 error
+      for a mistyped invite, and the bare room id fallback the daemon
+      denies.
+    - A TTY on stdin is allowed (the user pastes one line and presses
+      Enter), which also keeps the invite out of shell history. The pasted
+      invite shows on screen; no echo suppression (USER 2026-11-04: an
+      invite is single use, and none would need a new dependency).
+    - `-` is the Unix stdin convention (USER 2026-11-04), not a `--stdin`
+      flag.
+    - No error message, log line or `tracing` event contains the invite
+      text or any part of it. Errors name the source (`stdin`) only.
+
+    **Shape:** one pure function, `read_invite(reader: impl Read, source:
+    &str) -> Result<String>` (`source` is `stdin` or the path, used in
+    errors), in `src/cli/network.rs`, unit-tested over byte slices (empty, whitespace only,
+    trailing newline, CRLF, two lines, one byte over the cap, a valid
+    invite), and the
+    clap/`ipc_join` wiring in `main.rs`/`cli/network.rs`.
+
+    **Order:** independent of every other requirement; lands first.
+    JOIN-INPUT-002 reuses `read_invite`.
+    """
+
+    req_id = "JOIN-INPUT-001"

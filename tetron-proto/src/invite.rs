@@ -38,6 +38,13 @@ const PAYLOAD_LEN: usize = 32 + SECRET_LEN;
 /// Total raw length of a checksummed invite code (payload + checksum).
 const ENCODED_LEN: usize = PAYLOAD_LEN + CHECKSUM_LEN;
 
+/// Longest base58 text an invite code can have (JOIN-INPUT-001): the base58
+/// length of an all-0xFF `ENCODED_LEN` payload, `ceil(ENCODED_LEN * 8 /
+/// log2(58))`, in integer form (`log2(58)` ~ 5.858, `8 / 5.858` ~ 1.3657).
+/// 72 for today's 52-byte code. Callers that read an invite from a stream
+/// size their read with it instead of picking a number of their own.
+pub const INVITE_CODE_MAX_CHARS: usize = (ENCODED_LEN * 1366).div_ceil(1000);
+
 /// Encode an invite code: `bs58(network_pubkey(32) || secret(16) ||
 /// blake3(payload)[..4])`.
 pub fn encode_invite_code(network_pubkey: &EndpointId, secret: &[u8]) -> String {
@@ -101,6 +108,23 @@ mod tests {
         let mut key_bytes = [0u8; 32];
         key_bytes[0] = seed;
         iroh::SecretKey::from(key_bytes).public()
+    }
+
+    #[test]
+    fn max_chars_matches_largest_encoded_code() {
+        // JOIN-INPUT-001: the longest possible base58 text of an ENCODED_LEN
+        // payload (all 0xFF bytes) is exactly INVITE_CODE_MAX_CHARS.
+        let longest = bs58::encode([0xFFu8; ENCODED_LEN]).into_string();
+        assert_eq!(longest.len(), INVITE_CODE_MAX_CHARS);
+        assert_eq!(INVITE_CODE_MAX_CHARS, 72);
+    }
+
+    #[test]
+    fn real_codes_fit_max_chars() {
+        for seed in 0..=255u8 {
+            let code = encode_invite_code(&test_id(seed), &[0xFFu8; SECRET_LEN]);
+            assert!(code.len() <= INVITE_CODE_MAX_CHARS);
+        }
     }
 
     #[test]
