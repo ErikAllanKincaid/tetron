@@ -1414,3 +1414,31 @@ class JoinReadsInviteFromStdin(Requirement):
     """
 
     req_id = "JOIN-INPUT-001"
+
+
+class JoinReadsInviteFromFile(Requirement):
+    """REQUIREMENT-ID: JOIN-INPUT-002
+
+    `tetron join --invite-file <path>` reads the invite code from a file,
+    for callers that already hold it on disk (the TetronOS first-boot unit
+    reads `/etc/tetron/pending-invite`, 0600 root, written by the
+    installer). Equivalent to `tetron join - < <path>`; the flag exists so
+    a systemd unit or script needs no shell redirection and errors can
+    name the path.
+
+    **Behavior:**
+    - `--invite-file` and the positional `invite_code` are mutually
+      exclusive, and one of them is required (clap `conflicts_with` /
+      `required_unless_present`).
+    - Same rules as JOIN-INPUT-001 through `read_invite` (size cap from
+      `INVITE_CODE_MAX_CHARS`,
+      trim, exactly one non-empty line). Errors name the path, never the
+      content: "cannot read invite file <path>: <io error>", "invite file
+      <path> is empty", and so on.
+    - tetron never deletes, rewrites or chmods the file. Deleting it after
+      the join (success or not) is the caller's job.
+
+    **Order:** depends on JOIN-INPUT-001 (`read_invite`).
+    """
+
+    req_id = "JOIN-INPUT-002"
