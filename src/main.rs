@@ -81,7 +81,12 @@ pub(crate) enum Command {
     Join {
         /// A one-time invite code, or `-` to read it from stdin so it stays
         /// out of argv/ps (tetron join <room-id> is denied)
-        invite_code: String,
+        #[arg(required_unless_present = "invite_file")]
+        invite_code: Option<String>,
+        /// Read the invite code from this file instead (one line; the file is
+        /// left in place)
+        #[arg(long, value_name = "PATH", conflicts_with = "invite_code")]
+        invite_file: Option<std::path::PathBuf>,
         /// Optional local alias for the network
         #[arg(long)]
         alias: Option<String>,
@@ -564,12 +569,16 @@ async fn main() -> Result<()> {
         }
         Command::Join {
             invite_code,
+            invite_file,
             alias,
             hostname,
             tor,
             veilid,
             force,
-        } => ipc_join(&invite_code, alias.as_deref(), hostname, tor, veilid, force).await,
+        } => {
+            let code = resolve_invite(invite_code.as_deref(), invite_file.as_deref())?;
+            ipc_join(&code, alias.as_deref(), hostname, tor, veilid, force).await
+        }
         Command::Nuke {
             network_key,
             force,
@@ -804,6 +813,19 @@ async fn cmd_set_operator(user: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // JOIN-INPUT-002: positional invite and --invite-file are exclusive, one required.
+    #[test]
+    fn join_accepts_invite_file_alone() {
+        assert!(Cli::try_parse_from(["tetron", "join", "--invite-file", "/x"]).is_ok());
+        assert!(Cli::try_parse_from(["tetron", "join", "-"]).is_ok());
+    }
+
+    #[test]
+    fn join_rejects_both_or_neither_invite_sources() {
+        assert!(Cli::try_parse_from(["tetron", "join", "abc", "--invite-file", "/x"]).is_err());
+        assert!(Cli::try_parse_from(["tetron", "join"]).is_err());
+    }
 
     #[test]
     fn strip_deleted_suffix_sanitizes_replaced_binary_path() {

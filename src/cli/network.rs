@@ -196,6 +196,26 @@ fn read_invite_stdin() -> Result<String> {
     read_invite(stdin.lock(), "stdin")
 }
 
+/// JOIN-INPUT-001/002: turn `tetron join`'s invite source into the invite
+/// code text. `--invite-file` is read as data (a `-` inside it is not
+/// stdin); the positional `-` reads stdin; any other positional is the code.
+/// The file is never deleted or changed: that is the caller's job.
+pub(crate) fn resolve_invite(arg: Option<&str>, file: Option<&std::path::Path>) -> Result<String> {
+    match (arg, file) {
+        (_, Some(path)) => {
+            let source = path.display().to_string();
+            let f = std::fs::File::open(path)
+                .map_err(|e| anyhow::anyhow!("cannot read invite file {source}: {e}"))?;
+            read_invite(f, &source)
+        }
+        (Some("-"), None) => read_invite_stdin(),
+        (Some(code), None) => Ok(code.to_string()),
+        (None, None) => {
+            anyhow::bail!("no invite given (use an invite code, `-`, or --invite-file)")
+        }
+    }
+}
+
 pub(crate) async fn ipc_join(
     invite_code: &str,
     alias: Option<&str>,
@@ -218,14 +238,6 @@ pub(crate) async fn ipc_join(
     // room-id joins with "a valid invite key is required". The wire field stays
     // `network_key` regardless -- by the time this crosses IPC it's always the
     // resolved public key, never invite-code text.
-    // JOIN-INPUT-001: `-` reads the invite from stdin, keeping it out of argv.
-    let from_stdin;
-    let invite_code = if invite_code == "-" {
-        from_stdin = read_invite_stdin()?;
-        from_stdin.as_str()
-    } else {
-        invite_code
-    };
     let (network_key, invite) = match invite::decode_invite_code(invite_code) {
         Ok((net_pubkey, secret)) => (net_pubkey.to_string(), Some(secret)),
         // INVITE-CHECKSUM-001: a decode failure is only the room-id fallback
@@ -362,6 +374,44 @@ pub(crate) async fn ipc_leave(network: &str, force: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // JOIN-INPUT-002: --invite-file.
+    #[test]
+    fn invite_file_is_read_and_trimmed() {
+        let code = sample_code();
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, format!("{code}\n").as_bytes()).unwrap();
+        assert_eq!(resolve_invite(None, Some(f.path())).unwrap(), code);
+        assert!(f.path().exists(), "tetron must not delete the invite file");
+    }
+
+    #[test]
+    fn invite_file_errors_name_the_path() {
+        let err = resolve_invite(
+            None,
+            Some(std::path::Path::new("/nonexistent/pending-invite")),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("/nonexistent/pending-invite"));
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let err = resolve_invite(None, Some(f.path()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&f.path().display().to_string()));
+    }
+
+    #[test]
+    fn dash_inside_invite_file_is_not_stdin() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, b"-\n").unwrap();
+        assert_eq!(resolve_invite(None, Some(f.path())).unwrap(), "-");
+    }
+
+    #[test]
+    fn positional_code_passes_through() {
+        assert_eq!(resolve_invite(Some("abc"), None).unwrap(), "abc");
+    }
 
     // JOIN-INPUT-001: read_invite over byte slices.
     fn sample_code() -> String {
