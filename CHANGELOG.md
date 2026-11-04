@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `tetron join -` reads the invite from stdin and `tetron join --invite-file <path>` from a file, so the invite never appears on the command line, in `ps` or in shell history. Pasting at a terminal works too: paste the one line and press Enter. To join from a URL, let curl fetch it: `curl --proto =https -fsS --max-filesize 8192 URL | tetron join -` (JOIN-INPUT-001, JOIN-INPUT-002).
+
 ## [0.15.0] - 2026-11-01
 
 ### Fixed
