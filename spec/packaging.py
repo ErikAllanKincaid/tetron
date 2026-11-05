@@ -473,15 +473,17 @@ class ReleaseBumpScript(Requirement):
 class ContribInviteServe(Requirement):
     """REQUIREMENT-ID: INVITE-SERVE-001
 
-    `contrib/tetron-invite-serve.sh NETWORK [PORT]` hands an invite to a
-    joiner on the LAN without a TUI or webui (USER 2026-11-05; serving from
+    `contrib/tetron-invite-serve.sh [-r] NETWORK [PORT]` hands an invite to
+    a joiner on the LAN without a TUI or webui (USER 2026-11-05; serving from
     tetron-tui itself is shelved). It needs only `tetron` and `python3`:
 
     - creates one invite with `tetron invite NETWORK create --json` and
-      writes the bare `invite_key` and a newline to a file with a random
-      32 hex character name, mode 0600, in a new 0700 directory from
-      `mktemp -d`, next to an empty `index.html` so the directory is never
-      listed;
+      writes the bare `invite_key` and a newline to a file named
+      `invite.txt`, or with `-r` a random 6 character name from [a-z0-9],
+      mode 0600, in a new 0700 directory from `mktemp -d`, next to an empty
+      `index.html` so the directory is never listed. The URL must be short
+      enough to type; a long random path is no easier than typing the
+      invite itself (USER 2026-11-05);
     - binds `python3 -m http.server` to the source address of the default
       route only (`ip -4 route get`), on PORT (default 7979);
     - prints the URL, for `tetron join` via curl or the tetron-tui join
