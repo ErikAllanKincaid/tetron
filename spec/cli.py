@@ -1404,10 +1404,12 @@ class JoinReadsInviteFromStdin(Requirement):
 
     **Shape:** one pure function, `read_invite(reader: impl Read, source:
     &str) -> Result<String>` (`source` is `stdin` or the path, used in
-    errors), in `src/cli/network.rs`, unit-tested over byte slices (empty, whitespace only,
-    trailing newline, CRLF, two lines, one byte over the cap, a valid
-    invite), and the
-    clap/`ipc_join` wiring in `main.rs`/`cli/network.rs`.
+    errors), public in `tetron-proto/src/invite.rs` as `invite::read_invite`
+    so add-on clients (tetron-tui, tetron-webui) check an invite from a
+    file or a fetched body with the same rules (USER 2026-11-05),
+    unit-tested there over byte slices (empty, whitespace only, trailing
+    newline, CRLF, two lines, one byte over the cap, a valid invite), and
+    the clap/`ipc_join` wiring in `main.rs`/`cli/network.rs`.
 
     **Order:** independent of every other requirement; lands first.
     JOIN-INPUT-002 reuses `read_invite`.
