@@ -10,12 +10,13 @@ Tetron lets you reach every computer you own as if they were sitting on the same
 
 It is a standalone P2P mesh VPN: every device gets a stable, identity-derived address automatically the moment it joins. Peers connect directly over an encrypted tunnel, falling back to relay only when a direct path isn't possible, and the only way onto a network is an invite key you control.
 
-**Prefer a browser or a menu bar to a terminal?** Everything below is the CLI, but you do not have to use it directly:
+**Prefer a dashboard to typing commands?** Everything below is the CLI, but you do not have to use it directly:
 
 - **[tetron-webui](https://github.com/ErikAllanKincaid/tetron-webui)** -- a browser dashboard: status, create/join/leave, invites, and the full coordinator admin surface. This is likely the easiest way to run tetron day to day if you're not looking to live in a terminal.
 - **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client for glanceable status and quick per-network toggling.
+- **[tetron-tui](https://github.com/ErikAllanKincaid/tetron-tui)** -- a terminal dashboard (htop style) for servers and SSH sessions: networks, peers, transport and traffic history, invites with a QR code, join, and coordinator admin.
 
-Both are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
+All three are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
 
 **Name**
 
