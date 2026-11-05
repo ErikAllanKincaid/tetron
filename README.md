@@ -130,6 +130,8 @@ tetron create --network-name mynet --hostname alice --tor
 sudo tetron install
 tetron join <invite-key> --hostname bob
 tetron join <invite-key> --hostname bob --alias homelab --tor
+tetron join - --hostname bob                     # paste the invite, Enter; keeps it out of ps/history
+tetron join --invite-file invite.txt --hostname bob
 
 # 4. From either machine:
 tetron status                      # networks, peers, mesh IPs, hostnames, traffic

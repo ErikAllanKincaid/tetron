@@ -176,6 +176,24 @@ tetron join t3tnR1vY3R... --hostname bob --tor
 tetron join t3tnR1vY3R... --hostname bob --veilid
 ```
 
+**Keep the invite out of `ps` and shell history.** The invite is a secret until used. Instead of an argument, give it on stdin (`-`) or in a file; both take exactly one line, trimmed (JOIN-INPUT-001/002):
+
+```bash
+# Paste the invite and press Enter
+tetron join - --hostname bob
+
+# From a file (USB stick, config disk); the file is left in place
+tetron join --invite-file /media/usb/invite.txt --hostname bob
+
+# Pushed from the admin machine over ssh
+printf '%s\n' "$INVITE" | ssh bob tetron join - --hostname bob
+
+# From a URL: curl fetches, tetron never speaks HTTP
+curl --proto =https -fsS --max-filesize 8192 https://example.org/invite.txt | tetron join -
+```
+
+To make the file, save the bare invite: `tetron invite homelab create --json | jq -r .invite_key > invite.txt` and `chmod 600 invite.txt`.
+
 The hostname is set once at join. The coordinator resolves collisions appending `-1`, `-2`, etc. if the name is already taken.
 
 ```bash
@@ -824,7 +842,7 @@ done
 
 # Step 2: Join each machine to the network using the invite key
 for host in server2 server3; do
-  ssh "$host" tetron join "$INVITE_KEY" --hostname "$host"
+  printf '%s\n' "$INVITE_KEY" | ssh "$host" tetron join - --hostname "$host"
 done
 ```
 

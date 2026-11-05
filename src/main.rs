@@ -78,6 +78,12 @@ pub(crate) enum Command {
         force: bool,
     },
     /// Join an existing network using an invite code (bare room id is denied — tetron is invite-only)
+    #[command(after_help = "Examples:
+  tetron join <invite>                     invite on the command line (visible in ps and history)
+  tetron join -                            paste the invite, press Enter (or pipe it in)
+  tetron join --invite-file invite.txt     one line; the file is left in place
+  printf '%s\\n' \"$INVITE\" | ssh host tetron join -
+  curl --proto =https -fsS --max-filesize 8192 URL | tetron join -")]
     Join {
         /// A one-time invite code, or `-` to read it from stdin so it stays
         /// out of argv/ps (tetron join <room-id> is denied)
