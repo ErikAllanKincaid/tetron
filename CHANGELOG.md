@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-05
+
+### Changed
+
+- `read_invite` (invite input checks: size cap, trim, exactly one line, errors name the source and never the invite) moved from the `tetron` CLI into `tetron-proto` as `invite::read_invite`, so add-on clients such as tetron-tui check an invite from a file or URL with the same rules. `tetron join` behaves as before (JOIN-INPUT-001).
+
 ## [0.15.1] - 2026-11-04
 
 ### Added
