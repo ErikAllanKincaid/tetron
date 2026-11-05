@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use tetron_proto::invite::{
-    INVITE_CODE_MAX_CHARS, decode_invite_code, encode_invite_code, is_bare_room_id,
+    INVITE_CODE_MAX_CHARS, decode_invite_code, encode_invite_code, is_bare_room_id, read_invite,
 };
 
 /// Length of the random invite secret, in bytes (128 bits).

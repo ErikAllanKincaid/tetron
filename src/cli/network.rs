@@ -142,43 +142,6 @@ fn created_json(
     })
 }
 
-/// JOIN-INPUT-001: read one invite code from `reader`, sized by the codec
-/// (`INVITE_CODE_MAX_CHARS`). Surrounding whitespace and line endings are
-/// trimmed; exactly one non-empty line is accepted. Errors name `source`
-/// (`stdin` or a path), never the input, so no invite text reaches a
-/// terminal log, journal or answers file.
-pub(crate) fn read_invite(reader: impl std::io::Read, source: &str) -> Result<String> {
-    use std::io::Read;
-    let cap = invite::INVITE_CODE_MAX_CHARS + 64;
-    let mut buf = Vec::new();
-    reader
-        .take(cap as u64 + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| anyhow::anyhow!("cannot read invite from {source}: {e}"))?;
-    anyhow::ensure!(
-        buf.len() <= cap,
-        "{source}: input too large to be an invite"
-    );
-    let text = std::str::from_utf8(&buf)
-        .map_err(|_| anyhow::anyhow!("{source}: input is not text, not an invite"))?;
-    let mut lines = text
-        .split(['\n', '\r'])
-        .map(str::trim)
-        .filter(|l| !l.is_empty());
-    let code = lines
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("{source}: no invite found (empty input)"))?;
-    anyhow::ensure!(
-        lines.next().is_none(),
-        "{source}: expected exactly one invite, found more than one line"
-    );
-    anyhow::ensure!(
-        code.len() <= invite::INVITE_CODE_MAX_CHARS,
-        "{source}: line too long to be an invite"
-    );
-    Ok(code.to_string())
-}
-
 /// JOIN-INPUT-001: `tetron join -`. From a pipe or file, read to EOF; from a
 /// terminal, read the one pasted line so Enter finishes it (no Ctrl+D).
 fn read_invite_stdin() -> Result<String> {
@@ -191,9 +154,9 @@ fn read_invite_stdin() -> Result<String> {
             .lock()
             .read_line(&mut line)
             .map_err(|e| anyhow::anyhow!("cannot read invite from stdin: {e}"))?;
-        return read_invite(line.as_bytes(), "stdin");
+        return invite::read_invite(line.as_bytes(), "stdin");
     }
-    read_invite(stdin.lock(), "stdin")
+    invite::read_invite(stdin.lock(), "stdin")
 }
 
 /// JOIN-INPUT-001/002: turn `tetron join`'s invite source into the invite
@@ -206,7 +169,7 @@ pub(crate) fn resolve_invite(arg: Option<&str>, file: Option<&std::path::Path>) 
             let source = path.display().to_string();
             let f = std::fs::File::open(path)
                 .map_err(|e| anyhow::anyhow!("cannot read invite file {source}: {e}"))?;
-            read_invite(f, &source)
+            invite::read_invite(f, &source)
         }
         (Some("-"), None) => read_invite_stdin(),
         (Some(code), None) => Ok(code.to_string()),
@@ -375,6 +338,11 @@ pub(crate) async fn ipc_leave(network: &str, force: bool) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn sample_code() -> String {
+        let key = iroh::SecretKey::generate().public();
+        invite::encode_invite_code(&key, &[7u8; 16])
+    }
+
     // JOIN-INPUT-002: --invite-file.
     #[test]
     fn invite_file_is_read_and_trimmed() {
@@ -411,58 +379,6 @@ mod tests {
     #[test]
     fn positional_code_passes_through() {
         assert_eq!(resolve_invite(Some("abc"), None).unwrap(), "abc");
-    }
-
-    // JOIN-INPUT-001: read_invite over byte slices.
-    fn sample_code() -> String {
-        let key = iroh::SecretKey::generate().public();
-        invite::encode_invite_code(&key, &[7u8; 16])
-    }
-
-    #[test]
-    fn read_invite_accepts_code_with_trailing_newline() {
-        let code = sample_code();
-        let got = read_invite(format!("{code}\n").as_bytes(), "stdin").unwrap();
-        assert_eq!(got, code);
-    }
-
-    #[test]
-    fn read_invite_accepts_crlf_and_surrounding_whitespace() {
-        let code = sample_code();
-        let got = read_invite(format!("  \r\n{code}\r\n\n").as_bytes(), "stdin").unwrap();
-        assert_eq!(got, code);
-    }
-
-    #[test]
-    fn read_invite_rejects_empty_and_whitespace_only() {
-        assert!(read_invite(&b""[..], "stdin").is_err());
-        assert!(read_invite(&b" \n\t\r\n"[..], "stdin").is_err());
-    }
-
-    #[test]
-    fn read_invite_rejects_two_lines() {
-        let code = sample_code();
-        let err = read_invite(format!("{code}\n{code}\n").as_bytes(), "stdin").unwrap_err();
-        assert!(!err.to_string().contains(&code));
-    }
-
-    #[test]
-    fn read_invite_rejects_input_over_cap() {
-        let over = [b'a'; invite::INVITE_CODE_MAX_CHARS + 64 + 1];
-        assert!(read_invite(&over[..], "stdin").is_err());
-        // A line longer than one invite fails even within the read cap.
-        let long = "a".repeat(invite::INVITE_CODE_MAX_CHARS + 1);
-        assert!(read_invite(long.as_bytes(), "stdin").is_err());
-    }
-
-    #[test]
-    fn read_invite_errors_name_source_not_content() {
-        let long = "a".repeat(invite::INVITE_CODE_MAX_CHARS + 1);
-        let err = read_invite(long.as_bytes(), "/etc/tetron/pending-invite")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("/etc/tetron/pending-invite"));
-        assert!(!err.contains(&long));
     }
 
     #[test]
