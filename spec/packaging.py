@@ -468,3 +468,27 @@ class ReleaseBumpScript(Requirement):
     `BUMP_GATE_CMD` so the hermetic test runs in seconds.
     """
     req_id = "RELEASE-001"
+
+
+class ContribInviteServe(Requirement):
+    """REQUIREMENT-ID: INVITE-SERVE-001
+
+    `contrib/tetron-invite-serve.sh NETWORK [PORT]` hands an invite to a
+    joiner on the LAN without a TUI or webui (USER 2026-11-05; serving from
+    tetron-tui itself is shelved). It needs only `tetron` and `python3`:
+
+    - creates one invite with `tetron invite NETWORK create --json` and
+      writes the bare `invite_key` and a newline to a file with a random
+      32 hex character name, mode 0600, in a new 0700 directory from
+      `mktemp -d`, next to an empty `index.html` so the directory is never
+      listed;
+    - binds `python3 -m http.server` to the source address of the default
+      route only (`ip -4 route get`), on PORT (default 7979);
+    - prints the URL, for `tetron join` via curl or the tetron-tui join
+      field (TUI-JOIN-URL-001);
+    - serves until Ctrl+C or SIGTERM, then deletes the directory; the
+      invite is single use, so a later fetch is useless after the join;
+    - never prints the invite itself on a failure path; errors name the
+      failed step.
+    """
+    req_id = "INVITE-SERVE-001"
