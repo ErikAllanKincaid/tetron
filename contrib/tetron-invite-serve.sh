@@ -2,14 +2,23 @@
 # tetron-invite-serve.sh - create one invite and serve it on the LAN
 # (INVITE-SERVE-001).
 #
-# Usage: ./tetron-invite-serve.sh NETWORK [PORT]
+# Usage: ./tetron-invite-serve.sh [-r] NETWORK [PORT]
 #
-# Prints a URL. On the joiner, enter it in the tetron-tui join field (J), or:
+# Prints a short URL ending in /invite.txt, or with -r a random 6 character
+# name. On the joiner, enter it in the tetron-tui join field (J), or:
 #   curl --proto =http -fsS URL | tetron join -
 # Serves until Ctrl+C, then deletes the invite. Needs tetron and python3.
 set -eu
 
-net=${1:?usage: $0 NETWORK [PORT]}
+rand=
+while getopts r opt; do
+	case $opt in
+	r) rand=1 ;;
+	*) echo "usage: $0 [-r] NETWORK [PORT]" >&2; exit 2 ;;
+	esac
+done
+shift $((OPTIND - 1))
+net=${1:?usage: $0 [-r] NETWORK [PORT]}
 port=${2:-7979}
 
 ip=$(ip -4 route get 1.1.1.1 2>/dev/null |
@@ -22,7 +31,8 @@ trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null; rm -rf "$dir"' EXIT
 trap 'exit 130' INT TERM
 chmod 700 "$dir"
 : > "$dir/index.html"
-name=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+name=invite.txt
+[ -z "$rand" ] || name=$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 6)
 
 json=$(tetron invite "$net" create --json) || { echo "tetron invite $net create failed" >&2; exit 1; }
 (umask 077 && printf '%s\n' "$json" |
