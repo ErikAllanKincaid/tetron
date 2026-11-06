@@ -338,7 +338,7 @@ class CrateIdentityGate(Constraint):
     own email either ("better to have message to github"); resolved by
     using a GitHub username as the entry (no email, matching `Dario`'s
     pattern) since `Cargo.toml`'s own `repository` field already points at
-    `github.com/ErikAllanKincaid/tetron` -- the actual contact path, same
+    `github.com/tetronos/tetron` -- the actual contact path, same
     "GitHub only, no personal email in a published file" policy
     `SECURITY.md` already follows (`RENAME-013`).
     """
@@ -391,7 +391,7 @@ class DebReleaseWiringGate(Constraint):
     `systemctl start|enable|restart`. `postrm` (PACKAGING-013) never removes
     node data: no `rm`, `groupdel`, `delgroup` or `systemctl`.
     `.github/workflows/release.yml` uses
-    `ErikAllanKincaid/tetron-packaging` pinned to a full 40 hex SHA, passes
+    `tetronos/tetron-packaging` pinned to a full 40 hex SHA, passes
     `vars.DEB_MAINTAINER` as the maintainer, and still builds and uploads the
     raw `tetron-linux-x86_64-musl` and `tetron-linux-aarch64-musl` assets with
     their `.sha256` files.

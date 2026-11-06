@@ -4,9 +4,9 @@
 # already at the latest release is left as it is.
 #
 # Quick start (asks what to install when run at a terminal):
-#   curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
 # Show this help without installing anything:
-#   curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+#   curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
 # Options go after `bash -s --` in the same way.
 #
 # Components:
@@ -161,7 +161,7 @@ require_cmd() {
 
 require_cmd curl install
 
-SELF_URL=https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh
+SELF_URL=https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh
 
 # --help prints the comment block at the top of this file. When the script is
 # piped into bash there is no file to read, so it is fetched again from
@@ -583,7 +583,7 @@ musl_reason() {
 
 # --- per-component settings ---
 # GitHub repository of each component.
-component_repo() { case "$1" in core) echo ErikAllanKincaid/tetron ;; webui) echo ErikAllanKincaid/tetron-webui ;; tui) echo ErikAllanKincaid/tetron-tui ;; systray) echo ErikAllanKincaid/tetron-systray ;; hosts) echo ErikAllanKincaid/tetron-hosts ;; sync-receiver) echo ErikAllanKincaid/tetron-sync-receiver ;; messageboard) echo ErikAllanKincaid/tetron-messageboard ;; backup) echo ErikAllanKincaid/tetron ;; esac; }
+component_repo() { case "$1" in core) echo tetronos/tetron ;; webui) echo tetronos/tetron-webui ;; tui) echo tetronos/tetron-tui ;; systray) echo tetronos/tetron-systray ;; hosts) echo tetronos/tetron-hosts ;; sync-receiver) echo tetronos/tetron-sync-receiver ;; messageboard) echo tetronos/tetron-messageboard ;; backup) echo tetronos/tetron ;; esac; }
 # Install location. /usr/local/bin is on PATH by default on Linux and macOS;
 # writing to it needs root.
 component_default_dir() { echo "${TETRON_SUITE_RAW_BIN_DIR:-/usr/local/bin}"; }

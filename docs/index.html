@@ -150,7 +150,7 @@
   <a class="brand" href="#top"><img src="images/icon.png" alt="">tetron</a>
   <span class="links" style="display:contents"><a href="#tour">tour</a><a href="#why">why</a><a href="#how">how</a><a href="#compare">compare</a><a href="#ecosystem">ecosystem</a><a href="#desktop">desktop</a></span>
   <button class="tbtn" id="theme" type="button" aria-label="Switch between light and dark theme">light</button>
-<a href="https://github.com/ErikAllanKincaid/tetron">github</a>
+<a href="https://github.com/tetronos/tetron">github</a>
 </div></nav>
 
 <header class="hero" id="top"><div class="wrap">
@@ -159,12 +159,12 @@
   <p class="lede">Reach your laptop, home server, NAS and phone as if they sat on the same desk, from anywhere. No port forwarding, no static IPs, no account, nothing exposed to the internet. Invite a machine and it is on your network.</p>
   <p class="eyebrow inst">Install</p>
   <p class="inst-sub">Paste into your terminal</p>
-  <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
-  <p class="inspect">Read before you run: <a href="https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
+  <div class="install"><span class="p">$</span><code id="cmd">curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash</code><button class="copy" id="copy">copy</button></div>
+  <p class="inspect">Read before you run: <a href="https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
   <p class="inspect">Optional, installs nothing: list every option first</p>
-  <div class="install alt"><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
+  <div class="install alt"><code>curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
   <p class="sub">Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Android. The installer sets up the daemon, a web dashboard and a tray client.</p>
-  <p class="apk"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/ErikAllanKincaid/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
+  <p class="apk"><a class="btn" href="https://github.com/tetronos/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>v0.14.3 debug build, pre-release, about 58 MB. Allow installs from your browser to sideload it. <a href="https://github.com/tetronos/tetron/releases/tag/tetron-mobile-android-v0.14.3-debug">Release notes</a></span></p>
   <div class="pills"><span class="pill">no accounts</span><span class="pill">no open ports</span><span class="pill">end-to-end encrypted</span><span class="pill">invite-only</span><span class="pill">optional Tor and Veilid</span><span class="pill">Linux, macOS, Android</span><span class="pill">MPL 2.0</span></div>
 </div></header>
 
@@ -214,7 +214,7 @@ next: tetron join &lt;invite-key&gt;   single-use invite
     <figure><img src="images/webui3.png" alt="tetron-webui join network form" loading="lazy"><figcaption>web dashboard: join</figcaption></figure>
   </div>
   <p class="use">Use the TUI</p>
-  <figure class="tui"><img src="images/tetron-tui.png" alt="tetron-tui: networks on the left, peers with direct or relay path and round-trip time on the right, key hints along the bottom" loading="lazy"><figcaption>terminal dashboard over ssh or the local console &middot; <a href="https://github.com/ErikAllanKincaid/tetron-tui">tetron-tui</a></figcaption></figure>
+  <figure class="tui"><img src="images/tetron-tui.png" alt="tetron-tui: networks on the left, peers with direct or relay path and round-trip time on the right, key hints along the bottom" loading="lazy"><figcaption>terminal dashboard over ssh or the local console &middot; <a href="https://github.com/tetronos/tetron-tui">tetron-tui</a></figcaption></figure>
 </div></section>
 
 <section id="why"><div class="wrap">
@@ -264,7 +264,7 @@ Co-coordinators, so the network
 survives when one machine is off.
 No firewall, DNS or ssh server added.</pre></div>
   </div>
-  <p class="note" style="margin-top:1rem">Built on <a href="https://iroh.computer">iroh</a> (QUIC, hole-punching, relays) and a DHT for discovery. For the full picture read <a href="https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html">Anatomy of a Mesh</a>.</p>
+  <p class="note" style="margin-top:1rem">Built on <a href="https://iroh.computer">iroh</a> (QUIC, hole-punching, relays) and a DHT for discovery. For the full picture read <a href="https://tetronos.github.io/tetron/Tetron_AnatomyofaMesh.html">Anatomy of a Mesh</a>.</p>
 </div></section>
 
 <section id="compare"><div class="wrap">
@@ -289,22 +289,22 @@ No firewall, DNS or ssh server added.</pre></div>
   <p class="lede">Every addon is a separate, opt-in program that talks to the same local daemon, so the core stays small. The suite installer picks sensible defaults and installs any of them with one flag.</p>
   <h3 class="grp">Control it</h3>
   <div class="grid">
-    <div class="win"><div class="bar"><i></i><i></i><i></i>browser</div><div class="body"><h3>Web dashboard<span class="tag">default</span></h3><p>Status, create, join and leave, invites and the full admin surface, in a browser. It also has an Add-ons panel to start the rest.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-webui">tetron-webui</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>terminal</div><div class="body"><h3>Terminal dashboard<span class="tag">default</span></h3><p>A keyboard and mouse TUI over ssh or the local console. Live peers, direct or relay path and why, rtt and throughput charts, invites with a QR code, and one key to ssh to a peer.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-tui">tetron-tui</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>tray</div><div class="body"><h3>Tray client<span class="tag">default with a display</span></h3><p>Glanceable status and per-network on/off in your menu bar or system tray, with a shortcut into the other dashboards.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-systray">tetron-systray</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>android</div><div class="body"><h3>Android app<span class="tag">pre-release</span></h3><p>Join your networks from your phone. Download the debug build and sideload it.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download the .apk</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>browser</div><div class="body"><h3>Web dashboard<span class="tag">default</span></h3><p>Status, create, join and leave, invites and the full admin surface, in a browser. It also has an Add-ons panel to start the rest.</p><a class="more" href="https://github.com/tetronos/tetron-webui">tetron-webui</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>terminal</div><div class="body"><h3>Terminal dashboard<span class="tag">default</span></h3><p>A keyboard and mouse TUI over ssh or the local console. Live peers, direct or relay path and why, rtt and throughput charts, invites with a QR code, and one key to ssh to a peer.</p><a class="more" href="https://github.com/tetronos/tetron-tui">tetron-tui</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>tray</div><div class="body"><h3>Tray client<span class="tag">default with a display</span></h3><p>Glanceable status and per-network on/off in your menu bar or system tray, with a shortcut into the other dashboards.</p><a class="more" href="https://github.com/tetronos/tetron-systray">tetron-systray</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>android</div><div class="body"><h3>Android app<span class="tag">pre-release</span></h3><p>Join your networks from your phone. Download the debug build and sideload it.</p><a class="more" href="https://github.com/tetronos/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download the .apk</a></div></div>
   </div>
   <h3 class="grp">Name it and keep it</h3>
   <div class="grid">
-    <div class="win"><div class="bar"><i></i><i></i><i></i>names</div><div class="body"><h3>Hostnames<span class="tag">opt-in</span></h3><p>Writes peer names into /etc/hosts as hostname.network, so ssh homeserver.mynet works with no DNS server.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-hosts">tetron-hosts</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>backup</div><div class="body"><h3>Encrypted backup<span class="tag">opt-in</span></h3><p>One script backs up and restores your identity and network keys as a passphrase-encrypted archive. Also in the web dashboard.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron/blob/main/contrib/tetron-backup.sh">tetron-backup.sh</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>relay</div><div class="body"><h3>Your own relay<span class="tag">opt-in</span></h3><p>Turns a plain Linux server into a self-hosted relay and prints the command that points your nodes at it.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-relay">tetron-relay</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>names</div><div class="body"><h3>Hostnames<span class="tag">opt-in</span></h3><p>Writes peer names into /etc/hosts as hostname.network, so ssh homeserver.mynet works with no DNS server.</p><a class="more" href="https://github.com/tetronos/tetron-hosts">tetron-hosts</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>backup</div><div class="body"><h3>Encrypted backup<span class="tag">opt-in</span></h3><p>One script backs up and restores your identity and network keys as a passphrase-encrypted archive. Also in the web dashboard.</p><a class="more" href="https://github.com/tetronos/tetron/blob/main/contrib/tetron-backup.sh">tetron-backup.sh</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>relay</div><div class="body"><h3>Your own relay<span class="tag">opt-in</span></h3><p>Turns a plain Linux server into a self-hosted relay and prints the command that points your nodes at it.</p><a class="more" href="https://github.com/tetronos/tetron-relay">tetron-relay</a></div></div>
   </div>
   <h3 class="grp">Build on it</h3>
   <div class="grid">
-    <div class="win"><div class="bar"><i></i><i></i><i></i>board</div><div class="body"><h3>Message board<span class="tag">opt-in</span></h3><p>A browser message board for one network. Anyone on the mesh can read and post text and images, with no accounts.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-messageboard">tetron-messageboard</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Veilid transport<span class="tag">opt-in</span></h3><p>Builds and installs the companion daemon that lets a network use Veilid as an extra path. It is a separate install, so core stays small.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-veilid">tetron-veilid</a></div></div>
-    <div class="win"><div class="bar"><i></i><i></i><i></i>photos</div><div class="body"><h3>Phone photo backup<span class="tag">opt-in</span></h3><p>tetron-sync-receiver turns a home computer into a destination that accepts only allowed phones, over the mesh. tetron-mobile-sync is the phone side.</p><a class="more" href="https://github.com/ErikAllanKincaid/tetron-sync-receiver">tetron-sync-receiver</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>board</div><div class="body"><h3>Message board<span class="tag">opt-in</span></h3><p>A browser message board for one network. Anyone on the mesh can read and post text and images, with no accounts.</p><a class="more" href="https://github.com/tetronos/tetron-messageboard">tetron-messageboard</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>veilid</div><div class="body"><h3>Veilid transport<span class="tag">opt-in</span></h3><p>Builds and installs the companion daemon that lets a network use Veilid as an extra path. It is a separate install, so core stays small.</p><a class="more" href="https://github.com/tetronos/tetron-veilid">tetron-veilid</a></div></div>
+    <div class="win"><div class="bar"><i></i><i></i><i></i>photos</div><div class="body"><h3>Phone photo backup<span class="tag">opt-in</span></h3><p>tetron-sync-receiver turns a home computer into a destination that accepts only allowed phones, over the mesh. tetron-mobile-sync is the phone side.</p><a class="more" href="https://github.com/tetronos/tetron-sync-receiver">tetron-sync-receiver</a></div></div>
   </div>
   <p class="note" style="margin-top:1.4rem"><code>install-tetron-suite.sh --install-all</code> installs every addon above except the Android app and tetron-relay, which have their own installs. Addons are optional, and tetron works without any of them.</p>
 </div></section>
@@ -312,23 +312,23 @@ No firewall, DNS or ssh server added.</pre></div>
 <section id="desktop"><div class="wrap desk"><div>
   <p class="eyebrow">Better together</p>
   <h2>A mesh network and a desktop for it.</h2>
-  <p class="lede"><a href="https://erikallankincaid.github.io/tetron-wm/">tetron-wm</a> is a window manager for the terminal. It shows tetron status in its tray, toggles each network from a popover and opens a terminal into tetron. Everything works without it, and it works without tetron too.</p>
-  <a class="btn" href="https://erikallankincaid.github.io/tetron-wm/">Meet tetron-wm</a><a class="btn ghost" href="https://github.com/ErikAllanKincaid/tetron-wm">tetron-wm on GitHub</a>
+  <p class="lede"><a href="https://tetronos.github.io/tetron-wm/">tetron-wm</a> is a window manager for the terminal. It shows tetron status in its tray, toggles each network from a popover and opens a terminal into tetron. Everything works without it, and it works without tetron too.</p>
+  <a class="btn" href="https://tetronos.github.io/tetron-wm/">Meet tetron-wm</a><a class="btn ghost" href="https://github.com/tetronos/tetron-wm">tetron-wm on GitHub</a>
   </div>
-  <a href="https://erikallankincaid.github.io/tetron-wm/"><img src="images/tetron-wm_desktop.png" alt="The tetron-wm desktop: a terminal window manager with tetron status in its tray." loading="lazy"></a>
+  <a href="https://tetronos.github.io/tetron-wm/"><img src="images/tetron-wm_desktop.png" alt="The tetron-wm desktop: a terminal window manager with tetron status in its tray." loading="lazy"></a>
 </div></section>
 
 <section><div class="wrap">
   <h2>Try it now.</h2>
-  <div class="install" style="margin-top:1rem"><span class="p">$</span><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash</code></div>
-  <p class="inspect" style="margin-left:0;text-align:left">Read before you run: <a href="https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
+  <div class="install" style="margin-top:1rem"><span class="p">$</span><code>curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash</code></div>
+  <p class="inspect" style="margin-left:0;text-align:left">Read before you run: <a href="https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh">install-tetron-suite.sh</a></p>
   <p class="inspect" style="margin-left:0;text-align:left">Optional, installs nothing: list every option first</p>
-  <div class="install alt" style="margin-left:0"><code>curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
-  <p class="apk" style="margin-top:1rem"><a class="btn" href="https://github.com/ErikAllanKincaid/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>Debug build, pre-release.</span></p>
+  <div class="install alt" style="margin-left:0"><code>curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh <span class="tail">| bash -s -- <b>--help</b></span></code><button class="copy">copy</button></div>
+  <p class="apk" style="margin-top:1rem"><a class="btn" href="https://github.com/tetronos/tetron/releases/download/tetron-mobile-android-v0.14.3-debug/tetron-mobile-android-v0.14.3-debug.apk">Download for Android (.apk)</a><span>Debug build, pre-release.</span></p>
 </div></section>
 
 <footer><div class="wrap">
-  <a href="https://github.com/ErikAllanKincaid/tetron">GitHub</a><a href="HOWTO.md">How-to</a><a href="CLI_REFERENCE.md">CLI reference</a><a href="SECURITY.md">Security</a><a href="BACKGROUND.md">Background</a><a href="Tetron_AnatomyofaMesh.html">Anatomy of a mesh</a><a href="https://erikallankincaid.github.io/tetron-wm/">tetron-wm desktop</a>
+  <a href="https://github.com/tetronos/tetron">GitHub</a><a href="HOWTO.md">How-to</a><a href="CLI_REFERENCE.md">CLI reference</a><a href="SECURITY.md">Security</a><a href="BACKGROUND.md">Background</a><a href="Tetron_AnatomyofaMesh.html">Anatomy of a mesh</a><a href="https://tetronos.github.io/tetron-wm/">tetron-wm desktop</a>
   <p>Mozilla Public License 2.0. A fork of rayfish with a configurable subnet.</p>
 </div></footer>
 

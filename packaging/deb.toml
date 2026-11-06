@@ -1,4 +1,4 @@
-# Package description for mkdeb (https://github.com/ErikAllanKincaid/tetron-packaging).
+# Package description for mkdeb (https://github.com/tetronos/tetron-packaging).
 # Built in release CI by the build-deb action from the static musl binary.
 # Spec: spec/packaging.py (PACKAGING-006). The maintainer comes from the
 # repository variable DEB_MAINTAINER, never from this file.
@@ -14,7 +14,7 @@ and /var/log/tetron; delete them by hand if you really want the node gone:
 sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron."""
 section = "net"
 license = "MPL-2.0"
-homepage = "https://github.com/ErikAllanKincaid/tetron"
+homepage = "https://github.com/tetronos/tetron"
 depends = ["iproute2"]
 smoke = "tetron --version"
 

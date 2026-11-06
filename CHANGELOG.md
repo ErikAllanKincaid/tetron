@@ -135,7 +135,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Veilid transport (`--features veilid`) now talks to an external `tetron-veilid` companion daemon instead of embedding a Veilid node in the tetron daemon process** (`VEILID-017`..`019`). Same shape `--tor` already uses for Tor (a thin client to an external daemon), correcting the one place this project had deviated from "do one thing well." Requires the separate [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) addon installed and running (`127.0.0.1:5959`, the default `veilid-server` itself documents) — the officially distributed `veilid-server` package cannot be used directly, since it lacks the `footgun-nodeid-target` feature this transport's `SafetySelection::Unsafe` mode requires; `tetron-veilid` builds its own binary with that feature enabled. The `--veilid` CLI surface, roster propagation, and dial-path behavior are all unchanged — this only affects how the daemon reaches the Veilid network, not how a network using it is created or joined. Transparently reconnects (with backoff) if the companion daemon restarts or was briefly unreachable.
+- **Veilid transport (`--features veilid`) now talks to an external `tetron-veilid` companion daemon instead of embedding a Veilid node in the tetron daemon process** (`VEILID-017`..`019`). Same shape `--tor` already uses for Tor (a thin client to an external daemon), correcting the one place this project had deviated from "do one thing well." Requires the separate [`tetron-veilid`](https://github.com/tetronos/tetron-veilid) addon installed and running (`127.0.0.1:5959`, the default `veilid-server` itself documents) — the officially distributed `veilid-server` package cannot be used directly, since it lacks the `footgun-nodeid-target` feature this transport's `SafetySelection::Unsafe` mode requires; `tetron-veilid` builds its own binary with that feature enabled. The `--veilid` CLI surface, roster propagation, and dial-path behavior are all unchanged — this only affects how the daemon reaches the Veilid network, not how a network using it is created or joined. Transparently reconnects (with backoff) if the companion daemon restarts or was briefly unreachable.
 
 ## [0.12.0] - 2026-09-13
 
@@ -943,13 +943,13 @@ First public release.
 - **Optional transports / export**: `--features tor` (Tor transport) and
   `--features otel` (OTLP span export).
 
-[Unreleased]: https://github.com/ErikAllanKincaid/tetron/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.3...v0.10.0
-[0.9.3]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.2...v0.9.3
-[0.9.1]: https://github.com/ErikAllanKincaid/tetron/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/ErikAllanKincaid/tetron/compare/v0.8.2...v0.9.0
-[0.1.6]: https://github.com/ErikAllanKincaid/tetron/compare/v0.1.4...v0.1.6
+[Unreleased]: https://github.com/tetronos/tetron/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/tetronos/tetron/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/tetronos/tetron/compare/v0.9.3...v0.10.0
+[0.9.3]: https://github.com/tetronos/tetron/compare/v0.9.2...v0.9.3
+[0.9.1]: https://github.com/tetronos/tetron/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/tetronos/tetron/compare/v0.8.2...v0.9.0
+[0.1.6]: https://github.com/tetronos/tetron/compare/v0.1.4...v0.1.6
 [0.1.4]: https://github.com/rayfish/rayfish/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rayfish/rayfish/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rayfish/rayfish/compare/v0.1.1...v0.1.2

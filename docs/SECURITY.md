@@ -8,7 +8,7 @@ Tagged releases (`v0.8.0` through the current `latest`), but there is no formal 
 
 Please report security vulnerabilities **privately**; do not open a public GitHub issue.
 
-Use [GitHub private vulnerability reporting](https://github.com/ErikAllanKincaid/tetron/security/advisories/new) on this repository.
+Use [GitHub private vulnerability reporting](https://github.com/tetronos/tetron/security/advisories/new) on this repository.
 
 Include enough detail to reproduce: affected version/commit, configuration, and a description (ideally a proof of concept). Reports will be acknowledged, kept updated on remediation, and credited in the release notes unless you prefer to remain anonymous.
 
