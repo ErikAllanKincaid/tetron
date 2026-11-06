@@ -35,3 +35,4 @@ pub mod shutdown;
 pub mod stats;
 pub mod transport;
 pub mod tun;
+pub mod userdb;

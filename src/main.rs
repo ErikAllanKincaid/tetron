@@ -782,13 +782,7 @@ async fn try_live_reload_path_preference() -> Result<()> {
 
 /// Resolve a username to its UID, falling back to parsing a numeric UID.
 pub(crate) fn uid_for_user(user: &str) -> Option<u32> {
-    use std::ffi::CString;
-    let cname = CString::new(user).ok()?;
-    let pw = unsafe { libc::getpwnam(cname.as_ptr()) };
-    if !pw.is_null() {
-        return Some(unsafe { (*pw).pw_uid });
-    }
-    user.parse::<u32>().ok()
+    tetron::userdb::user_uid(user).or_else(|| user.parse::<u32>().ok())
 }
 
 /// `tetron set-operator <user>`: authorize a local user to run mutating tetron
