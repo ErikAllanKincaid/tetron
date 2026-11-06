@@ -12,7 +12,7 @@ tetron runs a root daemon that owns a TUN device and the iroh endpoint. Clients 
 sudo tetron install   # install the system service + start + activate data plane
 ```
 
-**Optional GUI add-ons.** Everything in this guide is CLI-only, by design (tetron core stays "do one thing well"). If you'd rather not live in the terminal, [`tetron-webui`](https://github.com/ErikAllanKincaid/tetron-webui) is a browser dashboard (create/join/leave, invites, admin actions, and an Add-ons panel that can install the others) and [`tetron-systray`](https://github.com/ErikAllanKincaid/tetron-systray) is a menu-bar/tray status client. Both are separate, opt-in binaries that talk to the same daemon over the same IPC socket -- nothing here changes if you never install them.
+**Optional GUI add-ons.** Everything in this guide is CLI-only, by design (tetron core stays "do one thing well"). If you'd rather not live in the terminal, [`tetron-webui`](https://github.com/tetronos/tetron-webui) is a browser dashboard (create/join/leave, invites, admin actions, and an Add-ons panel that can install the others) and [`tetron-systray`](https://github.com/tetronos/tetron-systray) is a menu-bar/tray status client. Both are separate, opt-in binaries that talk to the same daemon over the same IPC socket -- nothing here changes if you never install them.
 
 **Shell completions:**
 
@@ -24,15 +24,15 @@ tetron completions bash > /etc/bash_completion.d/tetron   # or: zsh, fish, elvis
 
 ## 1. Install from GitHub release
 
-Download the binary for your architecture from the [releases page](https://github.com/ErikAllanKincaid/tetron/releases), then install it:
+Download the binary for your architecture from the [releases page](https://github.com/tetronos/tetron/releases), then install it:
 
 ```bash
 # Download the latest release binary. Published assets: tetron-linux-x86_64,
 # tetron-linux-aarch64, tetron-macos-aarch64, tetron-macos-x86_64 -- swap
 # the filename below for your platform:
-curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
+curl -Lo tetron https://github.com/tetronos/tetron/releases/latest/download/tetron-linux-x86_64
 # OR
-wget -O tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
+wget -O tetron https://github.com/tetronos/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 
@@ -48,7 +48,7 @@ For a specific version instead of the latest, substitute the tag directly: `.../
 **Building from source:**
 
 ```bash
-git clone https://github.com/ErikAllanKincaid/tetron.git
+git clone https://github.com/tetronos/tetron.git
 cd tetron
 cargo build --release
 sudo install target/release/tetron /usr/local/bin/tetron
@@ -103,7 +103,7 @@ tetron create --network-name mynet --hostname alice --tor
 tetron create --network-name mynet --hostname alice --veilid   # requires --features veilid
 ```
 
-Tor requires a running Tor daemon with `ControlPort 9051`; Veilid requires a running [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) companion daemon. See [Tor transport](#tor-transport) / [Veilid transport](#veilid-transport) below — both rank as backups by default, see [Preferring a transport](#preferring-a-transport) to make one carry traffic deliberately.
+Tor requires a running Tor daemon with `ControlPort 9051`; Veilid requires a running [`tetron-veilid`](https://github.com/tetronos/tetron-veilid) companion daemon. See [Tor transport](#tor-transport) / [Veilid transport](#veilid-transport) below — both rank as backups by default, see [Preferring a transport](#preferring-a-transport) to make one carry traffic deliberately.
 
 ---
 
@@ -535,7 +535,7 @@ Mixing Tor and non-Tor nodes on the same network is supported — each peer uses
 
 ### Veilid transport
 
-Compiled into the release binary (`--features veilid` only matters building from source without it, VEILID-001..019). Talks to a separate [`tetron-veilid`](https://github.com/ErikAllanKincaid/tetron-veilid) companion daemon (`127.0.0.1:5959` by default) — a running daemon or control port to manage, same external-daemon shape as Tor, not an embedded node. Live-verified end to end (VEILID-007):
+Compiled into the release binary (`--features veilid` only matters building from source without it, VEILID-001..019). Talks to a separate [`tetron-veilid`](https://github.com/tetronos/tetron-veilid) companion daemon (`127.0.0.1:5959` by default) — a running daemon or control port to manage, same external-daemon shape as Tor, not an embedded node. Live-verified end to end (VEILID-007):
 
 ```bash
 # Create a network with Veilid transport
@@ -575,7 +575,7 @@ There is no self-update in tetron (removed from upstream, MINIMAL-002). Replace 
 
 ```bash
 # From a fresh release binary:
-curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
+curl -Lo tetron https://github.com/tetronos/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron   # overwrite the old binary at the same path
 
@@ -605,13 +605,13 @@ Everything that matters lives under `config::config_dir()` -- `/etc/tetron` on L
 
 ```bash
 # 1. install-tetron-suite.sh component (root-owned, /usr/local/bin)
-curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh -o install-tetron-suite.sh
+curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh -o install-tetron-suite.sh
 bash install-tetron-suite.sh --install-backup
 
 # 2. webui: Add-ons > Config Backup popup serves the script itself
 
 # 3. plain fetch
-curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/tetron-backup.sh -o tetron-backup.sh
+curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/tetron-backup.sh -o tetron-backup.sh
 chmod +x tetron-backup.sh
 ```
 

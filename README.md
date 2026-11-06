@@ -1,6 +1,6 @@
 # tetron
 
-**Website: [erikallankincaid.github.io/tetron](https://erikallankincaid.github.io/tetron/)**
+**Website: [tetronos.github.io/tetron](https://tetronos.github.io/tetron/)**
 
 **Tetron turns any group of machines into one private network, wherever they are.**
 
@@ -12,9 +12,9 @@ It is a standalone P2P mesh VPN: every device gets a stable, identity-derived ad
 
 **Prefer a dashboard to typing commands?** Everything below is the CLI, but you do not have to use it directly:
 
-- **[tetron-webui](https://github.com/ErikAllanKincaid/tetron-webui)** -- a browser dashboard: status, create/join/leave, invites, and the full coordinator admin surface. This is likely the easiest way to run tetron day to day if you're not looking to live in a terminal.
-- **[tetron-systray](https://github.com/ErikAllanKincaid/tetron-systray)** -- a menu-bar/tray client for glanceable status and quick per-network toggling.
-- **[tetron-tui](https://github.com/ErikAllanKincaid/tetron-tui)** -- a terminal dashboard (htop style) for servers and SSH sessions: networks, peers, transport and traffic history, invites with a QR code, join, and coordinator admin.
+- **[tetron-webui](https://github.com/tetronos/tetron-webui)** -- a browser dashboard: status, create/join/leave, invites, and the full coordinator admin surface. This is likely the easiest way to run tetron day to day if you're not looking to live in a terminal.
+- **[tetron-systray](https://github.com/tetronos/tetron-systray)** -- a menu-bar/tray client for glanceable status and quick per-network toggling.
+- **[tetron-tui](https://github.com/tetronos/tetron-tui)** -- a terminal dashboard (htop style) for servers and SSH sessions: networks, peers, transport and traffic history, invites with a QR code, join, and coordinator admin.
 
 All three are genuinely separate, opt-in clients talking to the same daemon underneath -- no daemon changes needed either way.
 
@@ -34,12 +34,12 @@ Electric ray *Tetronarce californica*
 Install suite.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
 ```
 
 ##### Debian and Ubuntu: install the .deb instead
 
-Each release also has `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb`. Download one from the [releases page](https://github.com/ErikAllanKincaid/tetron/releases), then `sudo apt install ./tetron_<version>-1_amd64.deb` and `sudo tetron install` to enable and start the service. The suite installer can do this for you with `--method deb`, which also converts a raw install in one step (it moves the old `/etc` unit to `/var/backups/tetron/` and removes the raw copy), and by default it uses the `.deb` for a new install and for an upgrade when a package already owns the binary; `--method binary` switches a packaged install back to the raw binary. Removing or purging the package keeps `/etc/tetron` (the node identity and settings) and `/var/log/tetron`; to delete them run `sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron`. Use one method per machine: a raw copy in `/usr/local/bin` comes first on `PATH` and hides the packaged one, which the suite installer reports.
+Each release also has `tetron_<version>-1_amd64.deb` and `tetron_<version>-1_arm64.deb`. Download one from the [releases page](https://github.com/tetronos/tetron/releases), then `sudo apt install ./tetron_<version>-1_amd64.deb` and `sudo tetron install` to enable and start the service. The suite installer can do this for you with `--method deb`, which also converts a raw install in one step (it moves the old `/etc` unit to `/var/backups/tetron/` and removes the raw copy), and by default it uses the `.deb` for a new install and for an upgrade when a package already owns the binary; `--method binary` switches a packaged install back to the raw binary. Removing or purging the package keeps `/etc/tetron` (the node identity and settings) and `/var/log/tetron`; to delete them run `sudo rm -rf /etc/tetron /var/log/tetron && sudo groupdel tetron`. Use one method per machine: a raw copy in `/usr/local/bin` comes first on `PATH` and hides the packaged one, which the suite installer reports.
 
 ##### Then use the webui, opens from systray.
 
@@ -61,7 +61,7 @@ Admin => mint invite
 Install suite.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
 ```
 
 ##### Join the network
@@ -85,20 +85,20 @@ Tetron runs a small root daemon (comparable to Tailscale's `tailscaled`) that ow
 #  Linux (x86_64/aarch64) and macOS (aarch64/x86_64) binaries are both
 #  published on releases -- swap tetron-linux-x86_64 below for
 #  tetron-macos-aarch64/tetron-macos-x86_64 on a Mac:
-curl -Lo tetron https://github.com/ErikAllanKincaid/tetron/releases/latest/download/tetron-linux-x86_64
+curl -Lo tetron https://github.com/tetronos/tetron/releases/latest/download/tetron-linux-x86_64
 chmod +x tetron
 sudo install tetron /usr/local/bin/tetron
 sudo tetron install
 
 # Install the Web UI.
-curl -Lo tetron-webui https://github.com/ErikAllanKincaid/tetron-webui/releases/latest/download/tetron-webui-linux-x86_64
+curl -Lo tetron-webui https://github.com/tetronos/tetron-webui/releases/latest/download/tetron-webui-linux-x86_64
 chmod +x tetron-webui
 sudo install tetron-webui /usr/local/bin/tetron-webui
 # sets up + starts a per-user service, no sudo needed for this step
 tetron-webui install
 
 # Addons (systray, etc.) install the same way -- swap the binary name/repo below:
-curl -Lo tetron-systray https://github.com/ErikAllanKincaid/tetron-systray/releases/latest/download/tetron-systray-linux-x86_64
+curl -Lo tetron-systray https://github.com/tetronos/tetron-systray/releases/latest/download/tetron-systray-linux-x86_64
 chmod +x tetron-systray
 sudo install tetron-systray /usr/local/bin/tetron-systray
 tetron-systray install
@@ -107,7 +107,7 @@ tetron-systray install
 To install or upgrade tetron and its add-ons in one step instead of running the steps above by hand, run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) as in the TL;DR above. It compares each component with its latest GitHub release, verifies each download against the SHA-256 checksum published with it, installs to `/usr/local/bin`, and registers each component's service. At a terminal it offers a default set (core and `tetron-tui`, plus `tetron-webui` and `tetron-systray` when a display is present) and lets you choose add-ons; with no terminal it installs core and `tetron-tui`. Anything already installed is upgraded with the rest. Upgrading core restarts the daemon, which briefly disconnects the host from its peers. `--check` reports versions without changing anything. The script documents itself at the top of the file. To see every option without installing anything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
 ```
 
 ```bash
@@ -157,7 +157,7 @@ A node that belongs to two networks does **not** automatically route traffic bet
 
 Every node runs the identical daemon. Once two nodes can reach each other, traffic moves directly between them over an encrypted QUIC/UDP tunnel -- iroh's shared relay/discovery infrastructure only brokers the initial introduction and NAT traversal, and is never in the data path for an established connection. Each node's TUN device carries whatever name the OS assigns it (`tun0`, `tun1`, ...), not a fixed name.
 
-For a longer, narrative take on the same architecture, see [**Tetron: Anatomy of a Mesh**](https://erikallankincaid.github.io/tetron/Tetron_AnatomyofaMesh.html) -- a field-guide-style writeup covering the daemon's internal structure, the path a packet takes, and how concurrent state is held. Third-party-style piece, included for a different angle on the same system rather than as an authoritative reference -- some details are simplified for narrative flow.
+For a longer, narrative take on the same architecture, see [**Tetron: Anatomy of a Mesh**](https://tetronos.github.io/tetron/Tetron_AnatomyofaMesh.html) -- a field-guide-style writeup covering the daemon's internal structure, the path a packet takes, and how concurrent state is held. Third-party-style piece, included for a different angle on the same system rather than as an authoritative reference -- some details are simplified for narrative flow.
 
 ## Co-coordinators and admission
 
@@ -292,7 +292,7 @@ just deploy <ip>                # cross-build release + install + start on a rem
 just deploy-dev <ip>            # same, but a debug build (faster iteration)
 ```
 
-Tetron primarily targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64). Prebuilt binaries for both platforms are published on [Releases](https://github.com/ErikAllanKincaid/tetron/releases) (`tetron-linux-x86_64`/`tetron-linux-aarch64`/`tetron-macos-aarch64`/`tetron-macos-x86_64`) -- macOS support is live-verified on real Apple Silicon hardware, not just compiled. Android support is deferred.
+Tetron primarily targets **Linux** (systemd service, x86_64/aarch64) and **macOS** (launchd daemon, aarch64/x86_64). Prebuilt binaries for both platforms are published on [Releases](https://github.com/tetronos/tetron/releases) (`tetron-linux-x86_64`/`tetron-linux-aarch64`/`tetron-macos-aarch64`/`tetron-macos-x86_64`) -- macOS support is live-verified on real Apple Silicon hardware, not just compiled. Android support is deferred.
 
 ## Uninstall
 

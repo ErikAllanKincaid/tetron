@@ -138,7 +138,7 @@ class ReleaseDebAssets(Requirement):
     raw binary assets, which are unchanged. The debs are built in
     `.github/workflows/release.yml` from the same musl binaries the job
     uploads (`tetron-linux-x86_64-musl`, `tetron-linux-aarch64-musl`) by the
-    `build-deb` action of `ErikAllanKincaid/tetron-packaging`, pinned by full
+    `build-deb` action of `tetronos/tetron-packaging`, pinned by full
     commit SHA, and are tested in a clean debian:trixie container before the
     upload step.
 

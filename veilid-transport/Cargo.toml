@@ -6,7 +6,7 @@ rust-version = "1.91"
 authors = ["Dario", "ErikAllanKincaid"]
 license = "MPL-2.0"
 description = "iroh CustomTransport carrying QUIC traffic over a companion tetron-veilid daemon (VEILID-001, 017-019)"
-repository = "https://github.com/ErikAllanKincaid/tetron"
+repository = "https://github.com/tetronos/tetron"
 
 # VEILID-001, 017-019. See spec/core.py's VeilidExternalDaemonProtocol
 # (VEILID-017) for the current architecture: a thin TCP/JSON client to an

@@ -489,7 +489,7 @@ def check_deb_release() -> dict:
     except OSError:
         problems.append("packaging/postinst missing")
     wf = Path(".github/workflows/release.yml").read_text()
-    refs = re.findall(r"uses:\s*ErikAllanKincaid/tetron-packaging@(\S+)", wf)
+    refs = re.findall(r"uses:\s*tetronos/tetron-packaging@(\S+)", wf)
     if not refs or any(not re.fullmatch(r"[0-9a-f]{40}", r) for r in refs):
         problems.append("tetron-packaging action missing or not pinned to a full SHA")
     if "vars.DEB_MAINTAINER" not in wf:

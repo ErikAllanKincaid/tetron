@@ -9,7 +9,7 @@
 #
 # This file is the single source of truth, living in the tetron repo at
 # contrib/tetron-backup.sh. Delivery channels (no repo clone needed):
-#   - raw.githubusercontent.com/ErikAllanKincaid/tetron/main/contrib/tetron-backup.sh
+#   - raw.githubusercontent.com/tetronos/tetron/main/contrib/tetron-backup.sh
 #   - `install-tetron-suite.sh backup` (installs to /usr/local/bin)
 #   - tetron-webui: Add-ons > Config Backup popup (webui proxies this file)
 #
