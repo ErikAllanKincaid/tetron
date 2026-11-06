@@ -439,3 +439,19 @@ class ReleaseVersionSitesAgree(Constraint):
     """
     constraint_id = "CON-REL01"
     enforcement_logic = "{{ release_bump.sites_agree and release_bump.test_failures == 0 }}"
+
+
+class NoNonReentrantLibcLookups(Constraint):
+    """CONSTRAINT-ID: CON-THR01
+
+    THREADSAFE-LOOKUP-001 guard. The daemon is multi-threaded (tokio), so
+    libc functions that return pointers into static storage must not be
+    called: `getgrnam`, `getgrgid`, `getpwnam`, `getpwuid`, `getgrent`,
+    `getpwent`, `getlogin`, `localtime`, `gmtime`, `ctime`, `asctime`,
+    `strtok`, `strerror`, `gethostbyname`, `gethostbyaddr`, `readdir`
+    (called as `libc::<name>(`). The `_r` variants are allowed.
+
+    ENFORCEMENT (reconcile.py): non_reentrant_libc.unexpected_count equals 0.
+    """
+    constraint_id = "CON-THR01"
+    enforcement_logic = "{{ non_reentrant_libc.unexpected_count == 0 }}"

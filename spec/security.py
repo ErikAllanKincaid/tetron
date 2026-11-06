@@ -2329,3 +2329,35 @@ class IpcAcceptErrorBackoff(Requirement):
     caps at 1 s, zero errors means no pause).
     """
     req_id = "IPC-ADMISSION-003"
+
+
+class ThreadSafeGroupAndUserLookup(Requirement):
+    """REQUIREMENT-ID: THREADSAFE-LOOKUP-001
+
+    Root cause of the 0.15.2 daemon crash seen 2026-11-05 on the TetronOS live
+    ISO (SIGSEGV/SIGBUS at `__libc_realloc` in musl, 7 restarts in about 20
+    minutes; analysis in DO-NOT-COMMIT/crash-2026-11-05-musl-heap-corruption/).
+    `config::storage::tetron_gid` called `libc::getgrnam`, which is not
+    thread safe: musl reads /etc/group into a static line buffer that it
+    grows with `realloc`. `tetron_gid` runs on every `config::load()`
+    (`config_dir` -> `ensure_dir` -> `set_owner`), and `config::load()` runs
+    from many tasks on several tokio worker threads at once (IPC requests
+    such as status polls from tetron-wm and tetron-tui, mesh events). Two
+    concurrent calls free and grow the same buffer and corrupt the heap;
+    musl's mallocng detects it and stops the process. The crashing core's
+    stack: realloc <- getdelim <- __getgrent_a <- __getgr_a <- getgrnam <-
+    set_owner <- ensure_dir <- config_dir <- config::load.
+
+    **The fix:** group and user lookups use the reentrant `getgrnam_r` and
+    `getpwnam_r` with a caller-owned buffer that grows on `ERANGE` (bounded),
+    so no static libc state is shared between threads. This covers
+    `tetron_gid` (storage.rs) and the `getpwnam` used by `set-operator`
+    (main.rs, single threaded today, fixed for the same reason).
+
+    **Tests:** a unit test calls the group lookup from many threads at once,
+    many times each, and checks every result equals the single-threaded one
+    (it crashed the musl build before the fix); unit tests for a missing
+    group and user returning None. CON-THR01 keeps the non-reentrant calls
+    out of the code.
+    """
+    req_id = "THREADSAFE-LOOKUP-001"
