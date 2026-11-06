@@ -1,0 +1,54 @@
+name: Pages
+
+# Publishes https://tetronos.github.io/tetron/ from docs/ (the same Jekyll
+# build GitHub's "deploy from branch" ran) and adds the suite installer as
+# /install.sh, copied from contrib/install-tetron-suite.sh of the same commit,
+# so the short command
+#   curl -fsSL https://tetronos.github.io/tetron/install.sh | bash
+# always serves the installer that is on main. One copy in git, never stale.
+# Pull requests build only (to check the site still builds); pushes to main
+# build and deploy. Needs Settings > Pages > Source: GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+      - name: Add install.sh (the suite installer from this commit)
+        run: |
+          sudo install -m 644 contrib/install-tetron-suite.sh _site/install.sh
+          head -1 _site/install.sh | grep -q '^#!' || { echo "install.sh is not a script"; exit 1; }
+          ls -la _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
