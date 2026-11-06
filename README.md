@@ -4,7 +4,7 @@
 
 **Tetron turns any group of machines into one private network, wherever they are.**
 
-<img src="docs/images/icon.png" alt="tetron logo">
+<img src="docs/images/icon.png" alt="tetron logo" width="100">
 
 Tetron lets you reach every computer you own as if they were sitting on the same desk, no matter where they actually are. Turn on your laptop or phone from a coffee shop and it can talk straight to your home server, your NAS, or your other laptop -- no port forwarding, no static IPs, nothing exposed to the open internet. Install it, invite your other machines, and they're on your network.
 
