@@ -21,7 +21,7 @@
 #
 # What this script does for each selected component, in order:
 #   1. Asks GitHub (api.github.com) for the latest release of the component's
-#      repository. All repositories are under github.com/ErikAllanKincaid/.
+#      repository. All repositories are under github.com/tetronos/.
 #   2. If that version is installed and its service is running, moves on.
 #      Otherwise downloads the binary built for this OS and CPU, plus its
 #      .sha256 checksum file, from that exact release over HTTPS. The binary
