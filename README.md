@@ -34,7 +34,7 @@ Electric ray *Tetronarce californica*
 Install suite.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
+curl -fsSL https://tetronos.github.io/tetron/install.sh | bash
 ```
 
 ##### Debian and Ubuntu: install the .deb instead
@@ -61,7 +61,7 @@ Admin => mint invite
 Install suite.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
+curl -fsSL https://tetronos.github.io/tetron/install.sh | bash
 ```
 
 ##### Join the network
@@ -107,7 +107,7 @@ tetron-systray install
 To install or upgrade tetron and its add-ons in one step instead of running the steps above by hand, run [`contrib/install-tetron-suite.sh`](contrib/install-tetron-suite.sh) as in the TL;DR above. It compares each component with its latest GitHub release, verifies each download against the SHA-256 checksum published with it, installs to `/usr/local/bin`, and registers each component's service. At a terminal it offers a default set (core and `tetron-tui`, plus `tetron-webui` and `tetron-systray` when a display is present) and lets you choose add-ons; with no terminal it installs core and `tetron-tui`. Anything already installed is upgraded with the rest. Upgrading core restarts the daemon, which briefly disconnects the host from its peers. `--check` reports versions without changing anything. The script documents itself at the top of the file. To see every option without installing anything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+curl -fsSL https://tetronos.github.io/tetron/install.sh | bash -s -- --help
 ```
 
 ```bash
