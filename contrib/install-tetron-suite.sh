@@ -4,9 +4,9 @@
 # already at the latest release is left as it is.
 #
 # Quick start (asks what to install when run at a terminal):
-#   curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash
+#   curl -fsSL https://tetronos.github.io/tetron/install.sh | bash
 # Show this help without installing anything:
-#   curl -fsSL https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh | bash -s -- --help
+#   curl -fsSL https://tetronos.github.io/tetron/install.sh | bash -s -- --help
 # Options go after `bash -s --` in the same way.
 #
 # Components:
@@ -161,7 +161,7 @@ require_cmd() {
 
 require_cmd curl install
 
-SELF_URL=https://raw.githubusercontent.com/tetronos/tetron/main/contrib/install-tetron-suite.sh
+SELF_URL=https://tetronos.github.io/tetron/install.sh
 
 # --help prints the comment block at the top of this file. When the script is
 # piped into bash there is no file to read, so it is fetched again from
