@@ -95,19 +95,12 @@ struct Settings {
     path_preference: Option<String>,
 }
 
-/// Look up the `tetron` group's gid (Linux), if the group exists.
+/// Look up the `tetron` group's gid (Linux), if the group exists. Uses the
+/// reentrant lookup: this runs on every config load, from many daemon
+/// threads at once (THREADSAFE-LOOKUP-001).
 #[cfg(target_os = "linux")]
 fn tetron_gid() -> Option<u32> {
-    use std::ffi::CString;
-    let name = CString::new("tetron").ok()?;
-    // SAFETY: getgrnam returns a pointer to a static struct; we copy gr_gid out
-    // immediately before any further libc call could overwrite it.
-    let grp = unsafe { libc::getgrnam(name.as_ptr()) };
-    if grp.is_null() {
-        None
-    } else {
-        Some(unsafe { (*grp).gr_gid })
-    }
+    crate::userdb::group_gid("tetron")
 }
 
 /// Best-effort `chown` to root, with group `tetron` for non-secret paths (or

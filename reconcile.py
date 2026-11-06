@@ -377,6 +377,22 @@ def check_live_approval_absence() -> dict:
     return {"unexpected_count": unexpected}
 
 
+def check_non_reentrant_libc() -> dict:
+    """CON-THR01: no non-reentrant libc lookups (static return storage) in the
+    multi-threaded code; the `_r` variants are allowed."""
+    names = ["getgrnam", "getgrgid", "getpwnam", "getpwuid", "getgrent", "getpwent",
+             "getlogin", "localtime", "gmtime", "ctime", "asctime", "strtok", "strerror",
+             "gethostbyname", "gethostbyaddr", "readdir"]
+    pat = re.compile(r"libc::(" + "|".join(names) + r")\s*\(")
+    hits = []
+    for root in [Path("src"), Path("tetron-proto")]:
+        for p in root.rglob("*.rs"):
+            for i, line in enumerate(p.read_text().splitlines(), 1):
+                if pat.search(line) and not line.lstrip().startswith("//"):
+                    hits.append(f"{p}:{i}")
+    return {"unexpected_count": len(hits), "hits": hits}
+
+
 def check_cargo_audit() -> dict:
     """D-02: known-CVE scanning of the dependency tree via `cargo audit`.
     Accepted/tracked advisories live in `.cargo/audit.toml` (each with a
@@ -559,6 +575,7 @@ if __name__ == "__main__":
         "crate_identity": check_crate_identity(),
         "product_identity": check_product_identity(),
         "live_approval_absence": check_live_approval_absence(),
+        "non_reentrant_libc": check_non_reentrant_libc(),
         "cargo_audit": check_cargo_audit(),
         "deb_release": check_deb_release(),
         "suite_shell_tests": check_suite_shell_tests(),
@@ -585,6 +602,7 @@ if __name__ == "__main__":
         and ctx["product_identity"]["alpn_prefix"] == "tetron/net/"
         and ctx["product_identity"]["config_dir"] == "/etc/tetron"
         and ctx["live_approval_absence"]["unexpected_count"] == 0
+        and ctx["non_reentrant_libc"]["unexpected_count"] == 0
         and ctx["cargo_audit"]["installed"]
         and ctx["cargo_audit"]["count"] == 0
         and ctx["deb_release"]["valid"]
