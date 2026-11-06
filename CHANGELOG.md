@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-11-05
+
 ### Fixed
 
 - Daemon crash (SIGSEGV or SIGBUS in `realloc`, the service restarting every few seconds) on the static musl build, seen on a TetronOS live system while tetron-wm and tetron-tui polled status. Every config load looked up the `tetron` group with `getgrnam`, which is not thread safe: musl keeps its `/etc/group` line buffer in static storage, and concurrent loads from several daemon threads corrupted the heap. Group and user lookups now use the reentrant `getgrnam_r` and `getpwnam_r` (new `userdb` module), and a reconcile gate (CON-THR01) keeps non-reentrant libc lookups out of the code (THREADSAFE-LOOKUP-001).
