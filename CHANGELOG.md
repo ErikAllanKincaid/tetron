@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-11-06
+
+### Changed
+
+- The project moved to the tetronos GitHub organization: repository, release, install and docs links point to `github.com/tetronos/tetron` and `tetronos.github.io/tetron`. Old `github.com/ErikAllanKincaid/...` links keep redirecting; old `erikallankincaid.github.io` links do not.
+- Short install command: `curl -fsSL https://tetronos.github.io/tetron/install.sh | bash`. The docs site is now published by a workflow that serves `contrib/install-tetron-suite.sh` from the same commit as `/install.sh`; the long raw URL keeps working. The installer's `--help` fetches itself from the short URL.
+- `contrib/tetron-invite-serve.sh` serves the invite as `invite.txt` by default; `-r` picks a random 6 character name (INVITE-SERVE-001).
+- `docs/images/icon.png` re-rendered from `icon.svg` at 512x512 (the old PNG had a seam line under the T).
+
 ## [0.15.3] - 2026-11-05
 
 ### Fixed
